@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lottie-web 示範：狀態動畫與區段播放</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body { background: radial-gradient(60% 70% at 30% 40%, rgba(76, 201, 240, .08), transparent 70%), var(--bg); }
+  h1 { position: fixed; left: 16px; top: 14px; margin: 0; font-size: 16px; }
+  h1 small { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
+  .layout { position: fixed; inset: 56px 16px 96px; display: flex; gap: 22px; align-items: center; justify-content: center; }
+  .player {
+    height: 100%; aspect-ratio: 1; max-width: calc(100% - 290px); padding: 0;
+    background: radial-gradient(circle at 50% 45%, #1d2230, #12151b 70%);
+  }
+  .side { width: 250px; display: grid; gap: 14px; }
+  .grp label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .row .btn { flex: 1; padding: 8px 6px; }
+  .st[data-m="loading"][aria-pressed="true"] { border-color: var(--c2); box-shadow: inset 0 0 0 1px var(--c2); }
+  .st[data-m="success"][aria-pressed="true"] { border-color: var(--c4); box-shadow: inset 0 0 0 1px var(--c4); }
+  .st[data-m="error"][aria-pressed="true"] { border-color: var(--c3); box-shadow: inset 0 0 0 1px var(--c3); }
+  .info { font-size: 11px; color: var(--muted); line-height: 1.5; }
+  .timeline { position: fixed; left: 16px; right: 16px; bottom: 46px; }
+  .marks { position: relative; height: 18px; margin: 0 8px 2px; }
+  .marks button {
+    position: absolute; top: 0; height: 16px; border: 0; border-radius: 4px; cursor: pointer;
+    font: 11px/16px var(--font); color: #0e1013; opacity: .85; padding: 0;
+  }
+  .marks button:hover { opacity: 1; }
+  .scrubrow { display: flex; gap: 10px; align-items: center; }
+  .scrubrow input { flex: 1; }
+  .scrubrow span { font-size: 12px; color: var(--muted); min-width: 92px; text-align: right; }
+  @media (max-width: 620px) {
+    h1 small { display: none; }
+    .layout { flex-direction: column; inset: 52px 12px 92px; gap: 10px; }
+    .player { height: auto; flex: 1 1 0; min-height: 0; max-width: 100%; }
+    .side { width: 100%; gap: 6px; }
+    .grp { display: flex; align-items: center; gap: 8px; }
+    .grp label { margin: 0; width: 44px; flex: none; }
+    .grp .row { flex: 1; }
+    .row .btn { padding: 7px 4px; font-size: 12px; }
+    .info { display: none; }
+    .timeline { left: 12px; right: 12px; }
+    .scrubrow span { min-width: 64px; }
+  }
+</style>
+</head>
+<body>
+<h1>Lottie 狀態動畫<small>設計師匯出一份 JSON，前端直接播放</small></h1>
+<div class="controls">
+  <button class="btn" id="auto" aria-pressed="true">自動展示</button>
+  <button class="btn primary" id="replay">重播</button>
+</div>
+<main class="layout">
+  <div class="panel player" id="player"></div>
+  <aside class="side">
+    <div class="grp"><label>狀態</label><div class="row">
+      <button class="btn st" data-m="loading" aria-pressed="true">載入中</button>
+      <button class="btn st" data-m="success" aria-pressed="false">成功</button>
+      <button class="btn st" data-m="error" aria-pressed="false">失敗</button>
+    </div></div>
+    <div class="grp"><label>渲染器</label><div class="row">
+      <button class="btn" data-r="svg" aria-pressed="true">SVG</button>
+      <button class="btn" data-r="canvas" aria-pressed="false">Canvas</button>
+    </div></div>
+    <div class="grp"><label>速度</label><div class="row">
+      <button class="btn" data-s="0.5" aria-pressed="false">0.5×</button>
+      <button class="btn" data-s="1" aria-pressed="true">1×</button>
+      <button class="btn" data-s="2" aria-pressed="false">2×</button>
+    </div></div>
+    <div class="info mono" id="info">載入中…</div>
+  </aside>
+</main>
+<div class="timeline">
+  <div class="marks" id="marks"></div>
+  <div class="scrubrow">
+    <input type="range" id="scrub" min="0" max="239" value="0" aria-label="影格">
+    <span id="frame">第 0 影格</span>
+  </div>
+</div>
+<div class="hint">點狀態按鈕播放 marker 區段，或拖曳時間軸</div>
+
+<script src="https://cdn.jsdelivr.net/npm/lottie-web@5.13.0/build/player/lottie.min.js"></script>
+<script>
+// One hand-made Lottie file holds three states, separated by markers.
+const SRC = "assets/lottie-web/status.json";
+const COLORS = { loading: "var(--c2)", success: "var(--c4)", error: "var(--c3)" };
+const NAMES = { loading: "載入中", success: "成功", error: "失敗" };
+const SEQ = ["loading", "loading", "success", "loading", "loading", "error"];
+const player = document.getElementById("player");
+const scrub = document.getElementById("scrub");
+const frameEl = document.getElementById("frame");
+const autoBtn = document.getElementById("auto");
+let text = "", total = 240, marks = {}, anim = null;
+let renderer = "svg", speed = 1, state = "loading", auto = true, seq = 0;
+
+function press(sel, attr, val) {
+  document.querySelectorAll(sel).forEach((b) => b.setAttribute("aria-pressed", b.dataset[attr] === String(val)));
+}
+function setAuto(on) {
+  auto = on;
+  autoBtn.setAttribute("aria-pressed", on);
+}
+
+function load() {
+  if (anim) anim.destroy();
+  // Parse a fresh copy each time: lottie-web mutates the data it is given.
+  anim = lottie.loadAnimation({
+    container: player, renderer, loop: false, autoplay: false,
+    animationData: JSON.parse(text),
+    rendererSettings: { preserveAspectRatio: "xMidYMid meet" },
+  });
+  anim.setSpeed(speed);
+  anim.addEventListener("enterFrame", sync);
+  anim.addEventListener("complete", next);
+  if (anim.isLoaded) playState(state);
+  else anim.addEventListener("DOMLoaded", () => playState(state));
+}
+
+function playState(name) {
+  state = name;
+  press(".st", "m", name);
+  anim.playSegments(marks[name], true);
+}
+
+// Segment finished: loading loops, auto mode walks through the sequence.
+function next() {
+  if (auto) { seq = (seq + 1) % SEQ.length; playState(SEQ[seq]); }
+  else if (state === "loading") playState("loading");
+}
+
+function sync() {
+  const f = Math.round(anim.firstFrame + anim.currentFrame);
+  if (document.activeElement !== scrub) scrub.value = f;
+  frameEl.textContent = `第 ${f} 影格`;
+}
+
+fetch(SRC).then((r) => r.text()).then((t) => {
+  text = t;
+  const data = JSON.parse(t);
+  total = data.op;
+  scrub.max = total - 1;
+  const marksEl = document.getElementById("marks");
+  for (const m of data.markers) {
+    marks[m.cm] = [m.tm, m.tm + m.dr];
+    const b = document.createElement("button");
+    b.textContent = NAMES[m.cm];
+    b.style.cssText = `left:${(m.tm / total) * 100}%;width:calc(${(m.dr / total) * 100}% - 2px);background:${COLORS[m.cm]}`;
+    b.addEventListener("click", () => { setAuto(false); playState(m.cm); });
+    marksEl.append(b);
+  }
+  document.getElementById("info").innerHTML =
+    `status.json・${(t.length / 1024).toFixed(1)} KB<br>${data.layers.length} 個圖層・${total} 影格・${data.fr} fps<br>3 個 marker：loading／success／error`;
+  load();
+}).catch((e) => { document.getElementById("info").textContent = `載入動畫失敗：${e.message}`; });
+
+document.querySelectorAll(".st").forEach((b) => b.addEventListener("click", () => { setAuto(false); playState(b.dataset.m); }));
+document.querySelectorAll("[data-r]").forEach((b) => b.addEventListener("click", () => {
+  renderer = b.dataset.r;
+  press("[data-r]", "r", renderer);
+  load();
+}));
+document.querySelectorAll("[data-s]").forEach((b) => b.addEventListener("click", () => {
+  speed = Number(b.dataset.s);
+  press("[data-s]", "s", b.dataset.s);
+  anim.setSpeed(speed);
+}));
+scrub.addEventListener("input", () => {
+  setAuto(false);
+  state = null;
+  press(".st", "m", "");
+  anim.resetSegments(true);
+  anim.goToAndStop(Number(scrub.value), true);
+});
+scrub.addEventListener("change", () => scrub.blur());
+autoBtn.addEventListener("click", () => {
+  setAuto(!auto);
+  if (auto) { seq = 0; playState(SEQ[0]); }
+});
+document.getElementById("replay").addEventListener("click", () => { setAuto(true); seq = 0; playState(SEQ[0]); });
+addEventListener("resize", () => anim && anim.resize());
+</script>
+</body>
+</html>

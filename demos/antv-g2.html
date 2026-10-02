@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AntV G2 示範：圖形語法組合圖</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"運量與雨量為示意資料"}</script>
+<style>
+  body { background: radial-gradient(80% 80% at 70% 30%, #1b1a2b 0%, var(--bg) 70%); }
+  .title { position: fixed; left: 14px; top: 12px; z-index: 40; }
+  .title h1 { margin: 0; font-size: 16px; }
+  .title p { margin: 0; font-size: 12px; color: var(--muted); }
+  .title code { font: 12px var(--mono); color: var(--accent); }
+  .wrap { position: fixed; left: 8px; right: 8px; top: 60px; bottom: 44px; }
+  #chart { width: 100%; height: 100%; }
+  @media (max-width: 640px) { .title { top: 54px; } .title code { display: block; } .wrap { top: 118px; } }
+</style>
+</head>
+<body>
+<div class="title"><h1>捷運各線每月運量 × 降雨</h1><p>示意資料・同一份資料，只換語法：<code id="grammar">interval + stackY + line</code></p></div>
+<div class="controls">
+  <button class="btn" data-mode="stack" aria-pressed="true">堆疊</button>
+  <button class="btn" data-mode="dodge">並排</button>
+  <button class="btn" data-mode="polar">極座標</button>
+  <button class="btn" data-mode="transpose">轉置</button>
+</div>
+<div class="wrap"><div id="chart"></div></div>
+<div class="hint">按鈕只改轉換或座標系・滑過看數值・點圖例隱藏路線</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@antv/g2@5.4.8/dist/g2.min.js"></script>
+<script>
+// Grammar of graphics with G2 5: one dataset, marks + transforms + coordinates composed declaratively.
+const LINES = ["板南線", "淡水信義線", "松山新店線", "中和新蘆線", "文湖線"];
+const LINE_COLORS = ["#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#c9a66b"];
+const BASE = [4300, 3900, 2300, 2400, 1500]; // illustrative monthly ridership (10k trips)
+const SEASON = [0.93, 0.82, 1.0, 0.98, 1.02, 0.99, 0.95, 0.94, 1.0, 1.04, 1.03, 1.06];
+const RAIN = [95, 170, 180, 180, 250, 320, 240, 320, 360, 150, 90, 75];
+const MONTHS = SEASON.map((_, i) => `${i + 1}月`);
+const rows = LINES.flatMap((line, li) => MONTHS.map((month, mi) => ({
+  month, line, value: Math.round(BASE[li] * SEASON[mi] * (1 + Math.sin(li * 3 + mi) * 0.03)),
+})));
+const rain = MONTHS.map((month, i) => ({ month, rain: RAIN[i] }));
+
+const GRAMMAR = {
+  stack: "interval + stackY + line",
+  dodge: "interval + dodgeX + line",
+  polar: "interval + stackY + polar",
+  transpose: "interval + stackY + transpose",
+};
+
+const chart = new G2.Chart({ container: "chart", autoFit: true });
+
+function spec(mode) {
+  const narrow = innerWidth < 640;
+  const polar = mode === "polar", transposed = mode === "transpose";
+  const bars = {
+    type: "interval",
+    data: rows,
+    encode: { x: "month", y: "value", color: "line" },
+    transform: [{ type: mode === "dodge" ? "dodgeX" : "stackY" }],
+    scale: { color: { domain: LINES, range: LINE_COLORS }, y: { nice: true } },
+    style: polar ? { stroke: "#0e1013", lineWidth: 1 } : { radiusTopLeft: 3, radiusTopRight: 3, columnWidthRatio: 0.72 },
+    axis: polar ? { x: { title: false, grid: true }, y: { title: false, label: false, grid: true } }
+      : { x: { title: false, labelAutoRotate: false, labelFormatter: (d) => (narrow ? d.replace("月", "") : d) },
+          y: { title: "運量（萬人次）", grid: true, labelFormatter: (v) => v.toLocaleString() } },
+    legend: { color: { position: "top", layout: { justifyContent: "center" }, itemMarker: "circle", itemLabelFill: "#ecebe6" } },
+    tooltip: { items: [{ channel: "y", name: "運量", valueFormatter: (v) => `${v.toLocaleString()} 萬` }] },
+    animate: { enter: { type: polar ? "waveIn" : "growInY", duration: 900 } },
+    state: { inactive: { opacity: 0.35 } },
+    interaction: { elementHighlightByColor: true },
+  };
+  const children = [bars];
+  if (!polar && !transposed) {
+    children.push({
+      type: "line", data: rain,
+      encode: { x: "month", y: "rain", shape: "smooth" },
+      scale: { y: { key: "rain", independent: true, domain: [0, 400] } },
+      axis: { y: { position: "right", title: "雨量（mm）", grid: false } },
+      style: { stroke: "#f7df1e", lineWidth: 2.5 },
+      tooltip: { items: [{ channel: "y", name: "雨量", valueFormatter: (v) => `${v} mm` }] },
+    }, {
+      type: "point", data: rain,
+      encode: { x: "month", y: "rain", shape: "circle", size: 4 },
+      scale: { y: { key: "rain", independent: true, domain: [0, 400] } },
+      axis: { y: false },
+      style: { fill: "#0e1013", stroke: "#f7df1e", lineWidth: 2 },
+      labels: narrow ? [] : [{ text: "rain", dy: -12, fill: "#f7df1e", fontSize: 10 }],
+      tooltip: false,
+    });
+  }
+  return {
+    type: "view",
+    theme: { type: "classicDark", view: { viewFill: "transparent" } },
+    paddingRight: polar ? 10 : undefined,
+    coordinate: polar ? { type: "polar", innerRadius: 0.18 } : transposed ? { transform: [{ type: "transpose" }] } : { type: "cartesian" },
+    children,
+  };
+}
+
+let mode = "stack";
+function render() {
+  chart.clear();
+  chart.options(spec(mode));
+  chart.render().catch((err) => console.error("G2 render failed", err));
+  document.getElementById("grammar").textContent = GRAMMAR[mode];
+}
+render();
+
+document.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => {
+  mode = b.dataset.mode;
+  document.querySelectorAll("[data-mode]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  render();
+}));
+</script>
+</body>
+</html>

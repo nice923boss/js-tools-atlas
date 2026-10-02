@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeMirror 6 示範：即時程式畫布</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<!-- Every CodeMirror package must share one @codemirror/state instance: load them all with external deps ("*" prefix) and resolve each bare name exactly once here. -->
+<script type="importmap">
+{
+  "imports": {
+    "codemirror": "https://esm.sh/*codemirror@6.0.2",
+    "@codemirror/state": "https://esm.sh/*@codemirror/state@6.7.6",
+    "@codemirror/view": "https://esm.sh/*@codemirror/view@6.43.13",
+    "@codemirror/language": "https://esm.sh/*@codemirror/language@6.12.4",
+    "@codemirror/commands": "https://esm.sh/*@codemirror/commands@6.11.1",
+    "@codemirror/search": "https://esm.sh/*@codemirror/search@6.7.2",
+    "@codemirror/autocomplete": "https://esm.sh/*@codemirror/autocomplete@6.20.3",
+    "@codemirror/lint": "https://esm.sh/*@codemirror/lint@6.9.7",
+    "@codemirror/lang-javascript": "https://esm.sh/*@codemirror/lang-javascript@6.2.5",
+    "@codemirror/theme-one-dark": "https://esm.sh/*@codemirror/theme-one-dark@6.1.3",
+    "@lezer/common": "https://esm.sh/@lezer/common@1.5.3",
+    "@lezer/highlight": "https://esm.sh/*@lezer/highlight@1.2.5",
+    "@lezer/lr": "https://esm.sh/*@lezer/lr@1.4.10",
+    "@lezer/javascript": "https://esm.sh/*@lezer/javascript@1.5.6",
+    "@marijn/find-cluster-break": "https://esm.sh/@marijn/find-cluster-break@1.0.4",
+    "style-mod": "https://esm.sh/style-mod@4.1.4",
+    "w3c-keyname": "https://esm.sh/w3c-keyname@2.2.8",
+    "crelt": "https://esm.sh/crelt@1.0.7"
+  }
+}
+</script>
+<style>
+  .app {
+    position: fixed; inset: 0; padding: 12px 12px 46px; display: grid; gap: 10px;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr);
+  }
+  .pane { min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--bg-2); }
+  .tabbar { flex: none; display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  .tabbar .file { font: 600 12.5px var(--mono); padding: 4px 10px; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); }
+  .tabbar .sp { flex: 1; }
+  .tabbar .btn { padding: 6px 10px; font-size: 12px; }
+  #code { flex: 1 1 0; min-height: 0; }
+  #code .cm-editor { height: 100%; font-size: 13px; }
+  #code .cm-scroller { font-family: var(--mono); line-height: 1.55; }
+  .sbar { flex: none; display: flex; gap: 12px; padding: 5px 10px; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: var(--bg); font: 11.5px var(--mono); color: var(--muted); text-align: left; }
+  .sbar b { color: var(--c4); font-weight: 600; }
+  .sbar b.err { color: var(--c3); }
+  .sbar .grow { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .preview { position: relative; background: #0e1013; }
+  .preview canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .preview .tag { position: absolute; left: 10px; top: 10px; padding: 3px 9px; border-radius: 999px; background: rgba(0,0,0,.55); color: #fff; font-size: 11.5px; }
+  .flash { animation: flash .6s; }
+  @keyframes flash { from { box-shadow: inset 0 0 0 2px var(--accent); } to { box-shadow: inset 0 0 0 2px transparent; } }
+  body.paper .preview { background: #0e1013; }
+  @media (max-width: 640px) {
+    .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1.25fr) minmax(0, 1fr); }
+    .sbar .pos { display: none; }
+    #code .cm-editor { font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <section class="pane">
+    <div class="tabbar">
+      <span class="file">sketch.js</span>
+      <span class="sp"></span>
+      <button class="btn" id="theme">淺色主題</button>
+      <button class="btn" id="reset">重設</button>
+    </div>
+    <div id="code"></div>
+    <div class="sbar"><span class="pos" id="pos">行 1，欄 1</span><span id="sel">1 個游標</span><span class="grow" id="msg"><b>執行中</b></span></div>
+  </section>
+  <section class="pane preview" id="preview">
+    <canvas id="cv"></canvas>
+    <span class="tag">即時預覽</span>
+  </section>
+</div>
+<div class="hint">改數字即時重畫・輸入 ctx. 或 Math. 自動完成・Alt+點擊多游標</div>
+
+<script type="module">
+// CodeMirror 6: a modular editor built from extensions. Here: JS language + lint + autocomplete + a theme compartment.
+import { EditorView, basicSetup } from "codemirror";
+import { EditorState, Compartment } from "@codemirror/state";
+import { syntaxTree } from "@codemirror/language";
+import { linter, lintGutter } from "@codemirror/lint";
+import { javascript, javascriptLanguage, scopeCompletionSource } from "@codemirror/lang-javascript";
+import { oneDark } from "@codemirror/theme-one-dark";
+
+const START = `// 改數字、換顏色，右邊的畫面會立刻重畫
+const petals = 6;      // 花瓣數
+const layers = 14;     // 層數
+const speed = 0.6;     // 旋轉速度
+const palette = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389"];
+
+function draw(ctx, w, h, t) {
+  ctx.fillStyle = "#0e1013";
+  ctx.fillRect(0, 0, w, h);
+  ctx.translate(w / 2, h / 2);
+  const size = Math.min(w, h) * 0.44;
+  for (let i = 0; i < layers; i++) {
+    const r = size * (1 - i / layers);
+    ctx.rotate(Math.sin(t * speed + i * 0.3) * 0.08);
+    ctx.beginPath();
+    for (let a = 0; a <= Math.PI * 2 + 0.01; a += 0.02) {
+      const k = r * (0.75 + 0.25 * Math.cos(petals * a));
+      ctx.lineTo(Math.cos(a) * k, Math.sin(a) * k);
+    }
+    ctx.strokeStyle = palette[i % palette.length];
+    ctx.lineWidth = 2;
+    ctx.globalAlpha = 0.35 + 0.65 * (1 - i / layers);
+    ctx.stroke();
+  }
+}
+`;
+
+const $ = (id) => document.getElementById(id);
+const msg = $("msg");
+
+// Lint from the Lezer parse tree: every error node becomes a diagnostic, no extra parser needed.
+const syntaxLint = linter((view) => {
+  const out = [];
+  syntaxTree(view.state).iterate({
+    enter: (n) => {
+      if (n.type.isError && out.length < 20) {
+        const from = n.from, to = Math.min(view.state.doc.length, Math.max(n.to, n.from + 1));
+        out.push({ from, to, severity: "error", message: "語法錯誤：這裡缺少或多了符號" });
+      }
+    },
+  });
+  return out;
+}, { delay: 300 });
+
+// Completion for `ctx.`: list the real CanvasRenderingContext2D members.
+const CTX_MEMBERS = Object.getOwnPropertyNames(CanvasRenderingContext2D.prototype).filter((k) => k !== "constructor");
+function ctxCompletions(context) {
+  const m = context.matchBefore(/\bctx\.\w*/);
+  if (!m) return null;
+  return {
+    from: m.from + 4,
+    options: CTX_MEMBERS.map((k) => ({ label: k, type: typeof CanvasRenderingContext2D.prototype[k] === "function" ? "method" : "property" })),
+    validFor: /^\w*$/,
+  };
+}
+
+const themeSlot = new Compartment();
+const lightTheme = EditorView.theme({ "&": { backgroundColor: "#ffffff" }, ".cm-gutters": { backgroundColor: "#f6f5f1", border: "none" } });
+
+const view = new EditorView({
+  parent: $("code"),
+  state: EditorState.create({
+    doc: START,
+    extensions: [
+      basicSetup,
+      javascript(),
+      javascriptLanguage.data.of({ autocomplete: scopeCompletionSource(globalThis) }),
+      javascriptLanguage.data.of({ autocomplete: ctxCompletions }),
+      syntaxLint,
+      lintGutter(),
+      EditorState.allowMultipleSelections.of(true),
+      themeSlot.of(oneDark),
+      EditorView.updateListener.of((u) => {
+        if (u.docChanged) scheduleCompile();
+        if (u.selectionSet || u.docChanged) showCursor(u.state);
+      }),
+    ],
+  }),
+});
+
+function showCursor(state) {
+  const sel = state.selection;
+  const line = state.doc.lineAt(sel.main.head);
+  $("pos").textContent = `行 ${line.number}，欄 ${sel.main.head - line.from + 1}`;
+  $("sel").textContent = `${sel.ranges.length} 個游標`;
+}
+
+// Live preview: recompile the sketch after typing stops; keep drawing the last working version on error.
+const cv = $("cv");
+const ctx = cv.getContext("2d");
+let drawFn = null, failed = false, compileTimer = 0;
+function scheduleCompile() { clearTimeout(compileTimer); compileTimer = setTimeout(compile, 250); }
+function compile() {
+  try {
+    const fn = new Function(view.state.doc.toString() + "\nreturn typeof draw === 'function' ? draw : null;")();
+    if (!fn) throw new Error("找不到 draw() 函式");
+    drawFn = fn; failed = false;
+    msg.innerHTML = "<b>執行中</b>　已套用最新程式碼";
+    $("preview").classList.remove("flash"); void $("preview").offsetWidth; $("preview").classList.add("flash");
+  } catch (e) {
+    msg.innerHTML = `<b class="err">錯誤</b>　${e.message.replace(/[<>&]/g, "")}（仍顯示上一版）`;
+  }
+}
+function fit() {
+  const r = cv.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = Math.max(1, Math.round(r.width * dpr));
+  cv.height = Math.max(1, Math.round(r.height * dpr));
+}
+function frame(now) {
+  if (drawFn && !failed) {
+    const dpr = cv.width / Math.max(1, cv.clientWidth);
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    try { drawFn(ctx, cv.clientWidth, cv.clientHeight, now / 1000); }
+    catch (e) { failed = true; msg.innerHTML = `<b class="err">執行錯誤</b>　${e.message.replace(/[<>&]/g, "")}`; }
+    ctx.restore();
+  }
+  requestAnimationFrame(frame);
+}
+new ResizeObserver(fit).observe(cv);
+fit();
+compile();
+requestAnimationFrame(frame);
+showCursor(view.state);
+
+// Theme switch through a compartment: reconfigures one slot without rebuilding the editor.
+let dark = true;
+$("theme").onclick = () => {
+  dark = !dark;
+  view.dispatch({ effects: themeSlot.reconfigure(dark ? oneDark : lightTheme) });
+  document.body.classList.toggle("paper", !dark);
+  $("theme").textContent = dark ? "淺色主題" : "深色主題";
+};
+$("reset").onclick = () => view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: START } });
+
+// Short scripted edit on load: select the petal count and replace it, the same transaction API a user edit goes through.
+let touched = false;
+view.dom.addEventListener("pointerdown", () => { touched = true; });
+view.dom.addEventListener("keydown", () => { touched = true; });
+function scriptedEdit(value, delay) {
+  setTimeout(() => {
+    if (touched) return;
+    const line = view.state.doc.line(2);
+    const at = line.from + line.text.indexOf("=") + 2;
+    const end = at + line.text.slice(line.text.indexOf("=") + 2).indexOf(";");
+    view.dispatch({ selection: { anchor: at, head: end } });
+    setTimeout(() => { if (!touched) view.dispatch({ changes: { from: at, to: end, insert: String(value) }, selection: { anchor: at, head: at + String(value).length } }); }, 450);
+  }, delay);
+}
+scriptedEdit(9, 900);
+scriptedEdit(5, 4200);
+</script>
+</body>
+</html>

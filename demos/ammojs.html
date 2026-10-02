@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ammo.js 示範：果凍彈跳床（布料與軟體）</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"ammo.js 是 Bullet 物理引擎的 WebAssembly 版，布料與果凍都是 btSoftBody，3D 繪圖使用 three.js 0.186.1"}</script>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"}}</script>
+<style>
+  body { background: radial-gradient(circle at 50% 30%, #2a1f3a 0%, #0d0b14 75%); }
+  #stage { position: fixed; inset: 0; touch-action: none; }
+  #stage canvas { display: block; }
+  .heading { position: fixed; left: 16px; top: 14px; z-index: 40; pointer-events: none; }
+  .heading h1 { margin: 0; font-size: clamp(18px, 4vw, 26px); letter-spacing: .06em; }
+  .heading p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+  .stats { position: fixed; right: 12px; bottom: 12px; z-index: 40; padding: 5px 10px; border-radius: 999px; font-size: 12px; pointer-events: none; }
+  @media (max-width: 600px) { .heading { top: 96px; } .heading p { max-width: 230px; } .stats { bottom: 46px; } }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div class="heading"><h1>果凍彈跳床</h1><p>彈跳床是 Bullet 布料，果凍是有內壓的軟體，鐵球是剛體</p></div>
+<div class="controls">
+  <button class="btn primary" id="jelly">丟果凍</button>
+  <button class="btn" id="steel">丟鐵球</button>
+  <button class="btn" id="reset">重置</button>
+  <button class="btn" id="auto" aria-pressed="true">自動</button>
+</div>
+<div class="panel stats mono" id="stats">載入中</div>
+<div class="hint">拖曳旋轉視角・點畫面朝該處丟鐵球</div>
+
+<script src="https://cdn.jsdelivr.net/gh/kripken/ammo.js@79190a1f03845794b1bba1777f30037349967658/builds/ammo.wasm.js"></script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
+
+const A = await Ammo();
+
+const SIZE = 5, SEG = 22, BED_Y = 1.7;       // trampoline bed
+const MAX_JELLY = 7, MAX_STEEL = 6;
+const JELLY_COLORS = [0xf72585, 0x7bd389, 0x4cc9f0, 0xff8c42, 0x9d8cff, 0xf7df1e];
+
+// --- three.js scene ---------------------------------------------------------------------
+const stage = document.getElementById("stage");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+stage.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d0b14);
+scene.fog = new THREE.Fog(0x0d0b14, 14, 30);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.45;
+const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.5;
+controls.maxPolarAngle = Math.PI * 0.47;
+controls.minDistance = 4;
+controls.maxDistance = 20;
+controls.enablePan = false;
+
+scene.add(new THREE.HemisphereLight(0xfff0f6, 0x221a2c, 1.1));
+const sun = new THREE.DirectionalLight(0xffffff, 2.4);
+sun.position.set(4, 10, 5);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6, near: 1, far: 30 });
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+
+const floor = new THREE.Mesh(new THREE.CircleGeometry(16, 64), new THREE.MeshStandardMaterial({ color: 0x241c30, roughness: 0.9 }));
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+
+// Trampoline frame (visual only; the bed's edge nodes are pinned in the physics world).
+{
+  const metal = new THREE.MeshStandardMaterial({ color: 0x3a3f4b, metalness: 0.8, roughness: 0.35 });
+  const pad = new THREE.MeshStandardMaterial({ color: 0x4cc9f0, roughness: 0.5 });
+  const h = SIZE / 2;
+  for (const [x, z] of [[-h, -h], [h, -h], [-h, h], [h, h]]) {
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, BED_Y, 12), metal);
+    leg.position.set(x, BED_Y / 2, z);
+    leg.castShadow = true;
+    scene.add(leg);
+  }
+  for (const [x, z, ry] of [[0, -h, 0], [0, h, 0], [-h, 0, Math.PI / 2], [h, 0, Math.PI / 2]]) {
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(SIZE + 0.3, 0.12, 0.3), pad);
+    bar.position.set(x, BED_Y - 0.02, z);
+    bar.rotation.y = ry;
+    bar.castShadow = true;
+    scene.add(bar);
+  }
+}
+
+// --- ammo.js soft/rigid world -----------------------------------------------------------
+const collisionConfig = new A.btSoftBodyRigidBodyCollisionConfiguration();
+const dispatcher = new A.btCollisionDispatcher(collisionConfig);
+const broadphase = new A.btDbvtBroadphase();
+const solver = new A.btSequentialImpulseConstraintSolver();
+const softSolver = new A.btDefaultSoftBodySolver();
+const world = new A.btSoftRigidDynamicsWorld(dispatcher, broadphase, solver, collisionConfig, softSolver);
+const gravity = new A.btVector3(0, -9.8, 0);
+world.setGravity(gravity);
+world.getWorldInfo().set_m_gravity(gravity);
+const helpers = new A.btSoftBodyHelpers();
+const tmpTrans = new A.btTransform();
+
+function rigidBody(shape, mass, x, y, z) {
+  const t = new A.btTransform();
+  t.setIdentity();
+  t.setOrigin(new A.btVector3(x, y, z));
+  const inertia = new A.btVector3(0, 0, 0);
+  if (mass > 0) shape.calculateLocalInertia(mass, inertia);
+  const info = new A.btRigidBodyConstructionInfo(mass, new A.btDefaultMotionState(t), shape, inertia);
+  const body = new A.btRigidBody(info);
+  world.addRigidBody(body);
+  return body;
+}
+
+// Static ground
+{
+  const shape = new A.btBoxShape(new A.btVector3(16, 0.5, 16));
+  shape.setMargin(0.05);
+  const g = rigidBody(shape, 0, 0, -0.5, 0);
+  g.setFriction(0.8);
+}
+
+// Trampoline bed: a btSoftBody patch with every border node pinned (mass 0).
+const bedTex = (() => {
+  const c = document.createElement("canvas");
+  c.width = c.height = 512;
+  const g = c.getContext("2d");
+  g.fillStyle = "#16131f"; g.fillRect(0, 0, 512, 512);
+  for (let r = 240; r > 0; r -= 30) {
+    g.strokeStyle = r % 60 ? "rgba(247,223,30,0.55)" : "rgba(76,201,240,0.5)";
+    g.lineWidth = 6;
+    g.beginPath(); g.arc(256, 256, r, 0, Math.PI * 2); g.stroke();
+  }
+  g.strokeStyle = "rgba(255,255,255,0.08)"; g.lineWidth = 2;
+  for (let i = 0; i <= 512; i += 32) { g.beginPath(); g.moveTo(i, 0); g.lineTo(i, 512); g.moveTo(0, i); g.lineTo(512, i); g.stroke(); }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+})();
+const bedGeo = new THREE.PlaneGeometry(SIZE, SIZE, SEG, SEG);
+const bedMesh = new THREE.Mesh(bedGeo, new THREE.MeshStandardMaterial({ map: bedTex, side: THREE.DoubleSide, roughness: 0.7 }));
+bedMesh.castShadow = bedMesh.receiveShadow = true;
+scene.add(bedMesh);
+let bed = null;
+
+function buildBed() {
+  if (bed) world.removeSoftBody(bed);
+  const h = SIZE / 2;
+  // Corner order matches PlaneGeometry's vertex order: row by row from (-x, -z) to (+x, +z).
+  bed = helpers.CreatePatch(
+    world.getWorldInfo(),
+    new A.btVector3(-h, BED_Y, -h), new A.btVector3(h, BED_Y, -h),
+    new A.btVector3(-h, BED_Y, h), new A.btVector3(h, BED_Y, h),
+    SEG + 1, SEG + 1, 0, true,
+  );
+  const cfg = bed.get_m_cfg();
+  cfg.set_viterations(12);
+  cfg.set_piterations(12);
+  cfg.set_collisions(0x11);           // SDF_RS + VF_SS so jellies land on the bed
+  cfg.set_kDF(0.4);
+  cfg.set_kDP(0.002);
+  bed.get_m_materials().at(0).set_m_kLST(0.55);
+  bed.setTotalMass(3, false);
+  for (let iy = 0; iy <= SEG; iy++) for (let ix = 0; ix <= SEG; ix++) {
+    if (ix === 0 || iy === 0 || ix === SEG || iy === SEG) bed.setMass(iy * (SEG + 1) + ix, 0);
+  }
+  A.castObject(bed, A.btCollisionObject).getCollisionShape().setMargin(0.12);
+  world.addSoftBody(bed, 1, -1);
+  bed.setActivationState(4);
+}
+
+// Jellies: closed meshes turned into pressurised soft volumes.
+let jellies = [];     // { sb, mesh }
+let steels = [];      // { body, mesh }
+let jellyNo = 0;
+
+function makeJellyGeometry(kind) {
+  let geo;
+  if (kind === 0) geo = new THREE.SphereGeometry(0.55, 18, 12);
+  else if (kind === 1) geo = new THREE.BoxGeometry(0.85, 0.85, 0.85, 4, 4, 4);
+  else geo = new THREE.CapsuleGeometry(0.32, 0.6, 5, 12);
+  geo.deleteAttribute("normal");
+  geo.deleteAttribute("uv");
+  return mergeVertices(geo);
+}
+
+function addJelly(x, y, z) {
+  if (jellies.length >= MAX_JELLY) removeJelly(0);
+  const kind = jellyNo % 3;
+  const geo = makeJellyGeometry(kind);
+  geo.rotateX(Math.random() * Math.PI);
+  geo.rotateY(Math.random() * Math.PI);
+  geo.translate(x, y, z);
+  const verts = Array.from(geo.attributes.position.array);
+  const tris = Array.from(geo.index.array);
+  const sb = helpers.CreateFromTriMesh(world.getWorldInfo(), verts, tris, tris.length / 3, true);
+  const cfg = sb.get_m_cfg();
+  cfg.set_viterations(30);
+  cfg.set_piterations(30);
+  cfg.set_collisions(0x11);
+  cfg.set_kDF(0.3);
+  cfg.set_kDP(0.01);
+  cfg.set_kPR(kind === 1 ? 10 : 14);  // internal pressure keeps the jelly round
+  const mat = sb.get_m_materials().at(0);
+  mat.set_m_kLST(0.8);
+  mat.set_m_kAST(0.8);
+  sb.setTotalMass(2, false);
+  A.castObject(sb, A.btCollisionObject).getCollisionShape().setMargin(0.05);
+  world.addSoftBody(sb, 1, -1);
+  sb.setActivationState(4);
+
+  const color = JELLY_COLORS[jellyNo % JELLY_COLORS.length];
+  const mesh = new THREE.Mesh(geo, new THREE.MeshPhysicalMaterial({
+    color, roughness: 0.18, clearcoat: 1, clearcoatRoughness: 0.1, emissive: color, emissiveIntensity: 0.12,
+  }));
+  mesh.castShadow = true;
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  jellies.push({ sb, mesh });
+  jellyNo++;
+}
+
+function removeJelly(i) {
+  const j = jellies[i];
+  world.removeSoftBody(j.sb);
+  scene.remove(j.mesh);
+  j.mesh.geometry.dispose();
+  j.mesh.material.dispose();
+  jellies.splice(i, 1);
+}
+
+const steelGeo = new THREE.SphereGeometry(0.28, 28, 18);
+const steelMat = new THREE.MeshStandardMaterial({ color: 0xd8dde6, metalness: 1, roughness: 0.18 });
+function addSteel(from, vel) {
+  if (steels.length >= MAX_STEEL) removeSteel(0);
+  const shape = new A.btSphereShape(0.28);
+  shape.setMargin(0.04);
+  const body = rigidBody(shape, 5, from.x, from.y, from.z);
+  body.setLinearVelocity(new A.btVector3(vel.x, vel.y, vel.z));
+  body.setFriction(0.5);
+  body.setRestitution(0.2);
+  body.setActivationState(4);
+  const mesh = new THREE.Mesh(steelGeo, steelMat);
+  mesh.castShadow = true;
+  scene.add(mesh);
+  steels.push({ body, mesh });
+}
+function removeSteel(i) {
+  world.removeRigidBody(steels[i].body);
+  scene.remove(steels[i].mesh);
+  steels.splice(i, 1);
+}
+
+function dropJelly(h = 4.4 + Math.random() * 1.2) {
+  addJelly((Math.random() - 0.5) * 2.4, h, (Math.random() - 0.5) * 2.4);
+}
+function throwSteelAt(p) {
+  const from = new THREE.Vector3(p.x * 0.3, 7, p.z * 0.3 + 0.5);
+  addSteel(from, { x: (p.x - from.x) * 1.2, y: -3, z: (p.z - from.z) * 1.2 });
+}
+
+// --- sync meshes from soft-body nodes ---------------------------------------------------
+function syncSoft(sb, geo) {
+  const nodes = sb.get_m_nodes();
+  const pos = geo.attributes.position.array;
+  const n = nodes.size();
+  for (let i = 0; i < n; i++) {
+    const x = nodes.at(i).get_m_x();
+    pos[i * 3] = x.x(); pos[i * 3 + 1] = x.y(); pos[i * 3 + 2] = x.z();
+  }
+  geo.attributes.position.needsUpdate = true;
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  return n;
+}
+
+// --- input & UI -------------------------------------------------------------------------
+let auto = true, nextAuto = 0, autoStep = 0, simTime = 0;
+const autoBtn = document.getElementById("auto");
+const setAuto = (on) => { auto = on; autoBtn.setAttribute("aria-pressed", String(on)); controls.autoRotate = on; };
+autoBtn.addEventListener("click", () => setAuto(!auto));
+document.getElementById("jelly").addEventListener("click", () => dropJelly());
+document.getElementById("steel").addEventListener("click", () => throwSteelAt({ x: (Math.random() - 0.5) * 2, z: (Math.random() - 0.5) * 2 }));
+document.getElementById("reset").addEventListener("click", resetAll);
+
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+let down = null;
+renderer.domElement.addEventListener("pointerdown", (e) => { down = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener("pointerup", (e) => {
+  if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return;
+  ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const hit = ray.intersectObjects([bedMesh, floor, ...jellies.map((j) => j.mesh)])[0];
+  if (!hit) return;
+  // Launch from just in front of the camera toward the clicked point.
+  const from = camera.position.clone().addScaledVector(ray.ray.direction, 1.2);
+  const dir = hit.point.clone().sub(from);
+  const t = Math.max(0.35, dir.length() / 14);
+  addSteel(from, { x: dir.x / t, y: dir.y / t + 4.9 * t, z: dir.z / t });
+  setAuto(false);
+});
+
+function resetAll() {
+  while (jellies.length) removeJelly(jellies.length - 1);
+  while (steels.length) removeSteel(steels.length - 1);
+  buildBed();
+  jellyNo = 0;
+  autoStep = 0;
+  nextAuto = simTime + 0.2;
+}
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  const dist = 10 / Math.min(1, camera.aspect * 1.05);
+  const dir = camera.position.clone().sub(controls.target);
+  if (dir.lengthSq() < 0.01) dir.set(0.35, 0.55, 0.76);
+  camera.position.copy(controls.target).addScaledVector(dir.normalize(), dist);
+  controls.update();
+}
+
+// --- loop -------------------------------------------------------------------------------
+const statsEl = document.getElementById("stats");
+let last = performance.now(), frameNo = 0;
+function frame(now) {
+  const dt = Math.min(1 / 30, (now - last) / 1000);
+  last = now;
+  world.stepSimulation(dt, 4, 1 / 120);
+  simTime += dt;
+
+  // Auto show: three jellies first, then alternate between jellies and steel balls.
+  if (auto && simTime > nextAuto) {
+    if (autoStep < 3) { dropJelly(autoStep === 0 ? 2.9 : undefined); nextAuto = simTime + 0.6; }
+    else if (autoStep % 2) { throwSteelAt({ x: (Math.random() - 0.5) * 1.6, z: (Math.random() - 0.5) * 1.6 }); nextAuto = simTime + 2.6; }
+    else { dropJelly(); nextAuto = simTime + 2.6; }
+    autoStep++;
+  }
+
+  let nodeCount = syncSoft(bed, bedGeo);
+  for (let i = jellies.length - 1; i >= 0; i--) {
+    nodeCount += syncSoft(jellies[i].sb, jellies[i].mesh.geometry);
+    if (jellies[i].mesh.geometry.boundingSphere.center.y < -4) removeJelly(i);
+  }
+  for (let i = steels.length - 1; i >= 0; i--) {
+    const s = steels[i];
+    s.body.getMotionState().getWorldTransform(tmpTrans);
+    const p = tmpTrans.getOrigin(), q = tmpTrans.getRotation();
+    s.mesh.position.set(p.x(), p.y(), p.z());
+    s.mesh.quaternion.set(q.x(), q.y(), q.z(), q.w());
+    if (p.y() < -4) removeSteel(i);
+  }
+  if (frameNo++ % 10 === 0) statsEl.textContent = "軟體 " + (jellies.length + 1) + " 個・節點 " + nodeCount + "・鐵球 " + steels.length;
+
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+
+controls.target.set(0, 1.3, 0);
+camera.position.set(3.4, 6.6, 8.2);
+addEventListener("resize", resize);
+resize();
+resetAll();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

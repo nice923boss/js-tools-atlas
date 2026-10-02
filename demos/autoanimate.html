@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoAnimate 示範：一行讓清單動起來</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  h1 { position: fixed; left: 16px; top: 14px; margin: 0; font-size: 16px; }
+  h1 small { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
+  .layout { position: fixed; inset: 56px 16px 96px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 760px; margin: 0 auto; }
+  .col { display: flex; flex-direction: column; min-height: 0; padding: 10px 12px; }
+  .col.off { opacity: .92; }
+  .head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+  .head b { font-size: 13px; }
+  .head code { font-size: 11px; color: var(--muted); }
+  .switch { font-size: 12px; padding: 5px 9px; }
+  .switch[aria-pressed="true"] { color: var(--c4); }
+  ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; align-content: start; overflow: hidden; flex: 1; }
+  li {
+    display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 10px;
+    border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line);
+    border-left: 4px solid var(--c); white-space: nowrap; overflow: hidden;
+  }
+  li .name { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  li .tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; color: #0e1013; background: var(--c); }
+  li button { appearance: none; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 15px; padding: 0 2px; }
+  li button:hover { color: var(--c3); }
+  .toolbar { position: fixed; left: 16px; right: 16px; bottom: 48px; display: flex; gap: 8px; justify-content: center; align-items: center; flex-wrap: wrap; }
+  .toolbar .log { font-size: 12px; color: var(--muted); min-width: 120px; }
+  @media (max-width: 620px) {
+    h1 { display: none; }
+    .layout { inset: 52px 10px 92px; gap: 8px; }
+    .col { padding: 8px; }
+    .head { flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+    .head code { display: none; }
+    li { height: 30px; padding: 0 6px; gap: 4px; font-size: 12px; }
+    li .tag, li button { display: none; }
+    .toolbar { left: 10px; right: 10px; gap: 6px; }
+    .toolbar .btn { padding: 7px 10px; }
+    .toolbar .log { display: none; }
+  }
+</style>
+</head>
+<body>
+<h1>同一份資料，兩種清單<small>左邊多了一行 autoAnimate()</small></h1>
+<div class="controls">
+  <button class="btn" id="auto" aria-pressed="true">自動操作</button>
+  <button class="btn primary" id="replay">重播</button>
+</div>
+<main class="layout">
+  <section class="panel col">
+    <div class="head"><div><b>有 AutoAnimate</b> <code class="mono">autoAnimate(ul)</code></div>
+      <button class="btn switch" id="toggle" aria-pressed="true">動畫：開</button></div>
+    <ul id="a"></ul>
+  </section>
+  <section class="panel col off">
+    <div class="head"><div><b>一般 DOM</b> <code class="mono">沒有動畫</code></div></div>
+    <ul id="b"></ul>
+  </section>
+</main>
+<div class="toolbar">
+  <button class="btn" data-op="add">新增</button>
+  <button class="btn" data-op="remove">刪除</button>
+  <button class="btn" data-op="shuffle">洗牌</button>
+  <button class="btn" data-op="sort">排序</button>
+  <span class="log" id="log">上一步：無</span>
+</div>
+<div class="hint">左右兩欄同步操作，比較有無動畫的差別</div>
+
+<script type="module">
+import autoAnimate from "https://cdn.jsdelivr.net/npm/@formkit/auto-animate@0.10.0/index.mjs";
+
+// The left list gets AutoAnimate; both lists are updated by the same keyed DOM diff.
+const POOL = [
+  ["GSAP", "動畫", "--c1"], ["Anime.js", "動畫", "--c1"], ["Three.js", "3D", "--c2"], ["Babylon.js", "3D", "--c2"],
+  ["D3.js", "圖表", "--c3"], ["Chart.js", "圖表", "--c3"], ["p5.js", "創意", "--c4"], ["PixiJS", "創意", "--c4"],
+  ["Tone.js", "音訊", "--c5"], ["Howler.js", "音訊", "--c5"], ["Leaflet", "地圖", "--c6"], ["Matter.js", "物理", "--c6"],
+].map(([name, cat, c], id) => ({ id, name, cat, c }));
+const START = [0, 2, 4, 6, 8, 10];
+const lists = [document.getElementById("a"), document.getElementById("b")];
+const ctl = autoAnimate(lists[0]);
+const log = document.getElementById("log");
+let items = START.map((i) => POOL[i]), sortKey = "cat", auto = true, timer = null;
+
+function makeLi(it) {
+  const li = document.createElement("li");
+  li.dataset.id = it.id;
+  li.style.setProperty("--c", `var(${it.c})`);
+  li.innerHTML = `<span class="name">${it.name}</span><span class="tag">${it.cat}</span><button aria-label="刪除">×</button>`;
+  li.querySelector("button").addEventListener("click", () => { stopAuto(); apply("刪除 " + it.name, items.filter((x) => x.id !== it.id)); });
+  return li;
+}
+
+// Keyed reconcile: drop missing nodes, then move or insert nodes into the new order.
+function render(ul) {
+  const byId = new Map([...ul.children].map((li) => [Number(li.dataset.id), li]));
+  const keep = new Set(items.map((it) => it.id));
+  byId.forEach((li, id) => { if (!keep.has(id)) li.remove(); });
+  items.forEach((it, i) => {
+    const li = byId.get(it.id) || makeLi(it);
+    if (ul.children[i] !== li) ul.insertBefore(li, ul.children[i] || null);
+  });
+}
+
+function apply(label, next) {
+  items = next;
+  lists.forEach(render);
+  log.textContent = `上一步：${label}`;
+}
+
+const OPS = {
+  add() {
+    const free = POOL.filter((p) => !items.some((x) => x.id === p.id));
+    if (!free.length) return OPS.remove();
+    const it = free[Math.floor(Math.random() * free.length)];
+    const at = Math.floor(Math.random() * (items.length + 1));
+    apply("新增 " + it.name, [...items.slice(0, at), it, ...items.slice(at)]);
+  },
+  remove() {
+    if (items.length <= 2) return OPS.add();
+    const victim = items[Math.floor(Math.random() * items.length)];
+    apply("刪除 " + victim.name, items.filter((x) => x !== victim));
+  },
+  shuffle() {
+    const next = [...items];
+    for (let i = next.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [next[i], next[j]] = [next[j], next[i]]; }
+    apply("洗牌", next);
+  },
+  sort() {
+    sortKey = sortKey === "name" ? "cat" : "name";
+    const cmp = sortKey === "name" ? (a, b) => a.name.localeCompare(b.name) : (a, b) => a.cat.localeCompare(b.cat, "zh-Hant") || a.name.localeCompare(b.name);
+    apply(sortKey === "name" ? "依名稱排序" : "依分類排序", [...items].sort(cmp));
+  },
+};
+
+// Auto mode keeps the list between 4 and 8 items while cycling through every kind of change.
+const CYCLE = ["add", "shuffle", "remove", "sort", "add", "add", "shuffle", "remove", "sort", "remove"];
+let step = 0;
+function tick() {
+  let op = CYCLE[step++ % CYCLE.length];
+  if (op === "add" && items.length >= 8) op = "remove";
+  if (op === "remove" && items.length <= 4) op = "add";
+  OPS[op]();
+}
+function startAuto() { auto = true; document.getElementById("auto").setAttribute("aria-pressed", "true"); clearInterval(timer); timer = setInterval(tick, 1300); }
+function stopAuto() { auto = false; document.getElementById("auto").setAttribute("aria-pressed", "false"); clearInterval(timer); }
+
+document.querySelectorAll("[data-op]").forEach((b) => b.addEventListener("click", () => { stopAuto(); OPS[b.dataset.op](); }));
+document.getElementById("auto").addEventListener("click", () => (auto ? stopAuto() : startAuto()));
+document.getElementById("replay").addEventListener("click", () => {
+  step = 0; sortKey = "cat";
+  apply("重設", START.map((i) => POOL[i]));
+  startAuto();
+});
+const toggle = document.getElementById("toggle");
+toggle.addEventListener("click", () => {
+  const on = toggle.getAttribute("aria-pressed") !== "true";
+  on ? ctl.enable() : ctl.disable();
+  toggle.setAttribute("aria-pressed", on);
+  toggle.textContent = on ? "動畫：開" : "動畫：關";
+});
+
+apply("無", items);
+log.textContent = "上一步：無";
+startAuto();
+</script>
+</body>
+</html>

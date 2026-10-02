@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shader Park 示範：用 JavaScript 雕出 SDF 雕塑</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body {
+    background:
+      radial-gradient(55% 70% at 50% 45%, #232838 0%, transparent 70%),
+      radial-gradient(40% 50% at 85% 10%, rgba(157, 140, 255, 0.16), transparent 70%),
+      radial-gradient(40% 50% at 10% 95%, rgba(76, 201, 240, 0.12), transparent 70%),
+      var(--bg);
+  }
+  #stage { position: fixed; inset: 0; }
+  #stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+  .controls .label { font-size: 12px; align-self: center; padding: 6px 8px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); }
+  .btn { padding: 7px 10px; font-size: 12px; }
+  #code {
+    position: fixed; left: 12px; top: 12px; z-index: 40; width: 300px; padding: 10px 12px;
+    font: 11.5px/1.55 var(--mono); color: #c9c7bf; pointer-events: none;
+  }
+  #code h2 { margin: 0 0 6px; font: 600 12px/1.4 var(--font); color: var(--fg); }
+  #code h2 small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+  #code pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
+  #code .k { color: var(--c6); }
+  #code .f { color: var(--c2); }
+  #code .n { color: var(--c5); }
+  #code .in { color: var(--c1); }
+  #knobs {
+    position: fixed; right: 12px; bottom: 12px; z-index: 50; width: 250px; padding: 10px 12px;
+    display: grid; gap: 6px; font-size: 12px;
+  }
+  #knobs .row { display: grid; grid-template-columns: 64px 1fr 40px; align-items: center; gap: 8px; }
+  #knobs .row span:last-child { font-family: var(--mono); color: var(--muted); text-align: right; }
+  #knobs input { width: 100%; margin: 0; }
+  #knobs .err { color: var(--c3); font-size: 12px; }
+  @media (max-width: 760px) { #code { display: none; } }
+  @media (max-width: 520px) {
+    #knobs { left: 12px; right: 12px; width: auto; bottom: 46px; }
+  }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div class="controls" id="bar"><span class="label">雕塑</span></div>
+<div class="panel" id="code"><h2 id="codeTitle"></h2><pre id="codeSrc"></pre></div>
+<div class="panel" id="knobs"></div>
+<div class="hint">拖滑桿即時改 uniform，游標在雕塑上移動可轉動它</div>
+
+<script type="module">
+import { sculptToMinimalRenderer } from "https://cdn.jsdelivr.net/npm/shader-park-core@0.2.8/dist/shader-park-core.esm.js";
+
+// Each preset is real Shader Park code; input(value, min, max) becomes a GLSL uniform.
+const PRESETS = [
+  {
+    key: "orb",
+    label: "噪波金屬球",
+    note: "noise 位移 + boxFrame 混合",
+    knobs: [["morph", "框球混合", 0, 1, 0.3], ["bumps", "起伏", 0, 1, 0.6], ["hue", "色相", 0, 1, 0.58]],
+    source: `setMaxIterations(48);
+let morph = input(0.3, 0, 1);
+let bumps = input(0.6, 0, 1);
+let hue = input(0.58, 0, 1);
+let s = getSpace();
+let r = getRayDirection();
+let n1 = noise(r * 3.0 + vec3(0, 0, time * 0.12));
+let n = noise(s * 3.0 + vec3(0, 0, time * 0.25) + n1);
+backgroundColor(vec3(0.3, 0.35, 0.6));
+metal(n * 0.5 + 0.5);
+shine(n * 0.5 + 0.5);
+color(hsv2rgb(vec3(hue + n * 0.15, 0.85, 0.7)) + normal * 0.1);
+rotateY(time * 0.3 + mouse.x * 1.5);
+rotateX(mouse.y * 1.2);
+boxFrame(vec3(0.46), abs(n) * 0.05 + 0.012);
+mixGeo(morph);
+sphere(0.42 + n * bumps * 0.12);`,
+  },
+  {
+    key: "goo",
+    label: "黏土融合",
+    note: "blend() 平滑聯集",
+    knobs: [["goo", "黏稠度", 0, 0.3, 0.14], ["speed", "公轉速度", 0, 2, 0.8], ["hue", "色相", 0, 1, 0.9]],
+    source: `setMaxIterations(48);
+let goo = input(0.14, 0, 0.3);
+let speed = input(0.8, 0, 2);
+let hue = input(0.9, 0, 1);
+backgroundColor(vec3(0.4, 0.3, 0.45));
+rotateX(0.9 + mouse.y);
+rotateY(mouse.x * 1.5);
+shine(0.7);
+color(hsv2rgb(vec3(hue, 0.75, 0.85)));
+torus(0.34, 0.07);
+blend(goo);
+for (let i = 0; i < 4; i++) {
+  let a = time * speed + i * 1.5708;
+  let p = vec3(cos(a) * 0.34, sin(a * 2.0) * 0.16, sin(a) * 0.34);
+  displace(p);
+  color(hsv2rgb(vec3(hue + i * 0.07, 0.8, 0.9)));
+  sphere(0.1);
+  displace(p * -1.0);
+}`,
+  },
+  {
+    key: "crystal",
+    label: "碎形晶體",
+    note: "mirrorXYZ() 摺疊 + 旋轉",
+    knobs: [["fold", "摺疊間距", 0.1, 0.22, 0.16], ["twist", "扭轉", 0, 1, 0.35], ["hue", "色相", 0, 1, 0.12]],
+    source: `setMaxIterations(56);
+let fold = input(0.16, 0.1, 0.22);
+let twist = input(0.35, 0, 1);
+let hue = input(0.12, 0, 1);
+backgroundColor(vec3(0.35, 0.3, 0.5));
+rotateY(time * 0.2 + mouse.x * 1.5);
+rotateX(time * 0.13 + mouse.y);
+let s = getSpace();
+metal(0.75);
+shine(0.85);
+color(hsv2rgb(vec3(hue + length(s) * 0.6, 0.85, 0.8)));
+let size = fold;
+for (let i = 0; i < 3; i++) {
+  mirrorXYZ();
+  displace(size);
+  rotateZ(twist + sin(time * 0.5) * 0.15);
+  rotateX(twist * 0.6);
+  size = size * 0.5;
+}
+box(vec3(size * 1.3));`,
+  },
+];
+
+const stage = document.getElementById("stage");
+const knobsEl = document.getElementById("knobs");
+let values = {};
+let canvas = null;
+
+function highlight(src) {
+  const esc = src.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  return esc
+    .replace(/\b(let|for)\b/g, '<span class="k">$1</span>')
+    .replace(/\b(input)\(/g, '<span class="in">$1</span>(')
+    .replace(/\b([a-zA-Z][a-zA-Z0-9]*)\(/g, (m, name) => (name === "span" ? m : `<span class="f">${name}</span>(`))
+    .replace(/(?<![\w.#-])(\d+(?:\.\d+)?)/g, '<span class="n">$1</span>');
+}
+
+function buildKnobs(preset) {
+  knobsEl.textContent = "";
+  values = {};
+  for (const [name, label, min, max, value] of preset.knobs) {
+    values[name] = value;
+    const row = document.createElement("label");
+    row.className = "row";
+    const out = document.createElement("span");
+    out.textContent = value.toFixed(2);
+    const range = Object.assign(document.createElement("input"), {
+      type: "range", min, max, step: (max - min) / 100, value,
+    });
+    range.addEventListener("input", () => {
+      values[name] = Number(range.value);
+      out.textContent = values[name].toFixed(2);
+    });
+    const tag = document.createElement("span");
+    tag.textContent = label;
+    row.append(tag, range, out);
+    knobsEl.append(row);
+  }
+}
+
+function load(key) {
+  const preset = PRESETS.find((p) => p.key === key);
+  document.querySelectorAll("#bar .btn").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.k === key)));
+  document.getElementById("codeTitle").innerHTML = `${preset.label}<small>${preset.note}</small>`;
+  document.getElementById("codeSrc").innerHTML = highlight(preset.source);
+  buildKnobs(preset);
+
+  // The minimal renderer has no dispose(), so swap in a fresh canvas and drop the old context.
+  if (canvas) {
+    const old = canvas;
+    old.getContext("webgl2")?.getExtension("WEBGL_lose_context")?.loseContext();
+    old.remove();
+  }
+  canvas = document.createElement("canvas");
+  stage.append(canvas);
+  try {
+    sculptToMinimalRenderer(canvas, preset.source, () => ({ ...values }));
+    // Transparent clear so missed rays reveal the page gradient behind the sculpture.
+    canvas.getContext("webgl2").clearColor(0, 0, 0, 0);
+  } catch (err) {
+    console.warn(err);
+    const msg = document.createElement("div");
+    msg.className = "err";
+    msg.textContent = "此瀏覽器無法建立 WebGL2 雕塑：" + (err?.message || err);
+    knobsEl.append(msg);
+  }
+}
+
+const bar = document.getElementById("bar");
+for (const p of PRESETS) {
+  const b = document.createElement("button");
+  b.className = "btn"; b.type = "button"; b.dataset.k = p.key; b.textContent = p.label;
+  b.addEventListener("click", () => load(p.key));
+  bar.append(b);
+}
+load("orb");
+</script>
+</body>
+</html>

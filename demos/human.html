@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Human 示範：情緒鏡子，臉部、身體、手勢一次偵測</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"click","needs":["camera"],"size":"約 25 MB","note":"沒有鏡頭時可點範例照片或上傳照片"}</script>
+<style>
+  .app { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr) 300px; }
+  .main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 10px; padding: 12px 12px 48px; min-width: 0; min-height: 0; }
+  .top { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .top .lbl { font-size: 12px; color: var(--muted); margin-right: 2px; }
+  .chip { margin-left: auto; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg-2); color: var(--muted); white-space: nowrap; }
+  .chip.live { color: var(--c4); border-color: rgba(123, 211, 137, .4); }
+  .chip.live::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--c4); margin-right: 6px; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  .stage { position: relative; min-height: 0; border-radius: 14px; overflow: hidden; display: grid; place-items: center;
+    background: radial-gradient(70% 90% at 50% 0%, rgba(247, 37, 133, .10), transparent 70%), #0a0c0f; border: 1px solid var(--line); }
+  .frame { position: relative; }
+  .frame > video, .frame > img, .frame > canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .frame > video, .frame > img { object-fit: fill; border-radius: 6px; }
+  .frame.mirror > video, .frame.mirror > canvas { transform: scaleX(-1); }
+  .frame[data-src="video"] > img, .frame[data-src="photo"] > video { display: none; }
+  .tagl { position: absolute; inset: 0; pointer-events: none; }
+  .tagl span { position: absolute; transform: translate(0, calc(-100% - 6px)); white-space: nowrap; font-size: 13px; font-weight: 700; line-height: 1;
+    padding: 5px 9px; border-radius: 999px; background: rgba(10, 12, 15, .82); border: 1px solid var(--c3); color: var(--fg); }
+  .empty { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); max-width: 92%; color: var(--fg); font-size: 12px; pointer-events: none;
+    padding: 4px 12px; border-radius: 999px; background: rgba(10, 12, 15, .85); border: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .empty:empty { display: none; }
+  .src { display: flex; gap: 8px; align-items: center; min-width: 0; }
+  .src .btn { flex: none; white-space: nowrap; }
+  .thumbs { display: flex; gap: 6px; min-width: 0; overflow-x: auto; }
+  .thumb { flex: none; width: 52px; height: 40px; padding: 0; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: #000; cursor: pointer; }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .side { border-left: 1px solid var(--line); background: var(--bg-2); padding: 14px 14px 48px; overflow-y: auto; min-height: 0; }
+  .side h2 { margin: 0 0 2px; font-size: 13px; color: var(--muted); font-weight: 600; }
+  .hero { display: flex; align-items: center; gap: 12px; margin: 6px 0 10px; }
+  .hero .big { font-size: 50px; line-height: 1; width: 60px; text-align: center; }
+  .hero .ttl { font-size: 22px; font-weight: 800; }
+  .hero .sub { font-size: 12px; color: var(--muted); }
+  .row { display: grid; grid-template-columns: 64px minmax(0, 1fr) 40px; gap: 8px; align-items: center; font-size: 12px; margin: 4px 0; }
+  .row .m { height: 7px; border-radius: 7px; background: var(--line); overflow: hidden; }
+  .row .m i { display: block; height: 100%; border-radius: 7px; background: linear-gradient(90deg, var(--c3), var(--c5)); transition: width .2s; }
+  .row.top1 span:first-child { color: var(--fg); font-weight: 700; }
+  .row b { font: 600 12px var(--mono); text-align: right; }
+  .facts { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 10px 0; }
+  .facts div { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+  .facts small { display: block; font-size: 11px; color: var(--muted); }
+  .facts b { font-size: 14px; }
+  .gest { display: flex; flex-wrap: wrap; gap: 5px; }
+  .gest span { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg); }
+  .meta { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); font: 11px/1.7 var(--mono); color: var(--muted); }
+  .meta b { color: var(--c1); font-weight: 600; }
+  @media (max-width: 640px) {
+    /* single column: the side panel scrolls under the fixed hint, and its own text already explains the controls */
+    .hint { display: none; }
+    .app { grid-template-columns: 1fr; grid-template-rows: minmax(0, 60%) minmax(0, 40%); }
+    .main { padding: 8px 8px 6px; gap: 6px; }
+    .top .btn { padding: 6px 9px; font-size: 12px; }
+    .top .lbl, .chip { display: none; }
+    .src .btn { padding: 7px 9px; font-size: 12px; }
+    .thumb { width: 44px; height: 34px; }
+    .side { border-left: 0; border-top: 1px solid var(--line); padding: 8px 12px 12px; }
+    .hero { margin: 2px 0 6px; }
+    .hero .big { font-size: 36px; width: 44px; }
+    .hero .ttl { font-size: 18px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <section class="main">
+    <div class="top" id="mods">
+      <span class="lbl">偵測模組</span>
+      <button class="btn" data-mod="face" aria-pressed="true">🙂 臉部</button>
+      <button class="btn" data-mod="body" aria-pressed="true">🧍 身體</button>
+      <button class="btn" data-mod="hand" aria-pressed="true">✋ 手部</button>
+      <span class="chip" id="chip">尚未啟動</span>
+    </div>
+    <div class="stage" id="stage">
+      <div class="frame" id="frame" data-src="photo">
+        <video id="video" playsinline muted></video>
+        <img id="photo" alt="偵測用照片" crossorigin="anonymous">
+        <canvas id="overlay"></canvas>
+        <div class="tagl" id="tags"></div>
+      </div>
+      <div class="empty" id="empty"></div>
+    </div>
+    <div class="src">
+      <button class="btn primary" id="camBtn">開啟鏡頭</button>
+      <label class="btn" for="file">上傳</label>
+      <input type="file" id="file" accept="image/*" hidden>
+      <div class="thumbs" id="thumbs"></div>
+    </div>
+  </section>
+  <aside class="side" id="side">
+    <h2>情緒鏡子</h2>
+    <div class="hero"><span class="big">🙂</span><div><div class="ttl">等待啟動</div><div class="sub">按下開始後載入模型</div></div></div>
+  </aside>
+</div>
+<div class="hint">對鏡頭做表情或點範例照片，看情緒、年齡與手勢</div>
+
+<script src="_shared/gate.js"></script>
+<script type="module">
+const VER = "3.3.6";
+const GOOGLE_IMG = "https://storage.googleapis.com/mediapipe-assets/";
+const HF_IMG = "https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/fbe92bd97d48f3ec17779d8d8f2964e1c6bc7634/";
+const SAMPLES = [
+  HF_IMG + "selfie_segmentation.png", HF_IMG + "portrait-of-woman_small.jpg", HF_IMG + "woman-with-afro.jpg",
+  GOOGLE_IMG + "pose.jpg", GOOGLE_IMG + "victory.jpg",
+];
+const EMO = {
+  happy: ["😄", "開心"], surprise: ["😲", "驚訝"], neutral: ["😐", "平靜"], sad: ["😢", "難過"],
+  angry: ["😠", "生氣"], fear: ["😨", "害怕"], disgust: ["🤢", "厭惡"],
+};
+const SIDE = { left: "左", right: "右" };
+const FINGER = { thumb: "拇指", index: "食指", middle: "中指", ring: "無名指", pinky: "小指" };
+const LOOK = { left: "視線向左", right: "視線向右", up: "視線向上", down: "視線向下", center: "視線正視" };
+
+// Translate Human gesture strings into Traditional Chinese.
+function zhGesture(g) {
+  let m;
+  if ((m = g.match(/^facing (left|center|right)$/))) return m[1] === "center" ? "臉朝正面" : `臉朝${SIDE[m[1]]}`;
+  if ((m = g.match(/^blink (left|right) eye$/))) return `眨${SIDE[m[1]]}眼`;
+  if ((m = g.match(/^mouth (\d+)% open$/))) return `嘴巴張開 ${m[1]}%`;
+  if ((m = g.match(/^head (up|down)$/))) return m[1] === "up" ? "抬頭" : "低頭";
+  if ((m = g.match(/^looking (left|right|up|down|center)$/))) return LOOK[m[1]];
+  if ((m = g.match(/^leaning (left|right)$/))) return `身體${SIDE[m[1]]}傾`;
+  if ((m = g.match(/^raise (left|right) hand$/))) return `舉起${SIDE[m[1]]}手`;
+  if (g === "i give up") return "🙌 投降姿勢";
+  if ((m = g.match(/^(thumb|index|middle|ring|pinky) (up|forward)$/))) return `${FINGER[m[1]]}${m[2] === "up" ? "朝上" : "朝前"}`;
+  if (g === "victory") return "✌️ 勝利手勢";
+  if (g === "thumbs up") return "👍 讚";
+  if (g === "open palm") return "🖐️ 張開手掌";
+  if (g === "point") return "👉 指向";
+  if (g === "middle finger") return "中指手勢";
+  return g;
+}
+
+const $ = (id) => document.getElementById(id);
+const video = $("video"), photo = $("photo"), canvas = $("overlay"), ctx = canvas.getContext("2d");
+const frame = $("frame"), stage = $("stage");
+const mods = { face: true, body: true, hand: true };
+let human = null, source = "photo", stream = null, currentSample = null, lastResult = null, lastMs = 0, detecting = false;
+
+const setChip = (t, cls = "") => { const c = $("chip"); c.textContent = t; c.className = `chip ${cls}`; };
+const pct = (v) => `${Math.round(v * 100)}%`;
+const inputSize = () => (source === "video" ? [video.videoWidth, video.videoHeight] : [photo.naturalWidth, photo.naturalHeight]);
+
+function fit() {
+  const [w, h] = inputSize();
+  if (!w || !h) return;
+  const k = Math.min((stage.clientWidth - 16) / w, (stage.clientHeight - 16) / h);
+  frame.style.width = `${Math.floor(w * k)}px`;
+  frame.style.height = `${Math.floor(h * k)}px`;
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+}
+new ResizeObserver(fit).observe(stage);
+
+const userConfig = () => ({ face: { enabled: mods.face }, body: { enabled: mods.body }, hand: { enabled: mods.hand } });
+
+async function loadHuman() {
+  const s = demoStatus("下載 Human 函式庫…");
+  try {
+    const { Human } = await import(`https://cdn.jsdelivr.net/npm/@vladmandic/human@${VER}/dist/human.esm.js`);
+    human = new Human({
+      modelBasePath: `https://cdn.jsdelivr.net/npm/@vladmandic/human@${VER}/models/`,
+      backend: "webgl",
+      warmup: "none",
+      debug: false,
+      face: {
+        enabled: true, detector: { rotation: false, maxDetected: 3 }, mesh: { enabled: true }, iris: { enabled: true },
+        emotion: { enabled: true }, description: { enabled: true }, antispoof: { enabled: false }, liveness: { enabled: false },
+      },
+      body: { enabled: true, maxDetected: 1 },
+      hand: { enabled: true, maxDetected: 2 },
+      object: { enabled: false },
+      segmentation: { enabled: false },
+      gesture: { enabled: true },
+    });
+    s.text("下載臉部、情緒、年齡、身體與手部模型（約 23 MB）…");
+    s.progress(0.15);
+    // Poll how many model files are loaded so the bar moves while human.load() runs.
+    const timer = setInterval(() => {
+      const st = human.models?.stats?.();
+      if (st?.percentageLoaded) s.progress(0.15 + 0.8 * st.percentageLoaded);
+    }, 300);
+    await human.load();
+    clearInterval(timer);
+    s.text("初始化 WebGL 後端…");
+    s.progress(1);
+    await human.tf.ready();
+    s.done();
+  } catch (err) {
+    s.error(`載入失敗：${err.message || err}`);
+    throw err;
+  }
+}
+
+/* ---------- rendering ---------- */
+function setTags(list) {
+  $("tags").innerHTML = list.map((t) =>
+    `<span style="left:${(t.x * 100).toFixed(1)}%;top:${(t.y * 100).toFixed(1)}%">${t.text}</span>`).join("");
+}
+
+function drawResult(res) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const opts = { drawLabels: false, drawGestures: false, drawBoxes: true, drawPolygons: true, drawPoints: false, useDepth: true,
+    lineWidth: Math.max(2, canvas.width / 320), pointSize: Math.max(2, canvas.width / 260), roundRect: 14, color: "rgba(76, 201, 240, .75)" };
+  if (mods.face) human.draw.face(canvas, res.face, { ...opts, color: "rgba(76, 201, 240, .7)" });
+  if (mods.body) human.draw.body(canvas, res.body, { ...opts, drawPoints: true, drawBoxes: false, useDepth: false, lineWidth: opts.lineWidth * 1.6, color: "rgba(247, 37, 133, .95)" });
+  if (mods.hand) human.draw.hand(canvas, res.hand, { ...opts, drawPoints: true, color: "rgba(247, 223, 30, .9)" });
+}
+
+function renderPanel(res) {
+  const [w, h] = inputSize();
+  const tags = [];
+  for (const f of res.face) {
+    const top = f.emotion?.[0];
+    const e = EMO[top?.emotion] || ["🙂", "偵測中"];
+    const x = source === "video" ? 1 - (f.box[0] + f.box[2]) / w : f.box[0] / w;
+    tags.push({ x: Math.max(0, Math.min(0.7, x)), y: Math.max(0.08, f.box[1] / h), text: `${e[0]} ${e[1]}${f.age ? `，約 ${Math.round(f.age)} 歲` : ""}` });
+  }
+  setTags(tags);
+  const gestures = [...new Set(res.gesture.map((g) => zhGesture(g.gesture)))];
+  const gestHtml = gestures.length ? `<div class="gest">${gestures.slice(0, 10).map((g) => `<span>${g}</span>`).join("")}</div>` : `<div class="muted" style="font-size:12px">沒有偵測到手勢</div>`;
+  // MoveNet always returns one body; count it only when the pose score is meaningful
+  const bodies = res.body.filter((b) => b.score > 0.4).length;
+  const meta = `推論 <b>${lastMs.toFixed(0)} ms</b>，後端 ${human.tf.getBackend()}<br>臉 ${res.face.length}，身體 ${bodies}，手 ${res.hand.length}`;
+  const f = res.face[0];
+  if (!f) {
+    const [big, ttl, sub] = res.hand.length ? ["✋", `偵測到 ${res.hand.length} 隻手`, "沒有臉，改看手指方向與手勢"]
+      : bodies ? ["🧍", "偵測到身體", "沒有臉，改看身體姿勢"]
+      : [mods.face ? "🙈" : "🧍", mods.face ? "沒有偵測到臉" : "臉部模組已關閉", "正對鏡頭，或點下方範例照片"];
+    $("side").innerHTML = `<h2>情緒鏡子</h2><div class="hero"><span class="big">${big}</span><div><div class="ttl">${ttl}</div>
+      <div class="sub">${sub}</div></div></div><h2>手勢與姿勢</h2>${gestHtml}<div class="meta">${meta}</div>`;
+    return;
+  }
+  const scores = Object.fromEntries((f.emotion || []).map((e) => [e.emotion, e.score]));
+  const top = f.emotion?.[0];
+  const [emo, word] = EMO[top?.emotion] || ["🙂", "未知"];
+  const rows = Object.keys(EMO).map((k, i) =>
+    `<div class="row${k === top?.emotion ? " top1" : ""}"><span>${EMO[k][0]} ${EMO[k][1]}</span><span class="m"><i style="width:${pct(scores[k] || 0)}"></i></span><b>${pct(scores[k] || 0)}</b></div>`).join("");
+  const ang = f.rotation?.angle;
+  const deg = (r) => `${Math.round((r * 180) / Math.PI)}°`;
+  const gender = { male: "男性", female: "女性" }[f.gender] || "不確定";
+  $("side").innerHTML = `<h2>情緒鏡子</h2>
+    <div class="hero"><span class="big">${emo}</span><div><div class="ttl">${word}</div><div class="sub">信心 ${pct(top?.score || 0)}，共 ${res.face.length} 張臉</div></div></div>
+    ${rows}
+    <div class="facts">
+      <div><small>年齡（模型估計）</small><b>${f.age ? `約 ${Math.round(f.age)} 歲` : "無"}</b></div>
+      <div><small>性別（模型估計）</small><b>${gender}${f.genderScore ? ` ${pct(f.genderScore)}` : ""}</b></div>
+      <div><small>左右轉頭</small><b>${ang ? deg(ang.yaw) : "無"}</b></div>
+      <div><small>上下點頭</small><b>${ang ? deg(ang.pitch) : "無"}</b></div>
+    </div>
+    <h2>手勢與姿勢</h2>${gestHtml}<div class="meta">${meta}</div>`;
+}
+
+/* ---------- sources ---------- */
+async function detectPhoto() {
+  if (source !== "photo" || !photo.naturalWidth || !human) return;
+  fit();
+  const cfg = { ...userConfig(), cacheSensitivity: 0 };
+  if (!detectPhoto.warm) { await human.detect(photo, cfg); detectPhoto.warm = true; }  // first run compiles WebGL shaders
+  const t0 = performance.now();
+  const res = await human.detect(photo, cfg);
+  lastMs = performance.now() - t0;
+  if (res.error) throw new Error(res.error);
+  lastResult = res;
+  drawResult(res);
+  renderPanel(res);
+}
+
+async function usePhoto(url) {
+  await stopCamera();
+  source = "photo";
+  frame.dataset.src = "photo";
+  frame.classList.remove("mirror");
+  currentSample = url;
+  markThumbs();
+  setChip("範例照片");
+  $("empty").textContent = "";
+  try {
+    await new Promise((resolve, reject) => {
+      photo.onload = resolve;
+      photo.onerror = () => reject(new Error("照片載入失敗"));
+      photo.src = url;
+    });
+    await detectPhoto();
+  } catch (err) {
+    $("empty").textContent = `無法處理照片：${err.message || err}`;
+    console.warn(err);
+  }
+}
+
+function markThumbs() {
+  for (const b of $("thumbs").children) b.setAttribute("aria-pressed", String(b.dataset.url === currentSample));
+}
+for (const url of SAMPLES) {
+  const b = document.createElement("button");
+  b.className = "thumb";
+  b.dataset.url = url;
+  b.title = "改用這張範例照片";
+  b.innerHTML = `<img src="${url}" alt="範例照片" crossorigin="anonymous" loading="lazy">`;
+  b.addEventListener("click", () => human && usePhoto(url));
+  $("thumbs").append(b);
+}
+
+async function startCamera() {
+  $("camBtn").disabled = true;
+  setChip("鏡頭啟動中…");
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 960 }, height: { ideal: 720 } }, audio: false });
+    video.srcObject = stream;
+    await video.play();
+    source = "video";
+    currentSample = null;
+    markThumbs();
+    frame.dataset.src = "video";
+    frame.classList.add("mirror");
+    $("empty").textContent = "";
+    fit();
+    setChip("鏡頭即時偵測", "live");
+    if (!lastResult) $("side").innerHTML = `<h2>情緒鏡子</h2><div class="hero"><span class="big">⏳</span><div><div class="ttl">推論中…</div><div class="sub">第一次推論要編譯 WebGL 著色器，約需數秒</div></div></div>`;
+    $("camBtn").textContent = "停止鏡頭";
+    $("camBtn").classList.remove("primary");
+    detectLoop();
+    drawLoop();
+  } catch (err) {
+    console.warn("camera unavailable:", err);
+    const msg = /NotAllowed|Permission/i.test(String(err)) ? "鏡頭權限被拒絕" : "找不到可用的鏡頭";
+    await stopCamera();
+    await usePhoto(SAMPLES[0]);
+    $("empty").textContent = `${msg}，已改用範例照片`;
+  }
+  $("camBtn").disabled = false;
+}
+
+async function stopCamera() {
+  if (!stream) return;
+  stream.getTracks().forEach((t) => t.stop());
+  stream = null;
+  video.srcObject = null;
+  $("camBtn").textContent = "開啟鏡頭";
+  $("camBtn").classList.add("primary");
+  while (detecting) await new Promise((r) => setTimeout(r, 30));
+}
+
+// Detection runs as fast as the model allows; drawing runs every frame using Human's interpolated result.
+async function detectLoop() {
+  if (source !== "video" || !stream) return;
+  if (video.readyState >= 2) {
+    detecting = true;
+    const t0 = performance.now();
+    const res = await human.detect(video, userConfig());
+    lastMs = performance.now() - t0;
+    detecting = false;
+    if (!res.error && source === "video") { lastResult = res; renderPanel(human.next(res)); }
+  }
+  setTimeout(detectLoop, 0);
+}
+function drawLoop() {
+  if (source !== "video" || !stream) return;
+  if (lastResult) {
+    if (canvas.width !== video.videoWidth) fit();
+    drawResult(human.next(lastResult));
+  }
+  requestAnimationFrame(drawLoop);
+}
+
+$("mods").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-mod]");
+  if (!b) return;
+  mods[b.dataset.mod] = !mods[b.dataset.mod];
+  b.setAttribute("aria-pressed", String(mods[b.dataset.mod]));
+  if (source === "photo" && human) detectPhoto().catch(console.warn);
+});
+$("camBtn").addEventListener("click", () => human && (stream ? usePhoto(SAMPLES[0]) : startCamera()));
+$("file").addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  if (f && human) usePhoto(URL.createObjectURL(f));
+  e.target.value = "";
+});
+
+await demoGate({
+  icon: "😄", title: "Human 情緒鏡子",
+  desc: "一次跑臉部網格、情緒、年齡、身體骨架與手勢；按下後下載模型並請求鏡頭權限",
+  tags: ["需要鏡頭", "約 25 MB", "可改用照片"], button: "開始偵測",
+});
+try {
+  await loadHuman();
+  await startCamera();
+} catch (err) {
+  console.warn(err);
+}
+</script>
+</body>
+</html>

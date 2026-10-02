@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pizzicato.js 示範：效果器踏板</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"]}</script>
+<style>
+  body {
+    background:
+      radial-gradient(70% 50% at 50% 0%, rgba(255, 140, 66, 0.10), transparent 70%),
+      var(--bg);
+  }
+  .wrap {
+    position: fixed; inset: 0; display: flex; flex-direction: column; justify-content: center;
+    gap: 12px; padding: 16px 16px 48px; max-width: 980px; margin: 0 auto;
+  }
+  .top { display: flex; gap: 14px; align-items: center; }
+  .play {
+    width: 56px; height: 56px; flex: none; border-radius: 50%; border: 0; cursor: pointer;
+    background: var(--accent); color: var(--accent-ink); font-size: 20px; font-weight: 700;
+    box-shadow: 0 0 0 6px rgba(247, 223, 30, 0.12);
+  }
+  .scope {
+    flex: 1; min-width: 0; height: 96px; border-radius: 12px; border: 1px solid var(--line);
+    background: #0a0c0f; position: relative; overflow: hidden;
+  }
+  .scope canvas { width: 100%; height: 100%; display: block; }
+  .chain {
+    font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
+    min-height: 22px;
+  }
+  .chain b { color: var(--fg); font-weight: 600; padding: 1px 7px; border-radius: 6px; background: rgba(255,255,255,0.08); }
+  .chain b.fx { background: var(--pc); color: #111; }
+  .board {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px;
+    padding: 12px; border-radius: 14px; background: linear-gradient(180deg, #23262d, #17191e);
+    border: 1px solid var(--line); box-shadow: inset 0 2px 0 rgba(255,255,255,0.04);
+  }
+  .pedal {
+    position: relative; border-radius: 10px; padding: 10px 10px 8px; display: grid; gap: 6px;
+    background: linear-gradient(170deg, color-mix(in srgb, var(--pc) 70%, #fff 0%), color-mix(in srgb, var(--pc) 55%, #000));
+    color: #121212; box-shadow: 0 6px 14px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.35);
+    min-width: 0;
+  }
+  .pedal .row1 { display: flex; justify-content: space-between; align-items: center; gap: 4px; }
+  .pedal h3 { margin: 0; font-size: 14px; line-height: 1.2; }
+  .pedal small { font: 10px var(--mono); opacity: .7; display: block; }
+  .led { width: 10px; height: 10px; border-radius: 50%; background: #3b0d0d; box-shadow: inset 0 0 2px #000; flex: none; }
+  .pedal:not(.on) { filter: saturate(0.6) brightness(0.82); }
+  .pedal.on .led { background: #ff2a2a; box-shadow: 0 0 10px 2px rgba(255, 42, 42, 0.8); }
+  .pedal label { font-size: 11px; display: grid; gap: 2px; }
+  .pedal input[type=range] { width: 100%; accent-color: #1a1a1a; margin: 0; }
+  .stomp {
+    justify-self: center; width: 34px; height: 34px; border-radius: 50%; cursor: pointer;
+    border: 3px solid #2a2a2a; background: radial-gradient(circle at 35% 35%, #eee, #8d8d8d 60%, #555);
+    box-shadow: 0 3px 0 #222;
+  }
+  .stomp:active { transform: translateY(2px); box-shadow: 0 1px 0 #222; }
+  .pedal.on .stomp { box-shadow: 0 1px 0 #222; transform: translateY(2px); }
+  @media (max-width: 620px) {
+    .wrap { gap: 8px; padding: 10px 10px 46px; }
+    .play { width: 44px; height: 44px; font-size: 16px; }
+    .scope { height: 64px; }
+    .board { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding: 8px; }
+    .pedal { padding: 6px 5px 6px; gap: 3px; }
+    .pedal h3 { font-size: 11px; }
+    .pedal small { display: none; }
+    .pedal label span { display: none; }
+    .stomp { width: 26px; height: 26px; border-width: 2px; }
+    .led { width: 8px; height: 8px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <button class="play" id="play" aria-label="播放">▶</button>
+    <div class="scope"><canvas id="scope"></canvas></div>
+  </div>
+  <div class="chain" id="chain"></div>
+  <div class="board" id="board"></div>
+</div>
+<div class="hint">按播放後踩下踏板開關效果，旋鈕即時調整</div>
+
+<script src="https://cdn.jsdelivr.net/npm/pizzicato@0.6.4/distr/Pizzicato.min.js"></script>
+<script>
+// Pizzicato.js: one looping Sound, effects added / removed with addEffect / removeEffect.
+const FX = [
+  { key: "delay", name: "延遲", en: "Delay", color: "#4cc9f0",
+    make: () => new Pizzicato.Effects.Delay({ feedback: 0.45, time: 0.36, mix: 0.4 }),
+    knob: { label: "回授", min: 0, max: 0.9, val: 0.45, set: (e, v) => { e.feedback = v; } } },
+  { key: "reverb", name: "殘響", en: "Reverb", color: "#9d8cff",
+    make: () => new Pizzicato.Effects.Reverb({ time: 2.2, decay: 2, mix: 0.45 }),
+    knob: { label: "比例", min: 0, max: 1, val: 0.45, set: (e, v) => { e.mix = v; } } },
+  { key: "dist", name: "失真", en: "Distortion", color: "#ff8c42",
+    make: () => new Pizzicato.Effects.Distortion({ gain: 0.45 }),
+    knob: { label: "增益", min: 0, max: 1, val: 0.45, set: (e, v) => { e.gain = v; } } },
+  { key: "flanger", name: "法蘭", en: "Flanger", color: "#7bd389",
+    make: () => new Pizzicato.Effects.Flanger({ time: 0.45, speed: 0.4, depth: 0.25, feedback: 0.4, mix: 0.6 }),
+    knob: { label: "速度", min: 0.05, max: 2, val: 0.4, set: (e, v) => { e.speed = v; } } },
+  { key: "tremolo", name: "顫音", en: "Tremolo", color: "#f7df1e",
+    make: () => new Pizzicato.Effects.Tremolo({ speed: 6, depth: 0.8, mix: 0.9 }),
+    knob: { label: "速度", min: 1, max: 16, val: 6, set: (e, v) => { e.speed = v; } } },
+  { key: "lowpass", name: "低通", en: "LowPass", color: "#f72585",
+    make: () => new Pizzicato.Effects.LowPassFilter({ frequency: 700, peak: 8 }),
+    knob: { label: "頻率", min: 150, max: 5000, val: 700, set: (e, v) => { e.frequency = v; } } },
+  { key: "ring", name: "環形調變", en: "RingMod", color: "#5ee0d0",
+    make: () => new Pizzicato.Effects.RingModulator({ speed: 30, distortion: 1, mix: 0.5 }),
+    knob: { label: "頻率", min: 5, max: 400, val: 30, set: (e, v) => { e.speed = v; } } },
+  { key: "pingpong", name: "乒乓延遲", en: "PingPong", color: "#ffb4d6",
+    make: () => new Pizzicato.Effects.PingPongDelay({ feedback: 0.5, time: 0.3, mix: 0.45 }),
+    knob: { label: "時間", min: 0.05, max: 0.8, val: 0.3, set: (e, v) => { e.time = v; } } },
+];
+
+const sound = new Pizzicato.Sound({
+  source: "file",
+  options: { path: "_shared/audio/loop.mp3", loop: true, volume: 0.85 },
+});
+const active = new Map();   // key -> effect instance currently in the chain
+
+// Tap Pizzicato's master gain with an analyser for the oscilloscope.
+const ctx = Pizzicato.context;
+const analyser = ctx.createAnalyser();
+analyser.fftSize = 2048;
+Pizzicato.masterGainNode.connect(analyser);
+const buf = new Uint8Array(analyser.fftSize);
+const spec = new Uint8Array(analyser.frequencyBinCount);
+
+const board = document.getElementById("board");
+FX.forEach((fx) => {
+  const el = document.createElement("div");
+  el.className = "pedal";
+  el.style.setProperty("--pc", fx.color);
+  el.innerHTML = `
+    <div class="row1"><div><h3>${fx.name}</h3><small>${fx.en}</small></div><i class="led"></i></div>
+    <label><span>${fx.knob.label}</span><input type="range" min="${fx.knob.min}" max="${fx.knob.max}"
+      step="${(fx.knob.max - fx.knob.min) / 100}" value="${fx.knob.val}" aria-label="${fx.name}${fx.knob.label}"></label>
+    <button class="stomp" aria-label="${fx.name}開關"></button>`;
+  const knob = el.querySelector("input");
+  fx.inst = fx.make();
+  knob.addEventListener("input", () => fx.knob.set(fx.inst, +knob.value));
+  el.querySelector(".stomp").addEventListener("click", () => toggle(fx, el));
+  board.append(el);
+});
+
+function toggle(fx, el) {
+  if (active.has(fx.key)) {
+    sound.removeEffect(fx.inst);
+    active.delete(fx.key);
+    el.classList.remove("on");
+  } else {
+    sound.addEffect(fx.inst);
+    active.set(fx.key, fx);
+    el.classList.add("on");
+  }
+  renderChain();
+}
+
+function renderChain() {
+  const parts = ["<b>音源</b>"];
+  for (const fx of active.values()) parts.push(`→ <b class="fx" style="--pc:${fx.color}">${fx.name}</b>`);
+  parts.push("→ <b>輸出</b>");
+  document.getElementById("chain").innerHTML = `訊號鏈：${parts.join(" ")}`;
+}
+renderChain();
+
+// Default rig so the board looks alive before playing
+[0, 1].forEach((i) => toggle(FX[i], board.children[i]));
+
+const playBtn = document.getElementById("play");
+playBtn.addEventListener("click", async () => {
+  await ctx.resume();
+  if (sound.playing) sound.pause();
+  else sound.play();
+  playBtn.textContent = sound.playing ? "❚❚" : "▶";
+});
+
+// Oscilloscope + faint spectrum
+const cv = document.getElementById("scope");
+const g = cv.getContext("2d");
+function fit() {
+  const d = Math.min(devicePixelRatio || 1, 2);
+  cv.width = cv.clientWidth * d;
+  cv.height = cv.clientHeight * d;
+}
+fit();
+addEventListener("resize", fit);
+(function draw(t) {
+  const W = cv.width, H = cv.height;
+  g.clearRect(0, 0, W, H);
+  g.strokeStyle = "rgba(255,255,255,0.06)";
+  g.lineWidth = 1;
+  for (let x = 0; x < W; x += W / 16) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
+  g.beginPath(); g.moveTo(0, H / 2); g.lineTo(W, H / 2); g.stroke();
+  const live = sound.playing;
+  if (live) {
+    analyser.getByteFrequencyData(spec);
+    const n = 160;
+    for (let i = 0; i < n; i++) {
+      const v = spec[Math.floor(Math.pow(i / n, 2) * spec.length)] / 255;
+      g.fillStyle = `hsla(${20 + i * 1.6}, 90%, 60%, 0.35)`;
+      g.fillRect((i / n) * W, H - v * H, W / n - 1, v * H);
+    }
+    analyser.getByteTimeDomainData(buf);
+  }
+  g.lineWidth = Math.max(2, H / 40);
+  g.strokeStyle = "#f7df1e";
+  g.shadowColor = "#f7df1e";
+  g.shadowBlur = 10;
+  g.beginPath();
+  for (let x = 0; x <= W; x += 2) {
+    const v = live
+      ? (buf[Math.floor((x / W) * 1024)] - 128) / 128
+      : 0.18 * Math.sin(x / W * Math.PI * 6 + (t || 0) / 400) * Math.sin(x / W * Math.PI);
+    const y = H / 2 + v * H * 0.45;
+    x ? g.lineTo(x, y) : g.moveTo(x, y);
+  }
+  g.stroke();
+  g.shadowBlur = 0;
+  requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>

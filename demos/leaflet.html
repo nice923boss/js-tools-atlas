@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Leaflet 示範：台灣景點地圖</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  #map { position: fixed; inset: 0; background: #0b0d10; }
+  .dark-tiles { filter: invert(1) hue-rotate(180deg) brightness(.82) contrast(.92) saturate(.55); }
+  .leaflet-container { font: 13px/1.5 var(--font); }
+  .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--bg-2); color: var(--fg); border: 1px solid var(--line); }
+  .leaflet-popup-content { margin: 12px 14px; min-width: 180px; }
+  .leaflet-container a.leaflet-popup-close-button { color: var(--muted); }
+  .leaflet-control-attribution { background: rgba(14,16,19,.75) !important; color: var(--muted); font-size: 10px; }
+  .leaflet-control-attribution a { color: var(--c2); }
+  .leaflet-bar a { background: var(--bg-2); color: var(--fg); border-color: var(--line); }
+  .leaflet-bar a:hover { background: #22262d; }
+  .pop h3 { margin: 0 0 2px; font-size: 15px; }
+  .pop .meta { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .pop .tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; color: #111; margin-right: 6px; font-weight: 700; }
+  .pop p { margin: 0; font-size: 13px; }
+  .pin { position: relative; width: 18px; height: 18px; }
+  .pin i { position: absolute; inset: 3px; border-radius: 50%; background: var(--k); border: 2px solid #0e1013; box-shadow: 0 0 0 2px var(--k); }
+  .pin b { position: absolute; inset: 0; border-radius: 50%; background: var(--k); opacity: .45; animation: pulse 2.2s ease-out infinite; }
+  @keyframes pulse { from { transform: scale(.6); opacity: .6; } to { transform: scale(2.6); opacity: 0; } }
+  .route { stroke-dasharray: 8 10; animation: dash 1.2s linear infinite; }
+  @keyframes dash { to { stroke-dashoffset: -18; } }
+  #list { position: fixed; left: 12px; top: 12px; z-index: 500; width: 190px; max-height: calc(100% - 70px); overflow: auto; padding: 10px 8px; }
+  #list h2 { margin: 0 6px 6px; font-size: 14px; }
+  #list button { display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 6px; border: 0; border-radius: 6px; background: none; color: var(--fg); font: 13px var(--font); text-align: left; cursor: pointer; }
+  #list button:hover { background: rgba(255,255,255,.07); }
+  #list button span { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  #list button[hidden] { display: none; }
+  @media (max-width: 620px) { #list { display: none; } }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="list" class="panel"><h2>台灣景點</h2></div>
+<div class="controls" id="filters">
+  <button class="btn" data-cat="all" aria-pressed="true">全部</button>
+  <button class="btn" data-cat="自然">自然</button>
+  <button class="btn" data-cat="城市">城市</button>
+  <button class="btn" data-cat="古蹟">古蹟</button>
+  <button class="btn" id="routeBtn" aria-pressed="true">環島路線</button>
+</div>
+<div class="hint">點標記看介紹・左側清單可飛到景點・按分類篩選</div>
+
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// Taiwan landmarks rendered as Leaflet markers with popups, category filter and an island loop polyline.
+const COLORS = { "自然": "#7bd389", "城市": "#4cc9f0", "古蹟": "#ff8c42" };
+const SPOTS = [
+  { name: "台北 101", cat: "城市", city: "台北市信義區", lat: 25.0340, lng: 121.5645, desc: "508 公尺高的地標，跨年煙火的主角。" },
+  { name: "九份老街", cat: "城市", city: "新北市瑞芳區", lat: 25.1097, lng: 121.8443, desc: "山城石階、紅燈籠與芋圓，眺望基隆嶼。" },
+  { name: "野柳地質公園", cat: "自然", city: "新北市萬里區", lat: 25.2061, lng: 121.6900, desc: "女王頭與蕈狀岩，海蝕地形教科書。" },
+  { name: "淡水紅毛城", cat: "古蹟", city: "新北市淡水區", lat: 25.1754, lng: 121.4330, desc: "1628 年西班牙人始建，看淡水河夕陽。" },
+  { name: "鹿港龍山寺", cat: "古蹟", city: "彰化縣鹿港鎮", lat: 24.0533, lng: 120.4344, desc: "清代閩南寺廟建築，八卦藻井精巧。" },
+  { name: "台中國家歌劇院", cat: "城市", city: "台中市西屯區", lat: 24.1630, lng: 120.6406, desc: "伊東豊雄設計，曲牆結構像聲音的洞穴。" },
+  { name: "日月潭", cat: "自然", city: "南投縣魚池鄉", lat: 23.8571, lng: 120.9157, desc: "台灣最大淡水湖，環潭自行車道很熱門。" },
+  { name: "阿里山", cat: "自然", city: "嘉義縣阿里山鄉", lat: 23.5103, lng: 120.8031, desc: "神木群、雲海與森林小火車看日出。" },
+  { name: "赤崁樓", cat: "古蹟", city: "台南市中西區", lat: 22.9975, lng: 120.2025, desc: "荷蘭時期普羅民遮城遺構，古都代表。" },
+  { name: "安平古堡", cat: "古蹟", city: "台南市安平區", lat: 23.0015, lng: 120.1606, desc: "熱蘭遮城舊址，台灣最早的城堡。" },
+  { name: "駁二藝術特區", cat: "城市", city: "高雄市鹽埕區", lat: 22.6201, lng: 120.2817, desc: "港邊倉庫變身藝文基地，大型裝置藝術。" },
+  { name: "墾丁國家公園", cat: "自然", city: "屏東縣恆春鎮", lat: 21.9483, lng: 120.7798, desc: "珊瑚礁海岸與熱帶海洋，台灣最南端。" },
+  { name: "太魯閣峽谷", cat: "自然", city: "花蓮縣秀林鄉", lat: 24.1597, lng: 121.6211, desc: "立霧溪切穿大理石，形成壯麗峽谷。" },
+  { name: "清境農場", cat: "自然", city: "南投縣仁愛鄉", lat: 24.0569, lng: 121.1617, desc: "高山草原與綿羊秀，海拔近 2000 公尺。" },
+];
+// Order for the island loop route (clockwise from Taipei)
+const LOOP = ["台北 101", "九份老街", "太魯閣峽谷", "墾丁國家公園", "駁二藝術特區", "安平古堡", "赤崁樓", "阿里山", "日月潭", "清境農場", "台中國家歌劇院", "鹿港龍山寺", "淡水紅毛城", "台北 101"];
+
+const map = L.map("map", { zoomControl: false, minZoom: 6, zoomSnap: 0.25 });
+fitAll(); // set the final view before any tiles are requested
+L.control.zoom({ position: "bottomright" }).addTo(map);
+// OpenStreetMap raster tiles, darkened with a CSS filter (.dark-tiles)
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  className: "dark-tiles",
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> 貢獻者',
+}).addTo(map);
+
+const byName = {};
+const list = document.getElementById("list");
+for (const s of SPOTS) {
+  const icon = L.divIcon({ className: "", html: `<div class="pin" style="--k:${COLORS[s.cat]}"><b></b><i></i></div>`, iconSize: [18, 18], iconAnchor: [9, 9], popupAnchor: [0, -8] });
+  s.marker = L.marker([s.lat, s.lng], { icon, title: s.name })
+    .bindPopup(`<div class="pop"><h3>${s.name}</h3><div class="meta"><span class="tag" style="background:${COLORS[s.cat]}">${s.cat}</span>${s.city}</div><p>${s.desc}</p></div>`)
+    .addTo(map);
+  byName[s.name] = s;
+  const b = document.createElement("button");
+  b.innerHTML = `<span style="background:${COLORS[s.cat]}"></span>${s.name}`;
+  b.addEventListener("click", () => {
+    map.flyTo([s.lat, s.lng], 11, { duration: 1.4 });
+    map.once("moveend", () => s.marker.openPopup());
+  });
+  s.item = b;
+  list.append(b);
+}
+
+const route = L.polyline(LOOP.map((n) => [byName[n].lat, byName[n].lng]), { color: "#f7df1e", weight: 2.5, opacity: 0.8, className: "route" }).addTo(map);
+
+function fitAll() {
+  const wide = innerWidth > 620;
+  map.fitBounds(L.latLngBounds(SPOTS.map((s) => [s.lat, s.lng])), { paddingTopLeft: [wide ? 230 : 30, 60], paddingBottomRight: [30, 40] });
+}
+byName["墾丁國家公園"].marker.openPopup();
+
+document.querySelectorAll("#filters [data-cat]").forEach((btn) => btn.addEventListener("click", () => {
+  const cat = btn.dataset.cat;
+  document.querySelectorAll("#filters [data-cat]").forEach((b) => b.setAttribute("aria-pressed", b === btn));
+  map.closePopup();
+  for (const s of SPOTS) {
+    const show = cat === "all" || s.cat === cat;
+    if (show) s.marker.addTo(map); else s.marker.remove();
+    s.item.hidden = !show;
+  }
+}));
+
+document.getElementById("routeBtn").addEventListener("click", (e) => {
+  const on = e.currentTarget.getAttribute("aria-pressed") !== "true";
+  e.currentTarget.setAttribute("aria-pressed", on);
+  if (on) route.addTo(map); else route.remove();
+});
+
+window.addEventListener("resize", () => map.invalidateSize());
+</script>
+</body>
+</html>

@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>abcjs 示範：文字記譜即時排版與播放</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"]}</script>
+<style>
+  .app {
+    position: fixed; inset: 0; display: grid; grid-template-rows: auto minmax(0, 1fr);
+    gap: 10px; padding: 12px 14px 46px;
+  }
+  .top { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; background: #fff; }
+  .seg button {
+    border: 0; background: transparent; padding: 7px 12px; font: 600 13px var(--font); cursor: pointer; color: var(--muted);
+  }
+  .seg button[aria-pressed="true"] { background: var(--fg); color: #fff; }
+  .tr { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); }
+  .tr .btn { padding: 6px 10px; }
+  .tr b { min-width: 34px; text-align: center; color: var(--fg); font-family: var(--mono); }
+  .spacer { flex: 1; }
+  #play { min-width: 92px; }
+  .main { display: grid; grid-template-columns: 290px minmax(0, 1fr); gap: 12px; min-height: 0; }
+  .editor { display: flex; flex-direction: column; gap: 6px; min-height: 0; min-width: 0; }
+  .editor label { font-size: 12px; color: var(--muted); }
+  textarea {
+    flex: 1; min-height: 0; resize: none; width: 100%; border-radius: 10px; border: 1px solid var(--line);
+    background: #fffdf5; padding: 10px 12px; font: 12.5px/1.55 var(--mono); color: #3a372e;
+    outline: none; scrollbar-width: thin;
+  }
+  textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(226, 196, 0, 0.18); }
+  .warn { font-size: 12px; color: var(--c3); min-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .warn.ok { color: var(--c4); }
+  .sheet {
+    position: relative; min-height: 0; min-width: 0; background: #fff; border-radius: 12px;
+    border: 1px solid var(--line); box-shadow: 0 8px 28px rgba(0, 0, 0, 0.06); padding: 10px 12px 14px;
+    display: flex; flex-direction: column;
+  }
+  #paper { flex: 1; min-height: 0; }
+  #paper svg { display: block; width: 100%; height: 100%; }
+  #paper .abcjs-title, #paper .abcjs-composer { font-family: var(--font); }
+  #paper .abcjs-note, #paper .abcjs-rest { cursor: pointer; }
+  #paper .hl { fill: var(--c3); color: var(--c3); }
+  #paper .picked { fill: var(--c2); color: var(--c2); }
+  #paper .abcjs-lyric { fill: #8a8577; }
+  .abcjs-cursor { stroke: var(--c3); stroke-width: 2; opacity: 0.55; }
+  .prog { position: absolute; left: 12px; right: 12px; bottom: 6px; height: 3px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .prog i { display: block; height: 100%; width: 0; background: var(--c3); }
+  @media (max-width: 620px) {
+    .app { padding: 10px 10px 46px; gap: 8px; }
+    .main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 108px; gap: 8px; }
+    .editor { order: 2; }
+    .editor label { display: none; }
+    .seg button { padding: 6px 9px; font-size: 12px; }
+    .spacer { display: none; }
+    .sheet { padding: 6px 6px 12px; }
+  }
+</style>
+</head>
+<body class="paper">
+<div class="app">
+  <div class="top">
+    <div class="seg" id="tunes"></div>
+    <div class="tr">移調
+      <button class="btn" id="down" aria-label="降半音">−</button>
+      <b id="trv">0</b>
+      <button class="btn" id="up" aria-label="升半音">＋</button>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn primary" id="play">▶ 播放</button>
+  </div>
+  <div class="main">
+    <div class="editor">
+      <label for="abc">ABC 記譜文字（可直接修改）</label>
+      <textarea id="abc" spellcheck="false"></textarea>
+      <div class="warn" id="warn"></div>
+    </div>
+    <div class="sheet">
+      <div id="paper"></div>
+      <div class="prog"><i id="prog"></i></div>
+    </div>
+  </div>
+</div>
+<div class="hint">點音符可試聽，改左邊文字會即時重新排版</div>
+
+<script src="https://cdn.jsdelivr.net/npm/abcjs@6.7.1/dist/abcjs-basic-min.js"></script>
+<script>
+// abcjs: plain-text ABC notation -> engraved SVG (renderAbc) + synth playback with note highlighting.
+const TUNES = {
+  "小星星": `X:1
+T:小星星
+C:法國民謠
+M:4/4
+L:1/4
+Q:1/4=100
+K:C
+"C"C C G G|"F"A A "C"G2|"F"F F "C"E E|"G"D D "C"C2|
+w:do do sol sol la la sol fa fa mi mi re re do
+"C"G G "F"F F|"C"E E "G"D2|"C"G G "F"F F|"C"E E "G"D2|
+w:sol sol fa fa mi mi re sol sol fa fa mi mi re
+"C"C C G G|"F"A A "C"G2|"F"F F "C"E E|"G"D D "C"C2|]
+w:do do sol sol la la sol fa fa mi mi re re do`,
+  "小步舞曲": `X:2
+T:小步舞曲 G 大調
+C:佩措爾德（舊傳巴赫）
+M:3/4
+L:1/8
+Q:1/4=126
+K:G
+"G"d2 GABc|d2 G2 G2|"C"e2 cdef|"G"g2 G2 G2|
+"C"c2 dcBA|"G"B2 cBAG|"D"F2 GABG|"D7"A6|
+"G"d2 GABc|d2 G2 G2|"C"e2 cdef|"G"g2 G2 G2|
+"C"c2 dcBA|"G"B2 cBAG|"D7"A2 BAGF|"G"G6|]`,
+};
+
+const ta = document.getElementById("abc");
+const paper = document.getElementById("paper");
+const sheet = document.querySelector(".sheet");
+const warnEl = document.getElementById("warn");
+const playBtn = document.getElementById("play");
+const prog = document.getElementById("prog");
+let visualObj = null;
+let transpose = 0;
+let current = "小步舞曲";
+
+// Cursor control: abcjs calls these while the synth plays.
+const cursor = {
+  beatSubdivisions: 2,
+  onStart() {
+    const svg = paper.querySelector("svg");
+    if (svg && !svg.querySelector(".abcjs-cursor")) {
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("class", "abcjs-cursor");
+      svg.appendChild(line);
+    }
+  },
+  onEvent(ev) {
+    if (ev.measureStart && ev.left === null) return;   // tie continuation across a bar line
+    paper.querySelectorAll(".hl").forEach((el) => el.classList.remove("hl"));
+    ev.elements.forEach((group) => group.forEach((el) => el.classList.add("hl")));
+    const line = paper.querySelector(".abcjs-cursor");
+    if (line) {
+      line.setAttribute("x1", ev.left - 2); line.setAttribute("x2", ev.left - 2);
+      line.setAttribute("y1", ev.top); line.setAttribute("y2", ev.top + ev.height);
+    }
+  },
+  onBeat(beat, total) { prog.style.width = `${(beat / total) * 100}%`; },
+  onFinished() {
+    paper.querySelectorAll(".hl").forEach((el) => el.classList.remove("hl"));
+    paper.querySelector(".abcjs-cursor")?.remove();
+    prog.style.width = "0";
+    playBtn.textContent = "▶ 播放";
+  },
+};
+
+const synth = new ABCJS.synth.SynthController();
+synth.cursorControl = cursor;
+
+const NAMES = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+function onNoteClick(el) {
+  paper.querySelectorAll(".picked").forEach((n) => n.classList.remove("picked"));
+  el.abselem?.elemset?.forEach((n) => n.classList.add("picked"));
+  if (!el.midiPitches) visualObj.setUpAudio();   // attaches midiPitches to every note element
+  if (!el.midiPitches || !el.midiPitches.length) return;
+  ABCJS.synth.playEvent(el.midiPitches, el.midiGraceNotes, visualObj.millisecondsPerMeasure());
+  const p = el.midiPitches[0].pitch;
+  warnEl.className = "warn ok";
+  warnEl.textContent = `點到的音：${NAMES[p % 12]}${Math.floor(p / 12) - 1}（MIDI ${p}）`;
+}
+
+// Engrave the current text; the SVG is scaled to fit the sheet box without scrolling.
+function render() {
+  const w = paper.clientWidth;
+  visualObj = ABCJS.renderAbc("paper", ta.value, {
+    add_classes: true,
+    clickListener: onNoteClick,
+    staffwidth: Math.max(240, w - 24),
+    wrap: { minSpacing: 1.7, maxSpacing: 2.7, preferredMeasuresPerLine: w < 480 ? 3 : 4 },
+    paddingtop: 4, paddingbottom: 4, paddingleft: 8, paddingright: 8,
+  })[0];
+  const svg = paper.querySelector("svg");
+  if (svg) {
+    const vw = parseFloat(svg.getAttribute("width")), vh = parseFloat(svg.getAttribute("height"));
+    if (vw && vh) svg.setAttribute("viewBox", `0 0 ${vw} ${vh}`);
+    svg.removeAttribute("width"); svg.removeAttribute("height");
+    svg.setAttribute("preserveAspectRatio", "xMidYMin meet");
+    paper.style.height = "";
+  }
+  const warns = visualObj.warnings || [];
+  warnEl.className = warns.length ? "warn" : "warn ok";
+  warnEl.textContent = warns.length
+    ? `語法提示：${warns[0].replace(/<[^>]+>/g, "")}`
+    : `✓ 解析成功：${visualObj.lines.length} 行、每小節 ${visualObj.getBeatsPerMeasure()} 拍`;
+  synth.setTune(visualObj, false);
+  playBtn.textContent = "▶ 播放";
+  prog.style.width = "0";
+}
+
+function loadTune(name) {
+  current = name;
+  transpose = 0;
+  document.getElementById("trv").textContent = "0";
+  ta.value = TUNES[name];
+  document.querySelectorAll("#tunes button").forEach((b) => b.setAttribute("aria-pressed", b.textContent === name));
+  render();
+}
+
+// ABCJS.strTranspose rewrites the ABC text itself (key signature, notes, chord symbols).
+function shift(step) {
+  ta.value = ABCJS.strTranspose(ta.value, [visualObj], step);
+  transpose += step;
+  document.getElementById("trv").textContent = transpose > 0 ? `+${transpose}` : transpose;
+  render();
+}
+
+const tunesEl = document.getElementById("tunes");
+Object.keys(TUNES).forEach((name) => {
+  const b = document.createElement("button");
+  b.textContent = name;
+  b.addEventListener("click", () => loadTune(name));
+  tunesEl.append(b);
+});
+document.getElementById("up").addEventListener("click", () => shift(1));
+document.getElementById("down").addEventListener("click", () => shift(-1));
+
+let timer = 0;
+ta.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(render, 250); });
+
+playBtn.addEventListener("click", async () => {
+  playBtn.textContent = "載入音色中…";
+  await synth.play();
+  playBtn.textContent = synth.isStarted ? "❚❚ 暫停" : "▶ 播放";
+});
+
+let lastW = 0;
+new ResizeObserver(() => {
+  if (Math.abs(paper.clientWidth - lastW) > 4) { lastW = paper.clientWidth; render(); }
+}).observe(sheet);
+loadTune(current);
+</script>
+</body>
+</html>

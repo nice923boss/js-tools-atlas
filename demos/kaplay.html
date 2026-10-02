@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KAPLAY 示範：豆豆躲隕石</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  canvas { position: fixed; inset: 0; width: 100% !important; height: 100% !important; display: block; outline: none; touch-action: none; }
+</style>
+</head>
+<body>
+<div class="hint">← → 或按住拖曳移動，躲開隕石、接住金幣</div>
+
+<script src="https://cdn.jsdelivr.net/npm/kaplay@3001.0.19/dist/kaplay.js"></script>
+<script>
+// KAPLAY dodge game: built-in bean sprite, scenes, area collisions, addKaboom explosion, lifespan particles.
+kaplay({ background: [14, 16, 19], font: "sans-serif", crisp: false });
+loadBean();
+
+const FONT = "sans-serif";
+const ROCKS = ["#f72585", "#ff8c42", "#9d8cff", "#4cc9f0"];
+let best = 0;
+
+// parallax star backdrop as a custom draw component
+function starfield() {
+  const stars = Array.from({ length: 90 }, () => ({ x: rand(0, 1), y: rand(0, 1), r: rand(0.6, 2.2), v: rand(0.02, 0.12) }));
+  add([z(-10), {
+    update() { for (const s of stars) { s.y += s.v * dt(); if (s.y > 1) s.y -= 1; } },
+    draw() {
+      for (const s of stars) drawCircle({ pos: vec2(s.x * width(), s.y * height()), radius: s.r, color: rgb(255, 255, 255), opacity: 0.25 + s.r * 0.2 });
+    },
+  }]);
+}
+
+function spawnRock(speedMul = 1) {
+  const r = rand(12, 30);
+  const rock = add([
+    pos(rand(r, width() - r), -r - 10),
+    circle(r),
+    anchor("center"),
+    color(Color.fromHex(choose(ROCKS))),
+    outline(3, Color.fromHex("#1a1a14")),
+    area(),
+    rotate(0),
+    "rock",
+    { vy: rand(150, 250) * speedMul, spin: rand(-200, 200) },
+  ]);
+  rock.onUpdate(() => {
+    rock.pos.y += rock.vy * dt();
+    rock.angle += rock.spin * dt();
+    if (rand() < 0.45) {
+      add([pos(rock.pos.add(rand(-r, r) * 0.5, -r * 0.6)), circle(rand(2, 5)), anchor("center"),
+        color(rock.color), opacity(0.6), lifespan(0.35, { fade: 0.3 }), z(-1)]);
+    }
+    if (rock.pos.y > height() + r + 10) destroy(rock);
+  });
+  return rock;
+}
+
+function spawnCoin() {
+  const c = add([pos(rand(20, width() - 20), -20), circle(11), anchor("center"), color(Color.fromHex("#f7df1e")),
+    outline(3, Color.fromHex("#8a7a00")), area(), scale(1), "coin", { vy: rand(120, 170) }]);
+  c.onUpdate(() => {
+    c.pos.y += c.vy * dt();
+    c.scale = vec2(Math.abs(Math.sin(time() * 5)) * 0.8 + 0.2, 1);
+    if (c.pos.y > height() + 30) destroy(c);
+  });
+}
+
+function popText(p, msg, col) {
+  add([pos(p), text(msg, { size: 22, font: FONT }), anchor("center"), color(Color.fromHex(col)), opacity(1),
+    move(UP, 70), lifespan(0.7, { fade: 0.5 })]);
+}
+
+scene("title", () => {
+  starfield();
+  const demo = () => { spawnRock(0.8); wait(rand(0.25, 0.6), demo); };
+  demo();
+  const bean = add([sprite("bean"), pos(center().add(0, -height() * 0.2)), anchor("center"), scale(1.6), rotate(0)]);
+  bean.onUpdate(() => {
+    bean.pos = center().add(Math.sin(time() * 2) * 30, -height() * 0.2 + Math.sin(time() * 4) * 8);
+    bean.angle = Math.sin(time() * 2) * 10;
+  });
+  const title = add([text("豆豆躲隕石", { size: Math.min(56, width() / 7), font: FONT }), pos(center().add(0, 20)), anchor("center"),
+    color(Color.fromHex("#f7df1e")), outline(4, Color.fromHex("#1a1a14")), z(5)]);
+  add([text("躲開彩色隕石，接住金幣加分", { size: 18, font: FONT }), pos(center().add(0, 70)), anchor("center"),
+    color(Color.fromHex("#ecebe6")), z(5)]);
+  const go1 = add([text("按任意鍵或點擊開始", { size: 18, font: FONT }), pos(center().add(0, 106)), anchor("center"),
+    color(Color.fromHex("#4cc9f0")), opacity(1), z(5)]);
+  go1.onUpdate(() => { go1.opacity = 0.55 + Math.sin(time() * 5) * 0.45; });
+  title.onUpdate(() => { title.scale = vec2(1 + Math.sin(time() * 3) * 0.03); });
+  onKeyPress(() => go("game"));
+  onMousePress(() => go("game"));
+  onResize(() => go("title"));
+});
+
+scene("game", () => {
+  starfield();
+  let score = 0, alive = true, elapsed = 0;
+  const player = add([sprite("bean"), pos(width() / 2, height() - 70), anchor("center"), area({ scale: 0.72 }), scale(1), rotate(0), "player"]);
+  const hud = add([text("分數 0", { size: 22, font: FONT }), pos(16, 14), color(Color.fromHex("#f7df1e")), z(10)]);
+  const lvl = add([text("", { size: 15, font: FONT }), pos(16, 44), color(Color.fromHex("#9b998f")), z(10)]);
+
+  const loopRocks = () => {
+    if (!alive) return;
+    spawnRock(1 + elapsed * 0.03);
+    if (elapsed > 12 && rand() < 0.3) spawnRock(1.2 + elapsed * 0.03);
+    wait(Math.max(0.16, 0.6 - elapsed * 0.012), loopRocks);
+  };
+  loopRocks();
+  loop(1.6, () => { if (alive) spawnCoin(); });
+
+  player.onUpdate(() => {
+    if (!alive) return;
+    elapsed += dt();
+    score += dt() * 10;
+    hud.text = `分數 ${Math.floor(score)}`;
+    lvl.text = `速度 ×${(1 + elapsed * 0.03).toFixed(1)}`;
+    let dir = 0;
+    if (isKeyDown("left") || isKeyDown("a")) dir -= 1;
+    if (isKeyDown("right") || isKeyDown("d")) dir += 1;
+    player.pos.x += dir * 440 * dt();
+    if (isMouseDown()) player.pos.x = lerp(player.pos.x, mousePos().x, Math.min(1, dt() * 12));
+    player.pos.x = clamp(player.pos.x, 30, width() - 30);
+    player.pos.y = height() - 70;
+    player.angle = lerp(player.angle, dir * 14, 0.2);
+    player.scale = vec2(1 + Math.sin(time() * 14) * 0.04, 1 - Math.sin(time() * 14) * 0.04);
+  });
+
+  player.onCollide("coin", (c) => {
+    destroy(c);
+    score += 50;
+    popText(c.pos, "+50", "#f7df1e");
+    for (let i = 0; i < 10; i++) {
+      add([pos(c.pos), circle(rand(2, 4)), anchor("center"), color(Color.fromHex("#f7df1e")), opacity(1),
+        move(rand(0, 360), rand(80, 220)), lifespan(0.4, { fade: 0.3 })]);
+    }
+  });
+
+  player.onCollide("rock", () => {
+    if (!alive) return;
+    alive = false;
+    addKaboom(player.pos);
+    shake(16);
+    destroy(player);
+    best = Math.max(best, Math.floor(score));
+    wait(1.1, () => go("over", Math.floor(score)));
+  });
+});
+
+scene("over", (score) => {
+  starfield();
+  add([text("撞到隕石了！", { size: Math.min(46, width() / 8), font: FONT }), pos(center().add(0, -60)), anchor("center"),
+    color(Color.fromHex("#f72585")), outline(4, Color.fromHex("#1a1a14"))]);
+  add([text(`分數 ${score}　最高 ${best}`, { size: 24, font: FONT }), pos(center().add(0, 0)), anchor("center"), color(Color.fromHex("#ecebe6"))]);
+  const again = add([text("按任意鍵或點擊再玩一次", { size: 18, font: FONT }), pos(center().add(0, 46)), anchor("center"),
+    color(Color.fromHex("#4cc9f0")), opacity(1)]);
+  again.onUpdate(() => { again.opacity = 0.55 + Math.sin(time() * 5) * 0.45; });
+  onResize(() => go("over", score));
+  wait(0.4, () => {
+    onKeyPress(() => go("game"));
+    onMousePress(() => go("game"));
+  });
+});
+
+go("title");
+</script>
+</body>
+</html>

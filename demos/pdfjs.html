@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF.js 示範：網頁內的 PDF 閱讀器</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"預設載入 pdf.js 官方範例論文，也可開啟自己的 PDF"}</script>
+<style>
+  .app { position: fixed; inset: 0; display: grid; grid-template-rows: auto 1fr; }
+  .tb {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+    padding: 8px 10px; background: var(--bg-2); border-bottom: 1px solid var(--line);
+  }
+  .tb .group { display: flex; align-items: center; gap: 4px; }
+  .tb .btn { padding: 7px 10px; }
+  .tb .label { font: 12px var(--mono); color: var(--muted); min-width: 52px; text-align: center; }
+  .tb .title { font-weight: 700; margin-right: auto; display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .tb .title b { color: var(--accent); }
+  .tb .title span { color: var(--muted); font-weight: 400; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }
+  .search {
+    width: 150px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--bg); outline: none;
+  }
+  .search:focus { border-color: var(--accent); }
+  .body { display: grid; grid-template-columns: 118px 1fr; min-height: 0; }
+  .thumbs { overflow-y: auto; padding: 10px 12px; border-right: 1px solid var(--line); background: #121418; }
+  .thumb { position: relative; margin: 0 auto 12px; width: 84px; cursor: pointer; text-align: center; }
+  .thumb canvas { display: block; width: 84px; background: #fff; border-radius: 3px; outline: 2px solid transparent; outline-offset: 2px; transition: outline-color .15s; }
+  .thumb.active canvas { outline-color: var(--accent); }
+  .thumb small { color: var(--muted); font-size: 11px; }
+  .thumb .badge {
+    position: absolute; right: -6px; top: -6px; min-width: 18px; height: 18px; padding: 0 5px;
+    border-radius: 9px; background: var(--c3); color: #fff; font: 700 11px/18px var(--font);
+  }
+  .viewer { overflow: auto; padding: 16px; position: relative; background:
+    radial-gradient(70% 60% at 50% 0%, rgba(76, 201, 240, 0.08), transparent 70%), #0b0d10; }
+  .page { position: relative; margin: 0 auto 40px; background: #fff; box-shadow: 0 10px 40px rgba(0,0,0,.55); }
+  .page canvas { display: block; }
+  .found {
+    position: fixed; right: 12px; bottom: 12px; z-index: 50; font-size: 12px;
+    padding: 5px 10px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line);
+  }
+  .found:empty { display: none; }
+  /* Minimal text-layer rules adapted from pdfjs-dist web/pdf_viewer.css */
+  .textLayer {
+    position: absolute; inset: 0; overflow: clip; line-height: 1; text-align: initial;
+    transform-origin: 0 0; z-index: 2; opacity: 1;
+    --min-font-size: 1;
+    --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+    --min-font-size-inv: calc(1 / var(--min-font-size));
+  }
+  .textLayer span, .textLayer br {
+    color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%;
+  }
+  .textLayer > :not(.markedContent), .textLayer .markedContent span:not(.markedContent) {
+    --font-height: 0; font-size: calc(var(--text-scale-factor) * var(--font-height));
+    --scale-x: 1; --rotate: 0deg;
+    transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+  }
+  .textLayer .markedContent { display: contents; }
+  .textLayer ::selection { background: rgba(31, 143, 184, 0.35); }
+  .textLayer span.hit { background: rgba(247, 223, 30, 0.55); border-radius: 2px; }
+  /* the hint sits over the page viewer at every size: show it briefly, then fade it out */
+  .hint { animation: hint-fade .5s 8s forwards; }
+  @media (max-width: 600px) {
+    .body { grid-template-columns: 1fr; }
+    .thumbs { display: none; }
+    .tb .title span { display: none; }
+    .search { width: 110px; }
+    .viewer { padding: 10px; }
+    .found { bottom: 50px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="tb">
+    <div class="title"><b>PDF.js</b><span id="docName">載入中…</span></div>
+    <div class="group">
+      <button class="btn" id="prev" aria-label="上一頁">◀</button>
+      <span class="label" id="pageLabel">- / -</span>
+      <button class="btn" id="next" aria-label="下一頁">▶</button>
+    </div>
+    <div class="group">
+      <button class="btn" id="zoomOut" aria-label="縮小">－</button>
+      <span class="label" id="zoomLabel">適寬</span>
+      <button class="btn" id="zoomIn" aria-label="放大">＋</button>
+    </div>
+    <input class="search" id="search" type="search" placeholder="搜尋文字，如 trace" value="trace">
+    <button class="btn primary" id="openBtn">開啟 PDF</button>
+    <input type="file" id="file" accept="application/pdf" hidden>
+  </div>
+  <div class="body">
+    <div class="thumbs" id="thumbs"></div>
+    <div class="viewer" id="viewer">
+      <div class="page" id="page"><canvas id="canvas"></canvas><div class="textLayer" id="textLayer"></div></div>
+    </div>
+  </div>
+</div>
+<div class="found" id="found"></div>
+<div class="hint">可拖曳選取文字・搜尋會標出關鍵字・點縮圖換頁</div>
+
+<script src="_shared/gate.js"></script>
+<script type="module">
+import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.3.289/build/pdf.min.mjs";
+
+const BASE = "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.3.289/";
+const SAMPLE = "https://cdn.jsdelivr.net/gh/mozilla/pdf.js@v6.3.289/web/compressed.tracemonkey-pldi-09.pdf";
+pdfjsLib.GlobalWorkerOptions.workerSrc = BASE + "build/pdf.worker.min.mjs";
+
+const $ = (id) => document.getElementById(id);
+const viewer = $("viewer"), pageEl = $("page"), canvas = $("canvas"), textLayerEl = $("textLayer");
+let doc = null, docTask = null, pageNum = 1, zoom = null; // zoom null = fit width
+let renderToken = 0, renderTask = null;
+const textCache = new Map();
+
+async function openPdf(source, name) {
+  const s = demoStatus("讀取 PDF 中…");
+  try {
+    const task = pdfjsLib.getDocument({
+      ...source,
+      cMapUrl: BASE + "cmaps/", cMapPacked: true,
+      standardFontDataUrl: BASE + "standard_fonts/", wasmUrl: BASE + "wasm/", iccUrl: BASE + "iccs/",
+    });
+    task.onProgress = ({ loaded, total }) => total && s.progress(loaded / total);
+    const next = await task.promise;
+    if (docTask) docTask.destroy();
+    doc = next;
+    docTask = task;
+    textCache.clear();
+    pageNum = 1;
+    $("docName").textContent = `${name}・${doc.numPages} 頁`;
+    s.done();
+    await renderPage();
+    buildThumbs();
+  } catch (err) {
+    s.error("無法開啟這個 PDF：" + err.message);
+  }
+}
+
+async function renderPage() {
+  const token = ++renderToken;
+  const page = await doc.getPage(pageNum);
+  const base = page.getViewport({ scale: 1 });
+  const fit = Math.max(0.3, (viewer.clientWidth - 32) / base.width);
+  const scale = zoom ?? Math.min(fit, 2.2);
+  const vp = page.getViewport({ scale });
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  if (renderTask) renderTask.cancel();
+  const off = document.createElement("canvas");
+  off.width = Math.floor(vp.width * dpr);
+  off.height = Math.floor(vp.height * dpr);
+  renderTask = page.render({ canvas: off, viewport: vp, transform: dpr === 1 ? undefined : [dpr, 0, 0, dpr, 0, 0] });
+  try {
+    await renderTask.promise;
+  } catch (err) {
+    if (err?.name === "RenderingCancelledException") return;
+    throw err;
+  }
+  if (token !== renderToken) return;
+  // Swap in the finished bitmap to avoid flicker
+  canvas.width = off.width;
+  canvas.height = off.height;
+  canvas.getContext("2d").drawImage(off, 0, 0);
+  canvas.style.width = `${vp.width}px`;
+  canvas.style.height = `${vp.height}px`;
+  pageEl.style.width = `${vp.width}px`;
+  pageEl.style.setProperty("--total-scale-factor", scale);
+  textLayerEl.replaceChildren();
+  const layer = new pdfjsLib.TextLayer({ textContentSource: page.streamTextContent(), container: textLayerEl, viewport: vp });
+  await layer.render();
+  if (token !== renderToken) return;
+  $("pageLabel").textContent = `${pageNum} / ${doc.numPages}`;
+  $("zoomLabel").textContent = zoom ? `${Math.round(zoom * 100)}%` : "適寬";
+  document.querySelectorAll(".thumb").forEach((t) => t.classList.toggle("active", +t.dataset.page === pageNum));
+  document.querySelector(".thumb.active")?.scrollIntoView({ block: "nearest" });
+  markHits();
+}
+
+async function buildThumbs() {
+  const box = $("thumbs");
+  box.replaceChildren();
+  const myDoc = doc;
+  for (let i = 1; i <= myDoc.numPages; i++) {
+    const item = document.createElement("div");
+    item.className = "thumb" + (i === pageNum ? " active" : "");
+    item.dataset.page = i;
+    const c = document.createElement("canvas");
+    const label = document.createElement("small");
+    label.textContent = i;
+    item.append(c, label);
+    item.addEventListener("click", () => goTo(i));
+    box.append(item);
+  }
+  updateBadges();
+  for (let i = 1; i <= myDoc.numPages; i++) {
+    if (myDoc !== doc) return;
+    const page = await myDoc.getPage(i);
+    const vp = page.getViewport({ scale: 168 / page.getViewport({ scale: 1 }).width });
+    const c = box.children[i - 1].querySelector("canvas");
+    c.width = vp.width;
+    c.height = vp.height;
+    await page.render({ canvas: c, viewport: vp }).promise;
+  }
+}
+
+function goTo(n) {
+  if (!doc) return;
+  pageNum = Math.min(doc.numPages, Math.max(1, n));
+  viewer.scrollTop = 0;
+  renderPage();
+}
+
+async function pageText(i) {
+  if (!textCache.has(i)) {
+    const tc = await (await doc.getPage(i)).getTextContent();
+    textCache.set(i, tc.items.map((it) => it.str).join(" ").toLowerCase());
+  }
+  return textCache.get(i);
+}
+
+function markHits() {
+  const q = $("search").value.trim().toLowerCase();
+  textLayerEl.querySelectorAll("span").forEach((sp) => {
+    sp.classList.toggle("hit", !!q && sp.textContent.toLowerCase().includes(q));
+  });
+}
+
+async function updateBadges() {
+  const q = $("search").value.trim().toLowerCase();
+  const myDoc = doc;
+  let pages = 0, total = 0;
+  for (let i = 1; i <= myDoc.numPages; i++) {
+    const text = await pageText(i);
+    if (myDoc !== doc) return;
+    const n = q ? text.split(q).length - 1 : 0;
+    const thumb = $("thumbs").children[i - 1];
+    thumb?.querySelector(".badge")?.remove();
+    if (n) {
+      pages++;
+      total += n;
+      const b = document.createElement("span");
+      b.className = "badge";
+      b.textContent = n;
+      thumb?.append(b);
+    }
+  }
+  $("found").textContent = q ? `「${q}」出現 ${total} 次，分布在 ${pages} 頁` : "";
+}
+
+let searchTimer;
+$("search").addEventListener("input", () => {
+  markHits();
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(updateBadges, 250);
+});
+$("prev").addEventListener("click", () => goTo(pageNum - 1));
+$("next").addEventListener("click", () => goTo(pageNum + 1));
+$("zoomIn").addEventListener("click", () => { zoom = Math.min(4, (zoom ?? currentScale()) * 1.25); renderPage(); });
+$("zoomOut").addEventListener("click", () => { zoom = Math.max(0.3, (zoom ?? currentScale()) / 1.25); renderPage(); });
+$("zoomLabel").addEventListener("click", () => { zoom = null; renderPage(); });
+$("openBtn").addEventListener("click", () => $("file").click());
+$("file").addEventListener("change", async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  openPdf({ data: new Uint8Array(await f.arrayBuffer()) }, f.name);
+});
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT") return;
+  if (e.key === "ArrowRight" || e.key === "PageDown") goTo(pageNum + 1);
+  if (e.key === "ArrowLeft" || e.key === "PageUp") goTo(pageNum - 1);
+});
+function currentScale() {
+  return parseFloat(pageEl.style.getPropertyValue("--total-scale-factor")) || 1;
+}
+let resizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => doc && !zoom && renderPage(), 150);
+});
+
+openPdf({ url: SAMPLE }, "TraceMonkey 論文（官方範例）");
+</script>
+</body>
+</html>

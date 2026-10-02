@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meyda 示範：音訊特徵擷取與色度圖</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"]}</script>
+<style>
+  .wrap {
+    position: fixed; inset: 0; display: grid; gap: 10px 14px; padding: 12px 16px 44px;
+    grid-template-columns: minmax(0, 1fr) 220px; grid-template-rows: auto minmax(0, 1fr);
+  }
+  header { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; }
+  header h1 { margin: 0; font-size: 17px; }
+  header p { margin: 0; font-size: 12px; color: var(--muted); }
+  .playbtn {
+    width: 44px; height: 44px; border-radius: 50%; border: 0; flex: none; cursor: pointer;
+    background: var(--accent); color: var(--accent-ink); font-size: 17px; font-weight: 700;
+    box-shadow: 0 0 0 5px rgba(247, 223, 30, 0.12);
+  }
+  .chartbox { position: relative; min-height: 0; border-radius: 12px; border: 1px solid var(--line); background: var(--bg-2); }
+  #chart { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+  .side { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  .side .src { font-size: 11px; color: var(--muted); }
+  .meter { background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; }
+  .meter .t { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+  .meter b { font: 600 13px var(--mono); color: var(--fg); }
+  .meter .m { height: 5px; border-radius: 3px; background: rgba(255,255,255,.08); margin-top: 5px; overflow: hidden; }
+  .meter .m i { display: block; height: 100%; width: 0; border-radius: 3px; background: var(--mc); transition: width .08s; }
+  #blob { flex: 1; min-height: 60px; width: 100%; border-radius: 10px; background: var(--bg-2); border: 1px solid var(--line); }
+  @media (max-width: 620px) {
+    .wrap { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) auto; padding: 10px 12px 40px; gap: 8px; }
+    header h1 { font-size: 14px; }
+    header p { display: none; }
+    .playbtn { width: 38px; height: 38px; font-size: 15px; }
+    .side { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .side .src, #blob { display: none; }
+    .meter { padding: 5px 8px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <button class="playbtn" id="play" aria-label="播放">▶</button>
+    <div>
+      <h1>Meyda 音訊特徵：色度、音色、響度</h1>
+      <p>離線逐格擷取整首循環的特徵，播放時再即時分析</p>
+    </div>
+  </header>
+  <div class="chartbox"><canvas id="chart"></canvas></div>
+  <div class="side">
+    <div class="src" id="src">游標所在時間點的特徵</div>
+    <div class="meter" style="--mc:#f7df1e"><div class="t">響度 RMS <b id="v-rms">0.000</b></div><div class="m"><i id="m-rms"></i></div></div>
+    <div class="meter" style="--mc:#4cc9f0"><div class="t">頻譜質心 <b id="v-cen">0 Hz</b></div><div class="m"><i id="m-cen"></i></div></div>
+    <div class="meter" style="--mc:#9d8cff"><div class="t">頻譜平坦度 <b id="v-flat">0.00</b></div><div class="m"><i id="m-flat"></i></div></div>
+    <div class="meter" style="--mc:#f72585"><div class="t">過零率 <b id="v-zcr">0</b></div><div class="m"><i id="m-zcr"></i></div></div>
+    <canvas id="blob"></canvas>
+  </div>
+</div>
+<div class="hint">滑過圖表看各時間點的特徵，按播放看即時分析</div>
+<audio id="audio" src="_shared/audio/loop.mp3" loop preload="auto"></audio>
+
+<script src="_shared/gate.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/meyda@5.6.3/dist/web/meyda.min.js"></script>
+<script>
+// Meyda: offline feature extraction over the whole track (Meyda.extract) for the heatmaps,
+// plus a live MeydaAnalyzer on the <audio> element for the meters while playing.
+const URL_ = "_shared/audio/loop.mp3";
+const N = 4096, HOP = 2048, BAR = 2.4;
+const NOTES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const FEATS = ["chroma", "mfcc", "rms", "spectralCentroid", "spectralFlatness", "zcr"];
+let frames = [], chords = [], sr = 44100, hover = -1, live = null;
+
+const $ = (id) => document.getElementById(id);
+const audio = $("audio");
+const cv = $("chart"), g = cv.getContext("2d");
+const blob = $("blob"), bg = blob.getContext("2d");
+
+// Colour map: deep navy -> violet -> pink -> yellow
+const STOPS = [[14, 16, 30], [70, 40, 140], [200, 50, 140], [255, 140, 66], [247, 223, 30]];
+function cmap(v) {
+  v = Math.max(0, Math.min(1, v)) * (STOPS.length - 1);
+  const i = Math.min(STOPS.length - 2, Math.floor(v)), f = v - i;
+  return STOPS[i].map((c, k) => Math.round(c + (STOPS[i + 1][k] - c) * f));
+}
+
+async function analyse() {
+  const s = demoStatus("Meyda 正在逐格分析音訊特徵…");
+  try {
+    const buf = await (await fetch(URL_)).arrayBuffer();
+    const ab = await new OfflineAudioContext(1, 44100, 44100).decodeAudioData(buf);
+    sr = ab.sampleRate;
+    const mono = new Float32Array(ab.length);
+    for (let c = 0; c < ab.numberOfChannels; c++) {
+      const d = ab.getChannelData(c);
+      for (let i = 0; i < d.length; i++) mono[i] += d[i] / ab.numberOfChannels;
+    }
+    Meyda.bufferSize = N;
+    Meyda.sampleRate = sr;
+    const total = Math.floor((mono.length - N) / HOP);
+    for (let k = 0; k <= total; k++) {
+      frames.push(Meyda.extract(FEATS, mono.slice(k * HOP, k * HOP + N)));
+      if (k % 60 === 0) { s.progress(k / total); await new Promise(requestAnimationFrame); }
+    }
+    chords = detectChords();
+    s.done();
+    draw();
+  } catch (err) {
+    s.error("音訊分析失敗：" + err.message);
+    console.error(err);
+  }
+}
+
+// Template-match each bar's mean chroma against the 24 major / minor triads.
+function detectChords() {
+  const fps = sr / HOP, out = [];
+  const bars = Math.round(frames.length / fps / BAR);
+  for (let b = 0; b < bars; b++) {
+    const a = Math.floor(b * BAR * fps), z = Math.min(frames.length, Math.floor((b + 1) * BAR * fps));
+    const mean = new Array(12).fill(0);
+    for (let f = a; f < z; f++) frames[f].chroma.forEach((v, i) => { mean[i] += v; });
+    let best = { s: -1, name: "" };
+    for (let r = 0; r < 12; r++) {
+      for (const [third, suffix] of [[4, ""], [3, "m"]]) {
+        const sc = mean[r] + mean[(r + third) % 12] + mean[(r + 7) % 12];
+        if (sc > best.s) best = { s: sc, name: NOTES[r] + suffix };
+      }
+    }
+    out.push(best.name);
+  }
+  return out;
+}
+
+function layout() {
+  const W = cv.width, H = cv.height, dpr = W / cv.clientWidth;
+  const L = 40 * dpr, R = 10 * dpr, top = 30 * dpr, gap = 22 * dpr;
+  const avail = H - top - gap * 2 - 10 * dpr;
+  const chromaH = avail * 0.5, mfccH = avail * 0.3, rmsH = avail * 0.2;
+  return { W, H, dpr, L, R, top, gap, chromaH, mfccH, rmsH, plotW: W - L - R };
+}
+
+function heat(x, y, w, h, rows, valueAt) {
+  const n = frames.length;
+  const img = g.createImageData(n, rows);
+  for (let f = 0; f < n; f++) {
+    for (let r = 0; r < rows; r++) {
+      const [cr, cg, cb] = cmap(valueAt(f, r));
+      const p = ((rows - 1 - r) * n + f) * 4;
+      img.data[p] = cr; img.data[p + 1] = cg; img.data[p + 2] = cb; img.data[p + 3] = 255;
+    }
+  }
+  const tmp = document.createElement("canvas");
+  tmp.width = n; tmp.height = rows;
+  tmp.getContext("2d").putImageData(img, 0, 0);
+  g.imageSmoothingEnabled = false;
+  g.drawImage(tmp, x, y, w, h);
+}
+
+let mfccNorm = null;
+function draw() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  cv.width = cv.clientWidth * dpr;
+  cv.height = cv.clientHeight * dpr;
+  const Lo = layout();
+  g.clearRect(0, 0, Lo.W, Lo.H);
+  if (!frames.length) return;
+  const font = (px, w = 500) => `${w} ${px * dpr}px "Noto Sans TC", "Microsoft JhengHei", sans-serif`;
+  const n = frames.length;
+  const xOf = (f) => Lo.L + (f / n) * Lo.plotW;
+
+  // Chord labels per bar
+  g.font = font(12, 700);
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  const fps = sr / HOP;
+  chords.forEach((c, b) => {
+    const x0 = xOf(b * BAR * fps), x1 = xOf(Math.min(n, (b + 1) * BAR * fps));
+    g.fillStyle = b % 2 ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.09)";
+    g.fillRect(x0 + 1, 6 * dpr, x1 - x0 - 2, 18 * dpr);
+    g.fillStyle = "#f7df1e";
+    g.fillText(c, (x0 + x1) / 2, 15 * dpr);
+  });
+  g.textAlign = "left";
+  g.fillStyle = "#9b998f";
+  g.font = font(10);
+  g.fillText("和弦", 4 * dpr, 15 * dpr);
+
+  // Chroma heatmap
+  let y = Lo.top;
+  heat(Lo.L, y, Lo.plotW, Lo.chromaH, 12, (f, r) => Math.pow(frames[f].chroma[r], 1.6));
+  g.font = font(10);
+  g.textBaseline = "middle";
+  g.textAlign = "right";
+  for (let r = 0; r < 12; r++) {
+    g.fillStyle = NOTES[r].includes("#") ? "#6d6b64" : "#c9c7bf";
+    g.fillText(NOTES[r], Lo.L - 6 * dpr, y + Lo.chromaH - (r + 0.5) * (Lo.chromaH / 12));
+  }
+  const chromaY = y;
+
+  // MFCC heatmap (coefficients 1..12, z-scored per coefficient)
+  y += Lo.chromaH + Lo.gap;
+  if (!mfccNorm) {
+    mfccNorm = [];
+    for (let c = 1; c < 13; c++) {
+      const vals = frames.map((fr) => fr.mfcc[c]);
+      const mean = vals.reduce((a, b) => a + b, 0) / n;
+      const sd = Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / n) || 1;
+      mfccNorm.push({ mean, sd });
+    }
+  }
+  heat(Lo.L, y, Lo.plotW, Lo.mfccH, 12, (f, r) => 0.5 + (frames[f].mfcc[r + 1] - mfccNorm[r].mean) / mfccNorm[r].sd / 4);
+  g.fillStyle = "#9b998f";
+  g.textAlign = "right";
+  g.fillText("音色", Lo.L - 6 * dpr, y + Lo.mfccH / 2);
+  g.textAlign = "left";
+  g.fillText("MFCC 1 到 12", Lo.L, y - 8 * dpr);
+  g.fillText("色度 Chroma（12 音級）", Lo.L, chromaY - 6 * dpr + 0);
+
+  // RMS area
+  y += Lo.mfccH + Lo.gap;
+  const maxR = Math.max(...frames.map((f) => f.rms)) || 1;
+  const grad = g.createLinearGradient(0, y, 0, y + Lo.rmsH);
+  grad.addColorStop(0, "rgba(247,223,30,0.9)");
+  grad.addColorStop(1, "rgba(247,37,133,0.15)");
+  g.beginPath();
+  g.moveTo(Lo.L, y + Lo.rmsH);
+  frames.forEach((fr, f) => g.lineTo(xOf(f), y + Lo.rmsH - (fr.rms / maxR) * Lo.rmsH));
+  g.lineTo(Lo.L + Lo.plotW, y + Lo.rmsH);
+  g.closePath();
+  g.fillStyle = grad;
+  g.fill();
+  g.fillStyle = "#9b998f";
+  g.textAlign = "right";
+  g.fillText("響度", Lo.L - 6 * dpr, y + Lo.rmsH / 2);
+  g.textAlign = "left";
+  g.fillText("RMS", Lo.L, y - 8 * dpr);
+
+  // Playhead / hover marker
+  const t = !audio.paused ? audio.currentTime : null;
+  const mark = t !== null ? Math.floor((t * sr) / HOP) : hover;
+  if (mark >= 0 && mark < n) {
+    const x = xOf(mark);
+    g.strokeStyle = "#ffffff";
+    g.lineWidth = 2 * dpr;
+    g.beginPath(); g.moveTo(x, Lo.top - 4 * dpr); g.lineTo(x, Lo.H - 6 * dpr); g.stroke();
+    if (!live || audio.paused) showValues(frames[mark], `${((mark * HOP) / sr).toFixed(2)} 秒的特徵`);
+  }
+}
+
+function showValues(f, label) {
+  if (!f) return;
+  $("src").textContent = label;
+  const cenHz = (f.spectralCentroid * sr) / (f.bufSize || N);
+  $("v-rms").textContent = f.rms.toFixed(3);
+  $("m-rms").style.width = `${Math.min(100, f.rms * 300)}%`;
+  $("v-cen").textContent = `${Math.round(cenHz)} Hz`;
+  $("m-cen").style.width = `${Math.min(100, (cenHz / 5000) * 100)}%`;
+  $("v-flat").textContent = f.spectralFlatness.toFixed(2);
+  $("m-flat").style.width = `${Math.min(100, f.spectralFlatness * 250)}%`;
+  const zrate = f.zcr / (f.bufSize || N);
+  $("v-zcr").textContent = `${(zrate * 100).toFixed(1)}%`;
+  $("m-zcr").style.width = `${Math.min(100, zrate * 800)}%`;
+  drawBlob(f, cenHz);
+}
+
+// Sound-driven shape: size from RMS, colour from centroid, wobble from chroma.
+function drawBlob(f, cenHz) {
+  if (!blob.clientWidth) return;
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  blob.width = blob.clientWidth * dpr;
+  blob.height = blob.clientHeight * dpr;
+  const W = blob.width, H = blob.height, cx = W / 2, cy = H / 2;
+  const base = Math.min(W, H) * (0.18 + Math.min(0.22, f.rms * 1.2));
+  const hue = 300 - Math.min(1, cenHz / 4000) * 250;
+  bg.clearRect(0, 0, W, H);
+  const gr = bg.createRadialGradient(cx, cy, 0, cx, cy, base * 1.6);
+  gr.addColorStop(0, `hsla(${hue}, 95%, 65%, 0.95)`);
+  gr.addColorStop(1, `hsla(${hue + 40}, 95%, 50%, 0)`);
+  bg.fillStyle = gr;
+  bg.beginPath();
+  const chroma = f.chroma || new Array(12).fill(0.5);
+  for (let i = 0; i <= 120; i++) {
+    const a = (i / 120) * Math.PI * 2;
+    const c = chroma[Math.floor((i / 120) * 12) % 12];
+    const r = base * (1 + c * 0.45);
+    const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
+    i ? bg.lineTo(x, y) : bg.moveTo(x, y);
+  }
+  bg.fill();
+}
+
+cv.addEventListener("mousemove", (e) => {
+  if (!frames.length) return;
+  const r = cv.getBoundingClientRect();
+  const Lo = layout();
+  const x = (e.clientX - r.left) * Lo.dpr;
+  hover = Math.floor(((x - Lo.L) / Lo.plotW) * frames.length);
+  if (audio.paused) draw();
+});
+cv.addEventListener("click", (e) => {
+  if (hover >= 0) audio.currentTime = (hover * HOP) / sr;
+});
+
+// Live analysis while playing
+let actx = null;
+$("play").addEventListener("click", async () => {
+  if (!actx) {
+    actx = new AudioContext();
+    const src = actx.createMediaElementSource(audio);
+    src.connect(actx.destination);
+    const analyzer = Meyda.createMeydaAnalyzer({
+      audioContext: actx, source: src, bufferSize: 1024,
+      featureExtractors: ["rms", "spectralCentroid", "spectralFlatness", "zcr", "chroma"],
+      callback: (f) => { live = { ...f, bufSize: 1024 }; },
+    });
+    analyzer.start();
+  }
+  await actx.resume();
+  if (audio.paused) audio.play(); else audio.pause();
+});
+audio.addEventListener("play", () => { $("play").textContent = "❚❚"; loop(); });
+audio.addEventListener("pause", () => { $("play").textContent = "▶"; draw(); });
+function loop() {
+  if (audio.paused) return;
+  draw();
+  if (live) showValues(live, "即時分析中（MeydaAnalyzer）");
+  requestAnimationFrame(loop);
+}
+
+window.addEventListener("resize", () => { draw(); if (frames.length) showValues(frames[Math.max(0, hover)], $("src").textContent); });
+analyse().then(() => { hover = Math.floor(frames.length * 0.33); draw(); });
+</script>
+</body>
+</html>

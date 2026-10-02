@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenCV.js 示範：邊緣、輪廓、色彩篩選、卡通化即時調整</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"click","size":"約 13 MB","note":"鏡頭可選用，預設處理範例照片"}</script>
+<style>
+  .app { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr) 300px; }
+  .main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 10px; padding: 12px 12px 48px; min-width: 0; min-height: 0; }
+  .top { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .chip { margin-left: auto; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg-2); color: var(--muted); white-space: nowrap; font-family: var(--mono); }
+  .stage { position: relative; min-height: 0; border-radius: 14px; overflow: hidden; display: grid; place-items: center; touch-action: none;
+    background: radial-gradient(70% 90% at 50% 0%, rgba(76, 201, 240, .10), transparent 70%), #0a0c0f; border: 1px solid var(--line); }
+  .frame { position: relative; cursor: ew-resize; }
+  .frame canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; border-radius: 6px; }
+  #dst { clip-path: inset(0 0 0 var(--split, 50%)); }
+  .split { position: absolute; top: 0; bottom: 0; left: var(--split, 50%); width: 2px; margin-left: -1px; background: #fff; box-shadow: 0 0 10px rgba(0, 0, 0, .6); pointer-events: none; }
+  .split::after { content: "◀ ▶"; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 10px; letter-spacing: -1px; color: #0a0c0f;
+    background: #fff; border-radius: 999px; padding: 6px 7px; white-space: nowrap; box-shadow: 0 2px 10px rgba(0, 0, 0, .5); }
+  .lbl { position: absolute; top: 8px; font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px; background: rgba(10, 12, 15, .78); border: 1px solid var(--line); pointer-events: none; }
+  .lbl.l { left: 8px; } .lbl.r { right: 8px; color: var(--c1); border-color: rgba(76, 201, 240, .5); }
+  .empty { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); max-width: 92%; color: var(--fg); font-size: 12px; pointer-events: none;
+    padding: 4px 12px; border-radius: 999px; background: rgba(10, 12, 15, .85); border: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .empty:empty { display: none; }
+  .src { display: flex; gap: 8px; align-items: center; min-width: 0; }
+  .src .btn { flex: none; white-space: nowrap; }
+  .thumbs { display: flex; gap: 6px; min-width: 0; overflow-x: auto; }
+  .thumb { flex: none; width: 52px; height: 40px; padding: 0; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: #000; cursor: pointer; }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .side { border-left: 1px solid var(--line); background: var(--bg-2); padding: 14px 14px 48px; overflow-y: auto; min-height: 0; }
+  .side h2 { margin: 0 0 4px; font-size: 16px; }
+  .side p { margin: 0 0 12px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .sl { display: grid; grid-template-columns: 70px minmax(0, 1fr) 40px; gap: 8px; align-items: center; font-size: 12px; margin: 8px 0; }
+  .sl input { width: 100%; margin: 0; }
+  .sl b { font: 600 12px var(--mono); text-align: right; color: var(--c1); }
+  .presets { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 6px; }
+  .presets .btn { padding: 4px 10px; font-size: 12px; }
+  .hue { position: relative; height: 12px; border-radius: 6px; margin: 2px 0 10px;
+    background: linear-gradient(90deg, #f00, #ff0 16.7%, #0f0 33.3%, #0ff 50%, #00f 66.7%, #f0f 83.3%, #f00); }
+  .hue i { position: absolute; top: -3px; bottom: -3px; border: 2px solid #fff; border-radius: 4px; box-shadow: 0 0 0 1px #000; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 12px 0; }
+  .stat { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--panel); }
+  .stat b { display: block; font: 800 20px var(--mono); color: var(--fg); }
+  .stat span { font-size: 11px; color: var(--muted); }
+  pre.code { margin: 0; padding: 10px; border-radius: 10px; background: #0a0c0f; border: 1px solid var(--line); font: 11px/1.65 var(--mono); color: #c9d1d9;
+    white-space: pre-wrap; overflow-wrap: anywhere; }
+  pre.code em { font-style: normal; color: var(--c3); }
+  pre.code u { text-decoration: none; color: var(--c1); }
+  @media (max-width: 640px) {
+    /* single column: the side panel scrolls under the fixed hint, and its own text already explains the controls */
+    .hint { display: none; }
+    .app { grid-template-columns: 1fr; grid-template-rows: minmax(0, 56%) minmax(0, 44%); }
+    .main { padding: 8px 8px 6px; gap: 6px; }
+    .top .btn { padding: 6px 8px; font-size: 12px; }
+    .chip { display: none; }
+    .src .btn { padding: 7px 9px; font-size: 12px; }
+    .thumb { width: 44px; height: 34px; }
+    .side { border-left: 0; border-top: 1px solid var(--line); padding: 8px 12px 12px; }
+    .side h2 { font-size: 14px; }
+    .side p { display: none; }
+    .sl { margin: 5px 0; }
+    .stats { margin: 8px 0; }
+    .stat b { font-size: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <section class="main">
+    <div class="top" id="tabs">
+      <button class="btn" data-mode="canny" aria-pressed="true">✏️ 邊緣</button>
+      <button class="btn" data-mode="contours" aria-pressed="false">🔷 輪廓</button>
+      <button class="btn" data-mode="hsv" aria-pressed="false">🎨 色彩篩選</button>
+      <button class="btn" data-mode="cartoon" aria-pressed="false">🖍️ 卡通化</button>
+      <span class="chip" id="chip">尚未載入</span>
+    </div>
+    <div class="stage" id="stage">
+      <div class="frame" id="frame">
+        <canvas id="src"></canvas>
+        <canvas id="dst"></canvas>
+        <div class="split"></div>
+        <span class="lbl l">原圖</span>
+        <span class="lbl r">OpenCV 處理後</span>
+      </div>
+      <div class="empty" id="empty"></div>
+    </div>
+    <div class="src">
+      <button class="btn" id="camBtn">開啟鏡頭</button>
+      <label class="btn" for="file">上傳</label>
+      <input type="file" id="file" accept="image/*" hidden>
+      <div class="thumbs" id="thumbs"></div>
+    </div>
+  </section>
+  <aside class="side" id="side">
+    <h2>等待載入</h2>
+    <p>按下開始後下載 OpenCV.js（WebAssembly 版）。</p>
+  </aside>
+</div>
+<div class="hint">拖曳畫面比對前後，調整右側滑桿即時重算</div>
+
+<script src="_shared/gate.js"></script>
+<script type="module">
+const CV_URL = "https://cdn.jsdelivr.net/npm/@techstark/opencv-js@5.0.0-release.1/dist/opencv.js";
+const CV_BYTES = 13298869;
+const MAX_SIDE = 960;
+const PHOTOS = [7, 6, 4, 1, 5, 8, 3].map((n) => `_shared/img/photo-${n}.jpg`);
+
+const $ = (id) => document.getElementById(id);
+const srcCanvas = $("src"), dstCanvas = $("dst"), sctx = srcCanvas.getContext("2d", { willReadFrequently: true });
+const frame = $("frame"), stage = $("stage"), video = document.createElement("video");
+video.playsInline = true; video.muted = true;
+
+let cv = null, mode = "canny", stream = null, pending = false, currentPhoto = PHOTOS[0], userPicked = false;
+
+/* Parameters per mode; slider definitions drive both the UI and the processing call. */
+const MODES = {
+  canny: {
+    name: "Canny 邊緣偵測", desc: "灰階化、高斯模糊後用 Canny 找出亮度劇烈變化的邊緣，再把邊緣畫成霓虹線。",
+    sliders: [["blur", "模糊核", 1, 9, 2, 5], ["lo", "低門檻", 10, 200, 1, 30], ["hi", "高門檻", 30, 300, 1, 90], ["line", "線寬", 1, 4, 1, 2], ["dim", "背景亮度", 0, 60, 1, 22]],
+    photo: 7,
+  },
+  contours: {
+    name: "輪廓偵測", desc: "灰階二值化（門檻 0 代表 Otsu 自動門檻），開運算去雜點後用 findContours 找出每個區塊的輪廓並依面積過濾。",
+    sliders: [["th", "門檻", 0, 250, 1, 0], ["area", "最小面積‰", 1, 30, 1, 1], ["inv", "反轉黑白", 0, 1, 1, 0]],
+    photo: 4,
+  },
+  hsv: {
+    name: "HSV 色彩篩選", desc: "RGB 轉 HSV 色彩空間後用 inRange 依色相、飽和度篩選像素，其餘轉成灰階。",
+    sliders: [["h", "色相中心", 0, 179, 1, 14], ["w", "色相寬度", 4, 60, 1, 14], ["s", "最低飽和", 0, 255, 1, 90], ["v", "最低亮度", 0, 255, 1, 50]],
+    presets: [["橘", 14], ["黃", 28], ["綠", 60], ["青", 90], ["藍", 110], ["紅", 0]],
+    photo: 6,
+  },
+  cartoon: {
+    name: "卡通化濾鏡", desc: "雙邊濾波保留邊緣、抹平色塊，自適應門檻產生墨線，色彩量化後合成插畫風。",
+    sliders: [["n", "平滑次數", 1, 6, 1, 3], ["block", "線條範圍", 3, 21, 2, 11], ["c", "線條淡化", 1, 15, 1, 8], ["q", "色階數", 3, 16, 1, 6]],
+    photo: 8,
+  },
+};
+const params = Object.fromEntries(Object.entries(MODES).map(([k, m]) => [k, Object.fromEntries(m.sliders.map((s) => [s[0], s[5]]))]));
+
+/* ---------- layout ---------- */
+function fit() {
+  const w = srcCanvas.width, h = srcCanvas.height;
+  if (!w || !h) return;
+  const k = Math.min((stage.clientWidth - 16) / w, (stage.clientHeight - 16) / h);
+  frame.style.width = `${Math.floor(w * k)}px`;
+  frame.style.height = `${Math.floor(h * k)}px`;
+}
+new ResizeObserver(fit).observe(stage);
+
+function setSplit(clientX) {
+  const r = frame.getBoundingClientRect();
+  const p = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+  frame.style.setProperty("--split", `${(p * 100).toFixed(1)}%`);
+}
+stage.addEventListener("pointerdown", (e) => { stage.setPointerCapture(e.pointerId); setSplit(e.clientX); });
+stage.addEventListener("pointermove", (e) => { if (e.buttons) setSplit(e.clientX); });
+
+/* ---------- side panel ---------- */
+const fmt = (key, v) => (key === "inv" ? (v ? "開" : "關") : key === "th" && v === 0 ? "自動" : v);
+function buildSide() {
+  const m = MODES[mode], p = params[mode];
+  const sliders = m.sliders.map(([key, label, min, max, step]) =>
+    `<label class="sl"><span>${label}</span><input type="range" data-k="${key}" min="${min}" max="${max}" step="${step}" value="${p[key]}"><b id="v_${key}">${fmt(key, p[key])}</b></label>`).join("");
+  const presets = m.presets ? `<div class="presets">${m.presets.map(([t, h]) => `<button class="btn" data-hue="${h}">${t}</button>`).join("")}</div><div class="hue"><i id="hueSel"></i></div>` : "";
+  $("side").innerHTML = `<h2>${m.name}</h2><p>${m.desc}</p>${presets}${sliders}
+    <div class="stats"><div class="stat"><b id="st1">-</b><span id="st1l">-</span></div><div class="stat"><b id="st2">-</b><span>處理時間</span></div></div>
+    <pre class="code" id="code"></pre>`;
+  updateHueBar();
+}
+function updateHueBar() {
+  const el = $("hueSel");
+  if (!el) return;
+  const { h, w } = params.hsv;
+  el.style.left = `${((h - w) / 180) * 100}%`;
+  el.style.width = `${((2 * w) / 180) * 100}%`;
+}
+$("side").addEventListener("input", (e) => {
+  const k = e.target.dataset.k;
+  if (!k) return;
+  params[mode][k] = Number(e.target.value);
+  $(`v_${k}`).textContent = fmt(k, params[mode][k]);
+  updateHueBar();
+  schedule();
+});
+$("side").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-hue]");
+  if (!b) return;
+  params.hsv.h = Number(b.dataset.hue);
+  buildSide();
+  schedule();
+});
+
+/* ---------- OpenCV processing (all Mats freed in finally) ---------- */
+function canny(src, p) {
+  const gray = new cv.Mat(), edges = new cv.Mat(), dst = new cv.Mat(), neon = new cv.Mat(src.rows, src.cols, cv.CV_8UC4, new cv.Scalar(76, 201, 240, 255));
+  try {
+    const k = p.blur % 2 ? p.blur : p.blur + 1;
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, gray, new cv.Size(k, k), 0);
+    cv.Canny(gray, edges, p.lo, Math.max(p.lo + 1, p.hi));
+    if (p.line > 1) {
+      const kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(p.line, p.line));
+      cv.dilate(edges, edges, kernel);
+      kernel.delete();
+    }
+    src.convertTo(dst, -1, p.dim / 100, 0);
+    neon.copyTo(dst, edges);
+    cv.imshow(dstCanvas, dst);
+    const ratio = cv.countNonZero(edges) / (edges.rows * edges.cols);
+    return {
+      stat: [`${(ratio * 100).toFixed(1)}%`, "邊緣像素比例"],
+      code: [`cv.<u>cvtColor</u>(src, gray, cv.COLOR_RGBA2GRAY)`, `cv.<u>GaussianBlur</u>(gray, gray, new cv.Size(<em>${k}</em>, <em>${k}</em>), 0)`,
+        `cv.<u>Canny</u>(gray, edges, <em>${p.lo}</em>, <em>${Math.max(p.lo + 1, p.hi)}</em>)`,
+        ...(p.line > 1 ? [`cv.<u>dilate</u>(edges, edges, kernel${p.line}x${p.line})`] : []), `neon.<u>copyTo</u>(dst, edges)`],
+    };
+  } finally { gray.delete(); edges.delete(); dst.delete(); neon.delete(); }
+}
+
+// Distinct outline colors without extra Mat allocations (HSV hue wheel to RGB).
+function hueColor(i) {
+  const h = ((i * 47) % 360) / 60, f = (n) => { const k = (n + h) % 6; return Math.round(255 * (1 - 0.85 * Math.max(0, Math.min(1, Math.min(k, 4 - k))))); };
+  return new cv.Scalar(f(5), f(3), f(1), 255);
+}
+
+function contours(src, p) {
+  const gray = new cv.Mat(), bin = new cv.Mat(), dst = new cv.Mat(), fill = new cv.Mat(), hier = new cv.Mat(), all = new cv.MatVector();
+  const kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(7, 7));
+  try {
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, gray, new cv.Size(7, 7), 0);
+    const type = (p.inv ? cv.THRESH_BINARY_INV : cv.THRESH_BINARY) + (p.th === 0 ? cv.THRESH_OTSU : 0);
+    const used = cv.threshold(gray, bin, p.th, 255, type);
+    cv.morphologyEx(bin, bin, cv.MORPH_OPEN, kernel);
+    cv.findContours(bin, all, hier, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+    const minArea = (src.rows * src.cols * p.area) / 1000;
+    const keep = [];
+    let points = 0;
+    for (let i = 0; i < all.size(); i++) {
+      const c = all.get(i);
+      if (cv.contourArea(c) >= minArea) { keep.push(i); points += c.rows; }
+      c.delete();
+    }
+    src.convertTo(dst, -1, 0.35, 0);
+    dst.copyTo(fill);
+    const t = Math.max(2, Math.round(src.cols / 320));
+    keep.forEach((idx, n) => {
+      cv.drawContours(fill, all, idx, hueColor(n), cv.FILLED, cv.LINE_AA);
+      cv.drawContours(dst, all, idx, hueColor(n), t, cv.LINE_AA);
+    });
+    cv.addWeighted(dst, 0.6, fill, 0.4, 0, dst);
+    cv.imshow(dstCanvas, dst);
+    const flag = `${p.inv ? "cv.THRESH_BINARY_INV" : "cv.THRESH_BINARY"}${p.th === 0 ? " + cv.THRESH_OTSU" : ""}`;
+    return {
+      stat: [`${keep.length} 個`, `輪廓（門檻 ${Math.round(used)}）`],
+      code: [`cv.<u>threshold</u>(gray, bin, <em>${p.th}</em>, 255, ${flag})  // 實際門檻 <em>${Math.round(used)}</em>`,
+        `cv.<u>morphologyEx</u>(bin, bin, cv.MORPH_OPEN, kernel)`,
+        `cv.<u>findContours</u>(bin, list, hier, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE)`,
+        `cv.<u>contourArea</u>(c) >= <em>${Math.round(minArea)}</em>`, `cv.<u>drawContours</u>(dst, list, i, color, <em>${t}</em>, cv.LINE_AA)`,
+        `// 找到 ${all.size()} 個，保留 ${keep.length} 個（${points} 個頂點）`],
+    };
+  } finally { [gray, bin, dst, fill, hier, all, kernel].forEach((m) => m.delete()); }
+}
+
+function hsvMask(src, p) {
+  const rgb = new cv.Mat(), hsv = new cv.Mat(), mask = new cv.Mat(), mask2 = new cv.Mat(), gray = new cv.Mat(), dst = new cv.Mat();
+  const kernel = cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5));
+  const bound = (h, s, v) => new cv.Mat(src.rows, src.cols, cv.CV_8UC3, new cv.Scalar(h, s, v, 0));
+  const ranges = [];
+  let lo = p.h - p.w, hi = p.h + p.w;
+  if (lo < 0) { ranges.push([180 + lo, 179]); lo = 0; }
+  if (hi > 179) { ranges.push([0, hi - 180]); hi = 179; }
+  ranges.unshift([lo, hi]);
+  try {
+    cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB);
+    cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
+    ranges.forEach(([a, b], i) => {
+      const l = bound(a, p.s, p.v), u = bound(b, 255, 255);
+      cv.inRange(hsv, l, u, i ? mask2 : mask);
+      if (i) cv.bitwise_or(mask, mask2, mask);
+      l.delete(); u.delete();
+    });
+    cv.morphologyEx(mask, mask, cv.MORPH_OPEN, kernel);
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.cvtColor(gray, dst, cv.COLOR_GRAY2RGBA);
+    dst.convertTo(dst, -1, 0.55, 0);
+    src.copyTo(dst, mask);
+    cv.imshow(dstCanvas, dst);
+    const ratio = cv.countNonZero(mask) / (mask.rows * mask.cols);
+    return {
+      stat: [`${(ratio * 100).toFixed(1)}%`, "符合條件的像素"],
+      code: [`cv.<u>cvtColor</u>(rgb, hsv, cv.COLOR_RGB2HSV)`,
+        ...ranges.map(([a, b]) => `cv.<u>inRange</u>(hsv, [<em>${a}</em>, <em>${p.s}</em>, <em>${p.v}</em>], [<em>${b}</em>, 255, 255], mask)`),
+        `cv.<u>morphologyEx</u>(mask, mask, cv.MORPH_OPEN, kernel)`, `src.<u>copyTo</u>(grayDst, mask)`],
+    };
+  } finally { [rgb, hsv, mask, mask2, gray, dst, kernel].forEach((m) => m.delete()); }
+}
+
+function cartoon(src, p) {
+  const rgb = new cv.Mat(), small = new cv.Mat(), tmp = new cv.Mat(), color = new cv.Mat(), gray = new cv.Mat(), edges = new cv.Mat(), edges3 = new cv.Mat(), dst = new cv.Mat();
+  const step = 256 / p.q, lut = new cv.Mat(1, 256, cv.CV_8UC3);
+  try {
+    for (let i = 0; i < 256; i++) {
+      const v = Math.min(255, Math.round(Math.floor(i / step) * step + step / 2));
+      lut.data[i * 3] = lut.data[i * 3 + 1] = lut.data[i * 3 + 2] = v;
+    }
+    cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB);
+    cv.pyrDown(rgb, small);
+    for (let i = 0; i < p.n; i++) {
+      cv.bilateralFilter(small, tmp, 7, 40, 7);
+      tmp.copyTo(small);
+    }
+    cv.pyrUp(small, color, new cv.Size(rgb.cols, rgb.rows));
+    cv.LUT(color, lut, color);
+    cv.cvtColor(rgb, gray, cv.COLOR_RGB2GRAY);
+    cv.medianBlur(gray, gray, 7);
+    cv.adaptiveThreshold(gray, edges, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, p.block, p.c);
+    cv.cvtColor(edges, edges3, cv.COLOR_GRAY2RGB);
+    cv.bitwise_and(color, edges3, color);
+    cv.cvtColor(color, dst, cv.COLOR_RGB2RGBA);
+    cv.imshow(dstCanvas, dst);
+    return {
+      stat: [`${p.q ** 3}`, "可用顏色數"],
+      code: [`cv.<u>pyrDown</u>(rgb, small)`, `cv.<u>bilateralFilter</u>(small, tmp, 7, 40, 7)  // ×<em>${p.n}</em>`,
+        `cv.<u>LUT</u>(color, lut, color)  // ${p.q} 階`, `cv.<u>medianBlur</u>(gray, gray, 7)`,
+        `cv.<u>adaptiveThreshold</u>(gray, edges, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, <em>${p.block}</em>, <em>${p.c}</em>)`,
+        `cv.<u>bitwise_and</u>(color, edges, color)`],
+    };
+  } finally { [rgb, small, tmp, color, gray, edges, edges3, dst, lut].forEach((m) => m.delete()); }
+}
+
+const RUN = { canny, contours, hsv: hsvMask, cartoon };
+let lastMs = 0;
+function processFrame() {
+  if (!cv || !srcCanvas.width) return;
+  const src = cv.imread(srcCanvas);
+  try {
+    const t0 = performance.now();
+    const out = RUN[mode](src, params[mode]);
+    lastMs = performance.now() - t0;
+    if ($("st1")) {
+      $("st1").textContent = out.stat[0];
+      $("st1l").textContent = out.stat[1];
+      $("st2").textContent = `${Math.round(lastMs)} ms`;
+      $("code").innerHTML = out.code.join("\n");
+    }
+  } catch (err) {
+    console.error(err);
+    $("empty").textContent = `處理失敗：${err.message || err}`;
+  } finally {
+    src.delete();
+  }
+}
+function schedule() {
+  if (stream || pending) return;
+  pending = true;
+  requestAnimationFrame(() => { pending = false; processFrame(); });
+}
+
+/* ---------- sources ---------- */
+function sizeTo(w, h) {
+  const k = Math.min(1, MAX_SIDE / Math.max(w, h));
+  const W = Math.round(w * k), H = Math.round(h * k);
+  if (srcCanvas.width !== W || srcCanvas.height !== H) {
+    srcCanvas.width = dstCanvas.width = W; srcCanvas.height = dstCanvas.height = H;
+    fit();
+  }
+  $("chip").textContent = `${W} × ${H}`;
+}
+function loadImage(url) {
+  return new Promise((ok, fail) => {
+    const img = new Image();
+    img.onload = () => ok(img);
+    img.onerror = () => fail(new Error("圖片載入失敗"));
+    img.src = url;
+  });
+}
+async function usePhoto(url) {
+  await stopCamera();
+  try {
+    const img = await loadImage(url);
+    currentPhoto = url;
+    markThumbs();
+    sizeTo(img.naturalWidth, img.naturalHeight);
+    sctx.drawImage(img, 0, 0, srcCanvas.width, srcCanvas.height);
+    $("empty").textContent = "";
+    schedule();
+  } catch (err) {
+    $("empty").textContent = err.message;
+  }
+}
+function buildThumbs() {
+  $("thumbs").innerHTML = PHOTOS.map((u) => `<button class="thumb" data-url="${u}" aria-pressed="false" title="範例照片"><img src="${u}" alt="範例照片"></button>`).join("");
+  markThumbs();
+}
+function markThumbs() {
+  for (const b of $("thumbs").children) b.setAttribute("aria-pressed", String(!stream && b.dataset.url === currentPhoto));
+}
+$("thumbs").addEventListener("click", (e) => { const b = e.target.closest("[data-url]"); if (b && cv) { userPicked = true; usePhoto(b.dataset.url); } });
+$("file").addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  if (f && cv) { userPicked = true; usePhoto(URL.createObjectURL(f)); }
+  e.target.value = "";
+});
+
+async function startCamera() {
+  $("camBtn").disabled = true;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+    video.srcObject = stream;
+    await video.play();
+    $("camBtn").textContent = "停止鏡頭";
+    $("empty").textContent = "";
+    markThumbs();
+    requestAnimationFrame(camLoop);
+  } catch (err) {
+    console.warn("camera unavailable:", err);
+    stream = null;
+    $("empty").textContent = /NotAllowed|Permission/i.test(String(err)) ? "鏡頭權限被拒絕，繼續使用照片" : "找不到可用的鏡頭，繼續使用照片";
+  }
+  $("camBtn").disabled = false;
+}
+async function stopCamera() {
+  if (!stream) return;
+  stream.getTracks().forEach((t) => t.stop());
+  stream = null;
+  video.srcObject = null;
+  $("camBtn").textContent = "開啟鏡頭";
+}
+function camLoop() {
+  if (!stream) return;
+  if (video.readyState >= 2 && video.videoWidth) {
+    sizeTo(video.videoWidth, video.videoHeight);
+    sctx.save();
+    sctx.scale(-1, 1);
+    sctx.drawImage(video, -srcCanvas.width, 0, srcCanvas.width, srcCanvas.height);
+    sctx.restore();
+    processFrame();
+  }
+  requestAnimationFrame(camLoop);
+}
+$("camBtn").addEventListener("click", () => (stream ? usePhoto(currentPhoto) : startCamera()));
+
+function setMode(m) {
+  mode = m;
+  for (const b of $("tabs").querySelectorAll("[data-mode]")) b.setAttribute("aria-pressed", String(b.dataset.mode === m));
+  buildSide();
+  if (!stream && !userPicked) usePhoto(`_shared/img/photo-${MODES[m].photo}.jpg`);
+  else schedule();
+}
+$("tabs").addEventListener("click", (e) => { const b = e.target.closest("[data-mode]"); if (b && cv) setMode(b.dataset.mode); });
+buildThumbs();
+
+/* ---------- load OpenCV.js with a progress bar, then run ---------- */
+async function loadOpenCV() {
+  const s = demoStatus("下載 OpenCV.js（約 13 MB）…");
+  try {
+    const res = await fetch(CV_URL);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const reader = res.body.getReader(), parts = [];
+    let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value);
+      got += value.length;
+      s.progress(got / CV_BYTES);
+    }
+    s.text("編譯 WebAssembly…");
+    const url = URL.createObjectURL(new Blob(parts, { type: "text/javascript" }));
+    await new Promise((ok, fail) => {
+      const tag = document.createElement("script");
+      tag.src = url;
+      tag.onload = ok;
+      tag.onerror = () => fail(new Error("opencv.js 執行失敗"));
+      document.head.appendChild(tag);
+    });
+    URL.revokeObjectURL(url);
+    cv = await window.cv;
+    s.done();
+  } catch (err) {
+    s.error(`OpenCV.js 載入失敗：${err.message || err}`);
+    throw err;
+  }
+}
+
+await demoGate({
+  icon: "👁️", title: "OpenCV.js 影像處理實驗室",
+  desc: "在瀏覽器裡跑 OpenCV 5（WebAssembly），對照片做邊緣、輪廓、色彩篩選與卡通化，滑桿即時重算",
+  tags: ["約 13 MB", "鏡頭可選用", "OpenCV 5.0.0"], button: "載入 OpenCV",
+});
+await loadOpenCV();
+buildSide();
+await usePhoto(PHOTOS[0]);
+</script>
+</body>
+</html>

@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tweakpane 示範：液態球控制台</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #pane { position: fixed; top: 12px; right: 12px; width: 280px; max-height: calc(100% - 60px); overflow: auto; z-index: 40; border-radius: 8px; }
+  @media (max-width: 520px) { #pane { width: 230px; } }
+  /* Tweakpane theme variables tuned to the site palette */
+  :root {
+    --tp-base-background-color: hsla(220, 12%, 10%, 0.9);
+    --tp-container-background-color: hsla(220, 10%, 30%, 0.35);
+    --tp-input-background-color: hsla(220, 10%, 22%, 1);
+    --tp-monitor-foreground-color: #f7df1e;
+    --tp-label-foreground-color: #b9b7ae;
+    --tp-base-font-family: "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="pane"></div>
+<div class="hint">拖曳面板滑桿、色票、2D 搖桿，球體即時變形</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js"
+} }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { Pane } from "https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js";
+import * as Essentials from "https://cdn.jsdelivr.net/npm/@tweakpane/plugin-essentials@0.2.1/dist/tweakpane-plugin-essentials.min.js";
+
+const canvas = document.getElementById("c");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 50);
+camera.position.set(0, 0, 6);
+
+// Noise-displaced sphere with fresnel two-tone shading
+const NOISE = `
+vec3 mod289(vec3 x){return x-floor(x*(1./289.))*289.;}
+vec4 mod289(vec4 x){return x-floor(x*(1./289.))*289.;}
+vec4 permute(vec4 x){return mod289(((x*34.)+1.)*x);}
+vec4 taylorInvSqrt(vec4 r){return 1.79284291400159-.85373472095314*r;}
+float snoise(vec3 v){
+  const vec2 C=vec2(1./6.,1./3.);const vec4 D=vec4(0.,.5,1.,2.);
+  vec3 i=floor(v+dot(v,C.yyy));vec3 x0=v-i+dot(i,C.xxx);
+  vec3 g=step(x0.yzx,x0.xyz);vec3 l=1.-g;vec3 i1=min(g.xyz,l.zxy);vec3 i2=max(g.xyz,l.zxy);
+  vec3 x1=x0-i1+C.xxx;vec3 x2=x0-i2+C.yyy;vec3 x3=x0-D.yyy;i=mod289(i);
+  vec4 p=permute(permute(permute(i.z+vec4(0.,i1.z,i2.z,1.))+i.y+vec4(0.,i1.y,i2.y,1.))+i.x+vec4(0.,i1.x,i2.x,1.));
+  float n_=.142857142857;vec3 ns=n_*D.wyz-D.xzx;vec4 j=p-49.*floor(p*ns.z*ns.z);
+  vec4 x_=floor(j*ns.z);vec4 y_=floor(j-7.*x_);vec4 x=x_*ns.x+ns.yyyy;vec4 y=y_*ns.x+ns.yyyy;vec4 h=1.-abs(x)-abs(y);
+  vec4 b0=vec4(x.xy,y.xy);vec4 b1=vec4(x.zw,y.zw);vec4 s0=floor(b0)*2.+1.;vec4 s1=floor(b1)*2.+1.;vec4 sh=-step(h,vec4(0.));
+  vec4 a0=b0.xzyw+s0.xzyw*sh.xxyy;vec4 a1=b1.xzyw+s1.xzyw*sh.zzww;
+  vec3 p0=vec3(a0.xy,h.x);vec3 p1=vec3(a0.zw,h.y);vec3 p2=vec3(a1.xy,h.z);vec3 p3=vec3(a1.zw,h.w);
+  vec4 norm=taylorInvSqrt(vec4(dot(p0,p0),dot(p1,p1),dot(p2,p2),dot(p3,p3)));p0*=norm.x;p1*=norm.y;p2*=norm.z;p3*=norm.w;
+  vec4 m=max(.6-vec4(dot(x0,x0),dot(x1,x1),dot(x2,x2),dot(x3,x3)),0.);m=m*m;
+  return 42.*dot(m*m,vec4(dot(p0,x0),dot(p1,x1),dot(p2,x2),dot(p3,x3)));}
+`;
+const uniforms = {
+  uTime: { value: 0 }, uAmp: { value: 0.35 }, uFreq: { value: 1.4 },
+  uColorA: { value: new THREE.Color("#4cc9f0") }, uColorB: { value: new THREE.Color("#f72585") },
+  uLight: { value: new THREE.Vector3(0.5, 0.6, 1).normalize() }, uBands: { value: 0 },
+};
+const material = new THREE.ShaderMaterial({
+  uniforms,
+  vertexShader: NOISE + `
+    uniform float uTime, uAmp, uFreq;
+    varying vec3 vN; varying vec3 vView; varying float vD;
+    float disp(vec3 p){ return snoise(p * uFreq + uTime) * uAmp; }
+    void main(){
+      vec3 p = position; vec3 n = normalize(normal);
+      float d = disp(p); vec3 moved = p + n * d;
+      // Approximate displaced normal with finite differences along tangents
+      vec3 t = normalize(cross(n, vec3(0.01, 1., 0.02))); vec3 b = cross(n, t);
+      vec3 pt = p + t * 0.01; vec3 pb = p + b * 0.01;
+      pt += normalize(pt) * disp(pt); pb += normalize(pb) * disp(pb);
+      vN = normalize(normalMatrix * cross(pt - moved, pb - moved));
+      vec4 mv = modelViewMatrix * vec4(moved, 1.);
+      vView = normalize(-mv.xyz); vD = d;
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: `
+    uniform vec3 uColorA, uColorB, uLight; uniform float uBands;
+    varying vec3 vN; varying vec3 vView; varying float vD;
+    void main(){
+      vec3 n = normalize(vN);
+      float diff = max(dot(n, normalize(uLight)), 0.);
+      float fres = pow(1. - max(dot(n, vView), 0.), 2.5);
+      float k = clamp(vD * 1.4 + .5, 0., 1.);
+      if (uBands > .5) k = floor(k * 6.) / 6.;
+      vec3 base = mix(uColorA, uColorB, k);
+      vec3 col = base * (0.25 + 0.85 * diff) + fres * mix(uColorB, vec3(1.), .4) * .9;
+      float spec = pow(max(dot(reflect(-normalize(uLight), n), vView), 0.), 40.);
+      gl_FragColor = vec4(col + spec * .6, 1.);
+    }`,
+});
+const DETAIL = { "低": 16, "中": 48, "高": 96 };
+const blob = new THREE.Mesh(new THREE.IcosahedronGeometry(1.2, 48), material);
+scene.add(blob);
+
+// ---- Tweakpane ----
+const state = {
+  amp: 0.35, freq: 1.4, speed: 0.6, detail: 48, wire: false, bands: false,
+  colorA: "#4cc9f0", colorB: "#f72585", bg: "#0e1013",
+  light: { x: 0.5, y: 0.6 }, spin: { x: 0.15, y: 0.25 },
+  wave: 0,
+};
+const pane = new Pane({ container: document.getElementById("pane"), title: "液態球控制台" });
+pane.registerPlugin(Essentials);
+
+pane.addBlade({
+  view: "buttongrid", size: [4, 1], cells: (x) => ({ title: ["平靜", "心跳", "暴走", "液態"][x] }), label: "預設",
+}).on("click", (ev) => applyPreset(ev.index[0]));
+
+pane.addBinding(state, "wave", { label: "脈動曲線", readonly: true, view: "graph", min: -1, max: 1, rows: 2 });
+
+const tabs = pane.addTab({ pages: [{ title: "形狀" }, { title: "色彩" }, { title: "效能" }] });
+const [pShape, pColor, pMon] = tabs.pages;
+
+pShape.addBinding(state, "amp", { label: "振幅", min: 0, max: 1, step: 0.01 });
+pShape.addBinding(state, "freq", { label: "頻率", min: 0.2, max: 4, step: 0.01 });
+pShape.addBinding(state, "speed", { label: "流速", min: 0, max: 3, step: 0.01 });
+pShape.addBinding(state, "detail", { label: "細節", options: DETAIL }).on("change", (ev) => {
+  blob.geometry.dispose();
+  blob.geometry = new THREE.IcosahedronGeometry(1.2, ev.value);
+});
+pShape.addBinding(state, "wire", { label: "線框" });
+pShape.addBinding(state, "spin", { label: "自轉", x: { min: -1, max: 1 }, y: { min: -1, max: 1, inverted: true } });
+
+pColor.addBinding(state, "colorA", { label: "低處色" });
+pColor.addBinding(state, "colorB", { label: "高處色" });
+pColor.addBinding(state, "bg", { label: "背景" });
+pColor.addBinding(state, "bands", { label: "色階" });
+pColor.addBinding(state, "light", { label: "光源", picker: "inline", expanded: true, x: { min: -1, max: 1 }, y: { min: -1, max: 1, inverted: true } });
+
+pMon.addBinding(state, "wave", { label: "數值", readonly: true, format: (v) => v.toFixed(3) });
+const fps = pMon.addBlade({ view: "fpsgraph", label: "FPS", rows: 2 });
+
+function apply() {
+  uniforms.uAmp.value = state.amp;
+  uniforms.uFreq.value = state.freq;
+  uniforms.uColorA.value.set(state.colorA);
+  uniforms.uColorB.value.set(state.colorB);
+  uniforms.uLight.value.set(state.light.x, state.light.y, 0.9).normalize();
+  uniforms.uBands.value = state.bands ? 1 : 0;
+  material.wireframe = state.wire;
+  scene.background.set(state.bg);
+}
+pane.on("change", apply);
+
+const PRESETS = [
+  { amp: 0.12, freq: 0.8, speed: 0.25, colorA: "#7bd389", colorB: "#4cc9f0" },
+  { amp: 0.45, freq: 1.2, speed: 1.6, colorA: "#ff8c42", colorB: "#f72585" },
+  { amp: 0.9, freq: 3.2, speed: 2.6, colorA: "#9d8cff", colorB: "#f7df1e" },
+  { amp: 0.35, freq: 1.4, speed: 0.6, colorA: "#4cc9f0", colorB: "#f72585" },
+];
+function applyPreset(i) {
+  Object.assign(state, PRESETS[i]);
+  pane.refresh(); // pull the new values into every binding view
+  apply();
+}
+
+scene.background = new THREE.Color(state.bg);
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  // Shift the view so the blob sits left of the pane on wide screens
+  const paneW = w > 620 ? 300 : 0;
+  camera.setViewOffset(w, h, paneW / 2, 0, w, h);
+  camera.position.z = w < h ? 8.5 : 6;
+  camera.updateProjectionMatrix();
+}
+addEventListener("resize", resize);
+resize();
+
+const clock = new THREE.Clock();
+let t = 0;
+renderer.setAnimationLoop(() => {
+  fps.begin();
+  const dt = clock.getDelta();
+  t += dt * state.speed;
+  uniforms.uTime.value = t;
+  blob.rotation.y += dt * state.spin.x;
+  blob.rotation.x += dt * state.spin.y;
+  // Pulse value derived from time and amplitude, shown by the graph monitor
+  state.wave = Math.sin(t * 2.1) * Math.cos(t * 1.3) * state.amp;
+  renderer.render(scene, camera);
+  fps.end();
+});
+</script>
+</body>
+</html>

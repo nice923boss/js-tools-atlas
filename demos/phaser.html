@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phaser 示範：星星跳跳平台遊戲</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body { background: radial-gradient(120% 90% at 50% 0%, #1d2540 0%, #12151d 55%, #0e1013 100%); }
+  #game { position: fixed; inset: 0; }
+  #game canvas { display: block; touch-action: none; }
+  .hud { position: fixed; left: 12px; top: 12px; z-index: 40; display: flex; gap: 8px; font-weight: 700; }
+  .hud .panel { padding: 6px 12px; font-size: 14px; }
+  .hud b { color: var(--accent); }
+  .title {
+    position: fixed; inset: 0; z-index: 45; display: grid; place-items: center; pointer-events: none;
+    transition: opacity .4s;
+  }
+  .title .card { text-align: center; padding: 18px 28px; border-radius: 16px; background: rgba(14, 16, 19, .62); backdrop-filter: blur(4px); }
+  .title h1 { margin: 0; font-size: clamp(30px, 7vw, 52px); letter-spacing: 4px; color: var(--accent);
+    text-shadow: 0 4px 0 #8a7a00, 0 10px 30px rgba(247, 223, 30, .35); }
+  .title p { margin: 6px 0 0; color: var(--fg); }
+  .title .blink { color: var(--c2); animation: blink 1.2s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: .2; } }
+  .title.hide { opacity: 0; }
+  .msg { position: fixed; left: 50%; top: 22%; transform: translateX(-50%); z-index: 45; font-size: 22px; font-weight: 800;
+    color: var(--accent); text-shadow: 0 3px 12px rgba(0,0,0,.6); pointer-events: none; opacity: 0; transition: opacity .3s; white-space: nowrap; }
+  .msg.show { opacity: 1; }
+  .pad { position: fixed; right: 12px; bottom: 12px; z-index: 50; display: flex; gap: 8px; }
+  .pad .btn { width: 52px; height: 46px; padding: 0; font-size: 18px; touch-action: none; user-select: none; }
+  .pad .btn.primary { width: 64px; font-size: 15px; }
+  @media (max-width: 600px) { .hint { bottom: 68px; } }
+</style>
+</head>
+<body>
+<div id="game"></div>
+<div class="hud">
+  <div class="panel">星星 <b id="stars">0</b> / <span id="total">0</span></div>
+  <div class="panel">踩扁 <b id="stomps">0</b></div>
+</div>
+<div class="controls"><button class="btn" id="restart">重新開始</button></div>
+<div class="title" id="title">
+  <div class="card">
+    <h1>星星跳跳</h1>
+    <p>收集所有星星，從上方踩扁史萊姆</p>
+    <p class="blink">按任意鍵或點擊開始</p>
+  </div>
+</div>
+<div class="msg" id="msg"></div>
+<div class="pad">
+  <button class="btn" id="bl" aria-label="向左">◀</button>
+  <button class="btn" id="br" aria-label="向右">▶</button>
+  <button class="btn primary" id="bj">跳</button>
+</div>
+<div class="hint">← → 移動，↑ 或空白鍵跳（可二段跳）</div>
+
+<script src="https://cdn.jsdelivr.net/npm/phaser@4.2.1/dist/phaser.min.js"></script>
+<script>
+// Phaser 4 platformer: generated textures, Arcade physics, particles, tweens, camera follow.
+const W = 2400, H = 540;
+const touch = { left: false, right: false, jump: false };
+const $ = (id) => document.getElementById(id);
+
+function makeTextures(scene) {
+  const g = scene.add.graphics();
+  // hero
+  g.fillStyle(0xf7df1e).fillRoundedRect(0, 0, 28, 32, 8);
+  g.fillStyle(0x1a1a14).fillRect(15, 9, 4, 8).fillRect(21, 9, 4, 8);
+  g.fillStyle(0xff8c42).fillRect(0, 22, 28, 4);
+  g.generateTexture("hero", 28, 32).clear();
+  // ground tile: grass + soil
+  g.fillStyle(0x262c3a).fillRect(0, 0, 32, 64);
+  g.fillStyle(0x30384a).fillRect(4, 22, 6, 6).fillRect(20, 40, 8, 6).fillRect(12, 54, 5, 5);
+  g.fillStyle(0x7bd389).fillRect(0, 0, 32, 8);
+  g.fillStyle(0x5cb06b).fillRect(0, 8, 32, 3);
+  g.generateTexture("ground", 32, 64).clear();
+  // floating platform tile
+  g.fillStyle(0x343c50).fillRect(0, 0, 32, 18);
+  g.fillStyle(0x4cc9f0).fillRect(0, 0, 32, 5);
+  g.fillStyle(0x2a3040).fillRect(31, 0, 1, 18);
+  g.generateTexture("plat", 32, 18).clear();
+  // star
+  const pts = [];
+  for (let i = 0; i < 10; i++) {
+    const r = i % 2 ? 5 : 11, a = -Math.PI / 2 + (i * Math.PI) / 5;
+    pts.push({ x: 11 + r * Math.cos(a), y: 11 + r * Math.sin(a) });
+  }
+  g.fillStyle(0xf7df1e).fillPoints(pts, true);
+  g.generateTexture("star", 22, 22).clear();
+  // slime
+  g.fillStyle(0xf72585).fillRoundedRect(0, 0, 30, 22, { tl: 11, tr: 11, bl: 3, br: 3 });
+  g.fillStyle(0xffffff).fillCircle(10, 9, 4).fillCircle(20, 9, 4);
+  g.fillStyle(0x1a1a14).fillCircle(11, 10, 2).fillCircle(21, 10, 2);
+  g.generateTexture("slime", 30, 22).clear();
+  // spark
+  g.fillStyle(0xffffff).fillCircle(4, 4, 4);
+  g.generateTexture("spark", 8, 8).clear();
+  g.destroy();
+}
+
+class Play extends Phaser.Scene {
+  constructor() { super("play"); }
+
+  create(data) {
+    if (!this.textures.exists("hero")) makeTextures(this);
+    this.started = false;
+    this.score = 0;
+    this.stomps = 0;
+    this.drawBackdrop();
+
+    this.physics.world.setBounds(0, 0, W, H + 300);
+    this.physics.world.setBoundsCollision(true, true, false, false);
+
+    // level geometry
+    this.solids = this.physics.add.staticGroup();
+    const ground = (x, w) => this.addSolid(x, H - 64, w, 64, "ground");
+    const plat = (x, y, n) => this.addSolid(x, y, n * 32, 18, "plat");
+    ground(0, 704); ground(832, 512); ground(1472, 928);
+    plat(220, 380, 4); plat(420, 300, 3); plat(600, 220, 4);
+    plat(700, 390, 4); plat(980, 330, 5); plat(1220, 250, 3);
+    plat(1360, 380, 3); plat(1600, 300, 4); plat(1820, 220, 4); plat(2060, 330, 5);
+
+    // stars
+    this.stars = this.physics.add.staticGroup();
+    const starAt = [
+      [120, 430], [260, 340], [460, 260], [640, 180], [700, 180], [760, 350], [790, 430], [1030, 290],
+      [1090, 290], [1250, 210], [1300, 430], [1400, 340], [1650, 260], [1860, 180], [1920, 180],
+      [2100, 290], [2180, 290], [2300, 430],
+    ];
+    for (const [x, y] of starAt) {
+      const s = this.stars.create(x, y, "star");
+      this.tweens.add({ targets: s, scaleX: 0.25, duration: 520, yoyo: true, repeat: -1, ease: "Sine.inOut", delay: x % 500 });
+    }
+    $("total").textContent = starAt.length;
+
+    // enemies patrol between bounds
+    this.slimes = this.physics.add.group();
+    for (const [x, min, max] of [[400, 260, 660], [1000, 860, 1320], [1700, 1500, 2000], [2200, 2050, 2380]]) {
+      const e = this.slimes.create(x, H - 90, "slime");
+      e.setData({ min, max }).setVelocityX(70).setBounce(0);
+    }
+
+    // player
+    this.spawn = { x: 80, y: H - 120 };
+    this.player = this.physics.add.sprite(this.spawn.x, this.spawn.y, "hero");
+    this.player.setCollideWorldBounds(true).setSize(22, 30).setDepth(5);
+    this.player.body.setMaxVelocityY(900);
+    this.jumps = 0;
+
+    this.physics.add.collider(this.player, this.solids);
+    this.physics.add.collider(this.slimes, this.solids);
+    this.physics.add.overlap(this.player, this.stars, (p, s) => this.collect(s));
+    this.physics.add.overlap(this.player, this.slimes, (p, e) => this.hitSlime(e));
+
+    this.fx = this.add.particles(0, 0, "spark", {
+      speed: { min: 60, max: 260 }, lifespan: 600, scale: { start: 0.9, end: 0 },
+      gravityY: 400, blendMode: "ADD", emitting: false, tint: [0xf7df1e, 0xff8c42, 0xffffff],
+    }).setDepth(6);
+    this.dust = this.add.particles(0, 0, "spark", {
+      speed: { min: 20, max: 90 }, angle: { min: 160, max: 380 }, lifespan: 380,
+      scale: { start: 0.6, end: 0 }, alpha: { start: 0.7, end: 0 }, emitting: false, tint: 0x4cc9f0,
+    }).setDepth(4);
+
+    // camera: zoom so the 540 px tall world fills the viewport height
+    const cam = this.cameras.main;
+    cam.setBounds(0, 0, W, H);
+    this.fitCamera();
+    this.scale.on("resize", this.fitCamera, this);
+    this.events.once("shutdown", () => this.scale.off("resize", this.fitCamera, this));
+    this.ghost = this.add.zone(200, H / 2, 2, 2);
+    this.tweens.add({ targets: this.ghost, x: W - 200, duration: 12000, yoyo: true, repeat: -1, ease: "Sine.inOut" });
+    cam.startFollow(this.ghost, true, 0.08, 0.08);
+
+    // input
+    this.keys = this.input.keyboard.addKeys("LEFT,RIGHT,UP,SPACE,A,D,W,R");
+    this.input.keyboard.on("keydown", (ev) => {
+      if (ev.code === "KeyR") this.scene.restart({ go: true });
+      else this.begin();
+    });
+    this.input.on("pointerdown", () => { if (this.started) touch.jump = true; else this.begin(); });
+    $("title").classList.remove("hide");
+    $("msg").classList.remove("show");
+    this.updateHud();
+    if (data && data.go) this.begin();
+  }
+
+  addSolid(x, y, w, h, key) {
+    const ts = this.add.tileSprite(x + w / 2, y + h / 2, w, h, key);
+    this.physics.add.existing(ts, true);
+    this.solids.add(ts);
+  }
+
+  drawBackdrop() {
+    const sky = this.add.graphics().setScrollFactor(0.05);
+    for (let i = 0; i < 90; i++) {
+      sky.fillStyle(0xffffff, Phaser.Math.FloatBetween(0.15, 0.7));
+      sky.fillCircle(Phaser.Math.Between(0, 1400), Phaser.Math.Between(0, 320), Phaser.Math.FloatBetween(0.6, 1.6));
+    }
+    const ridge = (color, sf, base, amp, step) => {
+      const g = this.add.graphics().setScrollFactor(sf, 1);
+      g.fillStyle(color);
+      const pts = [{ x: -200, y: H + 200 }];
+      for (let x = -200; x <= W + 200; x += step) pts.push({ x, y: base - Math.abs(Math.sin(x * 0.0037) * amp) - Math.random() * 30 });
+      pts.push({ x: W + 200, y: H + 200 });
+      g.fillPoints(pts, true);
+    };
+    ridge(0x1a2033, 0.25, 360, 140, 120);
+    ridge(0x20283c, 0.5, 430, 90, 80);
+  }
+
+  fitCamera() {
+    const cam = this.cameras.main;
+    this.cameras.resize(this.scale.width, this.scale.height);
+    cam.setZoom(this.scale.height / H);
+  }
+
+  begin() {
+    if (this.started) return;
+    this.started = true;
+    $("title").classList.add("hide");
+    this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
+  }
+
+  collect(star) {
+    star.disableBody(true, true);
+    this.fx.explode(18, star.x, star.y);
+    this.score++;
+    this.updateHud();
+    if (this.score === this.stars.getLength()) {
+      this.flash("全部收集！按 R 再玩一次");
+      this.cameras.main.flash(400, 247, 223, 30);
+      this.time.addEvent({ delay: 120, repeat: 8, callback: () => this.fx.explode(30, this.player.x + Phaser.Math.Between(-160, 160), this.player.y - Phaser.Math.Between(40, 200)) });
+    }
+  }
+
+  hitSlime(e) {
+    const p = this.player;
+    if (p.body.velocity.y > 0 && p.body.bottom <= e.body.top + 14) {
+      this.fx.explode(24, e.x, e.y);
+      e.destroy();
+      p.setVelocityY(-420);
+      this.jumps = 1;
+      this.stomps++;
+      this.updateHud();
+      this.cameras.main.shake(120, 0.006);
+    } else {
+      this.respawn("被史萊姆撞到了！");
+    }
+  }
+
+  respawn(text) {
+    this.cameras.main.shake(260, 0.012);
+    this.player.setVelocity(0, 0).setPosition(this.spawn.x, this.spawn.y - 30);
+    this.player.setAlpha(0.3);
+    this.tweens.add({ targets: this.player, alpha: 1, duration: 600 });
+    this.flash(text);
+  }
+
+  flash(text) {
+    const m = $("msg");
+    m.textContent = text;
+    m.classList.add("show");
+    clearTimeout(this.msgTimer);
+    this.msgTimer = setTimeout(() => m.classList.remove("show"), 1800);
+  }
+
+  updateHud() {
+    $("stars").textContent = this.score;
+    $("stomps").textContent = this.stomps;
+  }
+
+  update() {
+    // slimes patrol
+    for (const e of this.slimes.getChildren()) {
+      if (e.x < e.getData("min")) e.setVelocityX(70);
+      if (e.x > e.getData("max")) e.setVelocityX(-70);
+      e.setFlipX(e.body.velocity.x < 0);
+      e.scaleY = 1 + Math.sin(this.time.now * 0.012 + e.x) * 0.08;
+    }
+    const p = this.player, k = this.keys;
+    if (!this.started) return;
+    const onGround = p.body.blocked.down || p.body.touching.down;
+    const left = k.LEFT.isDown || k.A.isDown || touch.left;
+    const right = k.RIGHT.isDown || k.D.isDown || touch.right;
+    p.setVelocityX(left ? -230 : right ? 230 : p.body.velocity.x * 0.8);
+    if (left) p.setFlipX(true);
+    if (right) p.setFlipX(false);
+
+    const jump = Phaser.Input.Keyboard.JustDown(k.UP) || Phaser.Input.Keyboard.JustDown(k.SPACE) ||
+      Phaser.Input.Keyboard.JustDown(k.W) || touch.jump;
+    touch.jump = false;
+    if (onGround) {
+      this.jumps = 0;
+      if (p.y < H - 40) this.spawn = { x: p.x, y: p.y };
+    }
+    if (jump && (onGround || this.jumps < 2)) {
+      this.jumps = onGround ? 1 : 2;
+      p.setVelocityY(onGround ? -560 : -480);
+      this.dust.explode(onGround ? 6 : 12, p.x, p.y + 16);
+      this.tweens.add({ targets: p, scaleX: 0.8, scaleY: 1.2, duration: 90, yoyo: true });
+    }
+    if (p.y > H + 80) this.respawn("掉下去了！");
+  }
+}
+
+const game = new Phaser.Game({
+  type: Phaser.AUTO,
+  parent: "game",
+  transparent: true,
+  scale: { mode: Phaser.Scale.RESIZE, width: "100%", height: "100%" },
+  physics: { default: "arcade", arcade: { gravity: { y: 1300 } } },
+  scene: Play,
+  banner: false,
+});
+
+// on-screen pad for touch / mouse
+const play = () => game.scene.getScene("play");
+const hold = (id, key) => {
+  const b = $(id);
+  b.addEventListener("pointerdown", (e) => { e.preventDefault(); touch[key] = true; play().begin(); });
+  for (const ev of ["pointerup", "pointerleave", "pointercancel"]) b.addEventListener(ev, () => { if (key !== "jump") touch[key] = false; });
+};
+hold("bl", "left"); hold("br", "right"); hold("bj", "jump");
+$("restart").addEventListener("click", () => play().scene.restart({ go: true }));
+</script>
+</body>
+</html>

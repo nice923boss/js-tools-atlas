@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dotlottie-web 示範：一個 .lottie 檔，多段動畫加主題</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body { --glow: rgba(143, 211, 255, .14); background: radial-gradient(55% 65% at 32% 45%, var(--glow), transparent 70%), var(--bg); transition: background .6s; }
+  body[data-theme="night"] { --glow: rgba(111, 126, 220, .18); }
+  body[data-theme="candy"] { --glow: rgba(255, 140, 190, .16); }
+  h1 { position: fixed; left: 16px; top: 14px; margin: 0; font-size: 16px; }
+  h1 small { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
+  .layout { position: fixed; inset: 56px 16px 52px; display: flex; gap: 24px; align-items: center; justify-content: center; }
+  .view { position: relative; height: 100%; aspect-ratio: 1; max-width: calc(100% - 300px); }
+  .view canvas { width: 100%; height: 100%; display: block; }
+  .view .status { position: absolute; }
+  .prog { position: absolute; left: 12%; right: 12%; bottom: 2%; height: 3px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .prog i { display: block; height: 100%; width: 0; background: var(--fg); opacity: .6; }
+  .side { width: 270px; display: grid; gap: 14px; }
+  .grp label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .row { display: flex; gap: 6px; }
+  .row .btn { flex: 1; padding: 8px 4px; display: flex; gap: 6px; align-items: center; justify-content: center; }
+  .sw { display: inline-flex; }
+  .sw i { width: 9px; height: 9px; border-radius: 50%; margin-left: -3px; border: 1px solid rgba(0,0,0,.35); }
+  .tree { font-size: 12px; line-height: 1.75; padding: 10px 12px; }
+  .tree div { color: var(--muted); white-space: nowrap; }
+  .tree b { color: var(--fg); font-weight: 600; }
+  .tree span { padding: 0 4px; border-radius: 4px; transition: background .3s, color .3s; }
+  .tree span.on { background: var(--accent); color: var(--accent-ink); }
+  @media (max-width: 640px) {
+    h1 small { display: none; }
+    .layout { flex-direction: column; inset: 52px 12px 50px; gap: 10px; }
+    .view { height: auto; flex: 1 1 0; min-height: 0; max-width: 100%; }
+    .side { width: 100%; gap: 6px; }
+    .grp { display: flex; align-items: center; gap: 8px; }
+    .grp label { margin: 0; width: 30px; flex: none; }
+    .grp .row { flex: 1; }
+    .row .btn { padding: 7px 2px; font-size: 12px; gap: 4px; }
+    .tree { display: none; }
+  }
+</style>
+</head>
+<body data-theme="day">
+<h1>.lottie 天氣組<small>一個壓縮檔裝 3 段動畫與 3 套主題，由 WASM 渲染</small></h1>
+<div class="controls">
+  <button class="btn" id="auto" aria-pressed="true">自動輪播</button>
+  <button class="btn primary" id="replay">重播</button>
+</div>
+<main class="layout">
+  <div class="view">
+    <canvas id="cv"></canvas>
+    <div class="status" id="status">正在下載 WASM 渲染器…</div>
+    <div class="prog"><i id="prog"></i></div>
+  </div>
+  <aside class="side">
+    <div class="grp"><label>動畫</label><div class="row">
+      <button class="btn" data-a="sunny" aria-pressed="true">晴天</button>
+      <button class="btn" data-a="rainy" aria-pressed="false">雨天</button>
+      <button class="btn" data-a="snowy" aria-pressed="false">下雪</button>
+    </div></div>
+    <div class="grp"><label>主題</label><div class="row">
+      <button class="btn" data-t="day" aria-pressed="true"><span class="sw"><i style="background:#8fd3ff"></i><i style="background:#ffc93c"></i><i style="background:#2f6fe4"></i></span>白天</button>
+      <button class="btn" data-t="night" aria-pressed="false"><span class="sw"><i style="background:#16204a"></i><i style="background:#f4efc4"></i><i style="background:#9fd0ff"></i></span>夜晚</button>
+      <button class="btn" data-t="candy" aria-pressed="false"><span class="sw"><i style="background:#ffc2dc"></i><i style="background:#ff6f3c"></i><i style="background:#f72585"></i></span>糖果</button>
+    </div></div>
+    <div class="panel tree mono" id="tree">
+      <div><b>weather.lottie</b> <span id="size"></span></div>
+      <div>├ manifest.json</div>
+      <div>├ a/ <span data-f="sunny">sunny.json</span><span data-f="rainy">rainy.json</span><span data-f="snowy">snowy.json</span></div>
+      <div>└ t/ <span data-f="day">day.json</span><span data-f="night">night.json</span><span data-f="candy">candy.json</span></div>
+    </div>
+  </aside>
+</main>
+<div class="hint">loadAnimation() 換動畫，setTheme() 換配色</div>
+
+<script type="module">
+import { DotLottie } from "https://cdn.jsdelivr.net/npm/@lottiefiles/dotlottie-web@0.80.0/dist/index.js";
+
+// Theme rules in t/*.json override the color slots (sky, sun, cloud, drop, snow) of every animation.
+const SRC = "assets/dotlottie-web/weather.lottie";
+const status = document.getElementById("status");
+const prog = document.getElementById("prog");
+const autoBtn = document.getElementById("auto");
+let animId = "sunny", themeId = "day", auto = true, step = 0, timer = null;
+
+const dl = new DotLottie({
+  canvas: document.getElementById("cv"), src: SRC, autoplay: true, loop: true, themeId,
+  renderConfig: { autoResize: true },
+});
+
+function mark() {
+  document.querySelectorAll("[data-a]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.a === animId));
+  document.querySelectorAll("[data-t]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.t === themeId));
+  document.querySelectorAll("[data-f]").forEach((s) => s.classList.toggle("on", s.dataset.f === animId || s.dataset.f === themeId));
+  document.body.dataset.theme = themeId;
+}
+function setAnim(id) {
+  animId = id;
+  mark();
+  dl.loadAnimation(id);
+}
+function setTheme(id) {
+  themeId = id;
+  mark();
+  dl.setTheme(id);
+}
+
+// A newly loaded animation starts unthemed, so re-apply the current theme.
+dl.addEventListener("load", () => {
+  status.hidden = true;
+  dl.setTheme(themeId);
+});
+dl.addEventListener("loadError", (e) => { status.hidden = false; status.textContent = `載入失敗：${e.error?.message ?? ""}`; });
+dl.addEventListener("frame", (e) => { prog.style.width = `${(e.currentFrame / Math.max(1, dl.totalFrames - 1)) * 100}%`; });
+
+// Auto tour: alternate between switching theme and switching animation.
+const ANIMS = ["sunny", "rainy", "snowy"], THEMES = ["day", "night", "candy"];
+function tick() {
+  step++;
+  if (step % 2) setTheme(THEMES[(THEMES.indexOf(themeId) + 1) % 3]);
+  else setAnim(ANIMS[(ANIMS.indexOf(animId) + 1) % 3]);
+}
+function startAuto() { clearInterval(timer); timer = setInterval(tick, 2600); }
+function setAuto(on) {
+  auto = on;
+  autoBtn.setAttribute("aria-pressed", on);
+  if (on) startAuto(); else clearInterval(timer);
+}
+
+document.querySelectorAll("[data-a]").forEach((b) => b.addEventListener("click", () => { setAuto(false); setAnim(b.dataset.a); }));
+document.querySelectorAll("[data-t]").forEach((b) => b.addEventListener("click", () => { setAuto(false); setTheme(b.dataset.t); }));
+autoBtn.addEventListener("click", () => setAuto(!auto));
+document.getElementById("replay").addEventListener("click", () => {
+  step = 0;
+  themeId = "day";
+  setAnim("sunny");
+  setAuto(true);
+});
+
+// Read the file size from Resource Timing instead of making a second request.
+dl.addEventListener("load", () => {
+  const entry = performance.getEntriesByType("resource").find((r) => r.name.endsWith("weather.lottie"));
+  if (entry?.decodedBodySize) document.getElementById("size").textContent = `${(entry.decodedBodySize / 1024).toFixed(1)} KB`;
+});
+mark();
+startAuto();
+</script>
+</body>
+</html>

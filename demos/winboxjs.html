@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WinBox.js 示範：網頁裡的桌面視窗系統</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body {
+    background:
+      linear-gradient(180deg, rgba(14,16,19,.35), rgba(14,16,19,.7)),
+      url("_shared/img/photo-1.jpg") center / cover no-repeat, var(--bg);
+  }
+  .menubar {
+    position: fixed; left: 0; right: 0; top: 0; height: 46px; z-index: 40; display: flex; align-items: center; gap: 10px; padding: 0 14px;
+    background: rgba(14,16,19,.55); backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); font-size: 13px;
+  }
+  .menubar b { font-size: 14px; }
+  .menubar #clock { color: var(--muted); font: 500 12px var(--mono); }
+  .icons { position: fixed; left: 10px; top: 58px; display: flex; flex-direction: column; gap: 4px; z-index: 1; }
+  .icon {
+    width: 76px; padding: 8px 4px 6px; border: 1px solid transparent; border-radius: 10px; background: none; color: #fff; cursor: pointer;
+    display: flex; flex-direction: column; align-items: center; gap: 4px; font: 12px var(--font); text-shadow: 0 1px 3px rgba(0,0,0,.8);
+  }
+  .icon span { font-size: 26px; line-height: 1; filter: drop-shadow(0 3px 6px rgba(0,0,0,.4)); }
+  .icon:hover { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.2); }
+  /* WinBox look */
+  .winbox { border-radius: 10px; overflow: hidden; box-shadow: 0 18px 50px rgba(0,0,0,.55); }
+  .winbox .wb-title { font-family: var(--font); font-size: 13px; font-weight: 600; }
+  .winbox .wb-body { background: #15181d; color: var(--fg); font-family: var(--font); }
+  .winbox.focus { box-shadow: 0 18px 50px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.25); }
+  .note { width: 100%; height: 100%; resize: none; border: 0; outline: 0; padding: 12px 14px; background: #fffbe6; color: #3a3420; font: 14px/1.7 var(--font); }
+  .album { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 6px; padding: 8px; }
+  .album img { width: 100%; aspect-ratio: 3 / 2; object-fit: cover; border-radius: 6px; cursor: zoom-in; transition: transform .15s; }
+  .album img:hover { transform: scale(1.04); }
+  .photo { width: 100%; height: 100%; background: center / cover no-repeat; }
+  .clockface { height: 100%; display: grid; place-items: center; text-align: center; background: radial-gradient(circle at 50% 30%, #222831, #101317); }
+  .clockface .t { font: 700 34px/1.1 var(--mono); color: var(--accent); }
+  .clockface .d { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .about { padding: 14px 16px; font-size: 13px; line-height: 1.7; }
+  .about h3 { margin: 0 0 6px; font-size: 15px; }
+  .about code { font-family: var(--mono); color: var(--c2); }
+  .about ul { margin: 6px 0 0; padding-left: 18px; }
+</style>
+</head>
+<body>
+<div class="menubar"><b>🪟 網頁桌面</b><span id="clock"></span></div>
+<div class="controls">
+  <button class="btn" id="tile">並排</button>
+  <button class="btn" id="closeAll">全部關閉</button>
+</div>
+<div class="icons">
+  <button class="icon" data-app="note"><span>📝</span>記事本</button>
+  <button class="icon" data-app="album"><span>🖼️</span>相簿</button>
+  <button class="icon" data-app="clock"><span>⏰</span>時鐘</button>
+  <button class="icon" data-app="about"><span>💡</span>關於</button>
+</div>
+<div class="hint">點左側圖示開視窗・拖曳標題列移動・拉邊緣縮放・右上角可縮小放大</div>
+
+<script src="https://cdn.jsdelivr.net/npm/winbox@0.2.82/dist/winbox.bundle.min.js"></script>
+<script>
+// A tiny desktop: each icon opens a WinBox window; the album spawns extra photo windows.
+const PHOTO_NAMES = ["峽灣", "紅岩峽谷", "綠色山谷公路", "披毯巴哥犬", "瀑布彩虹", "藍底水母", "母獅特寫", "海象群"];
+const LIMITS = { top: 46, bottom: 0, left: 0, right: 0 };
+const windows = new Set();
+let cascade = 0;
+
+function geometry(w, h) {
+  // Fit the requested size into the visible desktop and cascade new windows.
+  const small = innerWidth < 560;
+  const width = Math.min(w, innerWidth - (small ? 16 : 110));
+  const height = Math.min(h, innerHeight - 46 - 40);
+  const step = (cascade++ % 5) * 26;
+  const x = small ? 8 + step / 2 : Math.min(100 + step * 1.4, innerWidth - width - 10);
+  const y = Math.min(56 + step, innerHeight - height - 40);
+  return { width, height, x, y };
+}
+
+function open(title, opts) {
+  const win = new WinBox(title, { ...LIMITS, ...opts, onclose() { windows.delete(this); } });
+  windows.add(win);
+  return win;
+}
+
+const APPS = {
+  note() {
+    return open("記事本：今日備忘", {
+      ...geometry(300, 230), background: "linear-gradient(90deg,#d4a900,#f7df1e)",
+      html: `<textarea class="note">歡迎來到網頁桌面！
+
+☐ 確認週三讀書會場地
+☐ 整理相簿裡的旅遊照片
+☐ 把這個視窗拉大試試看</textarea>`,
+    });
+  },
+  album() {
+    const win = open("相簿（點照片開新視窗）", {
+      ...geometry(390, 260), background: "linear-gradient(90deg,#1f8fb8,#4cc9f0)",
+      html: `<div class="album">${PHOTO_NAMES.map((n, i) => `<img src="_shared/img/photo-${i + 1}.jpg" alt="${n}" data-i="${i}">`).join("")}</div>`,
+    });
+    win.body.addEventListener("click", (e) => {
+      const i = e.target.dataset.i;
+      if (i !== undefined) openPhoto(+i);
+    });
+    return win;
+  },
+  clock() {
+    const win = open("時鐘", {
+      ...geometry(230, 150), background: "linear-gradient(90deg,#d61f69,#f72585)",
+      html: `<div class="clockface"><div><div class="t"></div><div class="d"></div></div></div>`,
+    });
+    const tick = () => {
+      const now = new Date();
+      win.body.querySelector(".t").textContent = now.toLocaleTimeString("zh-TW", { hour12: false });
+      win.body.querySelector(".d").textContent = now.toLocaleDateString("zh-TW", { month: "long", day: "numeric", weekday: "long" });
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    win.onclose = () => { clearInterval(id); windows.delete(win); };
+    return win;
+  },
+  about() {
+    open("關於 WinBox.js", {
+      ...geometry(320, 240), background: "linear-gradient(90deg,#6a5ae0,#9d8cff)",
+      html: `<div class="about"><h3>一行程式開一個視窗</h3>
+        <code>new WinBox("標題", { html })</code>
+        <ul><li>拖曳標題列移動、拉邊緣縮放</li><li>縮小、最大化、全螢幕、關閉</li><li>點視窗即可帶到最上層</li></ul></div>`,
+    });
+  },
+};
+
+function openPhoto(i) {
+  const win = open(`照片：${PHOTO_NAMES[i]}`, { ...geometry(360, 260), background: "linear-gradient(90deg,#2f9e55,#7bd389)", html: `<div class="photo"></div>` });
+  win.body.querySelector(".photo").style.backgroundImage = `url(_shared/img/photo-${i + 1}.jpg)`;
+}
+
+document.querySelectorAll(".icon").forEach((b) => b.addEventListener("click", () => APPS[b.dataset.app]()));
+
+document.getElementById("closeAll").addEventListener("click", () => [...windows].forEach((w) => w.close(true)));
+document.getElementById("tile").addEventListener("click", () => {
+  // Tile every open window into a grid using move() and resize().
+  const list = [...windows].filter((w) => !w.min);
+  if (!list.length) return;
+  const left = innerWidth < 560 ? 0 : 92, top = 46, bottom = 40;
+  const W = innerWidth - left, H = innerHeight - top - bottom;
+  const cols = Math.ceil(Math.sqrt(list.length * W / H));
+  const rows = Math.ceil(list.length / cols);
+  list.forEach((w, i) => {
+    if (w.max) w.restore();
+    w.resize(W / cols - 8, H / rows - 8).move(left + (i % cols) * (W / cols) + 4, top + Math.floor(i / cols) * (H / rows) + 4);
+  });
+});
+
+setInterval(() => (document.getElementById("clock").textContent = new Date().toLocaleTimeString("zh-TW", { hour12: false, hour: "2-digit", minute: "2-digit" })), 1000);
+document.getElementById("clock").textContent = new Date().toLocaleTimeString("zh-TW", { hour12: false, hour: "2-digit", minute: "2-digit" });
+
+// Open a few windows at start so the desktop is alive immediately.
+APPS.album();
+const note = APPS.note();
+if (innerWidth >= 760) {
+  // Spread the first windows so the wallpaper and every window stay visible.
+  note.move(Math.min(520, innerWidth - 320), 90);
+  APPS.clock().move(innerWidth - 260, innerHeight - 210);
+}
+</script>
+</body>
+</html>

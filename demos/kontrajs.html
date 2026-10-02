@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kontra 示範：霓虹貪食蛇</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  .overlay { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; pointer-events: none; transition: opacity .3s; }
+  .overlay.hide { opacity: 0; }
+  .overlay .card { text-align: center; padding: 16px 26px; margin: 0 16px; border-radius: 16px; background: rgba(14, 16, 19, .72); backdrop-filter: blur(3px); border: 1px solid var(--line); }
+  .overlay h1 { margin: 0; font-size: clamp(28px, 7vw, 46px); letter-spacing: 3px;
+    background: linear-gradient(90deg, var(--c4), var(--c2), var(--c6)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .overlay p { margin: 6px 0 0; }
+  .overlay .blink { color: var(--c1); animation: blink 1.2s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div class="overlay" id="overlay">
+  <div class="card">
+    <h1 id="ov-title">霓虹貪食蛇</h1>
+    <p id="ov-sub">吃果實變長，金色星星限時出現，撞牆或咬到自己就結束</p>
+    <p class="blink" id="ov-go">按任意鍵或點擊開始</p>
+  </div>
+</div>
+<div class="hint">方向鍵／WASD 轉向，手指滑動或點擊蛇頭的上下左右也可以</div>
+
+<script type="module">
+// Kontra snake: GameLoop fixed step, onKey bindings, pointer down/up swipes, Pool particles, Text popups.
+import { init, GameLoop, Sprite, Text, Pool, initKeys, onKey, initPointer, onPointer, getPointer, randInt, lerp, clamp }
+  from "https://cdn.jsdelivr.net/npm/kontra@10.0.2/kontra.min.mjs";
+
+const FONT = "Noto Sans TC, Microsoft JhengHei, PingFang TC, sans-serif";
+const $ = (id) => document.getElementById(id);
+const { canvas, context: ctx } = init("game");
+initKeys();
+initPointer();
+
+const DIRS = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+let W = 0, H = 0, dpr = 1, cell = 24, cols = 20, rows = 14, ox = 0, oy = 0;
+let mode = "title"; // title | play | dying | over
+let snake = [], prev = [], dir = "right", queue = [], grow = 0;
+let food = null, star = null, score = 0, best = 0, stepMs = 130, acc = 0, shake = 0, overAt = 0, dieTimer = 0;
+const particles = Pool({ create: Sprite, maxSize: 600 });
+const popups = [];
+
+function layout(resetGrid) {
+  dpr = Math.min(2, devicePixelRatio || 1);
+  W = innerWidth; H = innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  const top = 48, bottom = 46;
+  if (resetGrid) {
+    cell = clamp(18, 34, Math.floor(Math.min(W, H) / 14));
+    cols = Math.max(10, Math.floor((W - 16) / cell));
+    rows = Math.max(8, Math.floor((H - top - bottom) / cell));
+  }
+  cell = Math.min((W - 16) / cols, (H - top - bottom) / rows);
+  ox = (W - cols * cell) / 2; oy = top + (H - top - bottom - rows * cell) / 2;
+}
+
+const key = (x, y) => y * cols + x;
+const occupied = (x, y, ignoreTail) => snake.some((s, i) => s.x === x && s.y === y && !(ignoreTail && i === snake.length - 1));
+const inside = (x, y) => x >= 0 && y >= 0 && x < cols && y < rows;
+
+function freeCell() {
+  for (let n = 0; n < 500; n++) {
+    const x = randInt(0, cols - 1), y = randInt(0, rows - 1);
+    if (!occupied(x, y) && !(food && food.gx === x && food.gy === y) && !(star && star.gx === x && star.gy === y)) return [x, y];
+  }
+  return [0, 0];
+}
+
+// food and bonus star are Kontra Sprites with custom render functions
+function makeFood(bonus) {
+  const [gx, gy] = freeCell();
+  return Sprite({
+    gx, gy, bonus, life: bonus ? 6 : Infinity, born: performance.now(),
+    render() {
+      const t = (performance.now() - this.born) / 1000, r = cell * (.32 + Math.sin(t * 6) * .04);
+      const c = ctx;
+      c.shadowColor = bonus ? "#f7df1e" : "#f72585"; c.shadowBlur = cell * .6;
+      c.fillStyle = bonus ? "#f7df1e" : "#f72585";
+      c.beginPath();
+      if (bonus) {
+        for (let i = 0; i < 10; i++) {
+          const a = -Math.PI / 2 + i * Math.PI / 5 + t, rr = i % 2 ? r * .5 : r * 1.15;
+          c.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+        }
+        c.closePath();
+      } else c.arc(0, 0, r, 0, Math.PI * 2);
+      c.fill();
+      c.shadowBlur = 0;
+      if (bonus) {
+        c.strokeStyle = "rgba(247,223,30,.6)"; c.lineWidth = 2;
+        c.beginPath(); c.arc(0, 0, cell * .62, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (this.life / 6)); c.stroke();
+      } else {
+        c.fillStyle = "#7bd389";
+        c.beginPath(); c.ellipse(r * .35, -r * 1.05, r * .38, r * .18, -.5, 0, Math.PI * 2); c.fill();
+      }
+    },
+  });
+}
+
+function burst(px, py, color, n, speed = 4) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, v = Math.random() * speed + 1;
+    particles.get({
+      x: px, y: py, dx: Math.cos(a) * v, dy: Math.sin(a) * v, ttl: randInt(20, 45), color, size: Math.random() * 3 + 2,
+      render() {
+        ctx.globalAlpha = Math.min(1, this.ttl / 25);
+        ctx.fillStyle = this.color;
+        ctx.beginPath(); ctx.arc(0, 0, this.size, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
+      },
+    });
+  }
+}
+
+function popup(px, py, text, color) {
+  popups.push(Text({ text, x: px, y: py, anchor: { x: .5, y: .5 }, font: `bold ${Math.round(cell * .8)}px ${FONT}`, color, ttl: 50 }));
+}
+
+const center = (gx, gy) => [ox + (gx + .5) * cell, oy + (gy + .5) * cell];
+
+function reset() {
+  // start along the longer side of the board so portrait screens get room too
+  const tall = rows > cols;
+  const sx = tall ? Math.floor(cols / 2) : Math.floor(cols / 3), sy = tall ? Math.floor(rows * 2 / 3) : Math.floor(rows / 2);
+  snake = [0, 1, 2, 3].map((i) => (tall ? { x: sx, y: sy + i } : { x: sx - i, y: sy }));
+  prev = snake.map((s) => ({ ...s }));
+  dir = tall ? "up" : "right"; queue = []; grow = 0; score = 0; stepMs = 130; acc = -500;
+  food = makeFood(false); star = null;
+}
+
+function overlay(title, sub, go) {
+  $("ov-title").textContent = title; $("ov-sub").textContent = sub; $("ov-go").textContent = go;
+  $("overlay").classList.remove("hide");
+}
+
+function start() {
+  layout(true);
+  reset();
+  mode = "play";
+  $("overlay").classList.add("hide");
+}
+
+function turn(d) {
+  if (mode !== "play") return;
+  const last = queue.length ? queue[queue.length - 1] : dir;
+  const [lx, ly] = DIRS[last], [nx, ny] = DIRS[d];
+  if (lx + nx === 0 && ly + ny === 0) return; // no reversing
+  if (d !== last && queue.length < 2) queue.push(d);
+}
+
+// flood fill size from a cell, used by the attract mode autopilot to avoid trapping itself
+function reachable(x0, y0) {
+  const seen = new Set(snake.slice(0, -1).map((s) => key(s.x, s.y)));
+  const stack = [[x0, y0]];
+  let n = 0;
+  while (stack.length && n < snake.length * 3) {
+    const [x, y] = stack.pop();
+    if (!inside(x, y) || seen.has(key(x, y))) continue;
+    seen.add(key(x, y)); n++;
+    for (const [dx, dy] of Object.values(DIRS)) stack.push([x + dx, y + dy]);
+  }
+  return n;
+}
+
+function autopilot() {
+  const h = snake[0], target = star || food;
+  let bestD = dir, bestScore = Infinity;
+  for (const [d, [dx, dy]] of Object.entries(DIRS)) {
+    const [cx, cy] = DIRS[dir];
+    if (dx + cx === 0 && dy + cy === 0) continue;
+    const x = h.x + dx, y = h.y + dy;
+    if (!inside(x, y) || occupied(x, y, true)) continue;
+    const room = reachable(x, y);
+    const s = Math.abs(target.gx - x) + Math.abs(target.gy - y) + (room < snake.length ? 1000 - room : 0);
+    if (s < bestScore) { bestScore = s; bestD = d; }
+  }
+  dir = bestD;
+}
+
+function step() {
+  // prev[i] is where segment i was before this step, used to tween the body between grid cells
+  prev = snake.map((s) => ({ ...s }));
+  if (mode === "title") autopilot();
+  else if (queue.length) dir = queue.shift();
+  const [dx, dy] = DIRS[dir], h = snake[0], nx = h.x + dx, ny = h.y + dy;
+  if (!inside(nx, ny) || occupied(nx, ny, grow === 0)) return die();
+  snake.unshift({ x: nx, y: ny });
+  if (grow > 0) { grow--; prev.push({ ...prev[prev.length - 1] }); } else snake.pop();
+
+  for (const f of [food, star]) {
+    if (!f || f.gx !== nx || f.gy !== ny) continue;
+    const [px, py] = center(nx, ny);
+    if (f.bonus) {
+      grow += 3; star = null;
+      if (mode === "play") { score += 50; popup(px, py - cell * .6, "+50", "#f7df1e"); }
+      burst(px, py, "#f7df1e", 40, 6); shake = 6;
+    } else {
+      grow += 1; food = makeFood(false);
+      if (mode === "play") { score += 10; popup(px, py - cell * .6, "+10", "#ecebe6"); }
+      burst(px, py, "#f72585", 18);
+      if (!star && Math.random() < .3) star = makeFood(true);
+    }
+    stepMs = Math.max(65, 130 - snake.length * 1.6);
+  }
+}
+
+function die() {
+  if (mode === "title") { burst(...center(snake[0].x, snake[0].y), "#4cc9f0", 30); reset(); return; }
+  mode = "dying"; dieTimer = 0; shake = 14;
+  best = Math.max(best, score);
+}
+
+function action() {
+  if (mode === "title" || (mode === "over" && performance.now() - overAt > 500)) start();
+}
+
+// input: Kontra key bindings plus a raw listener so any key can start the game
+onKey(["arrowup", "w"], () => turn("up"));
+onKey(["arrowdown", "s"], () => turn("down"));
+onKey(["arrowleft", "a"], () => turn("left"));
+onKey(["arrowright", "d"], () => turn("right"));
+addEventListener("keydown", () => action());
+
+let downAt = null;
+const pointerXY = () => { const p = getPointer(); return [p.x / dpr, p.y / dpr]; };
+onPointer("down", () => { downAt = pointerXY(); });
+onPointer("up", () => {
+  if (mode !== "play") { action(); return; }
+  if (!downAt) return;
+  const [ux, uy] = pointerXY();
+  let dx = ux - downAt[0], dy = uy - downAt[1];
+  if (Math.hypot(dx, dy) < 24) {
+    // a tap steers toward the tapped side of the head
+    const [hx, hy] = center(snake[0].x, snake[0].y);
+    dx = ux - hx; dy = uy - hy;
+  }
+  turn(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up"));
+  downAt = null;
+});
+document.addEventListener("pointerdown", (e) => { if (e.target !== canvas) action(); });
+
+addEventListener("resize", () => {
+  layout(mode === "title");
+  if (mode === "title") reset();
+});
+
+function drawBoard() {
+  ctx.fillStyle = "rgba(255,255,255,.025)";
+  ctx.strokeStyle = "rgba(76,201,240,.35)"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.roundRect(ox - 4, oy - 4, cols * cell + 8, rows * cell + 8, 10); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = "rgba(255,255,255,.07)";
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+    ctx.fillRect(ox + (x + .5) * cell - 1, oy + (y + .5) * cell - 1, 2, 2);
+  }
+}
+
+function drawSnake(t) {
+  const n = snake.length;
+  for (let i = n - 1; i >= 0; i--) {
+    const a = snake[i], b = prev[i] || a;
+    const x = ox + (lerp(b.x, a.x, t) + .5) * cell, y = oy + (lerp(b.y, a.y, t) + .5) * cell;
+    const hue = 190 + (i / Math.max(1, n - 1)) * 80, sz = cell * (i === 0 ? .9 : .8 - (i / n) * .2);
+    ctx.fillStyle = `hsl(${hue} 85% 62%)`;
+    ctx.shadowColor = `hsl(${hue} 90% 60%)`; ctx.shadowBlur = i === 0 ? cell * .7 : cell * .3;
+    ctx.beginPath(); ctx.roundRect(x - sz / 2, y - sz / 2, sz, sz, sz * .35); ctx.fill();
+    if (i === 0) {
+      ctx.shadowBlur = 0;
+      const [dx, dy] = DIRS[dir];
+      for (const s of [-1, 1]) {
+        const ex = x + dx * cell * .18 + dy * s * cell * .2, ey = y + dy * cell * .18 - dx * s * cell * .2;
+        ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(ex, ey, cell * .13, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "#0e1013"; ctx.beginPath(); ctx.arc(ex + dx * cell * .05, ey + dy * cell * .05, cell * .065, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+  }
+  ctx.shadowBlur = 0;
+}
+
+const loop = GameLoop({
+  blur: true,
+  update(dt) {
+    if (mode === "play" || mode === "title") {
+      acc += dt * 1000;
+      const ms = mode === "title" ? 95 : stepMs;
+      while (acc >= ms) { acc -= ms; step(); if (mode !== "play" && mode !== "title") break; }
+      if (star && (star.life -= dt) <= 0) star = null;
+    } else if (mode === "dying") {
+      // the body bursts apart segment by segment
+      dieTimer += dt;
+      while (snake.length && dieTimer > .04) {
+        dieTimer -= .04;
+        const s = snake.shift(); prev.shift();
+        burst(...center(s.x, s.y), `hsl(${190 + Math.random() * 80} 85% 62%)`, 10, 5);
+      }
+      if (!snake.length) {
+        mode = "over"; overAt = performance.now();
+        overlay("撞到了！", `分數 ${score}　最高 ${best}`, "按任意鍵或點擊再玩一次");
+      }
+    }
+    particles.update();
+    for (let i = popups.length - 1; i >= 0; i--) {
+      const p = popups[i];
+      p.y -= 1; p.ttl--; p.opacity = Math.min(1, p.ttl / 25);
+      if (p.ttl <= 0) popups.splice(i, 1);
+    }
+    shake *= .86;
+  },
+  render() {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = "#0e1013"; ctx.fillRect(0, 0, W, H);
+    if (shake > .3) ctx.translate((Math.random() - .5) * shake, (Math.random() - .5) * shake);
+    drawBoard();
+    for (const f of [food, star]) {
+      if (!f) continue;
+      [f.x, f.y] = center(f.gx, f.gy);
+      f.render();
+    }
+    const t = mode === "play" || mode === "title" ? clamp(0, 1, acc / (mode === "title" ? 95 : stepMs)) : 1;
+    drawSnake(t);
+    particles.render();
+    for (const p of popups) p.render();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.font = `bold ${W < 500 ? 16 : 20}px ${FONT}`; ctx.textBaseline = "middle";
+    ctx.textAlign = "left"; ctx.fillStyle = mode === "title" ? "#9d8cff" : "#f7df1e";
+    ctx.fillText(mode === "title" ? "展示模式" : `分數 ${score}`, 16, 26);
+    if (mode !== "title") {
+      ctx.textAlign = "right"; ctx.fillStyle = "#9b998f";
+      ctx.fillText(`長度 ${snake.length}　最高 ${best}`, W - 16, 26);
+    }
+  },
+});
+
+layout(true);
+reset();
+loop.start();
+</script>
+</body>
+</html>

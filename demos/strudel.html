@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strudel 示範：瀏覽器裡的即時編碼節奏</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"]}</script>
+<style>
+  .app {
+    position: fixed; inset: 0; display: grid; grid-template-rows: auto minmax(0, 1fr);
+    gap: 10px; padding: 12px 14px 46px;
+  }
+  .top { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .chip {
+    border: 1px solid var(--line); background: var(--bg-2); color: var(--muted); cursor: pointer;
+    font: 600 12.5px var(--font); padding: 6px 11px; border-radius: 999px;
+  }
+  .chip[aria-pressed="true"] { color: var(--accent-ink); background: var(--accent); border-color: transparent; }
+  .spacer { flex: 1; }
+  #play { min-width: 92px; }
+  .main { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 12px; min-height: 0; }
+  .left { display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
+  .code {
+    position: relative; flex: 1; min-height: 0; border-radius: 10px; border: 1px solid var(--line);
+    background: #12151a; overflow: hidden;
+  }
+  .code pre, .code textarea {
+    position: absolute; inset: 0; margin: 0; padding: 12px 14px; border: 0;
+    font: 13px/1.6 var(--mono); white-space: pre; tab-size: 2; letter-spacing: 0;
+  }
+  .code pre { overflow: hidden; color: #d8d6cf; pointer-events: none; }
+  .code textarea {
+    resize: none; width: 100%; height: 100%; background: transparent; color: transparent;
+    caret-color: var(--accent); outline: none; overflow: auto; scrollbar-width: none;
+  }
+  .code textarea::selection { background: rgba(247, 223, 30, 0.25); }
+  .code:focus-within { border-color: rgba(247, 223, 30, 0.55); }
+  .t-com { color: #6f7680; font-style: italic; }
+  .t-str { color: #f7df1e; }
+  .t-num { color: #ff8c42; }
+  .t-fn { color: #4cc9f0; }
+  mark {
+    background: rgba(247, 37, 133, 0.32); color: #fff; border-radius: 3px;
+    box-shadow: 0 0 0 1px rgba(247, 37, 133, 0.85);
+  }
+  .status { display: flex; gap: 10px; align-items: center; font: 12px var(--mono); color: var(--muted); min-height: 18px; }
+  .status .err { color: var(--c3); font-family: var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .status .ok { color: var(--c4); font-family: var(--font); }
+  kbd { font: 11px var(--mono); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line); color: var(--fg); }
+  .roll {
+    position: relative; min-width: 0; min-height: 0; border-radius: 10px; border: 1px solid var(--line);
+    background: radial-gradient(120% 90% at 30% 0%, #1b2029, #0f1115); overflow: hidden;
+  }
+  .roll canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .roll .cap {
+    position: absolute; left: 10px; top: 8px; font-size: 12px; color: var(--muted);
+    background: rgba(15, 17, 21, 0.7); padding: 2px 8px; border-radius: 6px;
+  }
+  @media (max-width: 620px) {
+    .app { padding: 10px 10px 46px; gap: 8px; }
+    .main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1.25fr) minmax(0, 1fr); gap: 8px; }
+    .code pre, .code textarea { font-size: 11.5px; padding: 9px 10px; }
+    .chip { padding: 5px 9px; font-size: 12px; }
+    .spacer { flex-basis: 100%; height: 0; }
+    .status .keys { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="top">
+    <div id="presets" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+    <div class="spacer"></div>
+    <button class="btn" id="apply" title="Ctrl + Enter">⟳ 套用</button>
+    <button class="btn primary" id="play">▶ 播放</button>
+  </div>
+  <div class="main">
+    <div class="left">
+      <div class="code">
+        <pre id="hl" aria-hidden="true"></pre>
+        <textarea id="src" spellcheck="false" wrap="off" aria-label="Strudel 程式碼"></textarea>
+      </div>
+      <div class="status">
+        <span id="cyc">循環 0.00</span>
+        <span id="msg" class="ok"></span>
+        <span class="spacer"></span>
+        <span class="keys"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> 套用</span>
+      </div>
+    </div>
+    <div class="roll">
+      <canvas id="cv"></canvas>
+      <div class="cap" id="cap">音符捲軸：橫軸是循環，直軸是音高或音色</div>
+    </div>
+  </div>
+</div>
+<div class="hint">邊播邊改程式碼再套用，正在發聲的片段會在程式碼裡亮起</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@strudel/web@1.3.0/dist/index.js"></script>
+<script>
+// Strudel: a JavaScript port of TidalCycles. Mini-notation strings ("sbd*4", "c3(3,8)") become
+// patterns that are queried in cycles and scheduled onto Web Audio synths. Only built-in synths
+// are used here (sbd, white/pink noise, sawtooth, supersaw...), so no sample download is needed.
+const PRESETS = {
+  "鼓組律動": `// 合成鼓組：大鼓、雜訊小鼓、腳踏鈸
+stack(
+  s("sbd*4").decay(.35),
+  s("~ pink ~ pink").decay(.12).gain(.45),
+  s("white*8").decay(.03).gain("[.22 .1]*4")
+)`,
+  "歐幾里得節奏": `// (3,8) 代表 8 格平均放 3 下
+stack(
+  s("sbd(3,8)").decay(.3),
+  note("<c2 c2 eb2 f2>(5,8,2)")
+    .s("square").lpf(700).decay(.18).sustain(0),
+  note("<g4 bb4 c5 eb5>(3,8,1)")
+    .s("triangle").decay(.2).sustain(0).gain(.5)
+)`,
+  "和弦進行": `// 每個循環換一個和弦，加上低音與琶音
+stack(
+  note("<[c3,eb3,g3,bb3] [ab2,c3,eb3,g3] [f2,ab2,c3,eb3] [g2,b2,d3,f3]>")
+    .s("sawtooth").lpf(900).attack(.05).release(.5).gain(.35),
+  note("<c2 ab1 f1 g1>*2").s("triangle").gain(.7),
+  s("sbd ~ sbd ~").decay(.3)
+)`,
+  "音階琶音": `// 音階編號 + 濾波器隨正弦波掃動
+n("0 2 4 6 7 6 4 2")
+  .scale("<C4:major A3:minor F3:lydian G3:mixolydian>")
+  .s("supersaw").lpf(sine.range(500, 2600).slow(4))
+  .decay(.15).sustain(.2).gain(.4)`,
+};
+
+const src = document.getElementById("src");
+const hl = document.getElementById("hl");
+const playBtn = document.getElementById("play");
+const msgEl = document.getElementById("msg");
+const cycEl = document.getElementById("cyc");
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+
+let repl = null;
+let pattern = null;
+let playing = false;
+let current = "鼓組律動";
+let lanes = [];          // sorted lane keys for the piano roll
+let activeKey = "";
+let lastCycle = 0;
+
+// ---------- code view: light syntax colouring + active mini-notation marks ----------
+function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+function tokenClasses(code) {
+  const cls = new Array(code.length).fill("");
+  const re = /(\/\/[^\n]*)|("[^"\n]*"|'[^'\n]*')|(\b\d+(?:\.\d+)?\b|\.\d+\b)|([A-Za-z_]\w*)(?=\()/g;
+  let m;
+  while ((m = re.exec(code))) {
+    const c = m[1] ? "t-com" : m[2] ? "t-str" : m[3] ? "t-num" : "t-fn";
+    for (let i = m.index; i < m.index + m[0].length; i++) cls[i] = c;
+  }
+  return cls;
+}
+function paintCode(ranges) {
+  const code = src.value;
+  const cls = tokenClasses(code);
+  const on = new Uint8Array(code.length);
+  ranges.forEach(([a, b]) => { for (let i = a; i < b && i < code.length; i++) on[i] = 1; });
+  let html = "", i = 0;
+  while (i < code.length) {
+    let j = i;
+    while (j < code.length && cls[j] === cls[i] && on[j] === on[i]) j++;
+    let piece = esc(code.slice(i, j));
+    if (cls[i]) piece = `<span class="${cls[i]}">${piece}</span>`;
+    if (on[i]) piece = `<mark>${piece}</mark>`;
+    html += piece;
+    i = j;
+  }
+  hl.innerHTML = html + "\n";
+  hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft;
+}
+src.addEventListener("scroll", () => { hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft; });
+src.addEventListener("input", () => { paintCode([]); setMsg("已修改，按 Ctrl + Enter 套用", "ok"); });
+
+// ---------- helpers on haps ----------
+function locRanges(hap) {
+  return (hap.context?.locations || []).map((l) => (Array.isArray(l) ? l : [l.start, l.end]));
+}
+function laneOf(v) {
+  if (v.note !== undefined) {
+    const m = typeof v.note === "number" ? v.note : strudel.noteToMidi(v.note);
+    return { key: `n${m}`, order: m, label: v.note };
+  }
+  const s = v.s || "sine";
+  return { key: `s${s}`, order: -100 + ["sbd", "pink", "white", "brown"].indexOf(s), label: s };
+}
+const SOUND_COLORS = { sbd: "#ff8c42", pink: "#f72585", white: "#4cc9f0", square: "#7bd389", triangle: "#9d8cff", sawtooth: "#f7df1e", supersaw: "#4cc9f0", sine: "#7bd389" };
+function colorOf(v) { return SOUND_COLORS[v.s || "sine"] || "#ecebe6"; }
+
+function buildLanes() {
+  const seen = new Map();
+  pattern.queryArc(0, 8).forEach((h) => {
+    const l = laneOf(h.value);
+    if (!seen.has(l.key)) seen.set(l.key, l);
+  });
+  lanes = [...seen.values()].sort((a, b) => b.order - a.order);
+}
+
+// ---------- piano roll ----------
+const WINDOW = 2;   // cycles visible
+function drawRoll(now) {
+  const dpr = devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (!pattern || !lanes.length) return;
+  const top = 34, bottom = 22, left = 6;
+  const playX = W * 0.22;
+  const pxPerCycle = (W - playX) / (WINDOW - 0.25);
+  const t0 = now - playX / pxPerCycle;
+  const laneH = Math.min(26, (H - top - bottom) / lanes.length);
+  const y0 = top + ((H - top - bottom) - laneH * lanes.length) / 2;
+  const laneIdx = new Map(lanes.map((l, i) => [l.key, i]));
+
+  // cycle grid
+  ctx.font = "11px ui-monospace, Consolas, monospace";
+  for (let c = Math.floor(t0); c <= t0 + WINDOW + 1; c += 0.25) {
+    const x = left + (c - t0) * pxPerCycle;
+    const whole = Math.abs(c - Math.round(c)) < 1e-6;
+    ctx.strokeStyle = whole ? "rgba(255,255,255,0.18)" : "rgba(255,255,255,0.05)";
+    ctx.beginPath(); ctx.moveTo(x, y0 - 6); ctx.lineTo(x, y0 + laneH * lanes.length + 4); ctx.stroke();
+    if (whole) { ctx.fillStyle = "rgba(255,255,255,0.4)"; ctx.fillText(String(Math.round(c)), x + 3, H - 7); }
+  }
+  // notes
+  const haps = pattern.queryArc(Math.max(0, t0), t0 + WINDOW + 0.5).filter((h) => h.hasOnset());
+  haps.forEach((h) => {
+    const i = laneIdx.get(laneOf(h.value).key);
+    if (i === undefined) return;
+    const b = h.whole.begin.valueOf(), e = h.whole.end.valueOf();
+    const x = left + (b - t0) * pxPerCycle, w = Math.max(3, (e - b) * pxPerCycle - 2);
+    const y = y0 + i * laneH + 2, hh = laneH - 4;
+    const active = playing && now >= b && now < e;
+    ctx.globalAlpha = b + 1e-6 < now && !active ? 0.35 : 1;
+    ctx.fillStyle = colorOf(h.value);
+    if (active) { ctx.shadowColor = ctx.fillStyle; ctx.shadowBlur = 14; }
+    ctx.beginPath(); ctx.roundRect(x, y, w, hh, Math.min(4, hh / 2)); ctx.fill();
+    ctx.shadowBlur = 0;
+  });
+  ctx.globalAlpha = 1;
+  // lane labels
+  ctx.font = "10px ui-monospace, Consolas, monospace";
+  lanes.forEach((l, i) => {
+    if (laneH < 11 && i % 2) return;
+    ctx.fillStyle = "rgba(236,235,230,0.45)";
+    ctx.fillText(l.label, W - ctx.measureText(l.label).width - 6, y0 + i * laneH + laneH / 2 + 3.5);
+  });
+  // playhead
+  const px = left + playX;
+  ctx.strokeStyle = "#f72585"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(px, y0 - 10); ctx.lineTo(px, y0 + laneH * lanes.length + 6); ctx.stroke();
+  ctx.lineWidth = 1;
+}
+
+// ---------- evaluate / play ----------
+function setMsg(text, cls) { msgEl.textContent = text; msgEl.className = cls; }
+
+async function apply(autoplay) {
+  const code = src.value;
+  const pat = await repl.evaluate(code, autoplay);
+  if (!pat) {
+    const err = repl.state.evalError;
+    setMsg(`語法錯誤：${err ? err.message : "無法解析"}`, "err");
+    return false;
+  }
+  pattern = pat;
+  buildLanes();
+  setMsg(playing || autoplay ? "✓ 已套用，下一拍生效" : "✓ 已解析，按播放開始", "ok");
+  paintCode([]);
+  return true;
+}
+
+function loadPreset(name) {
+  current = name;
+  src.value = PRESETS[name];
+  document.querySelectorAll("#presets .chip").forEach((b) => b.setAttribute("aria-pressed", b.textContent === name));
+  paintCode([]);
+  apply(playing);
+}
+
+playBtn.addEventListener("click", async () => {
+  if (playing) {
+    strudel.hush();
+    playing = false;
+    playBtn.textContent = "▶ 播放";
+    paintCode([]);
+    return;
+  }
+  await strudel.getAudioContext().resume();
+  playing = true;
+  playBtn.textContent = "■ 停止";
+  if (!(await apply(true))) { playing = false; playBtn.textContent = "▶ 播放"; }
+});
+document.getElementById("apply").addEventListener("click", () => apply(playing));
+src.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); apply(playing); }
+  if (e.key === "Tab") { e.preventDefault(); document.execCommand("insertText", false, "  "); }
+});
+
+const presetsEl = document.getElementById("presets");
+Object.keys(PRESETS).forEach((name) => {
+  const b = document.createElement("button");
+  b.className = "chip"; b.textContent = name;
+  b.addEventListener("click", () => loadPreset(name));
+  presetsEl.append(b);
+});
+
+// Animation loop: playhead, active-note glow and code highlighting follow the scheduler clock.
+function frame() {
+  let now = 0;
+  if (playing && repl) {
+    now = Math.max(0, repl.scheduler.now());
+    lastCycle = now;
+    const active = pattern ? pattern.queryArc(now, now + 1e-4).filter((h) => h.whole && h.whole.begin.valueOf() <= now) : [];
+    const ranges = active.flatMap(locRanges);
+    const key = ranges.map((r) => r.join("-")).join(",");
+    if (key !== activeKey) { activeKey = key; paintCode(ranges); }
+  } else if (activeKey) { activeKey = ""; paintCode([]); }
+  cycEl.textContent = `循環 ${(playing ? now : 0).toFixed(2)}`;
+  drawRoll(playing ? now : 0);
+  requestAnimationFrame(frame);
+}
+
+src.value = PRESETS[current];
+paintCode([]);
+initStrudel().then((r) => {
+  repl = r;
+  loadPreset(current);
+  requestAnimationFrame(frame);
+}).catch((err) => {
+  setMsg(`Strudel 載入失敗：${err.message}`, "err");
+  console.error(err);
+});
+</script>
+</body>
+</html>

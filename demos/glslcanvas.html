@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>glslCanvas 示範：邊改邊編譯的片段著色器</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  :root { --ed: min(380px, 42vw); }
+  #glsl { position: fixed; left: 0; top: 0; width: calc(100% - var(--ed) - 24px); height: 100%; display: block; }
+  .btn { padding: 7px 10px; font-size: 12px; }
+  .editor {
+    position: fixed; right: 12px; top: 56px; bottom: 12px; width: var(--ed); z-index: 40;
+    display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
+  }
+  .editor .head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; }
+  .editor .head b { font-weight: 600; flex: none; }
+  #status { min-width: 0; font: 11px/1.4 var(--mono); color: var(--c4); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #status.err { color: var(--c3); }
+  .editor textarea {
+    flex: 1; min-height: 0; resize: none; margin: 0;
+    background: rgba(0, 0, 0, 0.38); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 10px; font: 11.5px/1.5 var(--mono); color: #d8d6cf;
+    white-space: pre; overflow: auto; tab-size: 2; outline: none;
+  }
+  .editor textarea:focus { border-color: var(--accent); }
+  .knobs { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 6px 8px; align-items: center; font-size: 12px; color: var(--muted); }
+  .knobs input { width: 100%; margin: 0; }
+  .note { margin: 0; font-size: 11px; line-height: 1.5; color: var(--muted); }
+  .note code { font-family: var(--mono); color: var(--fg); }
+  @media (max-width: 600px) {
+    #glsl { width: 100%; height: calc(100% - 252px); }
+    .editor { left: 12px; right: 12px; width: auto; top: auto; bottom: 46px; height: 200px; }
+    .note { display: none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="glsl"></canvas>
+<div class="controls" id="bar"></div>
+<aside class="panel editor">
+  <div class="head"><b id="title">fragment shader</b><span id="status">編譯中…</span></div>
+  <textarea id="src" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="GLSL 片段著色器原始碼"></textarea>
+  <div class="knobs">
+    <label for="speed">速度</label><input id="speed" type="range" min="0" max="3" step="0.01" value="1">
+    <label for="hue">色相</label><input id="hue" type="range" min="0" max="1" step="0.01" value="0">
+  </div>
+  <p class="note"><code>u_time</code>、<code>u_mouse</code>、<code>u_resolution</code> 由 glslCanvas 自動傳入；<code>u_speed</code>、<code>u_hue</code> 由滑桿透過 <code>setUniform()</code> 設定。</p>
+</aside>
+<div class="hint">直接改程式碼，停手 0.4 秒就重新編譯</div>
+
+<script src="https://cdn.jsdelivr.net/npm/glslCanvas@0.2.6/dist/GlslCanvas.min.js"></script>
+<script>
+const HEADER = `#ifdef GL_ES
+precision highp float;
+#endif
+
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+uniform float u_time;
+uniform float u_speed;
+uniform float u_hue;
+`;
+
+const NOISE = `
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+float noise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x),
+             mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+`;
+
+const SHADERS = {
+  aurora: HEADER + NOISE + `
+float fbm(vec2 p) {
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 5; i++) { v += a * noise(p); p *= 2.0; a *= 0.5; }
+  return v;
+}
+
+vec3 palette(float t) {
+  return 0.5 + 0.5 * cos(6.2832 * (t + vec3(0.0, 0.33, 0.67)));
+}
+
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y;
+  float t = u_time * u_speed;
+  // Mouse x bends the curtains like wind
+  float wind = u_mouse.x > 0.0 ? u_mouse.x / u_resolution.x - 0.5 : 0.2 * sin(t * 0.2);
+
+  vec3 col = mix(vec3(0.01, 0.015, 0.05), vec3(0.03, 0.05, 0.14), uv.y);
+  vec2 cell = floor(gl_FragCoord.xy / 2.0);
+  col += step(0.996, hash(cell)) * (0.6 + 0.4 * sin(t * 2.0 + hash(cell + 3.0) * 30.0)) * uv.y;
+
+  for (int i = 0; i < 3; i++) {
+    float fi = float(i);
+    float x = p.x * (1.0 + fi * 0.35) + wind * p.y * 2.0 + fi * 7.0;
+    float base = 0.02 + fi * 0.07 + (fbm(vec2(x * 1.3 + t * 0.06, fi + t * 0.1)) - 0.5) * 0.7;
+    float h = p.y - base;
+    float rays = 0.55 + 0.45 * noise(vec2(x * 28.0, t * 0.6 + fi));
+    float glow = smoothstep(-0.015, 0.01, h) * exp(-max(h, 0.0) * (5.0 + fi * 2.0)) * rays;
+    col += palette(0.67 + u_hue - h * 1.2 - fi * 0.05) * glow * (0.8 - fi * 0.18);
+  }
+
+  float ridge = -0.3 + 0.2 * fbm(vec2(p.x * 2.5 + 3.0, 0.5));
+  col = mix(col, vec3(0.005, 0.008, 0.015), smoothstep(ridge + 0.004, ridge - 0.004, p.y));
+  gl_FragColor = vec4(col, 1.0);
+}
+`,
+
+  grid: HEADER + `
+vec3 hueShift(vec3 c, float a) {
+  const vec3 k = vec3(0.57735);
+  float ca = cos(a);
+  return c * ca + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - ca);
+}
+
+void main() {
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y;
+  float t = u_time * u_speed;
+  vec2 m = u_mouse.x > 0.0 ? u_mouse / u_resolution - 0.5 : vec2(0.15 * sin(t * 0.3), 0.0);
+  float horizon = -0.04;
+  vec3 col;
+
+  if (p.y > horizon) {
+    float h = p.y - horizon;
+    col = mix(vec3(0.6, 0.08, 0.45), vec3(0.04, 0.01, 0.12), smoothstep(0.0, 0.45, h));
+    // Striped retro sun
+    vec2 sp = p - vec2(m.x * 0.4, horizon + 0.2);
+    float r = length(sp);
+    float band = sin(sp.y * 70.0 - t * 2.0);
+    float cut = sp.y > 0.0 ? 1.0 : step(-0.2 - sp.y * 4.0, band);
+    vec3 sun = mix(vec3(1.0, 0.15, 0.55), vec3(1.0, 0.85, 0.25), smoothstep(-0.18, 0.18, sp.y));
+    col = mix(col, sun, smoothstep(0.185, 0.18, r) * cut);
+    col += vec3(1.0, 0.25, 0.6) * 0.3 * exp(-r * 5.0);
+  } else {
+    // Perspective floor grid scrolling toward the viewer
+    float d = horizon - p.y;
+    float z = 0.3 / d;
+    vec2 g = vec2((p.x - m.x * 0.4) * z * 5.0, z * 5.0 + t * 2.0);
+    float wx = 1.2 * z * 5.0 / u_resolution.y + 0.012;
+    float wz = 1.2 * z * z * 5.0 / (0.3 * u_resolution.y) + 0.012;
+    float lx = 1.0 - smoothstep(0.0, wx, abs(fract(g.x + 0.5) - 0.5));
+    float lz = 1.0 - smoothstep(0.0, wz, abs(fract(g.y + 0.5) - 0.5));
+    float grid = max(lx, lz) * exp(-z * 0.25) * smoothstep(0.0, 0.03, d);
+    col = vec3(0.03, 0.0, 0.08) + vec3(0.2, 0.9, 1.0) * grid + vec3(0.9, 0.2, 0.7) * 0.35 * exp(-d * 10.0);
+  }
+  col += vec3(1.0, 0.35, 0.75) * 0.7 * exp(-abs(p.y - horizon) * 60.0);
+  gl_FragColor = vec4(hueShift(col, u_hue * 6.2832), 1.0);
+}
+`,
+
+  cells: HEADER + `
+vec2 hash2(vec2 p) {
+  p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+  return fract(sin(p) * 43758.5453);
+}
+
+vec3 palette(float t) {
+  return 0.5 + 0.5 * cos(6.2832 * (t + vec3(0.0, 0.33, 0.67)));
+}
+
+void main() {
+  float t = u_time * u_speed;
+  vec2 p = gl_FragCoord.xy / u_resolution.y * 6.0;
+  vec2 ip = floor(p), fp = fract(p);
+  float d1 = 8.0, d2 = 8.0;
+  vec2 id = vec2(0.0);
+  // Animated Voronoi: keep the nearest and second-nearest seed
+  for (int y = -1; y <= 1; y++) {
+    for (int x = -1; x <= 1; x++) {
+      vec2 g = vec2(float(x), float(y));
+      vec2 o = 0.5 + 0.42 * sin(t + 6.2832 * hash2(ip + g));
+      vec2 r = g + o - fp;
+      float d = dot(r, r);
+      if (d < d1) { d2 = d1; d1 = d; id = ip + g; }
+      else if (d < d2) { d2 = d; }
+    }
+  }
+  float edge = sqrt(d2) - sqrt(d1);
+  vec3 base = palette(hash2(id).x * 0.45 + u_hue + 0.5);
+  vec3 col = base * (0.85 - 0.55 * sqrt(d1));
+  col += base * 0.7 * smoothstep(0.14, 0.05, edge);
+  col = mix(vec3(0.02, 0.02, 0.04), col, smoothstep(0.015, 0.045, edge));
+  col += vec3(1.0, 0.97, 0.9) * 0.8 * smoothstep(0.012, 0.003, d1);
+  // The cursor lights up nearby cells
+  float md = u_mouse.x > 0.0 ? length(gl_FragCoord.xy - u_mouse) / u_resolution.y : 9.0;
+  col += vec3(1.0, 0.95, 0.8) * 0.45 * exp(-md * 9.0);
+  gl_FragColor = vec4(col, 1.0);
+}
+`,
+
+  lava: HEADER + NOISE + `
+float fbm(vec2 p) {
+  float v = 0.0, a = 0.5;
+  mat2 r = mat2(0.8, 0.6, -0.6, 0.8);
+  for (int i = 0; i < 5; i++) { v += a * noise(p); p = r * p * 2.0; a *= 0.5; }
+  return v;
+}
+
+vec3 hueShift(vec3 c, float a) {
+  const vec3 k = vec3(0.57735);
+  float ca = cos(a);
+  return c * ca + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - ca);
+}
+
+void main() {
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y * 3.0;
+  float t = u_time * u_speed * 0.25;
+  vec2 m = u_mouse.x > 0.0 ? (u_mouse - 0.5 * u_resolution) / u_resolution.y * 3.0 : vec2(0.0);
+  // Domain warping: fbm feeding fbm feeding fbm
+  vec2 q = vec2(fbm(p + vec2(0.0, t)), fbm(p + vec2(5.2, 1.3) - t));
+  vec2 r = vec2(fbm(p + 4.0 * q + vec2(1.7, 9.2) + t * 1.5 + m * 0.3),
+                fbm(p + 4.0 * q + vec2(8.3, 2.8) - t));
+  float f = fbm(p + 3.5 * r);
+  vec3 col = mix(vec3(0.06, 0.0, 0.03), vec3(0.85, 0.12, 0.02), clamp(f * f * 3.0, 0.0, 1.0));
+  col = mix(col, vec3(1.0, 0.7, 0.15), clamp(length(q) * f * 1.4 - 0.25, 0.0, 1.0));
+  col = mix(col, vec3(0.03, 0.0, 0.06), clamp(r.y * r.y - 0.15, 0.0, 1.0));
+  col += vec3(1.0, 0.9, 0.6) * pow(clamp(f * 1.25, 0.0, 1.0), 8.0);
+  gl_FragColor = vec4(hueShift(col, u_hue * 6.2832), 1.0);
+}
+`,
+};
+
+const PRESETS = [["aurora", "極光"], ["grid", "霓虹格線"], ["cells", "細胞"], ["lava", "熔岩"]];
+const canvas = document.getElementById("glsl");
+const src = document.getElementById("src");
+const status = document.getElementById("status");
+const speed = document.getElementById("speed");
+const hue = document.getElementById("hue");
+
+// glslCanvas only resizes when the CSS size changes, so give it the right backing size up front.
+const dpr = window.devicePixelRatio || 1;
+canvas.width = Math.round(canvas.clientWidth * dpr);
+canvas.height = Math.round(canvas.clientHeight * dpr);
+
+const sandbox = new GlslCanvas(canvas);
+let lastError = "", pending = "", lastGood = "", restoring = false;
+
+function applyKnobs() {
+  sandbox.setUniform("u_speed", Number(speed.value));
+  sandbox.setUniform("u_hue", Number(hue.value));
+}
+
+function compile(code) {
+  pending = code;
+  sandbox.load(code);
+}
+
+if (!sandbox.gl) {
+  status.className = "err";
+  status.textContent = "此瀏覽器無法建立 WebGL";
+} else {
+  sandbox.on("error", (e) => {
+    const first = String(e.error || "").split("\n").find((line) => line.trim()) || "未知錯誤";
+    // glslCanvas prepends "#line 0", so the driver reports editor line + 1.
+    const m = first.match(/ERROR:\s*\d+:(\d+):\s*(.*)/);
+    lastError = m ? `第 ${Number(m[1]) - 1} 行：${m[2]}` : first;
+  });
+  // A new program starts with zeroed custom uniforms, so re-send the slider values on every load.
+  sandbox.on("load", () => {
+    applyKnobs();
+    if (restoring) return;
+    if (sandbox.isValid) {
+      lastGood = pending;
+      status.className = "";
+      status.textContent = "● 編譯成功";
+      status.title = "";
+    } else {
+      status.className = "err";
+      status.textContent = "● " + lastError;
+      status.title = lastError + "（畫面保留上一版）";
+      // glslCanvas swaps in a white placeholder on failure; put the last working shader back.
+      if (lastGood) {
+        restoring = true;
+        sandbox.load(lastGood);
+        restoring = false;
+      }
+    }
+    lastError = "";
+  });
+}
+
+function loadPreset(key) {
+  document.querySelectorAll("#bar .btn").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.k === key)));
+  document.getElementById("title").textContent = PRESETS.find((p) => p[0] === key)[1] + ".frag";
+  src.value = SHADERS[key].trim() + "\n";
+  src.scrollTop = 0;
+  if (sandbox.gl) compile(src.value);
+}
+
+const bar = document.getElementById("bar");
+for (const [key, label] of PRESETS) {
+  const b = document.createElement("button");
+  b.className = "btn"; b.type = "button"; b.dataset.k = key; b.textContent = label;
+  b.addEventListener("click", () => loadPreset(key));
+  bar.append(b);
+}
+
+let timer = 0;
+src.addEventListener("input", () => {
+  clearTimeout(timer);
+  status.className = "";
+  status.textContent = "編輯中…";
+  timer = setTimeout(() => sandbox.gl && compile(src.value), 400);
+});
+src.addEventListener("keydown", (e) => {
+  if (e.key !== "Tab") return;
+  e.preventDefault();
+  src.setRangeText("  ", src.selectionStart, src.selectionEnd, "end");
+  src.dispatchEvent(new Event("input"));
+});
+speed.addEventListener("input", () => sandbox.gl && applyKnobs());
+hue.addEventListener("input", () => sandbox.gl && applyKnobs());
+
+loadPreset("aurora");
+</script>
+</body>
+</html>

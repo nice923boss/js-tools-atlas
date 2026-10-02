@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tabulator 示範：可編輯的門市營收表</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tabulator-tables@6.6.1/dist/css/tabulator_simple.min.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"表格內數字、評分、狀態都可以直接點擊修改"}</script>
+<style>
+  :root { --ink: #23395b; }
+  .app { position: fixed; inset: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); }
+  .tb { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; background: var(--ink); color: #fff; }
+  .tb h1 { font-size: 15px; margin: 0 auto 0 0; display: flex; gap: 8px; align-items: baseline; white-space: nowrap; }
+  .tb h1 small { font-weight: 400; opacity: .8; font-size: 12px; }
+  .tb .btn { background: rgba(255,255,255,.14); color: #fff; border-color: rgba(255,255,255,.25); padding: 7px 11px; }
+  .tb .btn.primary { background: #fff; color: var(--ink); }
+  .tb .btn:disabled { opacity: .45; cursor: default; }
+  .seg { display: inline-flex; border: 1px solid rgba(255,255,255,.3); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; background: transparent; color: #fff; padding: 7px 10px; font: 600 12px var(--font); cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: #fff; color: var(--ink); }
+  .seg span { padding: 7px 4px 7px 10px; font-size: 12px; opacity: .75; }
+
+  .wrap { min-height: 0; min-width: 0; overflow: hidden; background: #fff; }
+  #table { height: 100%; border: 0; font-size: 13px; background: #fff; }
+  .statusbar {
+    display: flex; gap: 12px; align-items: center; padding: 6px 12px; min-height: 32px;
+    border-top: 1px solid var(--line); background: #eeede8; font-size: 12px; color: var(--muted);
+  }
+  .statusbar b { color: var(--fg); font-weight: 600; }
+  #log { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .statusbar .hint { position: static; flex: none; background: transparent; border: 0; padding: 0; backdrop-filter: none; }
+
+  /* Tabulator theme tweaks */
+  .tabulator { font-family: var(--font); }
+  .tabulator .tabulator-header { background: #f4f3ee; border-bottom: 2px solid var(--ink); color: #2c2b27; }
+  .tabulator .tabulator-header .tabulator-col { background: #f4f3ee; }
+  .tabulator .tabulator-header .tabulator-col .tabulator-col-content { padding: 7px 8px; }
+  .tabulator .tabulator-header .tabulator-col.tabulator-moving { background: #e4e9f2; border: 1px solid var(--ink); }
+  .tabulator .tabulator-header-filter input, .tabulator .tabulator-header-filter select {
+    font: 12px var(--font); padding: 3px 6px !important; border: 1px solid #d6d4cc; border-radius: 5px; background: #fff;
+  }
+  .tabulator-row { min-height: 32px; }
+  .tabulator-row .tabulator-cell { padding: 6px 8px; border-right-color: #ecebe6; }
+  .tabulator-row.tabulator-row-even { background: #fafaf7; }
+  .tabulator-row .tabulator-cell.tabulator-editable { cursor: text; }
+  .tabulator-row .tabulator-cell.tabulator-editable:hover { box-shadow: inset 0 0 0 1px #9fb0cc; }
+  .tabulator-row .tabulator-cell.tabulator-editing { border: 2px solid var(--ink); }
+  .tabulator-row .tabulator-cell.edited { background: #fff6cc; }
+  .tabulator-row.tabulator-group { background: #e8ecf3; border-top: 1px solid #c9d2e2; border-bottom: 1px solid #c9d2e2; padding: 6px 8px; font-weight: 700; color: var(--ink); }
+  .tabulator-row.tabulator-group span { color: #5c6b85; font-weight: 400; margin-left: 8px; }
+  .tabulator-row.tabulator-group .tabulator-arrow { border-left-color: var(--ink); }
+  .tabulator-row.tabulator-group.tabulator-group-visible .tabulator-arrow { border-top-color: var(--ink); border-left-color: transparent; }
+  .tabulator .tabulator-footer { background: #f4f3ee; border-top: 2px solid var(--ink); }
+  .tabulator .tabulator-footer .tabulator-calcs-holder { background: #f4f3ee !important; border: 0; }
+  .tabulator .tabulator-footer .tabulator-calcs-holder .tabulator-row { background: #f4f3ee !important; font-weight: 700; color: var(--ink); }
+  .tabulator-row .tabulator-cell.tabulator-frozen.tabulator-frozen-left { border-right: 2px solid #dcdad2; }
+  .tabulator .tabulator-tableholder .tabulator-placeholder span { color: var(--muted); font-size: 14px; font-weight: 400; }
+
+  .pill { display: inline-block; padding: 1px 9px; border-radius: 999px; font-size: 12px; line-height: 1.6; }
+  .pill.ok { background: #e3f4e8; color: #23784a; }
+  .pill.fix { background: #fde8d8; color: #b4501a; }
+  .pill.new { background: #e2eefc; color: #1f63b3; }
+
+  @media (max-width: 620px) {
+    .tb { padding: 8px 10px; gap: 6px; }
+    .tb h1 { flex: 1; }
+    .tb .seg { order: 5; }
+    .tb .long { display: none; }
+    .tb h1 small { display: none; }
+    .seg span { display: none; }
+    .seg button { padding: 6px 8px; }
+    .tb .btn { padding: 6px 9px; font-size: 12px; }
+    .statusbar .hint { display: none; }
+  }
+</style>
+</head>
+<body class="paper">
+<div class="app">
+  <div class="tb">
+    <h1>Tabulator 門市營收表 <small>示意資料・9 月目標與實績（萬元）</small></h1>
+    <div class="seg" id="groupSeg" role="group" aria-label="分組方式">
+      <span>分組</span>
+      <button data-group="region" aria-pressed="true">區域</button>
+      <button data-group="city" aria-pressed="false">縣市</button>
+      <button data-group="status" aria-pressed="false">狀態</button>
+      <button data-group="" aria-pressed="false">不分組</button>
+    </div>
+    <button class="btn" id="undoBtn" disabled>復原</button>
+    <button class="btn" id="jsonBtn">JSON</button>
+    <button class="btn primary" id="csvBtn"><span class="long">下載 </span>CSV</button>
+  </div>
+  <div class="wrap"><div id="table"></div></div>
+  <div class="statusbar">
+    <span id="log">示意資料，點目標、實績、評分或狀態即可修改</span>
+    <span class="hint">點儲存格編輯・拖曳欄名換順序・欄名下方可篩選</span>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/tabulator-tables@6.6.1/dist/js/tabulator.min.js"></script>
+<script>
+// Deterministic pseudo-random numbers so the sample data is stable between loads
+function mulberry32(seed) {
+  return () => {
+    seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(20260930);
+
+// [store, city, region, manager, status]
+const STORES = [
+  ["臺北信義店", "臺北市", "北區", "林怡君", "營運中"],
+  ["臺北西門店", "臺北市", "北區", "陳冠宇", "營運中"],
+  ["新北板橋店", "新北市", "北區", "張雅婷", "營運中"],
+  ["新北淡水店", "新北市", "北區", "王柏翰", "整修中"],
+  ["桃園中壢店", "桃園市", "北區", "李佳穎", "營運中"],
+  ["新竹巨城店", "新竹市", "北區", "黃子軒", "新開幕"],
+  ["基隆廟口店", "基隆市", "北區", "吳欣怡", "營運中"],
+  ["臺中逢甲店", "臺中市", "中區", "劉承恩", "營運中"],
+  ["臺中勤美店", "臺中市", "中區", "蔡佩珊", "營運中"],
+  ["彰化鹿港店", "彰化縣", "中區", "楊宗翰", "營運中"],
+  ["南投日月潭店", "南投縣", "中區", "許雅雯", "新開幕"],
+  ["苗栗頭份店", "苗栗縣", "中區", "鄭家豪", "營運中"],
+  ["臺南安平店", "臺南市", "南區", "謝宜蓁", "營運中"],
+  ["臺南中西店", "臺南市", "南區", "郭俊宏", "整修中"],
+  ["高雄駁二店", "高雄市", "南區", "洪詩涵", "營運中"],
+  ["高雄巨蛋店", "高雄市", "南區", "邱柏睿", "營運中"],
+  ["嘉義文化店", "嘉義市", "南區", "曾郁婷", "營運中"],
+  ["屏東墾丁店", "屏東縣", "南區", "廖志明", "新開幕"],
+  ["宜蘭羅東店", "宜蘭縣", "東區", "賴怡安", "營運中"],
+  ["花蓮東大門店", "花蓮縣", "東區", "周品妤", "營運中"],
+  ["臺東鐵花店", "臺東縣", "東區", "蕭宇翔", "整修中"],
+];
+
+const rateOf = (target, actual) => (target > 0 ? Math.round((actual / target) * 1000) / 10 : 0);
+
+const data = STORES.map(([store, city, region, manager, status], i) => {
+  const target = 80 + Math.round(rand() * 14) * 10;
+  const factor = status === "整修中" ? 0.55 + rand() * 0.3 : 0.78 + rand() * 0.42;
+  const actual = Math.round(target * factor);
+  return { id: i + 1, store, city, region, manager, target, actual, rate: rateOf(target, actual), stars: 3 + Math.round(rand() * 2), status };
+});
+
+const rateColor = (v) => (v >= 100 ? "#2f9e55" : v >= 85 ? "#e0a21b" : "#d64545");
+const STATUS_CLASS = { "營運中": "ok", "整修中": "fix", "新開幕": "new" };
+const GROUP_LABEL = { region: "區域", city: "縣市", status: "狀態" };
+const edited = new Map();  // "id:field" -> number of edits not yet undone
+
+const table = new Tabulator("#table", {
+  data,
+  index: "id",
+  height: "100%",
+  layout: "fitColumns",
+  movableColumns: true,
+  history: true,
+  groupBy: "region",
+  groupUpdateOnCellEdit: true,  // move a row to its new group when the grouped field is edited
+  columnCalcs: "table",
+  groupHeader: (value, count, rows) => {
+    const sum = rows.reduce((s, r) => s + r.actual, 0);
+    return `${value}<span>${count} 間門市・實績 ${sum.toLocaleString()} 萬</span>`;
+  },
+  locale: "zh-tw",
+  langs: {
+    "zh-tw": {
+      data: { loading: "載入中", error: "載入失敗" },
+      groups: { item: "筆", items: "筆" },
+      headerFilters: { default: "篩選…", columns: {} },
+    },
+  },
+  placeholder: "沒有符合條件的門市",
+  rowFormatter: (row) => {
+    // Re-apply the "edited" highlight whenever a row is redrawn
+    const id = row.getData().id;
+    for (const cell of row.getCells()) {
+      cell.getElement().classList.toggle("edited", (edited.get(`${id}:${cell.getField()}`) || 0) > 0);
+    }
+  },
+  columns: [
+    { title: "門市", field: "store", frozen: true, minWidth: 116, headerFilter: "input", headerFilterPlaceholder: "搜尋門市", bottomCalc: "count", bottomCalcFormatter: (c) => `共 ${c.getValue()} 間` },
+    { title: "縣市", field: "city", minWidth: 78, headerFilter: "list", headerFilterParams: { valuesLookup: true, clearable: true }, headerFilterPlaceholder: "全部" },
+    { title: "區域", field: "region", visible: false, download: true },
+    { title: "店長", field: "manager", minWidth: 70, visible: innerWidth > 520 },  // narrow frames: make room for the editable numbers
+    { title: "目標", field: "target", minWidth: 76, hozAlign: "right", sorter: "number", editor: "number", editorParams: { min: 0, step: 10 }, validator: ["required", "min:0"], bottomCalc: "sum" },
+    { title: "實績", field: "actual", minWidth: 76, hozAlign: "right", sorter: "number", editor: "number", editorParams: { min: 0, step: 5 }, validator: ["required", "min:0"], bottomCalc: "sum" },
+    {
+      title: "達成率", field: "rate", minWidth: 130, widthGrow: 2, sorter: "number",
+      formatter: "progress",
+      formatterParams: { min: 0, max: 130, color: rateColor, legend: (v) => `${v}%`, legendColor: "#1c1c1a", legendAlign: "center" },
+      bottomCalc: (values, rows) => {
+        const t = rows.reduce((s, r) => s + r.target, 0);
+        const a = rows.reduce((s, r) => s + r.actual, 0);
+        return `${rateOf(t, a)}%`;
+      },
+    },
+    { title: "顧客評分", field: "stars", minWidth: 104, formatter: "star", formatterParams: { stars: 5 }, editor: "star", hozAlign: "center", bottomCalc: "avg", bottomCalcParams: { precision: 1 } },
+    {
+      title: "狀態", field: "status", minWidth: 86, hozAlign: "center",
+      editor: "list", editorParams: { values: ["營運中", "整修中", "新開幕"] },
+      formatter: (cell) => `<span class="pill ${STATUS_CLASS[cell.getValue()] || ""}">${cell.getValue()}</span>`,
+      headerFilter: "list", headerFilterParams: { values: ["營運中", "整修中", "新開幕"], clearable: true }, headerFilterPlaceholder: "全部",
+    },
+  ],
+});
+
+const log = document.getElementById("log");
+const undoBtn = document.getElementById("undoBtn");
+const FIELD_LABEL = { target: "目標", actual: "實績", stars: "評分", status: "狀態" };
+const syncUndo = () => { undoBtn.disabled = table.getHistoryUndoSize() === 0; };
+
+// Count edits per cell, refresh the derived rate and the highlight.
+// (row.reformat() is avoided on purpose: it rebuilds the cells, which wipes their undo history.)
+const touch = (cell, delta) => {
+  const row = cell.getRow();
+  const d = row.getData();
+  const field = cell.getField();
+  const key = `${d.id}:${field}`;
+  edited.set(key, Math.max(0, (edited.get(key) || 0) + delta));
+  if (field === "target" || field === "actual") row.update({ rate: rateOf(d.target, d.actual) });
+  cell.getElement().classList.toggle("edited", edited.get(key) > 0);
+  return d;
+};
+table.on("cellEdited", (cell) => {
+  const d = touch(cell, 1);
+  log.innerHTML = `已修改 <b>${d.store}</b> 的${FIELD_LABEL[cell.getField()]}：${cell.getOldValue()} → <b>${cell.getValue()}</b>`;
+  syncUndo();
+});
+table.on("historyUndo", (action, component) => {
+  if (action === "cellEdit") {
+    const d = touch(component, -1);
+    log.innerHTML = `已復原 <b>${d.store}</b> 的${FIELD_LABEL[component.getField()]}，回到 <b>${component.getValue()}</b>`;
+  }
+  syncUndo();
+});
+table.on("columnMoved", (column) => { log.innerHTML = `已把「<b>${column.getDefinition().title}</b>」欄拖到新位置`; });
+table.on("dataFiltered", (filters, rows) => {
+  if (filters.length) log.innerHTML = `篩選後剩 <b>${rows.length}</b> 間門市`;
+});
+
+undoBtn.addEventListener("click", () => table.undo());
+
+const seg = document.getElementById("groupSeg");
+seg.addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  for (const x of seg.querySelectorAll("button")) x.setAttribute("aria-pressed", String(x === b));
+  const key = b.dataset.group;
+  table.setGroupBy(key || false);
+  log.textContent = key ? `改為依${GROUP_LABEL[key]}分組，點群組列可收合` : "已取消分組";
+});
+
+document.getElementById("csvBtn").addEventListener("click", () => table.download("csv", "門市營收_示意資料.csv", { bom: true }));
+document.getElementById("jsonBtn").addEventListener("click", () => table.download("json", "門市營收_示意資料.json"));
+</script>
+</body>
+</html>

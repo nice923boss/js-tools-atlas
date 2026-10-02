@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>regl 示範：四萬個粒子的形狀變形</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  .controls .label { font-size: 12px; align-self: center; padding: 6px 8px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); }
+  .btn { padding: 7px 10px; font-size: 12px; }
+  .stat { position: fixed; left: 12px; top: 12px; z-index: 50; font: 12px/1.5 var(--mono); color: var(--muted); padding: 6px 10px; }
+  .stat b { color: var(--fg); font-weight: 600; }
+  @media (max-width: 520px) { .stat { top: auto; bottom: 48px; } }
+</style>
+</head>
+<body>
+<div class="controls" id="bar"><span class="label">形狀</span></div>
+<div class="stat panel" id="stat"></div>
+<div class="hint">點按鈕切換形狀，游標靠近會把粒子推開</div>
+
+<script src="https://cdn.jsdelivr.net/npm/regl@2.1.1/dist/regl.min.js"></script>
+<script>
+const N = 40000;
+const DURATION = 1.6;   // seconds per morph
+const AUTO_EVERY = 3.4; // seconds between automatic morphs
+
+// regl creates a full-window canvas and keeps it sized to the viewport
+const regl = createREGL({ pixelRatio: Math.min(devicePixelRatio, 2), attributes: { antialias: false, alpha: false } });
+
+// Per-point random delay gives the morph a staggered, organic look
+const delays = new Float32Array(N).map(() => Math.random());
+
+const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+const mixc = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+const C = { y: hex("#f7df1e"), b: hex("#4cc9f0"), p: hex("#f72585"), g: hex("#7bd389"), o: hex("#ff8c42"), v: hex("#9d8cff") };
+
+function makeLayout(fill) {
+  const pos = new Float32Array(N * 2), col = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    const [x, y, c] = fill(i);
+    pos[i * 2] = x; pos[i * 2 + 1] = y;
+    col.set(c, i * 3);
+  }
+  return { pos, col };
+}
+
+const spiral = () => makeLayout((i) => {
+  const r = Math.sqrt(i / N) * 0.92, a = i * 2.399963;
+  return [Math.cos(a) * r, Math.sin(a) * r, mixc(C.y, C.p, r / 0.92)];
+});
+
+function textLayout() {
+  // Sample opaque pixels of text drawn on an offscreen 2D canvas
+  const cv = document.createElement("canvas");
+  cv.width = 520; cv.height = 220;
+  const g = cv.getContext("2d");
+  g.fillStyle = "#fff";
+  g.font = "900 190px Arial Black, Arial, sans-serif";
+  g.textAlign = "center"; g.textBaseline = "middle";
+  g.fillText("regl", 260, 112);
+  const data = g.getImageData(0, 0, cv.width, cv.height).data;
+  const hits = [];
+  for (let y = 0; y < cv.height; y += 1) for (let x = 0; x < cv.width; x += 1) {
+    if (data[(y * cv.width + x) * 4 + 3] > 128) hits.push(x, y);
+  }
+  const count = hits.length / 2;
+  return makeLayout(() => {
+    const k = Math.floor(Math.random() * count);
+    const x = (hits[k * 2] + Math.random() - 260) / 260 * 0.95;
+    const y = -(hits[k * 2 + 1] + Math.random() - 110) / 260 * 0.95;
+    return [x, y, mixc(C.b, C.y, (x + 0.95) / 1.9)];
+  });
+}
+
+const heart = () => makeLayout(() => {
+  const t = Math.random() * Math.PI * 2, s = Math.sqrt(Math.random());
+  const x = 16 * Math.sin(t) ** 3;
+  const y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+  return [x * s * 0.052, (y * s + 2) * 0.052, mixc(C.p, C.o, s)];
+});
+
+const waves = () => makeLayout((i) => {
+  const lines = 56, k = i % lines, x = (Math.floor(i / lines) / (N / lines)) * 1.9 - 0.95;
+  const y = -0.7 + (k / (lines - 1)) * 1.4 + Math.sin(x * 6 + k * 0.35) * 0.06;
+  return [x, y, mixc(C.g, C.b, k / (lines - 1))];
+});
+
+const clusters = () => {
+  const centers = [[-0.5, 0.35, C.y], [0.45, 0.4, C.b], [0, -0.1, C.p], [-0.45, -0.45, C.g], [0.5, -0.45, C.v]];
+  return makeLayout((i) => {
+    const [cx, cy, c] = centers[i % centers.length];
+    const r = Math.sqrt(-2 * Math.log(Math.random() + 1e-6)) * 0.09, a = Math.random() * Math.PI * 2;
+    return [cx + Math.cos(a) * r, cy + Math.sin(a) * r, mixc(c, [1, 1, 1], Math.max(0, 0.35 - r * 2))];
+  });
+};
+
+const LAYOUTS = [
+  ["spiral", "葉序螺旋", spiral()],
+  ["text", "文字", textLayout()],
+  ["heart", "愛心", heart()],
+  ["waves", "波浪", waves()],
+  ["clusters", "星團", clusters()],
+];
+
+// Two key-frames live on the GPU; the vertex shader interpolates between them
+const buf = {
+  posA: regl.buffer({ usage: "dynamic", type: "float", data: LAYOUTS[0][2].pos }),
+  posB: regl.buffer({ usage: "dynamic", type: "float", data: LAYOUTS[0][2].pos }),
+  colA: regl.buffer({ usage: "dynamic", type: "float", data: LAYOUTS[0][2].col }),
+  colB: regl.buffer({ usage: "dynamic", type: "float", data: LAYOUTS[0][2].col }),
+  delay: regl.buffer(delays),
+};
+let fromPos = LAYOUTS[0][2].pos, fromCol = LAYOUTS[0][2].col;
+let toPos = fromPos, toCol = fromCol;
+let morphStart = -10;
+
+const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+const draw = regl({
+  vert: `
+  precision highp float;
+  attribute vec2 posA, posB;
+  attribute vec3 colA, colB;
+  attribute float delay;
+  uniform float progress, time, aspect, pointSize;
+  uniform vec2 mouse;
+  varying vec3 vCol;
+  float ease(float t) { return t < 0.5 ? 4.0 * t * t * t : 1.0 - pow(-2.0 * t + 2.0, 3.0) / 2.0; }
+  void main() {
+    float t = ease(clamp((progress - delay * 0.45) / 0.55, 0.0, 1.0));
+    vec2 p = mix(posA, posB, t);
+    // Swirl outward mid-flight
+    float s = sin(t * 3.14159);
+    p += s * 0.16 * vec2(sin(delay * 41.0 + time * 1.7), cos(delay * 29.0 + time * 1.3));
+    // Idle shimmer
+    p += 0.004 * vec2(sin(time * 2.0 + delay * 60.0), cos(time * 1.6 + delay * 50.0));
+    // Push particles away from the cursor
+    vec2 d = p - mouse;
+    float dist = length(d);
+    p += d / (dist + 1e-4) * 0.13 * exp(-dist * dist * 30.0);
+    vCol = mix(colA, colB, t) * (1.0 + s * 0.6);
+    float scale = min(1.0, aspect);
+    gl_Position = vec4(p.x * scale / aspect, p.y * scale, 0.0, 1.0);
+    gl_PointSize = pointSize;
+  }`,
+  frag: `
+  precision mediump float;
+  varying vec3 vCol;
+  void main() {
+    float d = length(gl_PointCoord - 0.5);
+    if (d > 0.5) discard;
+    gl_FragColor = vec4(vCol, smoothstep(0.5, 0.05, d) * 0.85);
+  }`,
+  attributes: {
+    posA: buf.posA, posB: buf.posB, colA: buf.colA, colB: buf.colB, delay: buf.delay,
+  },
+  uniforms: {
+    progress: regl.prop("progress"),
+    time: regl.prop("time"),
+    mouse: regl.prop("mouse"),
+    aspect: ({ viewportWidth, viewportHeight }) => viewportWidth / viewportHeight,
+    pointSize: ({ pixelRatio, viewportWidth }) => (viewportWidth / pixelRatio < 520 ? 1.8 : 2.4) * pixelRatio,
+  },
+  blend: { enable: true, func: { srcRGB: "src alpha", srcAlpha: 1, dstRGB: "one", dstAlpha: 1 } },
+  depth: { enable: false },
+  primitive: "points",
+  count: N,
+});
+
+// Snapshot where every point is right now so interrupted morphs stay smooth
+function currentState(progress) {
+  if (progress >= 1.0001) return { pos: toPos, col: toCol };
+  const pos = new Float32Array(N * 2), col = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    const t = ease(Math.min(1, Math.max(0, (progress - delays[i] * 0.45) / 0.55)));
+    pos[i * 2] = fromPos[i * 2] + (toPos[i * 2] - fromPos[i * 2]) * t;
+    pos[i * 2 + 1] = fromPos[i * 2 + 1] + (toPos[i * 2 + 1] - fromPos[i * 2 + 1]) * t;
+    for (let k = 0; k < 3; k++) col[i * 3 + k] = fromCol[i * 3 + k] + (toCol[i * 3 + k] - fromCol[i * 3 + k]) * t;
+  }
+  return { pos, col };
+}
+
+let now = 0, current = 0, auto = true, lastAuto = 0;
+function morphTo(index) {
+  const state = currentState((now - morphStart) / DURATION);
+  fromPos = state.pos; fromCol = state.col;
+  toPos = LAYOUTS[index][2].pos; toCol = LAYOUTS[index][2].col;
+  buf.posA.subdata(fromPos); buf.colA.subdata(fromCol);
+  buf.posB.subdata(toPos); buf.colB.subdata(toCol);
+  morphStart = now;
+  current = index;
+  document.querySelectorAll("#bar .btn[data-i]").forEach((b) => b.setAttribute("aria-pressed", String(+b.dataset.i === index)));
+}
+
+const bar = document.getElementById("bar");
+LAYOUTS.forEach(([key, label], i) => {
+  const b = document.createElement("button");
+  b.className = "btn"; b.type = "button"; b.dataset.i = i; b.textContent = label;
+  b.setAttribute("aria-pressed", String(i === 0));
+  b.addEventListener("click", () => { setAuto(false); morphTo(i); });
+  bar.append(b);
+});
+const autoBtn = document.createElement("button");
+autoBtn.className = "btn primary"; autoBtn.type = "button";
+function setAuto(on) {
+  auto = on; lastAuto = now;
+  autoBtn.textContent = on ? "自動輪播中" : "自動輪播";
+  autoBtn.className = on ? "btn primary" : "btn";
+}
+autoBtn.addEventListener("click", () => setAuto(!auto));
+bar.append(autoBtn);
+setAuto(true);
+lastAuto = -AUTO_EVERY + 0.8; // first morph shortly after load
+
+document.getElementById("stat").innerHTML = `粒子 <b>${N.toLocaleString()}</b>・每幀 <b>1</b> 次 draw call`;
+
+// Cursor in layout space (matches the vertex shader's aspect handling)
+const mouse = [9, 9];
+addEventListener("pointermove", (e) => {
+  const aspect = innerWidth / innerHeight, scale = Math.min(1, aspect);
+  mouse[0] = ((e.clientX / innerWidth) * 2 - 1) * aspect / scale;
+  mouse[1] = (-(e.clientY / innerHeight) * 2 + 1) / scale;
+});
+document.addEventListener("pointerleave", () => { mouse[0] = mouse[1] = 9; });
+
+regl.frame(({ time }) => {
+  now = time;
+  if (auto && now - lastAuto > AUTO_EVERY) {
+    lastAuto = now;
+    morphTo((current + 1) % LAYOUTS.length);
+  }
+  regl.clear({ color: [0.04, 0.045, 0.06, 1] });
+  draw({ progress: Math.min(1.0001, (now - morphStart) / DURATION), time: now, mouse });
+});
+</script>
+</body>
+</html>

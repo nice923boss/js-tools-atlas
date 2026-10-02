@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Excalibur.js 示範：霓虹打磚塊</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body { background: radial-gradient(90% 70% at 50% 0%, #1b1f33, #0e1013 70%); }
+  canvas { touch-action: none; position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); }
+  .overlay { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; pointer-events: none; transition: opacity .3s; }
+  .overlay.hide { opacity: 0; }
+  .overlay .card { text-align: center; padding: 16px 26px; border-radius: 16px; background: rgba(14, 16, 19, .7); backdrop-filter: blur(4px); border: 1px solid var(--line); }
+  .overlay h1 { margin: 0; font-size: clamp(26px, 6vw, 44px); letter-spacing: 3px;
+    background: linear-gradient(90deg, var(--c3), var(--c5), var(--c1), var(--c4), var(--c2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .overlay p { margin: 6px 0 0; }
+  .overlay .blink { color: var(--c2); animation: blink 1.2s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+</style>
+</head>
+<body>
+<div class="overlay" id="overlay">
+  <div class="card">
+    <h1 id="ov-title">霓虹打磚塊</h1>
+    <p id="ov-sub">擊破全部磚塊，球打在擋板邊緣會斜飛</p>
+    <p class="blink" id="ov-go">按任意鍵或點擊開始</p>
+  </div>
+</div>
+<div class="hint">滑鼠或手指移動擋板，← → 也可以，空白鍵或點擊發球</div>
+
+<script src="https://cdn.jsdelivr.net/npm/excalibur@0.32.0/build/dist/excalibur.min.js"></script>
+<script>
+// Excalibur.js breakout: Actors, collision events, Canvas graphics, ParticleEmitter, actions, camera shake.
+// portrait screens get a taller board with fewer columns (resolution is picked once at load)
+const PORTRAIT = innerHeight > innerWidth * 1.1;
+const W = PORTRAIT ? 480 : 720, H = PORTRAIT ? 700 : 480, FONT = "Noto Sans TC, Microsoft JhengHei, PingFang TC, sans-serif";
+const COLORS = ["#f72585", "#ff8c42", "#f7df1e", "#7bd389", "#4cc9f0", "#9d8cff"];
+const $ = (id) => document.getElementById(id);
+
+const game = new ex.Engine({
+  width: W, height: H,
+  displayMode: ex.DisplayMode.FitScreen,
+  backgroundColor: ex.Color.Transparent,
+  suppressPlayButton: true,
+  antialiasing: true,
+});
+
+// ScaleTo leaves a residual scale velocity behind, so zero it once the tween is done
+const settle = (a) => () => { a.get(ex.MotionComponent).scaleFactor = ex.vec(0, 0); };
+
+function pill(w, h, hex, r = 6) {
+  return new ex.Canvas({
+    width: w, height: h, cache: true,
+    draw: (ctx) => {
+      ctx.fillStyle = hex;
+      ctx.beginPath(); ctx.roundRect(0, 0, w, h, r); ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,.32)";
+      ctx.beginPath(); ctx.roundRect(3, 2, w - 6, h * 0.36, r / 2); ctx.fill();
+    },
+  });
+}
+
+// walls glow frame
+const frame = new ex.Actor({ x: W / 2, y: H / 2, z: -5 });
+frame.graphics.use(new ex.Canvas({
+  width: W, height: H, cache: true,
+  draw: (ctx) => {
+    ctx.strokeStyle = "rgba(76,201,240,.35)"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.roundRect(2, 2, W - 4, H + 40, 14); ctx.stroke();
+  },
+}));
+game.add(frame);
+
+const paddle = new ex.Actor({ x: W / 2, y: H - (PORTRAIT ? 84 : 34), width: 112, height: 14, collisionType: ex.CollisionType.Fixed });
+paddle.graphics.use(pill(112, 14, "#f7df1e", 7));
+game.add(paddle);
+
+const ball = new ex.Actor({ x: W / 2, y: H - 60, radius: 8, collisionType: ex.CollisionType.Passive });
+ball.graphics.use(new ex.Circle({ radius: 8, color: ex.Color.White }));
+game.add(ball);
+
+const trail = new ex.ParticleEmitter({
+  emitterType: ex.EmitterType.Circle, radius: 3, emitRate: 90, isEmitting: true,
+  particle: { life: 320, minSpeed: 0, maxSpeed: 12, beginColor: ex.Color.fromHex("#4cc9f0"), endColor: ex.Color.fromHex("#9d8cff"),
+    startSize: 9, endSize: 1, fade: true, opacity: 0.6 },
+});
+ball.addChild(trail);
+
+const burst = new ex.ParticleEmitter({
+  emitterType: ex.EmitterType.Circle, radius: 14, isEmitting: false,
+  particle: { life: 700, minSpeed: 60, maxSpeed: 260, startSize: 7, endSize: 1, fade: true, acc: ex.vec(0, 500),
+    beginColor: ex.Color.White, endColor: ex.Color.White },
+});
+game.add(burst);
+
+const font = (size, hex, align = ex.TextAlign.Left) =>
+  new ex.Font({ family: FONT, size, unit: ex.FontUnit.Px, color: ex.Color.fromHex(hex), bold: true, textAlign: align });
+const scoreLabel = new ex.Label({ text: "", pos: ex.vec(18, 30), font: font(18, "#f7df1e") });
+const livesLabel = new ex.Label({ text: "", pos: ex.vec(W - 18, 30), font: font(18, "#f72585", ex.TextAlign.Right) });
+game.add(scoreLabel);
+game.add(livesLabel);
+
+let bricks = new Set();
+let mode = "demo"; // demo | ready | play | over
+let score = 0, lives = 3, level = 1, speed = 360, flipped = false, targetX = W / 2;
+
+function buildBricks() {
+  for (const b of bricks) b.kill();
+  bricks = new Set();
+  const cols = PORTRAIT ? 7 : 10, rows = 6, gap = 6, bh = 20, bw = Math.floor((W - 40 - (cols - 1) * gap) / cols);
+  const x0 = (W - (cols * bw + (cols - 1) * gap)) / 2 + bw / 2;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const hex = COLORS[r];
+      const b = new ex.Actor({ x: x0 + c * (bw + gap), y: 70 + r * (bh + gap), width: bw, height: bh, collisionType: ex.CollisionType.Fixed });
+      b.graphics.use(pill(bw, bh, hex));
+      b.hex = hex;
+      b.scale = ex.vec(0.2, 0.2);
+      b.actions.delay((r * cols + c) * 12).scaleTo({ scale: ex.vec(1, 1), duration: 220 }).callMethod(settle(b));
+      bricks.add(b);
+      game.add(b);
+    }
+  }
+}
+
+function hud() {
+  scoreLabel.text = mode === "demo" ? "展示模式" : `分數 ${score}　第 ${level} 關`;
+  livesLabel.text = mode === "demo" ? "" : "♥".repeat(lives);
+}
+
+function serve() {
+  ball.pos = ex.vec(paddle.pos.x, paddle.pos.y - 22);
+  ball.vel = ex.vec(0, 0);
+}
+
+function launch() {
+  const a = (Math.random() - 0.5) * 0.9;
+  ball.vel = ex.vec(Math.sin(a) * speed, -Math.cos(a) * speed);
+}
+
+function overlay(title, sub, go) {
+  $("ov-title").textContent = title;
+  $("ov-sub").textContent = sub;
+  $("ov-go").textContent = go;
+  $("overlay").classList.remove("hide");
+}
+
+function newGame() {
+  score = 0; lives = 3; level = 1; speed = 360;
+  buildBricks();
+  mode = "ready";
+  serve();
+  $("overlay").classList.add("hide");
+  hud();
+}
+
+function action() {
+  if (mode === "demo" || mode === "over") newGame();
+  else if (mode === "ready") { mode = "play"; launch(); }
+}
+
+function breakBrick(b) {
+  bricks.delete(b);
+  b.body.collisionType = ex.CollisionType.PreventCollision;
+  burst.pos = b.pos.clone();
+  burst.particle.beginColor = ex.Color.fromHex(b.hex);
+  burst.particle.endColor = ex.Color.fromHex(b.hex);
+  burst.emitParticles(22);
+  b.actions.clearActions();
+  b.actions.scaleTo({ scale: ex.vec(1.35, 1.6), duration: 70 }).callMethod(settle(b)).fade(0, 140).die();
+  if (mode !== "demo") score += 10 * level;
+  speed = Math.min(620, speed + 3);
+  ball.vel = ball.vel.normalize().scale(speed);
+  game.currentScene.camera.shake(3, 3, 90);
+  hud();
+  if (bricks.size === 0) {
+    if (mode === "demo") { buildBricks(); return; }
+    level++;
+    speed = 360 + level * 30;
+    buildBricks();
+    mode = "ready";
+    serve();
+  }
+}
+
+ball.on("collisionstart", (ev) => {
+  const other = ev.other.owner;
+  if (other === paddle) {
+    const off = Math.max(-1, Math.min(1, (ball.pos.x - paddle.pos.x) / 56));
+    const a = off * 1.05;
+    ball.vel = ex.vec(Math.sin(a) * speed, -Math.abs(Math.cos(a) * speed));
+    paddle.actions.clearActions();
+    paddle.scale = ex.vec(1.15, 0.7);
+    paddle.actions.scaleTo({ scale: ex.vec(1, 1), duration: 160 }).callMethod(settle(paddle));
+    return;
+  }
+  if (bricks.has(other)) {
+    breakBrick(other);
+    if (!flipped) {
+      const n = ev.contact.mtv;
+      if (Math.abs(n.x) > Math.abs(n.y)) ball.vel.x *= -1; else ball.vel.y *= -1;
+      flipped = true;
+    }
+  }
+});
+
+const director = new ex.Actor();
+director.onPreUpdate = (engine, ms) => {
+  flipped = false;
+  const kb = engine.input.keyboard;
+  const dir = (kb.isHeld(ex.Keys.Right) || kb.isHeld(ex.Keys.D) ? 1 : 0) - (kb.isHeld(ex.Keys.Left) || kb.isHeld(ex.Keys.A) ? 1 : 0);
+  if (dir) targetX += dir * 620 * (ms / 1000);
+  if (mode === "demo") targetX = ball.pos.x + Math.sin(performance.now() / 400) * 30;
+  targetX = Math.max(56, Math.min(W - 56, targetX));
+  paddle.pos.x += (targetX - paddle.pos.x) * Math.min(1, ms / 40);
+  if (mode === "ready") serve();
+
+  // walls
+  const r = 8;
+  if (ball.pos.x < r) { ball.pos.x = r; ball.vel.x = Math.abs(ball.vel.x); }
+  if (ball.pos.x > W - r) { ball.pos.x = W - r; ball.vel.x = -Math.abs(ball.vel.x); }
+  if (ball.pos.y < r) { ball.pos.y = r; ball.vel.y = Math.abs(ball.vel.y); }
+  if (ball.pos.y > H + 20) {
+    if (mode === "demo") { serve(); launch(); return; }
+    lives--;
+    engine.currentScene.camera.shake(10, 10, 300);
+    hud();
+    if (lives <= 0) {
+      mode = "over";
+      ball.vel = ex.vec(0, 0);
+      ball.pos = ex.vec(W / 2, H + 60);
+      overlay("遊戲結束", `分數 ${score}，撐到第 ${level} 關`, "按任意鍵或點擊再玩一次");
+    } else {
+      mode = "ready";
+      serve();
+    }
+  }
+};
+game.add(director);
+
+game.input.pointers.primary.on("move", (e) => { targetX = e.worldPos.x; });
+game.input.pointers.primary.on("down", (e) => { targetX = e.worldPos.x; action(); });
+game.input.keyboard.on("press", (e) => {
+  if (mode === "demo" || mode === "over" || e.key === ex.Keys.Space || e.key === ex.Keys.Up) action();
+});
+document.addEventListener("pointerdown", (e) => { if (e.target.tagName !== "CANVAS") action(); });
+
+buildBricks();
+hud();
+game.start().then(launch);
+</script>
+</body>
+</html>

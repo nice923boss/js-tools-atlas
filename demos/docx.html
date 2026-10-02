@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>docx 示範：企劃書 Word 產生器</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"瀏覽器無法直接顯示 .docx，右側是依同一份內容結構繪製的示意預覽，下載後用 Word 開啟"}</script>
+<style>
+  .app { position: fixed; inset: 0; display: grid; grid-template-columns: 260px 1fr; }
+  .form { padding: 16px 16px 56px; border-right: 1px solid var(--line); background: var(--bg-2); overflow-y: auto; }
+  .form h1 { font-size: 17px; margin: 0 0 2px; }
+  .form h1 b { color: #2b579a; }
+  .form p.sub { margin: 0 0 10px; font-size: 12px; color: var(--muted); }
+  label.l { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  .field { width: 100%; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); outline: none; }
+  .field:focus { border-color: #2b579a; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .swatches { display: flex; gap: 8px; }
+  .swatch { width: 26px; height: 26px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px var(--line); cursor: pointer; }
+  .swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--fg); }
+  .checks { display: grid; gap: 4px; margin-top: 10px; font-size: 13px; }
+  .checks input { accent-color: #2b579a; }
+  .actions { margin-top: 14px; }
+  .actions .btn { width: 100%; padding: 10px; }
+  .btn.primary { background: #2b579a; color: #fff; }
+  .tip { margin-top: 10px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .view { position: relative; min-width: 0; min-height: 0; overflow-y: auto; background: #e3e2de; padding: 44px 20px 60px; }
+  .page { position: relative; margin: 0 auto; width: min(100%, 560px); aspect-ratio: 210 / 297; background: #fff; color: #222;
+    box-shadow: 0 8px 28px rgba(0,0,0,.18); container-type: inline-size; font-family: "Microsoft JhengHei", var(--font); }
+  /* cqw below resolves against .page (1pt = 100cqw / 595) */
+  .doc { padding: 12cqw; font-size: calc(11 * 100cqw / 595); line-height: 1.6; }
+  .page .hd { position: absolute; left: 12cqw; right: 12cqw; top: 5.5cqw; font-size: calc(9 * 100cqw / 595); text-align: right; color: #888; border-bottom: 0.15cqw solid #bbb; padding-bottom: 0.6cqw; }
+  .page .ft { position: absolute; left: 0; right: 0; bottom: 5cqw; text-align: center; color: #888; font-size: calc(9 * 100cqw / 595); }
+  .page h2.title { font-size: 2.1em; margin: 0 0 0.4em; line-height: 1.3; }
+  .page .metaLine { color: #666; font-size: 0.95em; margin: 0 0 1.2em; padding-bottom: 0.6em; border-bottom: 0.3cqw solid currentColor; }
+  .page h3 { font-size: 1.35em; margin: 1.1em 0 0.4em; }
+  .page p { margin: 0 0 0.6em; text-align: justify; }
+  .page mark { background: #fff200; }
+  .page table { width: 100%; border-collapse: collapse; margin: 0.3em 0 0.6em; }
+  .page th, .page td { border: 0.15cqw solid #999; padding: 0.35em 0.6em; text-align: left; }
+  .page th { color: #fff; }
+  .page ol { margin: 0 0 0.6em; padding-left: 1.8em; }
+  .page [data-new] { animation: flash 1.2s ease-out; }
+  @keyframes flash { from { background: rgba(43, 87, 154, .18); } to { background: transparent; } }
+  .meta { position: absolute; right: 16px; top: 12px; z-index: 2; font: 12px var(--mono); color: var(--muted);
+    background: var(--panel); border: 1px solid var(--line); padding: 4px 10px; border-radius: 999px; }
+  .label { position: absolute; left: 16px; top: 12px; z-index: 2; font-size: 12px; color: var(--muted);
+    background: var(--panel); border: 1px solid var(--line); padding: 4px 10px; border-radius: 999px; }
+  .viewWrap { position: relative; min-width: 0; min-height: 0; display: grid; }
+  @media (max-width: 640px) {
+    /* stacked layout scrolls under the fixed hint; the form labels already explain the controls */
+    .hint { display: none; }
+    .app { grid-template-columns: 1fr; grid-template-rows: 55% 45%; }
+    .viewWrap { grid-row: 1; }
+    .view { padding: 38px 12px 20px; }
+    .form { grid-row: 2; border-right: 0; border-top: 1px solid var(--line); padding: 10px 14px 56px; }
+    .form h1, .form p.sub { display: none; }
+    .label { display: none; }
+    .meta { top: 8px; right: 10px; }
+  }
+</style>
+</head>
+<body class="paper">
+<div class="app">
+  <div class="form">
+    <h1><b>docx</b> 企劃書產生器</h1>
+    <p class="sub">用 JavaScript 物件組出段落、表格、頁碼，輸出真正的 Word 檔</p>
+    <label class="l" for="title">文件標題</label>
+    <input class="field" id="title" value="瀏覽器端文件產生工作坊企劃書" maxlength="24">
+    <div class="row">
+      <div><label class="l" for="owner">承辦人</label><input class="field" id="owner" value="林怡君" maxlength="8"></div>
+      <div><label class="l" for="date">日期</label><input class="field" id="date" type="date" value="2026-10-03"></div>
+    </div>
+    <label class="l">標題顏色</label>
+    <div class="swatches" id="swatches"></div>
+    <div class="checks">
+      <label><input type="checkbox" id="optTable" checked> 議程表格</label>
+      <label><input type="checkbox" id="optList" checked> 編號清單</label>
+      <label><input type="checkbox" id="optHF" checked> 頁首、頁尾與頁碼</label>
+    </div>
+    <div class="actions"><button class="btn primary" id="download">下載 .docx</button></div>
+    <p class="tip">下載後用 Word、Pages 或 Google 文件開啟。頁碼是 Word 欄位，開啟時才會計算。</p>
+  </div>
+  <div class="viewWrap">
+    <span class="label">示意預覽（依同一份內容結構繪製）</span>
+    <span class="meta" id="meta">產生中…</span>
+    <div class="view"><div class="page"><div class="doc" id="page"></div></div></div>
+  </div>
+</div>
+<div class="hint">勾選項目或改標題，Word 檔即時重新產生</div>
+
+<script src="https://cdn.jsdelivr.net/npm/docx@9.8.1/dist/index.iife.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const COLORS = ["1F4E79", "2F6B4F", "B03A2E", "5B3E96"];
+let color = COLORS[0];
+
+const AGENDA = [
+  ["時間", "主題", "講者"],
+  ["09:30", "報到與環境檢查", "助教群"],
+  ["10:00", "用 docx 組出段落、表格與頁碼", "林怡君"],
+  ["11:00", "試算表與 PDF 輸出實作", "陳柏翰"],
+  ["12:00", "成果分享與問答", "全體"],
+];
+
+// Content model shared by the .docx builder and the HTML preview
+function buildBlocks() {
+  const owner = $("owner").value.trim() || "未填";
+  const blocks = [
+    { t: "title", text: $("title").value.trim() || "未命名文件" },
+    { t: "meta", text: `日期：${$("date").value}　承辦人：${owner}　文件編號：WS-2026-10` },
+    { t: "h", text: "一、活動目的" },
+    { t: "p", runs: [
+      { text: "本工作坊示範如何在" }, { text: "不經伺服器", bold: true }, { text: "的情況下，直接由瀏覽器產生 Word、Excel 與 PDF 文件，協助團隊把" },
+      { text: "報表下載", highlight: true }, { text: "功能搬到前端，降低後端負載。" },
+    ] },
+    { t: "h", text: "二、議程" },
+  ];
+  if ($("optTable").checked) blocks.push({ t: "table", rows: AGENDA, widths: [1700, 5026, 2300], key: "table" });
+  else blocks.push({ t: "p", runs: [{ text: "上午 09:30 報到，12:30 結束，共三個單元。" }] });
+  blocks.push({ t: "h", text: "三、準備事項" });
+  const prep = ["自備筆電並安裝最新版 Chrome 或 Edge", "預先下載課程範例檔（約 15 MB）", "報名截止日：2026-10-15（示意資料）"];
+  if ($("optList").checked) blocks.push({ t: "list", items: prep, key: "list" });
+  else blocks.push({ t: "p", runs: [{ text: prep.join("；") + "。" }] });
+  blocks.push({ t: "p", runs: [{ text: "如有疑問請洽承辦人" }, { text: owner, bold: true }, { text: "。" }] });
+  return blocks;
+}
+
+// ---------- real .docx via the docx library ----------
+function buildDoc(blocks) {
+  const D = docx;
+  const cellBorder = { style: D.BorderStyle.SINGLE, size: 4, color: "999999" };
+  const children = blocks.map((b) => {
+    if (b.t === "title") return new D.Paragraph({ spacing: { after: 120 }, children: [new D.TextRun({ text: b.text, bold: true, size: 44, color })] });
+    if (b.t === "meta") return new D.Paragraph({ spacing: { after: 240 }, border: { bottom: { style: D.BorderStyle.SINGLE, size: 12, color, space: 6 } },
+      children: [new D.TextRun({ text: b.text, color: "666666", size: 20 })] });
+    if (b.t === "h") return new D.Paragraph({ heading: D.HeadingLevel.HEADING_1, spacing: { before: 240, after: 80 },
+      children: [new D.TextRun({ text: b.text, bold: true, size: 28, color })] });
+    if (b.t === "p") return new D.Paragraph({ spacing: { after: 120 }, alignment: D.AlignmentType.JUSTIFIED,
+      children: b.runs.map((r) => new D.TextRun({ text: r.text, bold: !!r.bold, highlight: r.highlight ? "yellow" : undefined })) });
+    if (b.t === "table") return new D.Table({
+      columnWidths: b.widths,
+      width: { size: b.widths.reduce((a, c) => a + c, 0), type: D.WidthType.DXA },
+      rows: b.rows.map((r, i) => new D.TableRow({ tableHeader: i === 0, children: r.map((c, j) => new D.TableCell({
+        width: { size: b.widths[j], type: D.WidthType.DXA },
+        shading: i === 0 ? { type: D.ShadingType.CLEAR, fill: color, color: "auto" } : undefined,
+        borders: { top: cellBorder, bottom: cellBorder, left: cellBorder, right: cellBorder },
+        margins: { top: 60, bottom: 60, left: 120, right: 120 },
+        children: [new D.Paragraph({ children: [new D.TextRun({ text: c, bold: i === 0, color: i === 0 ? "FFFFFF" : "222222" })] })],
+      })) })),
+    });
+    if (b.t === "list") return b.items.map((it) => new D.Paragraph({ numbering: { reference: "prep", level: 0 }, children: [new D.TextRun(it)] }));
+    return [];
+  }).flat();
+
+  const hf = $("optHF").checked;
+  return new D.Document({
+    creator: "JS 工具圖鑑",
+    title: $("title").value,
+    styles: { default: { document: { run: { font: { ascii: "Calibri", hAnsi: "Calibri", eastAsia: "Microsoft JhengHei" }, size: 22 } } } },
+    numbering: { config: [{ reference: "prep", levels: [{ level: 0, format: D.LevelFormat.DECIMAL, text: "%1.", alignment: D.AlignmentType.START,
+      style: { paragraph: { indent: { left: 480, hanging: 360 } } } }] }] },
+    sections: [{
+      properties: { page: { size: { width: 11906, height: 16838 }, margin: { top: 1440, bottom: 1440, left: 1440, right: 1440 } } },
+      headers: hf ? { default: new D.Header({ children: [new D.Paragraph({ alignment: D.AlignmentType.RIGHT,
+        border: { bottom: { style: D.BorderStyle.SINGLE, size: 4, color: "BBBBBB", space: 4 } },
+        children: [new D.TextRun({ text: "JS 工具圖鑑學院　內部文件", color: "888888", size: 18 })] })] }) } : undefined,
+      footers: hf ? { default: new D.Footer({ children: [new D.Paragraph({ alignment: D.AlignmentType.CENTER,
+        children: [new D.TextRun({ color: "888888", size: 18, children: ["第 ", D.PageNumber.CURRENT, " 頁，共 ", D.PageNumber.TOTAL_PAGES, " 頁"] })] })] }) } : undefined,
+      children,
+    }],
+  });
+}
+
+// ---------- HTML preview ----------
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+let lastKeys = new Set();
+function renderPreview(blocks) {
+  const c = "#" + color;
+  const keys = new Set(blocks.map((b) => b.key).filter(Boolean));
+  const fresh = (b) => (b.key && !lastKeys.has(b.key) ? " data-new" : "");
+  let html = $("optHF").checked ? `<div class="hd" data-hf>JS 工具圖鑑學院　內部文件</div><div class="ft">第 1 頁，共 1 頁</div>` : "";
+  for (const b of blocks) {
+    if (b.t === "title") html += `<h2 class="title" style="color:${c}">${esc(b.text)}</h2>`;
+    else if (b.t === "meta") html += `<p class="metaLine" style="border-color:${c}">${esc(b.text)}</p>`;
+    else if (b.t === "h") html += `<h3 style="color:${c}">${esc(b.text)}</h3>`;
+    else if (b.t === "p") html += `<p>${b.runs.map((r) => r.bold ? `<b>${esc(r.text)}</b>` : r.highlight ? `<mark>${esc(r.text)}</mark>` : esc(r.text)).join("")}</p>`;
+    else if (b.t === "table") {
+      const total = b.widths.reduce((a, x) => a + x, 0);
+      html += `<table${fresh(b)}><colgroup>${b.widths.map((w) => `<col style="width:${(w / total * 100).toFixed(1)}%">`).join("")}</colgroup>` +
+        b.rows.map((r, i) => `<tr>${r.map((x) => i ? `<td>${esc(x)}</td>` : `<th style="background:${c}">${esc(x)}</th>`).join("")}</tr>`).join("") + `</table>`;
+    } else if (b.t === "list") html += `<ol${fresh(b)}>${b.items.map((x) => `<li>${esc(x)}</li>`).join("")}</ol>`;
+  }
+  $("page").innerHTML = html;
+  lastKeys = keys;
+}
+
+let gen = 0;
+async function update() {
+  const blocks = buildBlocks();
+  renderPreview(blocks);
+  const my = ++gen, t0 = performance.now();
+  try {
+    const blob = await docx.Packer.toBlob(buildDoc(blocks));
+    if (my !== gen) return;
+    const paras = blocks.filter((b) => b.t !== "table").reduce((n, b) => n + (b.items ? b.items.length : 1), 0);
+    const tables = blocks.filter((b) => b.t === "table").length;
+    $("meta").textContent = `${(blob.size / 1024).toFixed(1)} KB・${paras} 段落・${tables} 表格・${Math.round(performance.now() - t0)} ms`;
+    return blob;
+  } catch (err) {
+    console.error(err);
+    $("meta").textContent = "產生失敗：" + err.message;
+  }
+}
+
+$("swatches").innerHTML = COLORS.map((c, i) => `<button class="swatch" aria-pressed="${i === 0}" data-c="${c}" style="background:#${c}"></button>`).join("");
+$("swatches").addEventListener("click", (e) => {
+  const b = e.target.closest(".swatch"); if (!b) return;
+  color = b.dataset.c;
+  $("swatches").querySelectorAll(".swatch").forEach((s) => s.setAttribute("aria-pressed", s === b));
+  update();
+});
+let timer;
+for (const id of ["title", "owner", "date"]) $(id).addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(update, 150); });
+for (const id of ["optTable", "optList", "optHF"]) $(id).addEventListener("change", update);
+$("download").addEventListener("click", async () => {
+  const blob = await docx.Packer.toBlob(buildDoc(buildBlocks()));
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = ($("title").value.trim() || "文件") + ".docx";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+});
+
+update();
+</script>
+</body>
+</html>

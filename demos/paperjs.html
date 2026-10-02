@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paper.js 示範：貝茲曲線與路徑布林運算</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body {
+    background:
+      radial-gradient(circle at 1px 1px, rgba(255,255,255,0.07) 1px, transparent 1.5px) 0 0 / 22px 22px,
+      radial-gradient(80% 70% at 50% 40%, #161a24, var(--bg));
+  }
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+  #c.dragging { cursor: grabbing; }
+  .info {
+    position: fixed; right: 12px; bottom: 12px; z-index: 50;
+    padding: 8px 12px; font-size: 12px; line-height: 1.5; text-align: right;
+  }
+  .info b { color: var(--accent); font-size: 14px; }
+  @media (max-width: 560px) { .info { bottom: 52px; } }
+</style>
+</head>
+<body>
+<canvas id="c" resize></canvas>
+<div class="controls">
+  <button class="btn" data-op="unite" aria-pressed="true">聯集</button>
+  <button class="btn" data-op="intersect">交集</button>
+  <button class="btn" data-op="subtract">差集</button>
+  <button class="btn" data-op="exclude">互斥</button>
+  <button class="btn" data-op="divide">分割</button>
+</div>
+<div class="panel info"><b id="opName">聯集 unite()</b><div class="muted"><span class="mono" id="segs">0</span> 個錨點・黃點為貝茲控制把手</div></div>
+<div class="hint">拖曳圓形或花瓣移動・切換右上布林運算</div>
+
+<script src="https://cdn.jsdelivr.net/npm/paper@0.12.18/dist/paper-core.min.js"></script>
+<script>
+// Two editable shapes (circle + smoothed star "flower"); the boolean result is recomputed every frame
+// and drawn fully selected so Paper.js shows its bezier anchors and handles.
+paper.setup(document.getElementById("c"));
+const { Path, Point, Group, view, Tool } = paper;
+const OPS = {
+  unite: "聯集 unite()", intersect: "交集 intersect()", subtract: "差集 subtract()",
+  exclude: "互斥 exclude()", divide: "分割 divide()",
+};
+let op = "unite";
+
+const resultLayer = new paper.Layer();
+const shapeLayer = new paper.Layer();
+
+function unit() { return Math.min(view.size.width, view.size.height); }
+
+const circle = new Path.Circle({ center: [0, 0], radius: 100, strokeColor: "#4cc9f0", strokeWidth: 2, dashArray: [6, 6] });
+const flower = new Path.Star({ center: [0, 0], points: 6, radius1: 50, radius2: 120, strokeColor: "#f72585", strokeWidth: 2, dashArray: [6, 6] });
+flower.smooth({ type: "catmull-rom", factor: 0.5 });
+shapeLayer.addChildren([circle, flower]);
+
+function layout() {
+  const u = unit();
+  const c = view.center;
+  circle.fitBounds(new paper.Rectangle(c.x - u * 0.36, c.y - u * 0.2, u * 0.4, u * 0.4));
+  circle.position = c.add([-u * 0.12, -u * 0.02]);
+  const s = (u * 0.5) / flower.bounds.width;
+  flower.scale(s);
+  flower.position = c.add([u * 0.13, u * 0.04]);
+}
+layout();
+
+let result = new Group();
+function rebuild() {
+  result.remove();
+  const opts = { insert: false };
+  if (op === "divide") {
+    // Split into three independently coloured regions
+    const parts = [circle.subtract(flower, opts), circle.intersect(flower, opts), flower.subtract(circle, opts)];
+    const colors = ["#4cc9f0", "#f7df1e", "#f72585"];
+    parts.forEach((p, i) => {
+      p.fillColor = colors[i];
+      p.fillColor.alpha = 0.85;
+      p.strokeColor = "#0e1013";
+      p.strokeWidth = 3;
+      p.fullySelected = true;
+    });
+    result = new Group(parts);
+  } else {
+    const r = circle[op](flower, opts);
+    r.fillColor = {
+      gradient: { stops: ["#4cc9f0", "#9d8cff", "#f72585"] },
+      origin: r.bounds.topLeft, destination: r.bounds.bottomRight,
+    };
+    r.strokeColor = "#ffffff";
+    r.strokeWidth = 1.5;
+    r.fullySelected = true;
+    result = new Group([r]);
+  }
+  result.selectedColor = "#f7df1e";
+  result.shadowColor = "rgba(157,140,255,0.45)";
+  result.shadowBlur = 30;
+  resultLayer.addChild(result);
+  let n = 0;
+  result.getItems({ class: Path }).forEach((p) => { n += p.segments.length; });
+  document.getElementById("segs").textContent = n;
+}
+
+let dragging = null;
+const tool = new Tool();
+tool.onMouseDown = (e) => {
+  dragging = flower.contains(e.point) ? flower : circle.contains(e.point) ? circle : null;
+  if (dragging) document.getElementById("c").classList.add("dragging");
+};
+tool.onMouseDrag = (e) => {
+  if (dragging) dragging.position = dragging.position.add(e.delta);
+};
+tool.onMouseUp = () => {
+  dragging = null;
+  document.getElementById("c").classList.remove("dragging");
+};
+
+view.onFrame = (e) => {
+  // Slow rotation keeps the bezier result alive
+  if (dragging !== flower) flower.rotate(0.25);
+  rebuild();
+};
+
+view.onResize = () => layout();
+
+document.querySelectorAll("[data-op]").forEach((b) => {
+  b.addEventListener("click", () => {
+    op = b.dataset.op;
+    document.querySelectorAll("[data-op]").forEach((x) => x.setAttribute("aria-pressed", x === b));
+    document.getElementById("opName").textContent = OPS[op];
+  });
+});
+</script>
+</body>
+</html>

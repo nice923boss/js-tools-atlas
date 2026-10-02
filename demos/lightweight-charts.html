@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lightweight Charts 示範：台股模擬指數 K 線</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"指數與成交量為隨機生成的示意資料，非真實行情"}</script>
+<style>
+  .title { position: fixed; left: 14px; top: 12px; z-index: 40; }
+  .title h1 { margin: 0; font-size: 16px; }
+  .title p { margin: 0; font-size: 12px; color: var(--muted); }
+  .wrap { position: fixed; left: 6px; right: 6px; top: 62px; bottom: 44px; }
+  #chart { position: absolute; inset: 0; }
+  .legend { position: absolute; left: 10px; top: 6px; z-index: 5; pointer-events: none; font: 12px/1.5 var(--mono); color: var(--muted); }
+  .legend b { color: var(--fg); font-weight: 600; }
+  .legend .up { color: #f23645; } .legend .down { color: #22ab94; }
+  .legend .ma1 { color: #f7df1e; } .legend .ma2 { color: #9d8cff; }
+  @media (max-width: 640px) {
+    .title { top: 52px; } .wrap { top: 100px; }
+    .legend { font-size: 11px; }
+  }
+</style>
+</head>
+<body>
+<div class="title"><h1 id="name">台股模擬指數 2024 日 K</h1><p>示意資料・紅漲綠跌，下方窗格為成交量</p></div>
+<div class="controls">
+  <button class="btn" data-tf="day" aria-pressed="true">日 K</button>
+  <button class="btn" data-tf="week">週 K</button>
+  <button class="btn" id="ma" aria-pressed="true">均線</button>
+  <button class="btn primary" id="live" aria-pressed="true">即時跳動</button>
+</div>
+<div class="wrap"><div id="chart"></div><div class="legend" id="legend"></div></div>
+<div class="hint">滾輪縮放・拖曳平移・十字線看開高低收</div>
+
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.1/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+// TradingView Lightweight Charts v5: candlesticks + moving averages in pane 0, volume in pane 1,
+// series markers for MA crossovers, and a live-updating last bar.
+const { createChart, CandlestickSeries, HistogramSeries, LineSeries, createSeriesMarkers, createTextWatermark, CrosshairMode } = LightweightCharts;
+const UP = "#f23645", DOWN = "#22ab94"; // Taiwan convention: red = up, green = down
+
+let seed = 20240102;
+const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+const gauss = () => { let s = 0; for (let i = 0; i < 6; i++) s += rnd(); return (s - 3) * 1.41; };
+const pad = (v) => String(v).padStart(2, "0");
+const iso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+// The library hands times back as strings, BusinessDay objects or UTC timestamps; normalise to [y, m, d].
+const ymd = (t) => typeof t === "string" ? t.split("-").map(Number)
+  : typeof t === "number" ? ((d) => [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()])(new Date(t * 1000))
+  : [t.year, t.month, t.day];
+const sameDay = (a, b) => ymd(a).join("-") === ymd(b).join("-");
+
+function makeDaily() {
+  const out = [];
+  let close = 17900;
+  for (let d = new Date(2024, 0, 2); d.getFullYear() === 2024; d.setDate(d.getDate() + 1)) {
+    const wd = d.getDay(), m = d.getMonth(), day = d.getDate();
+    if (wd === 0 || wd === 6 || (m === 1 && day >= 6 && day <= 14)) continue; // weekends and Lunar New Year break
+    const drift = m < 6 ? 0.0022 : m === 6 ? -0.0025 : m >= 9 ? 0.0007 : 0.001;
+    const shock = m === 7 && day === 5 ? -0.08 : m === 7 && day === 6 ? 0.034 : 0;
+    const ret = drift + gauss() * 0.009 + shock;
+    const open = close * (1 + gauss() * 0.003);
+    const c = close * (1 + ret);
+    const high = Math.max(open, c) * (1 + Math.abs(gauss()) * 0.004);
+    const low = Math.min(open, c) * (1 - Math.abs(gauss()) * 0.004);
+    const vol = Math.max(1800, 3600 * (1 + Math.abs(ret) * 22 + gauss() * 0.12));
+    out.push({ time: iso(d), open, high, low, close: c, vol });
+    close = c;
+  }
+  return out;
+}
+
+// Weekly bars keyed by the first trading day of each week.
+function toWeekly(daily) {
+  const weeks = new Map();
+  for (const b of daily) {
+    const d = new Date(b.time), monday = new Date(d);
+    monday.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+    const k = iso(monday), w = weeks.get(k);
+    if (!w) weeks.set(k, { ...b });
+    else weeks.set(k, { ...w, high: Math.max(w.high, b.high), low: Math.min(w.low, b.low), close: b.close, vol: w.vol + b.vol });
+  }
+  return [...weeks.values()];
+}
+
+function movingAvg(bars, n) {
+  return bars.map((b, i) => (i < n - 1 ? null : { time: b.time, value: bars.slice(i - n + 1, i + 1).reduce((s, x) => s + x.close, 0) / n })).filter(Boolean);
+}
+
+function crossMarkers(fast, slow) {
+  const slowAt = new Map(slow.map((p) => [p.time, p.value]));
+  const marks = [];
+  let prev = null;
+  for (const p of fast) {
+    if (!slowAt.has(p.time)) continue;
+    const diff = p.value - slowAt.get(p.time);
+    if (prev !== null && Math.sign(diff) !== Math.sign(prev)) {
+      marks.push(diff > 0
+        ? { time: p.time, position: "belowBar", color: UP, shape: "arrowUp", text: "黃金交叉" }
+        : { time: p.time, position: "aboveBar", color: DOWN, shape: "arrowDown", text: "死亡交叉" });
+    }
+    prev = diff;
+  }
+  return marks;
+}
+
+const DAILY = makeDaily();
+const FRAMES = {
+  day: { bars: DAILY, ma: [20, 60], names: ["月線", "季線"], label: "日 K" },
+  week: { bars: toWeekly(DAILY), ma: [4, 13], names: ["月線", "季線"], label: "週 K" },
+};
+
+const el = document.getElementById("chart");
+const chart = createChart(el, {
+  autoSize: true,
+  layout: { background: { color: "transparent" }, textColor: "#9b998f", fontFamily: getComputedStyle(document.body).fontFamily, fontSize: 11,
+    panes: { separatorColor: "rgba(255,255,255,0.12)", separatorHoverColor: "rgba(247,223,30,0.25)", enableResize: true } },
+  grid: { vertLines: { color: "rgba(255,255,255,0.04)" }, horzLines: { color: "rgba(255,255,255,0.06)" } },
+  crosshair: { mode: CrosshairMode.Normal, vertLine: { labelBackgroundColor: "#2a2d33" }, horzLine: { labelBackgroundColor: "#2a2d33" } },
+  rightPriceScale: { borderColor: "rgba(255,255,255,0.12)" },
+  timeScale: { borderColor: "rgba(255,255,255,0.12)", rightOffset: 4, barSpacing: 6,
+    tickMarkFormatter: (t, type) => { const [y, m, d] = ymd(t); return type === 0 ? `${y} 年` : type === 1 ? `${m} 月` : `${d} 日`; } },
+  localization: { locale: "zh-TW", dateFormat: "yyyy/MM/dd", priceFormatter: (p) => Math.round(p).toLocaleString() },
+});
+
+const candles = chart.addSeries(CandlestickSeries, {
+  upColor: UP, downColor: DOWN, borderUpColor: UP, borderDownColor: DOWN, wickUpColor: UP, wickDownColor: DOWN,
+});
+const ma1 = chart.addSeries(LineSeries, { color: "#f7df1e", lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+const ma2 = chart.addSeries(LineSeries, { color: "#9d8cff", lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+const volume = chart.addSeries(HistogramSeries, {
+  priceFormat: { type: "custom", minMove: 1, formatter: (v) => `${Math.round(v).toLocaleString()} 億` }, priceLineVisible: false,
+}, 1);
+chart.panes()[0].setStretchFactor(3);
+chart.panes()[1].setStretchFactor(1);
+createTextWatermark(chart.panes()[0], { horzAlign: "center", vertAlign: "center",
+  lines: [{ text: "示意資料", color: "rgba(255,255,255,0.05)", fontSize: 56, fontStyle: "bold" }] });
+const markers = createSeriesMarkers(candles, []);
+
+let tf = "day", bars = [], maLast = [];
+const volBar = (b) => ({ time: b.time, value: b.vol, color: b.close >= b.open ? "rgba(242,54,69,0.55)" : "rgba(34,171,148,0.55)" });
+
+function load() {
+  const f = FRAMES[tf];
+  bars = f.bars.map((b) => ({ ...b }));
+  candles.setData(bars);
+  volume.setData(bars.map(volBar));
+  const a = movingAvg(bars, f.ma[0]), b = movingAvg(bars, f.ma[1]);
+  maLast = [a[a.length - 1], b[b.length - 1]];
+  ma1.setData(a);
+  ma2.setData(b);
+  markers.setMarkers(crossMarkers(a, b));
+  document.getElementById("name").textContent = `台股模擬指數 2024 ${f.label}`;
+  chart.timeScale().fitContent();
+  legend();
+}
+
+const fmt = (v) => Math.round(v).toLocaleString();
+function legend(param) {
+  const f = FRAMES[tf];
+  const bar = param && param.time ? param.seriesData.get(candles) : bars[bars.length - 1];
+  if (!bar) return;
+  const i = bars.findIndex((b) => sameDay(b.time, bar.time));
+  const prev = bars[i - 1] || bar;
+  const chg = ((bar.close - prev.close) / prev.close) * 100, cls = chg >= 0 ? "up" : "down";
+  const m1 = param && param.time ? param.seriesData.get(ma1) : maLast[0], m2 = param && param.time ? param.seriesData.get(ma2) : maLast[1];
+  const br = innerWidth < 640 ? "<br>" : "　";
+  const [y, m, d] = ymd(bar.time);
+  document.getElementById("legend").innerHTML =
+    `<b>${y}/${pad(m)}/${pad(d)}</b>　收 <b class="${cls}">${fmt(bar.close)}</b> <span class="${cls}">${chg >= 0 ? "▲" : "▼"} ${Math.abs(chg).toFixed(2)}%</span>` +
+    `${br}開 <b>${fmt(bar.open)}</b> 高 <b>${fmt(bar.high)}</b> 低 <b>${fmt(bar.low)}</b>　量 <b>${fmt(bars[i] ? bars[i].vol : 0)} 億</b>` +
+    (showMa ? `${br}<span class="ma1">${f.names[0]} ${m1 ? fmt(m1.value) : "-"}</span>　<span class="ma2">${f.names[1]} ${m2 ? fmt(m2.value) : "-"}</span>` : "");
+}
+
+let showMa = true, hovering = false;
+chart.subscribeCrosshairMove((param) => { hovering = !!param.time; legend(param); });
+load();
+
+// Live mode: jiggle the last bar like an intraday feed.
+let liveOn = true;
+setInterval(() => {
+  if (!liveOn) return;
+  const last = bars[bars.length - 1];
+  const close = last.close * (1 + gauss() * 0.0012);
+  const next = { ...last, close, high: Math.max(last.high, close), low: Math.min(last.low, close), vol: last.vol + 8 + rnd() * 20 };
+  bars[bars.length - 1] = next;
+  candles.update(next);
+  volume.update(volBar(next));
+  if (!hovering) legend();
+}, 450);
+
+document.querySelectorAll("[data-tf]").forEach((b) => b.addEventListener("click", () => {
+  tf = b.dataset.tf;
+  document.querySelectorAll("[data-tf]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  load();
+}));
+const maBtn = document.getElementById("ma");
+maBtn.addEventListener("click", () => {
+  showMa = !showMa;
+  maBtn.setAttribute("aria-pressed", String(showMa));
+  ma1.applyOptions({ visible: showMa });
+  ma2.applyOptions({ visible: showMa });
+  legend();
+});
+const liveBtn = document.getElementById("live");
+liveBtn.addEventListener("click", () => {
+  liveOn = !liveOn;
+  liveBtn.setAttribute("aria-pressed", String(liveOn));
+  liveBtn.classList.toggle("primary", liveOn);
+});
+</script>
+</body>
+</html>

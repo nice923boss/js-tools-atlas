@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPU.js 示範：同一段 JavaScript，GPU 與 CPU 賽跑</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  #view { position: fixed; inset: 0; background: #04060b; }
+  #view canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .btn { padding: 7px 10px; font-size: 12px; }
+  .controls .label { font-size: 12px; align-self: center; padding: 6px 8px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); }
+  #race {
+    position: fixed; left: 12px; top: 12px; z-index: 40; width: 300px; padding: 12px 14px;
+    display: grid; grid-template-columns: minmax(0, 1fr); gap: 9px; font-size: 12px;
+  }
+  #race h2 { margin: 0; font-size: 14px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .chip { font: 11px/1.5 var(--mono); padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--c4); white-space: nowrap; }
+  .chip.cpu { color: var(--c5); }
+  .seg { display: flex; gap: 4px; align-items: center; }
+  .seg .btn { padding: 6px 8px; font-family: var(--mono); font-size: 11.5px; }
+  .seg .grow { flex: 1; }
+  .seg .btn.primary { font-family: var(--font); font-size: 12px; padding: 7px 12px; }
+  .btn:disabled { opacity: .5; cursor: progress; }
+  .lane { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; }
+  .lane .name { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lane .ms { font-family: var(--mono); text-align: right; }
+  .lane .track { grid-column: 1 / -1; height: 8px; border-radius: 4px; background: rgba(255, 255, 255, 0.07); overflow: hidden; }
+  .lane .fill { height: 100%; width: 0; border-radius: 4px; transition: width .7s cubic-bezier(.2, .8, .2, 1); }
+  .lane.gpu .fill { background: linear-gradient(90deg, var(--c2), var(--c6)); }
+  .lane.cpu .fill { background: linear-gradient(90deg, var(--c5), var(--c3)); }
+  .lane.win .ms { color: var(--accent); }
+  #verdict { font-size: 13px; font-weight: 600; }
+  #verdict b { color: var(--accent); }
+  #detail, #env { color: var(--muted); font-size: 11.5px; line-height: 1.55; }
+  #env .warn { color: var(--c5); }
+  #env .r { display: block; font-family: var(--mono); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #fps { position: fixed; right: 12px; bottom: 12px; z-index: 40; padding: 6px 10px; font: 11.5px/1.5 var(--mono); color: var(--muted); }
+  #fps b { color: var(--fg); font-weight: 600; }
+  @media (max-width: 600px) {
+    #race { left: 12px; right: 12px; width: auto; top: auto; bottom: 46px; gap: 7px; padding: 10px 12px; }
+    #env .long, #detail .long, #env .r { display: none; }
+    #fps { top: 52px; bottom: auto; padding: 4px 8px; font-size: 11px; }
+    #fps .wide { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="view"></div>
+<div class="controls" id="engines">
+  <span class="label">碎形渲染</span>
+  <button class="btn" type="button" data-engine="gpu" aria-pressed="true">GPU</button>
+  <button class="btn" type="button" data-engine="cpu" aria-pressed="false">CPU</button>
+  <button class="btn" type="button" id="next">換放大點</button>
+</div>
+
+<section class="panel" id="race" aria-live="polite">
+  <h2>矩陣乘法對決 <span class="chip" id="modeChip">偵測中</span></h2>
+  <div class="seg" id="sizes">
+    <button class="btn" type="button" data-n="128" aria-pressed="false">128²</button>
+    <button class="btn" type="button" data-n="256" aria-pressed="true">256²</button>
+    <button class="btn" type="button" data-n="512" aria-pressed="false">512²</button>
+    <span class="grow"></span>
+    <button class="btn primary" type="button" id="go">開始比賽</button>
+  </div>
+  <div class="lane gpu" id="laneGpu"><span class="name" id="gpuName">GPU 核心</span><span class="ms" id="gpuMs">待命</span><div class="track"><div class="fill" id="gpuFill"></div></div></div>
+  <div class="lane cpu" id="laneCpu"><span class="name">CPU・純 JavaScript</span><span class="ms" id="cpuMs">待命</span><div class="track"><div class="fill" id="cpuFill"></div></div></div>
+  <div id="verdict">兩邊跑同一個 matMul 函式</div>
+  <div id="detail"></div>
+  <div id="env"></div>
+</section>
+
+<div class="panel" id="fps">準備中</div>
+<div class="hint">切換 GPU／CPU 看每幀耗時差距</div>
+
+<script src="https://cdn.jsdelivr.net/npm/gpu.js@2.24.1/dist/gpu-browser.min.js"></script>
+<script>
+// ---------- Kernels: plain JavaScript that GPU.js transpiles to GLSL (or runs as JS on CPU) ----------
+function mandelbrot(left, bottom, step, maxIter, shift) {
+  const x0 = left + this.thread.x * step;
+  const y0 = bottom + this.thread.y * step;
+  let x = 0;
+  let y = 0;
+  let dx = 0;
+  let dy = 0;
+  let count = 0;
+  for (let n = 0; n < maxIter; n++) {
+    const xx = x * x;
+    const yy = y * y;
+    if (xx + yy > 256) break;
+    // Track the derivative dz = 2 z dz + 1 for the distance estimate
+    const ndx = 2 * (x * dx - y * dy) + 1;
+    dy = 2 * (x * dy + y * dx);
+    dx = ndx;
+    y = 2 * x * y + y0;
+    x = xx - yy + x0;
+    count = count + 1;
+  }
+  if (count >= maxIter) {
+    this.color(0.012, 0.016, 0.035, 1);
+  } else {
+    const mag = Math.sqrt(x * x + y * y);
+    // Smooth escape count drives the hue, distance to the set drives the glow
+    const smooth = count + 1 - Math.log(Math.log(mag)) / 0.693147;
+    const dist = (mag * Math.log(mag)) / Math.sqrt(dx * dx + dy * dy);
+    const near = Math.max(0, 1 - dist / (step * 12));
+    const glow = 0.12 + 0.88 * Math.pow(near, 3);
+    const t = Math.log(smooth) * 0.55 + shift;
+    const r = 0.5 + 0.5 * Math.cos(6.28318 * (t + 0.0));
+    const g = 0.5 + 0.5 * Math.cos(6.28318 * (t + 0.1));
+    const b = 0.5 + 0.5 * Math.cos(6.28318 * (t + 0.22));
+    const core = Math.pow(near, 14) * 0.6;
+    this.color(r * glow + core, g * glow + core, (0.2 + b * 0.8) * glow + core, 1);
+  }
+}
+
+function matMul(a, b) {
+  let sum = 0;
+  for (let i = 0; i < this.constants.size; i++) {
+    sum += a[this.thread.y][i] * b[i][this.thread.x];
+  }
+  return sum;
+}
+
+// ---------- Helpers ----------
+const $ = (id) => document.getElementById(id);
+const view = $("view");
+const raceEl = $("race");
+
+function backendOf(shortcut) {
+  const inner = shortcut.kernel || shortcut;
+  const mode = inner.constructor.mode;
+  if (mode === "gpu") {
+    const isGl2 = typeof WebGL2RenderingContext !== "undefined" && inner.context instanceof WebGL2RenderingContext;
+    return { label: isGl2 ? "WebGL2" : "WebGL1", gpu: true };
+  }
+  if (mode === "webasm") return { label: "WebAssembly", gpu: false };
+  if (mode === "webgpu") return { label: "WebGPU", gpu: true };
+  return { label: "JavaScript", gpu: false };
+}
+
+function rendererOf(shortcut) {
+  const gl = (shortcut.kernel || shortcut).context;
+  if (!gl || typeof gl.getParameter !== "function") return "";
+  try {
+    let name = gl.getParameter(gl.RENDERER);
+    if (/^WebKit WebGL$/.test(name)) {
+      const ext = gl.getExtension("WEBGL_debug_renderer_info");
+      if (ext) name = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+    }
+    return String(name || "");
+  } catch (err) {
+    console.warn(err);
+    return "";
+  }
+}
+
+const fmtMs = (ms) => (ms < 10 ? ms.toFixed(1) : Math.round(ms).toLocaleString()) + " ms";
+const nextFrame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+
+// ---------- Fractal: the same kernel on two engines ----------
+const TARGETS = [
+  { name: "海馬谷", x: -0.743643887037151, y: 0.13182590420533 },
+  { name: "螺旋", x: -0.77568377, y: 0.13646737 },
+  { name: "漩渦", x: 0.001643721971153, y: -0.822467633298876 },
+];
+const HOME = { x: -0.76, y: 0 };
+const HOLD = 3;             // seconds to show the whole set before diving in
+const PERIOD = 32;          // seconds for one zoom in and back out
+const MIN_SCALE = 2.6e-7;   // complex units per CSS pixel at the deepest point (float32 limit)
+
+let engine = "gpu";
+let engines = {};           // { gpu: {kernel, canvas, w, h}, cpu: {...} }
+let targetIndex = 0;
+let zoomStart = performance.now();
+let racing = false;
+let layout = null;
+let frameMs = { gpu: 0, cpu: 0 };
+let lastStamp = 0;
+
+function computeLayout() {
+  const W = view.clientWidth, H = view.clientHeight;
+  const r = raceEl.getBoundingClientRect();
+  let x0 = 0, x1 = W, y0 = 52, y1 = H;
+  if (r.width < W * 0.6) x0 = r.right + 8; else y1 = r.top - 8;
+  const f = $("fps").getBoundingClientRect();
+  if (f.top < H / 2) y0 = Math.max(y0, f.bottom + 6);
+  const fw = Math.max(80, x1 - x0), fh = Math.max(80, y1 - y0);
+  const k = Math.min(1, Math.sqrt(420000 / (W * H)));
+  return {
+    W, H,
+    fx: x0 + fw / 2, fy: y0 + fh / 2,
+    s0: Math.max(2.9 / fw, 2.5 / fh),
+    w: Math.max(2, Math.round(W * k)), h: Math.max(2, Math.round(H * k)),
+  };
+}
+
+function buildEngine(kind) {
+  const gpu = kind === "cpu" ? new GPU({ mode: "cpu" }) : new GPU();
+  const kernel = gpu.createKernel(mandelbrot)
+    .setOutput([layout.w, layout.h])
+    .setGraphical(true)
+    .setLoopMaxIterations(520);
+  return { gpu, kernel, canvas: null };
+}
+
+function dropEngines() {
+  for (const e of Object.values(engines)) {
+    try {
+      const ctx = e.kernel.context;
+      e.kernel.destroy(true);
+      ctx?.getExtension?.("WEBGL_lose_context")?.loseContext();
+    } catch (err) {
+      console.warn(err);
+    }
+    e.canvas?.remove();
+  }
+  engines = {};
+}
+
+function zoomState(now) {
+  const t = (now - zoomStart) / 1000;
+  if (t > HOLD + PERIOD) {
+    targetIndex = (targetIndex + 1) % TARGETS.length;
+    zoomStart = now;
+    return zoomState(now);
+  }
+  const z = t < HOLD ? 0 : 0.5 - 0.5 * Math.cos((2 * Math.PI * (t - HOLD)) / PERIOD);
+  const s = layout.s0 * Math.pow(MIN_SCALE / layout.s0, z);
+  return { t, s, zoom: layout.s0 / s };
+}
+
+function renderFractal(now) {
+  const T = TARGETS[targetIndex];
+  const { t, s, zoom } = zoomState(now);
+  // The target point stays fixed on screen while the scale shrinks around it.
+  const cx = T.x + (HOME.x - T.x) * (s / layout.s0);
+  const cy = T.y + (HOME.y - T.y) * (s / layout.s0);
+  const left = cx - layout.fx * s;
+  const bottom = cy - (layout.H - layout.fy) * s;
+  const step = (s * layout.W) / layout.w;
+  const maxIter = Math.round(Math.min(500, 110 + 70 * Math.log10(zoom)));
+
+  if (!engines[engine]) engines[engine] = buildEngine(engine);
+  const e = engines[engine];
+  e.kernel(left, bottom, step, maxIter, t * 0.015);
+  // Show whichever canvas the kernel draws into (it changes if GPU.js falls back to CPU).
+  const c = e.kernel.canvas;
+  if (c !== e.canvas) {
+    e.canvas?.remove();
+    e.canvas = c;
+    view.append(c);
+  }
+  for (const other of Object.values(engines)) if (other.canvas) other.canvas.hidden = other !== e;
+  return { zoom, maxIter, T };
+}
+
+function updateFps(info) {
+  const be = backendOf(engines[engine].kernel);
+  const other = engine === "gpu" ? "cpu" : "gpu";
+  const otherTxt = frameMs[other] ? `<span class="wide">・${other.toUpperCase()} 上次 ${fmtMs(frameMs[other])}</span>` : "";
+  $("fps").innerHTML =
+    `<b>${engine.toUpperCase()}</b><span class="wide">（${be.label}）</span> 每幀 <b>${frameMs[engine] ? fmtMs(frameMs[engine]) : "…"}</b>${otherTxt}<br class="wide">` +
+    `<span class="wide">${layout.w}×${layout.h}・迭代 ${info.maxIter}</span>・${info.T.name} 放大 ${Math.round(info.zoom).toLocaleString()}×`;
+}
+
+let info = null;
+function loop(now) {
+  if (!racing) {
+    try {
+      if (lastStamp) {
+        const dt = now - lastStamp;
+        frameMs[engine] = frameMs[engine] ? frameMs[engine] * 0.85 + dt * 0.15 : dt;
+      }
+      info = renderFractal(now);
+      updateFps(info);
+      lastStamp = now;
+    } catch (err) {
+      console.error(err);
+      $("fps").textContent = "碎形核心執行失敗：" + (err?.message || err);
+      return;
+    }
+  } else {
+    lastStamp = 0;
+  }
+  requestAnimationFrame(loop);
+}
+
+document.querySelectorAll("#engines [data-engine]").forEach((b) => {
+  b.addEventListener("click", () => {
+    engine = b.dataset.engine;
+    lastStamp = 0;
+    frameMs[engine] = 0;
+    document.querySelectorAll("#engines [data-engine]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  });
+});
+$("next").addEventListener("click", () => {
+  targetIndex = (targetIndex + 1) % TARGETS.length;
+  zoomStart = performance.now() - HOLD * 1000;
+});
+
+// ---------- Matrix multiplication race ----------
+const benchGpu = new GPU();
+const benchCpu = new GPU({ mode: "cpu" });
+const benchKernels = {};
+let size = 256;
+
+function kernelsFor(n) {
+  if (!benchKernels[n]) {
+    benchKernels[n] = {
+      gpu: benchGpu.createKernel(matMul).setOutput([n, n]).setConstants({ size: n }),
+      cpu: benchCpu.createKernel(matMul).setOutput([n, n]).setConstants({ size: n }),
+    };
+  }
+  return benchKernels[n];
+}
+
+function randomMatrix(n) {
+  const m = new Float32Array(n * n);
+  for (let i = 0; i < m.length; i++) m[i] = Math.random();
+  return GPU.input(m, [n, n]);
+}
+
+function timeRuns(kernel, a, b, runs) {
+  const times = [];
+  let out = null;
+  for (let i = 0; i < runs; i++) {
+    const t0 = performance.now();
+    out = kernel(a, b);
+    times.push(performance.now() - t0);
+  }
+  times.sort((x, y) => x - y);
+  return { ms: times[Math.floor(times.length / 2)], out };
+}
+
+function maxDiff(p, q) {
+  let d = 0;
+  for (let y = 0; y < p.length; y++) {
+    const rp = p[y], rq = q[y];
+    for (let x = 0; x < rp.length; x++) d = Math.max(d, Math.abs(rp[x] - rq[x]));
+  }
+  return d;
+}
+
+function setLane(which, text, pct, win) {
+  $(which + "Ms").textContent = text;
+  $(which + "Fill").style.width = pct + "%";
+  $("lane" + (which === "gpu" ? "Gpu" : "Cpu")).classList.toggle("win", !!win);
+}
+
+function describeEnv(k) {
+  const be = backendOf(k);
+  const renderer = rendererOf(k);
+  const soft = /swiftshader|llvmpipe|softpipe|software|basic render/i.test(renderer);
+  const chip = $("modeChip");
+  chip.textContent = "後端 " + be.label;
+  chip.classList.toggle("cpu", !be.gpu);
+  $("gpuName").textContent = be.gpu ? `GPU・${be.label} 著色器` : `GPU 核心（已退回 ${be.label}）`;
+  let html = "";
+  if (!be.gpu) {
+    html = `<span class="warn">這個瀏覽器沒有可用的 WebGL，GPU.js 自動退回 ${be.label}，兩條跑道其實都在 CPU 上。</span>`;
+  } else if (soft) {
+    html = `<span class="warn">偵測到軟體模擬的 WebGL，GPU 跑道其實是 CPU 在模擬著色器，所以不一定比較快。</span>` +
+      `<span class="long">換到有實體顯示卡的瀏覽器，512² 通常能拉開數倍差距。</span>`;
+  } else {
+    html = `<span class="long">GPU 每個像素一條執行緒同時算；CPU 逐格跑三層迴圈。</span>`;
+  }
+  if (renderer) html += `<span class="r" title="${renderer.replace(/"/g, "&quot;")}">繪圖器：${renderer.replace(/</g, "&lt;")}</span>`;
+  $("env").innerHTML = html;
+}
+
+async function race() {
+  if (racing) return;
+  racing = true;
+  const buttons = document.querySelectorAll("#race .btn");
+  buttons.forEach((b) => (b.disabled = true));
+  const n = size;
+  const runs = n >= 512 ? 1 : n >= 256 ? 3 : 5;
+  $("verdict").textContent = `準備兩個 ${n}×${n} 隨機矩陣…`;
+  $("detail").textContent = "";
+  setLane("gpu", "計算中", 0);
+  setLane("cpu", "等待", 0);
+  try {
+    await nextFrame();
+    const a = randomMatrix(n), b = randomMatrix(n);
+    const k = kernelsFor(n);
+
+    // Warm-up: the first call transpiles JS to GLSL and compiles the shader.
+    let t0 = performance.now();
+    k.gpu(a, b);
+    const buildMs = performance.now() - t0;
+    describeEnv(k.gpu);
+    const g = timeRuns(k.gpu, a, b, runs);
+    setLane("gpu", fmtMs(g.ms), 100);
+    setLane("cpu", "計算中", 0);
+    await nextFrame();
+
+    k.cpu(a, b);
+    const c = timeRuns(k.cpu, a, b, runs);
+    const max = Math.max(g.ms, c.ms);
+    setLane("gpu", fmtMs(g.ms), Math.max(3, (g.ms / max) * 100), g.ms < c.ms);
+    setLane("cpu", fmtMs(c.ms), Math.max(3, (c.ms / max) * 100), c.ms < g.ms);
+
+    const ratio = g.ms < c.ms ? c.ms / g.ms : g.ms / c.ms;
+    $("verdict").innerHTML = g.ms < c.ms
+      ? `GPU 快 <b>${ratio.toFixed(1)}</b> 倍`
+      : `這台機器上 CPU 快 <b>${ratio.toFixed(1)}</b> 倍`;
+    const flops = (ms) => ((2 * n ** 3) / (ms / 1000) / 1e9).toFixed(2);
+    const diff = maxDiff(g.out, c.out);
+    $("detail").innerHTML =
+      `${n}×${n}・${runs > 1 ? `取 ${runs} 次中位數` : "單次計時"}・GFLOPS：GPU ${flops(g.ms)}／CPU ${flops(c.ms)}<br>` +
+      `結果最大差異 ${diff.toExponential(1)}（GPU 用 32 位元浮點）<span class="long">・首次呼叫轉譯並編譯 ${fmtMs(buildMs)}，未計入</span>`;
+  } catch (err) {
+    console.error(err);
+    $("verdict").textContent = "比賽失敗：" + (err?.message || err);
+  } finally {
+    buttons.forEach((b) => (b.disabled = false));
+    racing = false;
+  }
+}
+
+document.querySelectorAll("#sizes [data-n]").forEach((b) => {
+  b.addEventListener("click", () => {
+    size = Number(b.dataset.n);
+    document.querySelectorAll("#sizes [data-n]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  });
+});
+$("go").addEventListener("click", race);
+
+// ---------- Start ----------
+layout = computeLayout();
+let resizeTimer = 0;
+addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    const next = computeLayout();
+    if (next.w !== layout.w || next.h !== layout.h) dropEngines();
+    layout = next;
+  }, 250);
+});
+requestAnimationFrame(loop);
+setTimeout(race, 700);
+</script>
+</body>
+</html>

@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Magenta.js 示範：AI 接續你彈的旋律</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"click","needs":["audio"],"size":"約 17 MB","note":"MusicRNN 模型在瀏覽器內執行，每次接續的旋律都不一樣"}</script>
+<style>
+  .app {
+    position: fixed; inset: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
+    gap: 10px; padding: 12px 14px 46px;
+  }
+  .top { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .legend { display: flex; gap: 12px; align-items: center; font-size: 12.5px; color: var(--muted); }
+  .legend i { display: inline-block; width: 18px; height: 8px; border-radius: 3px; margin-right: 5px; vertical-align: middle; }
+  .spacer { flex: 1; }
+  .temp { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+  .temp input { width: 86px; }
+  .temp b { font: 600 12px var(--mono); color: var(--fg); min-width: 24px; }
+  #play { min-width: 82px; }
+  .roll {
+    position: relative; min-height: 0; border-radius: 10px; border: 1px solid var(--line); overflow: hidden;
+    background: linear-gradient(180deg, #151922, #0f1116);
+  }
+  .roll canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .msg {
+    position: absolute; right: 10px; bottom: 8px; max-width: calc(100% - 20px);
+    font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    padding: 3px 9px; border-radius: 999px; background: rgba(14, 16, 19, .72); pointer-events: none;
+  }
+  .msg.err { color: var(--c3); }
+  .kbd {
+    position: relative; height: clamp(64px, 17vh, 104px); user-select: none; touch-action: none;
+    border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: #0a0b0d;
+  }
+  .key { position: absolute; top: 0; cursor: pointer; transition: background .08s; }
+  .key.white {
+    height: 100%; background: linear-gradient(180deg, #e9e7df, #f8f7f2 85%, #d9d6cc);
+    border-right: 1px solid #b9b5a8; border-radius: 0 0 5px 5px;
+    display: flex; align-items: flex-end; justify-content: center; padding-bottom: 5px;
+    font: 600 10.5px var(--font); color: #77736a;
+  }
+  .key.black {
+    height: 60%; z-index: 2; border-radius: 0 0 4px 4px;
+    background: linear-gradient(180deg, #2a2d33, #121418); box-shadow: 0 2px 3px rgba(0, 0, 0, .5);
+  }
+  .key.white.on-seed { background: linear-gradient(180deg, #fff3a6, #f7df1e); color: #4a4200; }
+  .key.black.on-seed { background: linear-gradient(180deg, #f7df1e, #b8a400); }
+  .key.white.on-gen { background: linear-gradient(180deg, #c9f1ff, #4cc9f0); color: #08394a; }
+  .key.black.on-gen { background: linear-gradient(180deg, #4cc9f0, #2a8db0); }
+  @media (max-width: 620px) {
+    .app { padding: 10px 10px 46px; gap: 8px; }
+    .top { gap: 6px; }
+    .legend { flex-basis: 100%; }
+    .temp input { width: 64px; }
+    .btn { padding: 7px 10px; font-size: 12.5px; }
+    .key.white { font-size: 9px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="top">
+    <div class="legend"><span><i style="background:var(--c1)"></i>你的旋律</span><span><i style="background:var(--c2)"></i>AI 接續</span></div>
+    <div class="spacer"></div>
+    <button class="btn" id="sample">範例旋律</button>
+    <button class="btn" id="clear">↺ 清除</button>
+    <label class="temp">創意度 <input type="range" id="temp" min="0.6" max="1.6" step="0.1" value="1.1"><b id="tempVal">1.1</b></label>
+    <button class="btn" id="play">▶ 播放</button>
+    <button class="btn primary" id="gen">✨ 接續旋律</button>
+  </div>
+  <div class="roll" id="roll">
+    <canvas id="cv"></canvas>
+    <div class="msg" id="msg"></div>
+  </div>
+  <div class="kbd" id="kbd" aria-label="螢幕鋼琴"></div>
+</div>
+<div class="hint">點下方鋼琴彈幾個音（按久一點是長音），再按「接續旋律」</div>
+
+<script src="_shared/gate.js"></script>
+<script>
+const MM_URL = "https://cdn.jsdelivr.net/npm/@magenta/music@1.23.1/dist/magentamusic.js";
+const CKPT = "https://storage.googleapis.com/magentadata/js/checkpoints/music_rnn/basic_rnn";
+const SOUNDFONT = "https://storage.googleapis.com/magentadata/js/soundfonts/salamander";
+const QPM = 110, SPQ = 4, STEP_SEC = 60 / QPM / SPQ, VEL = 80;
+const LOW = 60, HIGH = 83;           // on-screen keyboard range (C4 to B5)
+const SEED_MAX = 64, GEN_STEPS = 64; // 4 bars of seed at most, 4 bars of continuation
+const SOLFEGE = { 0: "Do", 2: "Re", 4: "Mi", 5: "Fa", 7: "Sol", 9: "La", 11: "Si" };
+// "Little Bee" (a Taiwanese children's song), steps at 4 per quarter note
+const SAMPLE = [[67,0,4],[64,4,8],[64,8,16],[65,16,20],[62,20,24],[62,24,32],
+  [60,32,36],[62,36,40],[64,40,44],[65,44,48],[67,48,52],[67,52,56],[67,56,64]]
+  .map(([pitch, s, e]) => ({ pitch, s, e }));
+
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+const msgEl = document.getElementById("msg");
+const playBtn = document.getElementById("play"), genBtn = document.getElementById("gen");
+const tempIn = document.getElementById("temp"), tempVal = document.getElementById("tempVal");
+const kbd = document.getElementById("kbd");
+
+let mm = null, rnn = null, player = null;
+let seed = SAMPLE.map((n) => ({ ...n }));
+let gen = [];             // continuation notes in absolute steps
+let fresh = false;        // next key press starts a brand new melody
+let held = null;          // { note, t0 } while a key is pressed
+let generating = false;
+let playing = false, anchor = null; // anchor = { step, at } from the player's note callback
+const lit = new Map();    // pitch -> { until, kind } for keyboard highlights
+
+function setMsg(text, err) { msgEl.textContent = text; msgEl.className = err ? "msg err" : "msg"; }
+const seedEnd = () => seed.reduce((m, n) => Math.max(m, n.e), 0);
+const isBlack = (p) => [1, 3, 6, 8, 10].includes(p % 12);
+const toQuantized = (notes) => ({
+  notes: notes.map((n) => ({ pitch: n.pitch, velocity: VEL, quantizedStartStep: n.s, quantizedEndStep: n.e })),
+  totalQuantizedSteps: notes.reduce((m, n) => Math.max(m, n.e), 0),
+  quantizationInfo: { stepsPerQuarter: SPQ },
+});
+
+// ---------- on-screen piano ----------
+const whites = [];
+for (let p = LOW; p <= HIGH; p++) if (!isBlack(p)) whites.push(p);
+const keyEls = new Map();
+const ww = 100 / whites.length;
+for (let p = LOW; p <= HIGH; p++) {
+  const k = document.createElement("div");
+  k.dataset.pitch = p;
+  if (isBlack(p)) {
+    const left = whites.indexOf(p + 1) * ww;
+    k.className = "key black";
+    Object.assign(k.style, { left: `${left - ww * 0.31}%`, width: `${ww * 0.62}%` });
+  } else {
+    k.className = "key white";
+    Object.assign(k.style, { left: `${whites.indexOf(p) * ww}%`, width: `${ww}%` });
+    k.textContent = SOLFEGE[p % 12];
+  }
+  kbd.append(k);
+  keyEls.set(p, k);
+}
+
+kbd.addEventListener("pointerdown", (e) => {
+  const key = e.target.closest(".key");
+  if (!key) return;
+  e.preventDefault();
+  pressKey(Number(key.dataset.pitch));
+});
+window.addEventListener("pointerup", releaseKey);
+window.addEventListener("pointercancel", releaseKey);
+
+function pressKey(pitch) {
+  if (!player) { setMsg("模型還在載入，請稍候", true); return; }
+  if (held) releaseKey();
+  if (fresh) { stopPlayback(); seed = []; gen = []; fresh = false; }
+  const start = seedEnd();
+  if (start >= SEED_MAX) { setMsg("最多 4 小節，按「接續旋律」讓 AI 接著寫", true); return; }
+  const note = { pitch, s: start, e: start + 2 };
+  seed.push(note);
+  held = { note, t0: performance.now() };
+  player.resumeContext();
+  player.playNoteDown({ pitch, velocity: VEL });
+  lit.set(pitch, { until: Infinity, kind: "seed" });
+}
+function releaseKey() {
+  if (!held) return;
+  const { note } = held;
+  held = null;
+  player.playNoteUp({ pitch: note.pitch, velocity: VEL });
+  lit.delete(note.pitch);
+  setMsg(`你的旋律：${seed.length} 個音，按「接續旋律」讓 AI 寫下去`);
+}
+// Hold longer for a longer note: eighth, quarter, dotted quarter or half note
+function growHeldNote(now) {
+  if (!held) return;
+  const steps = Math.min(8, Math.max(2, 2 * Math.round((now - held.t0) / 1000 / STEP_SEC / 2)));
+  held.note.e = Math.min(held.note.s + steps, SEED_MAX);
+}
+
+// ---------- Magenta ----------
+async function generate() {
+  if (!rnn || generating) return;
+  if (held) releaseKey();
+  if (!seed.length) { setMsg("先在下方鋼琴彈幾個音", true); return; }
+  stopPlayback();
+  generating = true; genBtn.disabled = true; gen = [];
+  setMsg("MusicRNN 正在接續旋律…");
+  const temperature = Number(tempIn.value);
+  try {
+    const offset = seedEnd();
+    const out = await rnn.continueSequence(toQuantized(seed), GEN_STEPS, temperature);
+    gen = out.notes.map((n) => ({
+      pitch: n.pitch, s: offset + (n.quantizedStartStep || 0), e: offset + (n.quantizedEndStep || 0),
+    }));
+    fresh = true;
+    setMsg(`AI 接續了 ${gen.length} 個音（創意度 ${temperature.toFixed(1)}），再按一次會寫出不同版本`);
+  } catch (err) {
+    console.error(err);
+    setMsg(`生成失敗：${err.message || err}`, true);
+  } finally {
+    generating = false; genBtn.disabled = false;
+  }
+  return gen.length > 0;
+}
+
+function startPlayback() {
+  if (!player || !seed.length) return;
+  stopPlayback();
+  const seq = toQuantized([...seed, ...gen]);
+  playing = true; anchor = null;
+  playBtn.textContent = "■ 停止";
+  player.start(seq, QPM).catch((err) => { console.error(err); stopPlayback(); });
+}
+function stopPlayback() {
+  if (player && player.isPlaying()) player.stop();
+  playing = false; anchor = null;
+  playBtn.textContent = "▶ 播放";
+  for (const [p, v] of lit) if (v.until !== Infinity) lit.delete(p);
+}
+// Called by SoundFontPlayer (via Tone.Draw) when each note actually sounds
+function onPlayerNote(note) {
+  const step = note.startTime / STEP_SEC;
+  anchor = { step, at: performance.now() };
+  const kind = step >= seedEnd() - 1e-6 && gen.length ? "gen" : "seed";
+  lit.set(note.pitch, { until: performance.now() + (note.endTime - note.startTime) * 1000 - 30, kind });
+}
+function onPlayerStop() { stopPlayback(); }
+
+document.getElementById("gen").addEventListener("click", async () => {
+  if (await generate()) startPlayback();
+});
+playBtn.addEventListener("click", () => { if (playing) stopPlayback(); else startPlayback(); });
+document.getElementById("clear").addEventListener("click", () => {
+  stopPlayback(); seed = []; gen = []; fresh = false;
+  setMsg("已清除，點下方鋼琴開始彈");
+});
+document.getElementById("sample").addEventListener("click", () => {
+  stopPlayback(); seed = SAMPLE.map((n) => ({ ...n })); gen = []; fresh = false;
+  setMsg("已載入範例旋律「小蜜蜂」，按「接續旋律」");
+});
+tempIn.addEventListener("input", () => { tempVal.textContent = Number(tempIn.value).toFixed(1); });
+
+// ---------- piano roll ----------
+function resize() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [w, h];
+}
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h);
+}
+
+function draw(now) {
+  growHeldNote(now);
+  const [W, H] = resize();
+  ctx.clearRect(0, 0, W, H);
+  const all = [...seed, ...gen];
+  const sEnd = seedEnd();
+  const split = Math.max(sEnd, held || !gen.length ? Math.min(SEED_MAX, Math.max(sEnd, 32)) : sEnd);
+  const view = split + GEN_STEPS;
+  const lo = Math.min(LOW - 1, ...all.map((n) => n.pitch - 1));
+  const hi = Math.max(LOW + 20, ...all.map((n) => n.pitch + 1));
+  const rows = hi - lo + 1;
+  const gx = 34, top = 24, bottom = 32; // bottom strip is reserved for the status pill
+  const sw = (W - gx - 8) / view, rh = (H - top - bottom) / rows;
+  const X = (step) => gx + step * sw;
+  const Y = (pitch) => top + (hi - pitch) * rh;
+
+  // pitch rows
+  for (let p = lo; p <= hi; p++) {
+    if (isBlack(p)) { ctx.fillStyle = "rgba(0,0,0,.22)"; ctx.fillRect(gx, Y(p), W - gx, rh); }
+    if (p % 12 === 0) {
+      ctx.fillStyle = "rgba(255,255,255,.07)"; ctx.fillRect(gx, Y(p) + rh - 1, W - gx, 1);
+      ctx.fillStyle = "#9b998f"; ctx.font = "11px ui-monospace, Consolas, monospace"; ctx.textBaseline = "middle";
+      ctx.fillText(`C${p / 12 - 1}`, 6, Y(p) + rh / 2);
+    }
+  }
+  // continuation zone
+  ctx.fillStyle = "rgba(76,201,240,.045)";
+  ctx.fillRect(X(split), top, W - X(split), H - top);
+  // beat and bar lines
+  for (let s = 0; s <= view; s += 4) {
+    ctx.fillStyle = s % 16 === 0 ? "rgba(255,255,255,.14)" : "rgba(255,255,255,.05)";
+    ctx.fillRect(Math.round(X(s)), top, 1, H - top);
+  }
+  // seed / continuation boundary
+  ctx.save();
+  ctx.strokeStyle = "rgba(247,223,30,.55)"; ctx.setLineDash([4, 4]); ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(X(split), 4); ctx.lineTo(X(split), H); ctx.stroke();
+  ctx.restore();
+  ctx.font = "600 12px 'Noto Sans TC', 'Microsoft JhengHei', sans-serif"; ctx.textBaseline = "middle";
+  ctx.fillStyle = "#f7df1e"; ctx.fillText("你的旋律", gx + 6, 12);
+  ctx.fillStyle = "#4cc9f0"; ctx.fillText("AI 接續 →", X(split) + 8, 12);
+
+  const ph = playing && anchor ? anchor.step + (now - anchor.at) / 1000 / STEP_SEC : -1;
+  // notes
+  const drawNote = (n, color, glowColor) => {
+    const active = ph >= n.s && ph < n.e;
+    const x = X(n.s) + 1, y = Y(n.pitch) + 1.5, w = Math.max(3, (n.e - n.s) * sw - 2), h = Math.max(3, rh - 3);
+    ctx.save();
+    ctx.shadowColor = glowColor; ctx.shadowBlur = active ? 18 : 6;
+    ctx.fillStyle = active ? "#ffffff" : color;
+    roundRect(x, y, w, h, Math.min(4, h / 2)); ctx.fill();
+    ctx.restore();
+  };
+  for (const n of seed) drawNote(n, n === (held && held.note) ? "#fff7b8" : "#f7df1e", "rgba(247,223,30,.7)");
+  for (const n of gen) {
+    const g = ctx.createLinearGradient(X(n.s), 0, X(n.e), 0);
+    g.addColorStop(0, "#4cc9f0"); g.addColorStop(1, "#9d8cff");
+    drawNote(n, g, "rgba(76,201,240,.7)");
+  }
+  // generating shimmer over the continuation zone
+  if (generating) {
+    const t = (now / 900) % 1;
+    const zx = X(split), zw = W - zx;
+    const g = ctx.createLinearGradient(zx + zw * (t - 0.3), 0, zx + zw * t, 0);
+    g.addColorStop(0, "rgba(76,201,240,0)"); g.addColorStop(1, "rgba(76,201,240,.22)");
+    ctx.fillStyle = g; ctx.fillRect(zx, top, zw, H - top);
+    ctx.fillStyle = "#cfefff"; ctx.textAlign = "center"; ctx.font = "600 14px 'Noto Sans TC', 'Microsoft JhengHei', sans-serif";
+    ctx.fillText("AI 作曲中…", zx + zw / 2, top + (H - top) / 2);
+    ctx.textAlign = "start";
+  } else if (!gen.length) {
+    ctx.fillStyle = "rgba(207,239,255,.55)"; ctx.textAlign = "center"; ctx.font = "13px 'Noto Sans TC', 'Microsoft JhengHei', sans-serif";
+    const cx = X(split) + (W - X(split)) / 2, cy = top + (H - top) / 2;
+    const line = "按「✨ 接續旋律」讓 AI 寫下去";
+    // split into two lines when the continuation zone is too narrow (phone width)
+    if (ctx.measureText(line).width > W - X(split) - 16) {
+      ctx.fillText("按「✨ 接續旋律」", cx, cy - 10); ctx.fillText("讓 AI 寫下去", cx, cy + 10);
+    } else ctx.fillText(line, cx, cy);
+    ctx.textAlign = "start";
+  }
+  // playhead
+  if (ph >= 0) {
+    const x = X(Math.min(ph, view));
+    ctx.save();
+    ctx.shadowColor = "rgba(255,255,255,.8)"; ctx.shadowBlur = 10;
+    ctx.fillStyle = "#ffffff"; ctx.fillRect(x - 1, top - 4, 2, H - top + 4);
+    ctx.restore();
+  }
+  // keyboard highlights
+  for (const [p, el] of keyEls) {
+    const v = lit.get(p);
+    const on = v && v.until > now;
+    el.classList.toggle("on-seed", !!on && v.kind === "seed");
+    el.classList.toggle("on-gen", !!on && v.kind === "gen");
+  }
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+// ---------- start ----------
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const el = document.createElement("script");
+    el.src = src;
+    el.onload = resolve;
+    el.onerror = () => reject(new Error("函式庫下載失敗"));
+    document.head.append(el);
+  });
+}
+
+(async () => {
+  setMsg("等待載入模型");
+  await demoGate({
+    icon: "🎹",
+    title: "AI 接續你的旋律",
+    desc: "在螢幕鋼琴彈一小段旋律，Magenta 的 MusicRNN 模型會在瀏覽器內接著寫下去，並用真實鋼琴取樣播放。",
+    tags: ["會發出聲音", "約 17 MB"],
+    button: "載入模型",
+  });
+  const s = demoStatus("下載 Magenta.js（約 2.5 MB）…");
+  try {
+    s.progress(0.1);
+    await loadScript(MM_URL);
+    mm = window.mm;
+    s.text("下載 MusicRNN 旋律模型（約 13 MB）…"); s.progress(0.35);
+    rnn = new mm.MusicRNN(CKPT);
+    await rnn.initialize();
+    s.text("載入鋼琴音色…"); s.progress(0.8);
+    const sampler = new mm.SoundFontPlayer(SOUNDFONT, undefined, undefined, undefined, { run: onPlayerNote, stop: onPlayerStop });
+    const pitches = [];
+    for (let p = 48; p <= 84; p++) pitches.push({ pitch: p, velocity: VEL });
+    await sampler.loadSamples({ notes: pitches });
+    player = sampler;
+    s.done();
+  } catch (err) {
+    console.error(err);
+    s.error(`載入失敗：${err.message || err}，請確認網路連線後重新整理`);
+    return;
+  }
+  if (await generate()) {
+    setMsg("已接續範例旋律「小蜜蜂」，按 ▶ 播放聆聽，或在鋼琴彈你自己的旋律");
+  }
+})();
+</script>
+</body>
+</html>

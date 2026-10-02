@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>p2.js 示範：吊橋上的避震小車</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body { background: #0e1013; }
+  #stage { position: fixed; inset: 0; touch-action: none; cursor: crosshair; }
+  #stage canvas { display: block; width: 100%; height: 100%; }
+  .heading { position: fixed; left: 16px; top: 14px; z-index: 40; pointer-events: none; text-shadow: 0 1px 3px rgba(0, 0, 0, .5); }
+  .heading h1 { margin: 0; font-size: clamp(18px, 4vw, 26px); letter-spacing: .06em; }
+  .heading p { margin: 4px 0 0; font-size: 12px; color: rgba(255, 255, 255, .8); }
+  .legend { position: fixed; right: 12px; bottom: 12px; z-index: 40; display: grid; gap: 3px; padding: 7px 11px; font-size: 12px; pointer-events: none; }
+  .legend i { display: inline-block; width: 18px; height: 3px; margin-right: 6px; vertical-align: middle; border-radius: 2px; }
+  @media (max-width: 600px) { .heading { top: 60px; } .legend { bottom: 46px; } }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv"></canvas></div>
+<div class="heading"><h1>吊橋與避震小車</h1><p>繩索是距離約束，避震是滑軌約束加彈簧</p></div>
+<div class="controls">
+  <button class="btn primary" id="crate">丟箱子</button>
+  <button class="btn" id="cut">剪斷繩索</button>
+  <button class="btn" id="reset">重建吊橋</button>
+</div>
+<div class="panel legend mono" id="legend">
+  <span><i style="background:#e9c46a"></i>距離約束 <b id="nRope">0</b></span>
+  <span><i style="background:#4cc9f0"></i>滑軌約束 2</span>
+  <span><i style="background:#f72585"></i>線性彈簧 2</span>
+</div>
+<div class="hint">拖曳任何物體・點一下繩子就剪斷</div>
+
+<script src="https://cdn.jsdelivr.net/npm/p2@0.7.1/build/p2.min.js"></script>
+<script>
+// World units are meters with y pointing up; the canvas transform flips y when drawing.
+const GAP = 13;          // canyon width the bridge spans
+const PLANK = 0.8;       // plank length
+const LINK = 0.2;        // rope length between planks (chain longer than gap, so it sags)
+const N_PLANK = 13;
+const FLOOR_Y = -6.5;
+const G_CAR = 2, G_WORLD = 1;
+
+const canvas = document.getElementById("cv");
+const ctx = canvas.getContext("2d");
+let W = 0, H = 0, S = 1;
+let world, car, ropes, mouseBody, grab = null, carDir = 1, fallenAt = 0;
+
+function box(w, h, opts, group) {
+  const b = new p2.Body(opts);
+  const s = new p2.Box({ width: w, height: h });
+  if (group) { s.collisionGroup = group; s.collisionMask = group === G_CAR ? G_WORLD : G_WORLD | G_CAR; }
+  b.addShape(s);
+  b.size = [w, h];
+  settle(b);
+  world.addBody(b);
+  return b;
+}
+
+// p2 interpolates from previousPosition, which is only written when a body integrates; seed it.
+function settle(b) {
+  p2.vec2.copy(b.previousPosition, b.position);
+  b.previousAngle = b.angle;
+}
+
+function build() {
+  world = new p2.World({ gravity: [0, -10] });
+  world.solver.iterations = 30;
+  world.defaultContactMaterial.friction = 0.9;
+  ropes = [];
+  // Two cliffs and the canyon floor are static boxes.
+  const half = GAP / 2;
+  const cliffL = box(14, 12, { position: [-half - 7, -6] }, G_WORLD);
+  const cliffR = box(14, 12, { position: [half + 7, -6] }, G_WORLD);
+  cliffL.kind = cliffR.kind = "cliff";
+  box(40, 1, { position: [0, FLOOR_Y - 0.5] }, G_WORLD).kind = "floor";
+
+  // Planks laid flat with small gaps; the rope constraints are shorter than their rest distance
+  // would allow straight, so the solver lets the deck sag into a natural curve.
+  let prev = cliffL, prevAnchor = [7, 6 - 0.09];
+  for (let i = 0; i < N_PLANK; i++) {
+    const x = -half + ((i + 0.5) * GAP) / N_PLANK;
+    const p = box(PLANK, 0.16, { mass: 0.55, position: [x, -0.08] }, G_WORLD);
+    p.kind = "plank";
+    addRope(prev, prevAnchor, p, [-PLANK / 2, 0]);
+    prev = p;
+    prevAnchor = [PLANK / 2, 0];
+  }
+  addRope(prev, prevAnchor, cliffR, [-7, 6 - 0.09]);
+
+  buildCar(-half - 2.2);
+  mouseBody = new p2.Body();
+  world.addBody(mouseBody);
+  grab = null;
+  fallenAt = 0;
+  carDir = 1;
+}
+
+function addRope(a, la, b, lb) {
+  const c = new p2.DistanceConstraint(a, b, { localAnchorA: la, localAnchorB: lb, distance: LINK });
+  c.kind = "rope";
+  world.addConstraint(c);
+  ropes.push(c);
+}
+
+function buildCar(x) {
+  const chassis = box(2.0, 0.42, { mass: 3, position: [x, 1.2] }, G_CAR);
+  chassis.kind = "chassis";
+  const wheels = [], sliders = [], springs = [];
+  for (const dx of [-0.68, 0.68]) {
+    const w = new p2.Body({ mass: 0.5, position: [x + dx, 0.42] });
+    const s = new p2.Circle({ radius: 0.36 });
+    s.collisionGroup = G_CAR;
+    s.collisionMask = G_WORLD;
+    w.addShape(s);
+    w.kind = "wheel";
+    settle(w);
+    world.addBody(w);
+    // Slider: wheel center may only move along the chassis' local y axis, and is free to spin.
+    const pc = new p2.PrismaticConstraint(chassis, w, {
+      localAnchorA: [dx, -0.5], localAnchorB: [0, 0], localAxisA: [0, 1],
+      disableRotationalLock: true, lowerLimit: -0.32, upperLimit: 0.1,
+    });
+    world.addConstraint(pc);
+    const sp = new p2.LinearSpring(chassis, w, { localAnchorA: [dx, -0.21], localAnchorB: [0, 0], restLength: 0.66, stiffness: 160, damping: 7 });
+    world.addSpring(sp);
+    wheels.push(w);
+    sliders.push(pc);
+    springs.push(sp);
+  }
+  car = { chassis, wheels, sliders, springs };
+}
+
+function cutRope(c) {
+  world.removeConstraint(c);
+  ropes = ropes.filter((r) => r !== c);
+}
+
+function dropCrate(x) {
+  const s = 0.42 + Math.random() * 0.25;
+  const b = box(s, s, { mass: 0.35, position: [x, 5 + Math.random() * 2], angle: Math.random() * 2 }, G_WORLD);
+  b.kind = "crate";
+  b.hue = Math.floor(Math.random() * 360);
+}
+
+// --- input -------------------------------------------------------------------------------
+const toWorld = (e) => [(e.clientX - W / 2) / S, -(e.clientY - H * 0.42) / S];
+const stage = document.getElementById("stage");
+stage.addEventListener("pointerdown", (e) => {
+  const pt = toWorld(e);
+  const hit = world.hitTest(pt, world.bodies.filter((b) => b.mass > 0), 0.1)[0];
+  if (hit) {
+    const local = [0, 0];
+    hit.toLocalFrame(local, pt);
+    p2.vec2.copy(mouseBody.position, pt);
+    grab = new p2.RevoluteConstraint(mouseBody, hit, { localPivotA: [0, 0], localPivotB: local, maxForce: 400 * hit.mass });
+    world.addConstraint(grab);
+    stage.setPointerCapture(e.pointerId);
+    return;
+  }
+  // No body under the pointer: cut the closest rope if it is near enough.
+  let best = null, bestD = 0.35;
+  for (const c of ropes) {
+    const [a, b] = ropeEnds(c);
+    const d = segDist(pt, a, b);
+    if (d < bestD) { bestD = d; best = c; }
+  }
+  if (best) cutRope(best);
+});
+stage.addEventListener("pointermove", (e) => { if (grab) p2.vec2.copy(mouseBody.position, toWorld(e)); });
+const release = () => { if (grab) { world.removeConstraint(grab); grab = null; } };
+stage.addEventListener("pointerup", release);
+stage.addEventListener("pointercancel", release);
+
+document.getElementById("crate").addEventListener("click", () => { for (let i = 0; i < 3; i++) dropCrate(-4 + i * 4 + Math.random()); });
+document.getElementById("cut").addEventListener("click", () => {
+  const mid = ropes.filter((c) => c.bodyA.kind === "plank" && c.bodyB.kind === "plank");
+  if (mid.length) cutRope(mid[Math.floor(mid.length / 2)]);
+});
+document.getElementById("reset").addEventListener("click", build);
+
+function ropeEnds(c) {
+  const a = [0, 0], b = [0, 0];
+  c.bodyA.toWorldFrame(a, c.localAnchorA);
+  c.bodyB.toWorldFrame(b, c.localAnchorB);
+  return [a, b];
+}
+function segDist(p, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy || 1)));
+  return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
+}
+
+// --- simulation --------------------------------------------------------------------------
+function drive(now) {
+  const x = car.chassis.position[0];
+  const turn = GAP / 2 + 1.6;
+  if (x > turn) carDir = -1;
+  if (x < -turn) carDir = 1;
+  for (const w of car.wheels) {
+    // Spinning clockwise (negative) moves the car right; cap the spin so it crawls over the deck.
+    if (-carDir * w.angularVelocity < 7) w.angularForce += -carDir * 9;
+  }
+  if (car.chassis.position[1] < -3.5) {
+    if (!fallenAt) fallenAt = now;
+    else if (now - fallenAt > 2500) build();
+  }
+  for (const b of world.bodies.slice()) if (b.kind === "crate" && b.position[1] < FLOOR_Y + 0.6) world.removeBody(b);
+}
+
+// --- drawing -----------------------------------------------------------------------------
+function resize() {
+  W = innerWidth;
+  H = innerHeight;
+  S = Math.min(W / 19, H / 11);
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function backdrop() {
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, "#26315f");
+  sky.addColorStop(0.55, "#f28f6b");
+  sky.addColorStop(1, "#f6c28b");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "rgba(60, 40, 80, .45)";
+  ctx.beginPath();
+  ctx.moveTo(0, H * 0.5);
+  for (let i = 0; i <= 12; i++) ctx.lineTo((W * i) / 12, H * (0.3 + 0.12 * Math.abs(Math.sin(i * 1.7))));
+  ctx.lineTo(W, H);
+  ctx.lineTo(0, H);
+  ctx.fill();
+}
+
+function shapePath(b) {
+  const [w, h] = b.size;
+  ctx.beginPath();
+  ctx.rect(-w / 2, -h / 2, w, h);
+}
+
+function draw() {
+  backdrop();
+  ctx.save();
+  ctx.translate(W / 2, H * 0.42);
+  ctx.scale(S, -S);
+  ctx.lineJoin = "round";
+
+  for (const b of world.bodies) {
+    if (!b.kind) continue;
+    ctx.save();
+    const pos = b.mass ? b.interpolatedPosition : b.position;
+    ctx.translate(pos[0], pos[1]);
+    ctx.rotate(b.mass ? b.interpolatedAngle : b.angle);
+    if (b.kind === "cliff") {
+      shapePath(b);
+      const g = ctx.createLinearGradient(0, 6, 0, -6);
+      g.addColorStop(0, "#6b4a3a");
+      g.addColorStop(1, "#2b1d1a");
+      ctx.fillStyle = g;
+      ctx.fill();
+      ctx.fillStyle = "#5c8a3c";
+      ctx.fillRect(-7, 5.82, 14, 0.18);
+    } else if (b.kind === "floor") {
+      ctx.fillStyle = "#2d6a8a";
+      ctx.fillRect(-GAP / 2, 0.1, GAP, 0.4);
+    } else if (b.kind === "plank") {
+      shapePath(b);
+      ctx.fillStyle = "#b07a45";
+      ctx.fill();
+      ctx.lineWidth = 0.03;
+      ctx.strokeStyle = "#5a3a1e";
+      ctx.stroke();
+    } else if (b.kind === "crate") {
+      shapePath(b);
+      ctx.fillStyle = "hsl(" + b.hue + " 70% 58%)";
+      ctx.fill();
+      ctx.lineWidth = 0.05;
+      ctx.strokeStyle = "rgba(0,0,0,.35)";
+      ctx.stroke();
+      const [w] = b.size;
+      ctx.beginPath();
+      ctx.moveTo(-w / 2, -w / 2);
+      ctx.lineTo(w / 2, w / 2);
+      ctx.stroke();
+    } else if (b.kind === "chassis") {
+      ctx.fillStyle = "#e63946";
+      ctx.beginPath();
+      ctx.roundRect(-1, -0.21, 2, 0.42, 0.12);
+      ctx.fill();
+      ctx.fillStyle = "#1d3557";
+      ctx.beginPath();
+      ctx.roundRect(-0.55, 0.18, 0.95, 0.36, [0.16, 0.16, 0, 0]);
+      ctx.fill();
+      ctx.fillStyle = "#a8dadc";
+      ctx.fillRect(-0.45, 0.24, 0.75, 0.22);
+    } else if (b.kind === "wheel") {
+      const r = b.shapes[0].radius;
+      ctx.fillStyle = "#1b1b1f";
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#cfd3da";
+      ctx.lineWidth = 0.05;
+      for (let k = 0; k < 3; k++) {
+        const a = (k * Math.PI) / 3;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * r * 0.75, Math.sin(a) * r * 0.75);
+        ctx.lineTo(-Math.cos(a) * r * 0.75, -Math.sin(a) * r * 0.75);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  // Constraints drawn on top so the mechanism is readable.
+  ctx.lineCap = "round";
+  ctx.strokeStyle = "#e9c46a";
+  ctx.lineWidth = 0.07;
+  for (const c of ropes) {
+    const [a, b] = ropeEnds(c);
+    ctx.beginPath();
+    ctx.moveTo(a[0], a[1]);
+    ctx.lineTo(b[0], b[1]);
+    ctx.stroke();
+  }
+  for (const pc of car.sliders) {
+    const a = [0, 0], b = [0, 0];
+    // Slider rail drawn beside the spring, from the chassis down to the lower travel limit.
+    pc.bodyA.toWorldFrame(a, [pc.localAnchorA[0] + 0.16, -0.21]);
+    pc.bodyA.toWorldFrame(b, [pc.localAnchorA[0] + 0.16, pc.localAnchorA[1] + pc.lowerLimit]);
+    ctx.strokeStyle = "#4cc9f0";
+    ctx.lineWidth = 0.07;
+    ctx.beginPath();
+    ctx.moveTo(a[0], a[1]);
+    ctx.lineTo(b[0], b[1]);
+    ctx.stroke();
+  }
+  for (const sp of car.springs) zigzag(sp);
+  if (grab) {
+    const b = [0, 0];
+    grab.bodyB.toWorldFrame(b, grab.pivotB);
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 0.04;
+    ctx.beginPath();
+    ctx.moveTo(mouseBody.position[0], mouseBody.position[1]);
+    ctx.lineTo(b[0], b[1]);
+    ctx.stroke();
+  }
+  ctx.restore();
+  document.getElementById("nRope").textContent = ropes.length;
+}
+
+function zigzag(sp) {
+  const a = [0, 0], b = [0, 0];
+  sp.getWorldAnchorA(a);
+  sp.getWorldAnchorB(b);
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len, ny = dx / len;
+  ctx.strokeStyle = "#f72585";
+  ctx.lineWidth = 0.045;
+  ctx.beginPath();
+  ctx.moveTo(a[0], a[1]);
+  const turns = 7;
+  for (let i = 1; i < turns * 2; i++) {
+    const t = i / (turns * 2);
+    const side = i % 2 ? 0.1 : -0.1;
+    ctx.lineTo(a[0] + dx * t + nx * side, a[1] + dy * t + ny * side);
+  }
+  ctx.lineTo(b[0], b[1]);
+  ctx.stroke();
+}
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  drive(now);
+  world.step(1 / 120, dt, 8);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+addEventListener("resize", resize);
+resize();
+build();
+requestAnimationFrame(frame);
+// Idle preview: a crate drops onto the bridge every few seconds while there are only a few.
+setInterval(() => {
+  if (world.bodies.filter((b) => b.kind === "crate").length < 5) dropCrate(-4 + Math.random() * 8);
+}, 3500);
+</script>
+</body>
+</html>

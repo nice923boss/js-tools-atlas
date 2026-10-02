@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apache ECharts 示範：臺灣縣市數據大屏</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"地圖邊界來自 taiwan-atlas（內政部開放資料），數值為示意資料"}</script>
+<style>
+  body { background: radial-gradient(70% 90% at 30% 50%, #14202b 0%, var(--bg) 70%); }
+  #chart { position: fixed; inset: 0; }
+</style>
+</head>
+<body>
+<div id="chart"></div>
+<div class="controls">
+  <button class="btn" data-k="rain" aria-pressed="true">年雨量</button>
+  <button class="btn" data-k="temp">年均溫</button>
+  <button class="btn" data-k="dens">人口密度</button>
+</div>
+<div class="hint">滑過縣市連動長條・拖曳色階篩選・滾輪縮放地圖</div>
+
+<script src="https://cdn.jsdelivr.net/npm/echarts@6.1.0/dist/echarts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+<script>
+// Taiwan county choropleth + realtime-sorted bar ranking in one ECharts instance (dark theme).
+const NAMES = { A: "臺北市", B: "臺中市", C: "基隆市", D: "臺南市", E: "高雄市", F: "新北市", G: "宜蘭縣", H: "桃園市",
+  I: "嘉義市", J: "新竹縣", K: "苗栗縣", M: "南投縣", N: "彰化縣", O: "新竹市", P: "雲林縣", Q: "嘉義縣", T: "屏東縣",
+  U: "花蓮縣", V: "臺東縣", W: "金門縣", X: "澎湖縣", Z: "連江縣" };
+// Illustrative values (rounded, not official statistics).
+const VALUES = {
+  rain: { A: 2400, B: 1700, C: 3700, D: 1750, E: 1900, F: 2700, G: 2800, H: 1800, I: 1850, J: 1750, K: 1700, M: 2300, N: 1300,
+    O: 1700, P: 1250, Q: 1950, T: 2500, U: 2150, V: 1850, W: 1050, X: 1000, Z: 1150 },
+  temp: { A: 23.6, B: 23.6, C: 22.9, D: 24.6, E: 25.3, F: 23.0, G: 22.9, H: 22.6, I: 23.5, J: 22.4, K: 22.5, M: 21.0, N: 23.4,
+    O: 22.8, P: 23.2, Q: 23.4, T: 25.3, U: 23.7, V: 24.8, W: 21.4, X: 23.5, Z: 19.4 },
+  dens: { A: 9400, B: 1300, C: 2700, D: 850, E: 930, F: 1950, G: 210, H: 1890, I: 4500, J: 410, K: 300, M: 120, N: 1180,
+    O: 4400, P: 520, Q: 255, T: 290, U: 70, V: 60, W: 940, X: 840, Z: 470 },
+};
+const META = {
+  rain: { title: "年雨量", unit: "mm", colors: ["#0b2a3c", "#126e8f", "#4cc9f0", "#bdf2ff"] },
+  temp: { title: "年均溫", unit: "°C", colors: ["#2b1d5c", "#9d8cff", "#ff8c42", "#f7df1e"] },
+  dens: { title: "人口密度", unit: "人/km²", colors: ["#1d2a1f", "#2f7d4f", "#7bd389", "#f7df1e"],
+    pieces: [{ lt: 200 }, { gte: 200, lt: 500 }, { gte: 500, lt: 1000 }, { gte: 1000, lt: 2000 }, { gte: 2000, lt: 5000 }, { gte: 5000 }] },
+};
+// Kinmen and Matsu are moved closer as insets so the main island stays large.
+const SHIFT = { W: [0.95, 0.5], Z: [-0.2, -0.6] };
+
+const chart = echarts.init(document.getElementById("chart"), "dark", { renderer: "canvas" });
+chart.showLoading({ text: "載入地圖中…", color: "#f7df1e", textColor: "#ecebe6", maskColor: "rgba(14,16,19,.6)" });
+let metric = "rain";
+
+function shiftCoords(coords, [dx, dy]) {
+  return typeof coords[0] === "number" ? [coords[0] + dx, coords[1] + dy] : coords.map((c) => shiftCoords(c, [dx, dy]));
+}
+
+function layout() {
+  const w = chart.getWidth(), h = chart.getHeight();
+  const narrow = w < 640;
+  return narrow
+    ? { center: ["56%", "40%"], size: Math.min(w, h * 0.5) * 0.95, grid: { left: 64, right: 52, top: "67%", bottom: 58 }, rows: 5,
+        titleTop: 50, vm: { left: 10, top: 112, itemHeight: 70 } }
+    : { center: ["31%", "53%"], size: Math.min(w * 0.6, h) * 0.9, grid: { left: "62%", right: 56, top: 72, bottom: 48 }, rows: 22,
+        titleTop: 10, vm: { left: 18, bottom: 50, itemHeight: 120 } };
+}
+
+function seriesData(k) {
+  return Object.keys(NAMES).map((id) => ({ name: NAMES[id], value: VALUES[k][id] }));
+}
+
+// Bars reuse the map palette: piecewise metrics by bucket, continuous ones by linear position.
+function barColor(v) {
+  const m = META[metric], vals = Object.values(VALUES[metric]);
+  if (m.pieces) {
+    const i = m.pieces.findIndex((p) => (p.gte === undefined || v >= p.gte) && (p.lt === undefined || v < p.lt));
+    return echarts.color.lerp(i / (m.pieces.length - 1), m.colors);
+  }
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  return echarts.color.lerp(0.25 + 0.75 * ((v - lo) / (hi - lo)), m.colors);
+}
+
+function build() {
+  const m = META[metric], L = layout(), data = seriesData(metric);
+  const vals = data.map((d) => d.value);
+  const common = { id: "vm", seriesIndex: 0, inRange: { color: m.colors }, outOfRange: { color: "#2a2d33" }, textStyle: { color: "#9b998f" }, ...L.vm };
+  const visualMap = m.pieces
+    ? { ...common, type: "piecewise", pieces: m.pieces, itemWidth: 14, itemHeight: 10, itemGap: 4 }
+    : { ...common, type: "continuous", min: Math.min(...vals), max: Math.max(...vals), calculable: true, realtime: true, text: ["高", "低"], itemWidth: 12 };
+  chart.setOption({
+    backgroundColor: "transparent",
+    textStyle: { fontFamily: "Noto Sans TC, Microsoft JhengHei, sans-serif" },
+    title: { text: `臺灣縣市${m.title}`, subtext: `單位：${m.unit}｜示意資料`, left: 16, top: L.titleTop,
+      textStyle: { fontSize: 16, color: "#ecebe6" }, subtextStyle: { color: "#9b998f" } },
+    tooltip: { trigger: "item", backgroundColor: "rgba(18,20,24,.92)", borderColor: "rgba(255,255,255,.15)",
+      textStyle: { color: "#ecebe6" }, formatter: (p) => `${p.name}<br><b>${Number(p.value).toLocaleString()}</b> ${m.unit}` },
+    visualMap: [visualMap],
+    grid: { ...L.grid, containLabel: false },
+    xAxis: { type: "value", splitLine: { lineStyle: { color: "rgba(255,255,255,.06)" } }, axisLabel: { color: "#9b998f", fontSize: 10 },
+      max: (v) => v.max * 1.15 },
+    yAxis: { type: "category", inverse: true, max: L.rows - 1, data: data.map((d) => d.name),
+      axisLabel: { color: "#ecebe6", fontSize: 11 }, axisLine: { show: false }, axisTick: { show: false }, animationDuration: 300, animationDurationUpdate: 600 },
+    series: [
+      { id: "map", type: "map", map: "taiwan", roam: true, scaleLimit: { min: 0.8, max: 6 }, aspectScale: 0.92,
+        layoutCenter: L.center, layoutSize: L.size, selectedMode: false, data,
+        itemStyle: { borderColor: "rgba(14,16,19,.9)", borderWidth: 0.8 },
+        emphasis: { label: { show: true, color: "#0e1013", fontWeight: 700, backgroundColor: "#f7df1e", padding: [3, 6], borderRadius: 4 },
+          itemStyle: { areaColor: "#f7df1e", shadowBlur: 12, shadowColor: "rgba(247,223,30,.6)" } } },
+      { id: "bar", type: "bar", realtimeSort: true, data: data.map((d) => d.value), barWidth: "62%",
+        itemStyle: { borderRadius: [0, 4, 4, 0], color: (p) => barColor(p.value) },
+        label: { show: true, position: "right", color: "#ecebe6", fontSize: 10, valueAnimation: true,
+          formatter: (p) => Number(p.value).toLocaleString() },
+        emphasis: { itemStyle: { color: "#f7df1e" } } },
+    ],
+    animationDuration: 800, animationDurationUpdate: 900, animationEasingUpdate: "cubicInOut",
+  }, { replaceMerge: ["visualMap"] });
+}
+
+fetch("https://cdn.jsdelivr.net/npm/taiwan-atlas@2021.9.20/counties-10t.json")
+  .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+  .then((topo) => {
+    const geo = topojson.feature(topo, topo.objects.counties);
+    geo.features.forEach((f) => {
+      const id = f.properties.COUNTYID;
+      f.properties = { name: NAMES[id] || f.properties.COUNTYNAME };
+      if (SHIFT[id]) f.geometry.coordinates = shiftCoords(f.geometry.coordinates, SHIFT[id]);
+    });
+    echarts.registerMap("taiwan", geo);
+    chart.hideLoading();
+    build();
+  })
+  .catch((err) => {
+    chart.hideLoading();
+    console.error("Map load failed", err);
+    chart.setOption({ title: { text: "地圖資料載入失敗，請檢查網路連線", left: "center", top: "middle", textStyle: { color: "#ecebe6" } } });
+  });
+
+// Link hover between the map and the bar ranking.
+chart.on("mouseover", (p) => {
+  if (p.seriesId === "map") chart.dispatchAction({ type: "highlight", seriesId: "bar", name: p.name });
+  if (p.seriesId === "bar") chart.dispatchAction({ type: "highlight", seriesId: "map", name: p.name });
+});
+chart.on("mouseout", (p) => {
+  chart.dispatchAction({ type: "downplay", seriesId: p.seriesId === "map" ? "bar" : "map", name: p.name });
+});
+
+document.querySelectorAll("[data-k]").forEach((b) => b.addEventListener("click", () => {
+  metric = b.dataset.k;
+  document.querySelectorAll("[data-k]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  build();
+}));
+
+addEventListener("resize", () => { chart.resize(); if (echarts.getMap("taiwan")) build(); });
+</script>
+</body>
+</html>

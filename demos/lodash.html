@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lodash 示範：debounce 與 throttle 即時比較、groupBy 資料轉換</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"滑鼠在左側觸控板移動，或觀看自動模擬的連續事件"}</script>
+<style>
+  body { background: radial-gradient(70% 60% at 100% 0%, rgba(76,201,240,.10), transparent 60%), var(--bg); }
+  .app { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px 46px; }
+  header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 18px; }
+  header span { color: var(--muted); font-size: 13px; }
+  .card { min-height: 0; display: flex; gap: 12px; padding: 12px; border-radius: 14px; background: var(--bg-2); border: 1px solid var(--line); }
+  .timing { flex: 0 0 216px; }
+  .data { flex: 1; }
+  .card h2 { margin: 0 0 6px; font-size: 13px; color: var(--muted); font-weight: 600; }
+  /* timing */
+  .pad { position: relative; flex: 0 0 170px; border-radius: 12px; overflow: hidden; cursor: crosshair; touch-action: none;
+    background: repeating-linear-gradient(0deg, transparent 0 19px, rgba(255,255,255,.04) 19px 20px), repeating-linear-gradient(90deg, transparent 0 19px, rgba(255,255,255,.04) 19px 20px), #12151a;
+    border: 1px dashed rgba(247,37,133,.5); }
+  .pad p { position: absolute; left: 0; right: 0; bottom: 8px; margin: 0; text-align: center; font-size: 12px; color: var(--muted); pointer-events: none; }
+  .pad .mode { position: absolute; top: 8px; left: 8px; font-size: 11px; padding: 1px 8px; border-radius: 999px; background: rgba(247,37,133,.18); color: var(--c3); }
+  .dot { position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; background: var(--c3); box-shadow: 0 0 0 6px rgba(247,37,133,.2), 0 0 24px var(--c3); pointer-events: none; }
+  .lanes { flex: 1; min-width: 0; position: relative; }
+  .lanes canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  /* data */
+  .ctrl { flex: 0 0 300px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+  .row label { color: var(--muted); width: 36px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; background: none; color: var(--fg); font: 12px var(--font); padding: 4px 10px; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: var(--c2); color: #0b1a20; font-weight: 700; }
+  pre.code { flex: none; margin: 0 0 4px; padding: 7px 10px; border-radius: 8px; background: #0b0d10; border: 1px solid var(--line); font: 11px/1.55 var(--mono); color: #c8c6bd; overflow: hidden; white-space: pre; }
+  pre.code .k { color: var(--c2); } pre.code .s { color: var(--c4); } pre.code .n { color: var(--c5); }
+  .stats { font-size: 12px; color: var(--muted); margin-top: auto; }
+  .stats b { color: var(--fg); }
+  .bars { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+  .b { display: grid; grid-template-columns: 56px minmax(0, 1fr) 92px; gap: 8px; align-items: center; font-size: 13px; transition: transform .3s; }
+  .b .track { height: 22px; border-radius: 6px; background: rgba(255,255,255,.04); overflow: hidden; }
+  .b .fill { height: 100%; border-radius: 6px; transition: width .5s cubic-bezier(.2,.8,.2,1); display: flex; align-items: center; padding-left: 8px; font: 11px var(--mono); color: #0b0d10; white-space: nowrap; }
+  .b .v { font: 12px var(--mono); text-align: right; }
+  .b .v small { display: block; color: var(--muted); font-size: 10px; }
+  @media (max-width: 720px) {
+    /* stacked layout scrolls under the fixed hint: show it briefly, then fade it out */
+    .hint { animation: hint-fade .5s 8s forwards; }
+    .app { overflow-y: auto; }
+    .card { flex: none; flex-direction: column; }
+    .pad { flex: 0 0 110px; }
+    .lanes { height: 190px; flex: none; }
+    .ctrl { flex: none; }
+    pre.code { white-space: pre-wrap; }
+    .timing { flex: none; }
+    header span { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header><h1>🧰 Lodash 實用函式</h1><span>同一串事件，交給 throttle 與 debounce 會發生什麼事？</span></header>
+  <section class="card timing">
+    <div class="pad" id="pad"><span class="mode" id="mode">自動模擬中</span><div class="dot" id="dot"></div><p>在這裡移動滑鼠或手指</p></div>
+    <div class="lanes"><canvas id="cv"></canvas></div>
+  </section>
+  <section class="card data">
+    <div class="ctrl">
+      <h2>資料轉換：groupBy、sumBy、orderBy</h2>
+      <div class="row"><label>分組</label><div class="seg" id="gKey"><button data-v="city" aria-pressed="true">城市</button><button data-v="cat">品類</button></div></div>
+      <div class="row"><label>排序</label><div class="seg" id="gMetric"><button data-v="total" aria-pressed="true">總額</button><button data-v="count">筆數</button><button data-v="avg">平均</button></div>
+        <div class="seg" id="gDir"><button data-v="desc" aria-pressed="true">大→小</button><button data-v="asc">小→大</button></div></div>
+      <div class="row"><button class="btn" id="regen">🎲 重新產生 40 筆訂單</button></div>
+      <div class="stats" id="stats"></div>
+    </div>
+    <div class="bars"><pre class="code" id="code"></pre><div id="bars" style="display:grid;gap:6px"></div></div>
+  </section>
+</div>
+<div class="hint">throttle 固定節奏放行，debounce 等停下來才執行</div>
+
+<script src="https://cdn.jsdelivr.net/npm/lodash@4.18.1/lodash.min.js"></script>
+<script>
+// Lodash demo: the same burst of events is fed into _.throttle / _.debounce variants and plotted on a timeline,
+// plus a chain of groupBy / sumBy / meanBy / orderBy driving a live bar chart.
+const $ = (id) => document.getElementById(id);
+
+// ---------- timing lanes ----------
+const PAST = 5200, FUTURE = 700;
+const LANES = [
+  { name: "原始事件", code: "pointermove", color: "#f72585" },
+  { name: "throttle", code: "_.throttle(fn, 250)", color: "#4cc9f0" },
+  { name: "debounce", code: "_.debounce(fn, 300)", color: "#f7df1e" },
+  { name: "debounce + maxWait", code: "_.debounce(fn, 300, { maxWait: 1000 })", color: "#9d8cff" },
+].map((l) => ({ ...l, events: [], count: 0 }));
+const record = (i) => () => { LANES[i].events.push(performance.now()); LANES[i].count += 1; };
+const handlers = [record(0), _.throttle(record(1), 250), _.debounce(record(2), 300), _.debounce(record(3), 300, { maxWait: 1000 })];
+let lastRaw = -1e9;
+function fire() { lastRaw = performance.now(); handlers.forEach((h) => h()); }
+
+const pad = $("pad"), dot = $("dot");
+let manualUntil = 0;
+function moveDot(x, y) { dot.style.left = `${x}px`; dot.style.top = `${y}px`; }
+pad.addEventListener("pointermove", (e) => {
+  const r = pad.getBoundingClientRect();
+  manualUntil = performance.now() + 2500;
+  moveDot(e.clientX - r.left, e.clientY - r.top);
+  fire();
+});
+
+// Auto simulation: bursts of 25-70 ms events separated by pauses, so the difference is visible without input.
+let simNext = 0, burstEnd = 0, simT = 0;
+function simulate(now) {
+  if (now < manualUntil) { $("mode").textContent = "手動輸入"; return; }
+  $("mode").textContent = "自動模擬中";
+  if (now > burstEnd && now >= simNext) {
+    burstEnd = now + _.random(500, 1600);
+    simNext = now;
+  }
+  if (now <= burstEnd && now >= simNext) {
+    simT += 0.09;
+    const r = pad.getBoundingClientRect();
+    moveDot(r.width * (0.5 + 0.36 * Math.sin(simT * 1.3)), r.height * (0.45 + 0.3 * Math.sin(simT * 2.1 + 1)));
+    fire();
+    simNext = now + _.random(25, 70);
+    if (simNext > burstEnd) simNext = burstEnd + _.random(450, 1300);
+  }
+}
+
+const cv = $("cv"), ctx = cv.getContext("2d");
+function resize() {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = Math.round(cv.clientWidth * dpr);
+  cv.height = Math.round(cv.clientHeight * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+window.addEventListener("resize", _.debounce(resize, 100));
+resize();
+
+function draw(now) {
+  const W = cv.clientWidth, H = cv.clientHeight;
+  const top = 4, labelH = 18, laneH = (H - top - 16) / LANES.length;
+  const x = (t) => ((t - (now - PAST)) / (PAST + FUTURE)) * W;
+  const nowX = x(now);
+  ctx.clearRect(0, 0, W, H);
+  // future zone + second grid
+  ctx.fillStyle = "rgba(255,255,255,.035)";
+  ctx.fillRect(nowX, 0, W - nowX, H);
+  ctx.font = "10px Consolas, monospace";
+  ctx.fillStyle = "rgba(255,255,255,.35)";
+  for (let s = 0; s <= 5; s++) {
+    const gx = x(now - s * 1000);
+    ctx.fillRect(gx, H - 14, 1, 4);
+    ctx.fillText(s ? `-${s}s` : "現在", gx - (s ? 8 : 10), H - 2);
+  }
+  ctx.fillStyle = "rgba(255,255,255,.5)";
+  ctx.fillRect(nowX, 0, 1, H - 16);
+
+  LANES.forEach((lane, i) => {
+    const y0 = top + i * laneH;
+    const mid = y0 + labelH + (laneH - labelH) / 2 - 2;
+    lane.events = lane.events.filter((t) => t > now - PAST - 200);
+    // label
+    ctx.font = "600 12px 'Microsoft JhengHei', sans-serif";
+    ctx.fillStyle = lane.color;
+    ctx.fillText(lane.name, 0, y0 + 12);
+    const nameW = ctx.measureText(lane.name).width;
+    ctx.font = "11px Consolas, monospace";
+    ctx.fillStyle = "rgba(236,235,230,.55)";
+    if (W > 330) ctx.fillText(lane.code, nameW + 8, y0 + 12);
+    ctx.textAlign = "right";
+    ctx.fillStyle = "#ecebe6";
+    ctx.fillText(`${lane.count} 次`, W - 2, y0 + 12);
+    ctx.textAlign = "left";
+    // baseline
+    ctx.fillStyle = "rgba(255,255,255,.08)";
+    ctx.fillRect(0, mid, W, 1);
+    // pending window for debounce lanes
+    if ((i === 2 || i === 3) && now - lastRaw < 300 && W > 420) {
+      ctx.fillStyle = lane.color + "33";
+      ctx.fillRect(x(lastRaw), mid - 7, x(lastRaw + 300) - x(lastRaw), 14);
+      ctx.fillStyle = lane.color;
+      ctx.font = "10px 'Microsoft JhengHei', sans-serif";
+      ctx.fillText("等待中", x(lastRaw + 300) + 3, mid + 4);
+    }
+    // events
+    ctx.fillStyle = lane.color;
+    lane.events.forEach((t) => {
+      const ex = x(t);
+      if (i === 0) {
+        ctx.globalAlpha = 0.75;
+        ctx.fillRect(ex, mid - 8, 1.5, 16);
+        ctx.globalAlpha = 1;
+      } else {
+        const age = now - t;
+        const r = age < 250 ? 7 - age / 60 : 4.5;
+        ctx.shadowColor = lane.color;
+        ctx.shadowBlur = age < 400 ? 14 : 4;
+        ctx.beginPath();
+        ctx.arc(ex, mid, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+      }
+    });
+  });
+}
+
+function loop(now) {
+  simulate(now);
+  draw(now);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ---------- data transform ----------
+const CITIES = ["台北", "台中", "高雄", "台南", "新竹", "花蓮"];
+const CATS = ["咖啡", "甜點", "便當", "手搖飲", "麵包"];
+const COLORS = { 台北: "#f72585", 台中: "#4cc9f0", 高雄: "#f7df1e", 台南: "#ff8c42", 新竹: "#7bd389", 花蓮: "#9d8cff",
+  咖啡: "#ff8c42", 甜點: "#f72585", 便當: "#f7df1e", 手搖飲: "#4cc9f0", 麵包: "#7bd389" };
+let orders = [];
+const state = { key: "city", metric: "total", dir: "desc" };
+const METRIC_LABEL = { total: "總額", count: "筆數", avg: "平均" };
+const fmt = (n) => `$${Math.round(n).toLocaleString("zh-TW")}`;
+
+function regen() {
+  orders = _.times(40, (i) => ({ id: i + 1, city: _.sample(CITIES), cat: _.sample(CATS), amount: _.random(60, 980) }));
+  render();
+}
+
+function render() {
+  const rows = _(orders)
+    .groupBy(state.key)
+    .map((list, k) => ({ k, total: _.sumBy(list, "amount"), count: list.length, avg: _.meanBy(list, "amount") }))
+    .orderBy([state.metric], [state.dir])
+    .value();
+  const max = _.maxBy(rows, state.metric)[state.metric];
+  $("bars").innerHTML = rows.map((r) => `<div class="b"><span>${r.k}</span><div class="track"><div class="fill" style="width:${Math.max(6, (r[state.metric] / max) * 100)}%;background:${COLORS[r.k]}">${state.metric === "count" ? `${r.count} 筆` : ""}</div></div>` +
+    `<span class="v">${state.metric === "count" ? `${r.count} 筆` : fmt(r[state.metric])}<small>${state.metric === "count" ? fmt(r.total) : `${r.count} 筆`}</small></span></div>`).join("");
+  const metricExpr = { total: `_.sumBy(list, <span class="s">"amount"</span>)`, count: "list.length", avg: `_.meanBy(list, <span class="s">"amount"</span>)` }[state.metric];
+  $("code").innerHTML = `<span class="k">_</span>(orders).<span class="k">groupBy</span>(<span class="s">"${state.key}"</span>).<span class="k">map</span>((list, k) =&gt; ({ k, ${state.metric}: ${metricExpr} }))\n  .<span class="k">orderBy</span>([<span class="s">"${state.metric}"</span>], [<span class="s">"${state.dir}"</span>]).<span class="k">value</span>()`;
+  const top = _.maxBy(orders, "amount");
+  $("stats").innerHTML = `共 <b>${orders.length}</b> 筆，_.sumBy 合計 <b>${fmt(_.sumBy(orders, "amount"))}</b>，_.maxBy 最大單筆 <b>${top.city}${top.cat} ${fmt(top.amount)}</b>`;
+}
+
+function bindSeg(id, prop) {
+  $(id).addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    $(id).querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", x === b));
+    state[prop] = b.dataset.v;
+    render();
+  });
+}
+bindSeg("gKey", "key");
+bindSeg("gMetric", "metric");
+bindSeg("gDir", "dir");
+$("regen").addEventListener("click", regen);
+regen();
+</script>
+</body>
+</html>

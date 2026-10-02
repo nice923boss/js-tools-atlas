@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Globe.gl 示範：從台灣出發的航線地球</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body { background: #000; }
+  #globe { position: fixed; inset: 0; }
+  .scene-tooltip { font: 12px/1.5 var(--font) !important; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+  .tw-label { color: var(--accent); font: 700 13px var(--font); text-shadow: 0 0 6px #000, 0 0 2px #000; transform: translate(-50%, -150%); pointer-events: none; white-space: nowrap; }
+  #stats { position: fixed; left: 12px; top: 12px; z-index: 50; padding: 10px 14px; }
+  #stats b { font: 700 22px var(--mono); color: var(--accent); }
+  #stats div { font-size: 12px; color: var(--muted); }
+  #stats .sel { color: var(--fg); font-size: 13px; margin-top: 4px; min-height: 20px; }
+  @media (max-width: 560px) { #stats { top: auto; bottom: 48px; padding: 8px 12px; } #stats b { font-size: 18px; } }
+</style>
+</head>
+<body>
+<div id="globe"></div>
+<div id="stats" class="panel"><div>直飛航點（示意）</div><b id="count">0</b><div class="sel" id="sel">滑過弧線看距離</div></div>
+<div class="controls">
+  <button class="btn" data-hub="TPE" aria-pressed="true">桃園出發</button>
+  <button class="btn" data-hub="KHH">高雄出發</button>
+  <button class="btn" id="spin" aria-pressed="true">自動旋轉</button>
+</div>
+<div class="hint">拖曳旋轉地球・滾輪縮放・滑過航線看距離</div>
+
+<script src="https://cdn.jsdelivr.net/npm/globe.gl@2.46.2/dist/globe.gl.min.js"></script>
+<script>
+// Animated great-circle arcs from Taiwan airports on a night-lights globe (globe.gl / three.js).
+const IMG = "https://cdn.jsdelivr.net/npm/three-globe@2.45.3/example/img/";
+const HUBS = {
+  TPE: { name: "桃園機場", lat: 25.0777, lng: 121.2328 },
+  KHH: { name: "高雄機場", lat: 22.5771, lng: 120.3500 },
+};
+const DEST = [
+  ["東京", 35.772, 140.393, "TK"], ["大阪", 34.434, 135.244, "TK"], ["首爾", 37.460, 126.440, "TK"], ["香港", 22.308, 113.918, "TK"],
+  ["馬尼拉", 14.509, 121.020, "TK"], ["新加坡", 1.364, 103.991, "TK"], ["曼谷", 13.690, 100.750, "TK"], ["胡志明市", 10.818, 106.652, "TK"],
+  ["洛杉磯", 33.942, -118.408, "T"], ["舊金山", 37.619, -122.375, "T"], ["西雅圖", 47.450, -122.309, "T"], ["溫哥華", 49.195, -123.184, "T"],
+  ["紐約", 40.641, -73.778, "T"], ["倫敦", 51.470, -0.454, "T"], ["巴黎", 49.010, 2.548, "T"], ["阿姆斯特丹", 52.310, 4.768, "T"],
+  ["法蘭克福", 50.038, 8.562, "T"], ["維也納", 48.110, 16.570, "T"], ["杜拜", 25.253, 55.365, "T"], ["雪梨", -33.940, 151.175, "T"],
+  ["布里斯本", -27.384, 153.117, "T"], ["奧克蘭", -37.008, 174.792, "T"], ["澳門", 22.149, 113.592, "K"], ["峴港", 16.044, 108.199, "K"],
+];
+const COLORS = ["#f7df1e", "#4cc9f0", "#f72585", "#9d8cff", "#7bd389", "#ff8c42"];
+
+function km(a, b) {
+  const R = 6371, toRad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * toRad, dLng = (b.lng - a.lng) * toRad;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * toRad) * Math.cos(b.lat * toRad) * Math.sin(dLng / 2) ** 2;
+  return Math.round(2 * R * Math.asin(Math.sqrt(h)));
+}
+
+const el = document.getElementById("globe");
+const world = new Globe(el)
+  .globeImageUrl(IMG + "earth-night.jpg")
+  .bumpImageUrl(IMG + "earth-topology.png")
+  .backgroundImageUrl(IMG + "night-sky.png")
+  .atmosphereColor("#4cc9f0")
+  .atmosphereAltitude(0.18)
+  .arcColor((d) => [`${d.color}22`, d.color])
+  .arcStroke(0.55)
+  .arcAltitudeAutoScale(0.42)
+  .arcDashLength(0.45)
+  .arcDashGap(0.25)
+  .arcDashInitialGap(() => Math.random())
+  .arcDashAnimateTime((d) => 1400 + d.dist / 4)
+  .arcLabel((d) => `<b>${d.from} → ${d.to}</b><br>大圓距離約 ${d.dist.toLocaleString()} 公里`)
+  .onArcHover((d) => {
+    document.getElementById("sel").textContent = d ? `${d.from} → ${d.to}：${d.dist.toLocaleString()} 公里` : "滑過弧線看距離";
+    world.arcStroke((a) => (a === d ? 1.4 : 0.55));
+  })
+  .pointColor(() => "#ecebe6")
+  .pointAltitude(0.01)
+  .pointRadius(0.28)
+  .pointLabel((d) => d.name)
+  .ringColor(() => (t) => `rgba(247,223,30,${1 - t})`)
+  .ringMaxRadius(4)
+  .ringPropagationSpeed(2.2)
+  .ringRepeatPeriod(900)
+  .htmlElement((d) => {
+    const div = document.createElement("div");
+    div.className = "tw-label";
+    div.textContent = d.name;
+    return div;
+  });
+
+function showHub(code) {
+  const hub = HUBS[code];
+  const dests = DEST.filter((d) => d[3].includes(code[0]));
+  const arcs = dests.map(([to, lat, lng], i) => ({
+    startLat: hub.lat, startLng: hub.lng, endLat: lat, endLng: lng,
+    from: hub.name, to, color: COLORS[i % COLORS.length], dist: km(hub, { lat, lng }),
+  }));
+  world.arcsData(arcs)
+    .pointsData(dests.map(([name, lat, lng]) => ({ name, lat, lng })))
+    .ringsData([hub])
+    .htmlElementsData([hub]);
+  document.getElementById("count").textContent = `${dests.length} 個城市`;
+  document.querySelectorAll("[data-hub]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.hub === code));
+}
+
+showHub("TPE");
+const ALT = () => (innerWidth < 560 ? 3.4 : 2.3);
+world.pointOfView({ lat: 22, lng: 128, altitude: ALT() }, 0);
+const controls = world.controls();
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.45;
+
+document.querySelectorAll("[data-hub]").forEach((b) => b.addEventListener("click", () => {
+  showHub(b.dataset.hub);
+  world.pointOfView({ lat: HUBS[b.dataset.hub].lat - 3, lng: HUBS[b.dataset.hub].lng + 6, altitude: ALT() }, 1200);
+}));
+document.getElementById("spin").addEventListener("click", (e) => {
+  controls.autoRotate = !controls.autoRotate;
+  e.currentTarget.setAttribute("aria-pressed", controls.autoRotate);
+});
+
+function resize() { world.width(innerWidth).height(innerHeight); }
+window.addEventListener("resize", resize);
+resize();
+</script>
+</body>
+</html>

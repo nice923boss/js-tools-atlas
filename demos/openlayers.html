@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenLayers 示範：圖層切換與疊圖</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10.10.0/ol.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  #map { position: fixed; inset: 0; background: #0b0d10; }
+  .tiles-dark { filter: invert(1) hue-rotate(180deg) brightness(.82) contrast(.92) saturate(.55); }
+  .tiles-gray { filter: grayscale(1) contrast(.95); }
+  .tiles-relief { filter: brightness(.8) saturate(1.1); }
+  #layers { position: fixed; left: 12px; top: 12px; z-index: 50; width: 196px; padding: 10px 12px; font-size: 13px; }
+  #layers h3 { margin: 0 0 4px; font-size: 12px; color: var(--muted); font-weight: 500; letter-spacing: .05em; }
+  #layers h3 + * { margin-top: 0; }
+  #layers label { display: flex; align-items: center; gap: 7px; padding: 2px 0; cursor: pointer; }
+  #layers input[type=radio], #layers input[type=checkbox] { accent-color: var(--accent); margin: 0; }
+  #layers .sep { height: 1px; background: var(--line); margin: 8px 0; }
+  #layers input[type=range] { width: 100%; }
+  #layers .sw { width: 10px; height: 10px; border-radius: 2px; flex: none; margin-left: auto; }
+  #toggle { display: none; }
+  .ol-zoom { top: auto; left: auto; right: 12px; bottom: 54px; }
+  .ol-rotate { top: 12px; right: 12px; }
+  .ol-control button { background: var(--bg-2); color: var(--fg); border: 1px solid var(--line); }
+  .ol-control button:hover, .ol-control button:focus { background: #22262d; outline: none; }
+  .ol-attribution { background: rgba(14,16,19,.75) !important; }
+  .ol-attribution ul { color: var(--muted); font-size: 10px; text-shadow: none; }
+  .ol-attribution a { color: var(--c2); }
+  .ol-scale-line { left: auto; right: 60px; bottom: 12px; background: var(--panel); }
+  .ol-scale-line-inner { border-color: var(--fg); color: var(--fg); font-size: 10px; }
+  #pos { position: fixed; right: 12px; top: 12px; z-index: 50; padding: 5px 10px; border-radius: 8px; font: 12px var(--mono); }
+  #tip { padding: 4px 9px; border-radius: 6px; background: var(--accent); color: var(--accent-ink); font-weight: 700; font-size: 12px; white-space: nowrap; transform: translateY(-10px); pointer-events: none; }
+  @media (max-width: 560px) {
+    #layers { width: 170px; font-size: 12px; padding: 8px 10px; }
+    #layers.closed .body { display: none; }
+    #toggle { display: block; width: 100%; margin-bottom: 6px; padding: 5px; }
+    #pos { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="layers" class="panel closed">
+  <button class="btn" id="toggle">圖層面板</button>
+  <div class="body">
+    <h3>底圖</h3>
+    <label><input type="radio" name="base" value="dark" checked>深色街道（OSM）</label>
+    <label><input type="radio" name="base" value="osm">標準街道（OSM）</label>
+    <label><input type="radio" name="base" value="gray">灰階街道（OSM）</label>
+    <label><input type="radio" name="base" value="relief">地形暈渲（Natural Earth）</label>
+    <div class="sep"></div>
+    <h3>疊加圖層</h3>
+    <label><input type="checkbox" id="lyHsr" checked>高鐵路線與車站<span class="sw" style="background:#f7df1e"></span></label>
+    <label><input type="checkbox" id="lyHeat" checked>人口熱區（示意）<span class="sw" style="background:linear-gradient(90deg,#4cc9f0,#f72585)"></span></label>
+    <label><input type="checkbox" id="lyGrid">經緯網格<span class="sw" style="background:#9d8cff"></span></label>
+    <div class="sep"></div>
+    <h3>疊加透明度 <span id="opv" class="mono">90%</span></h3>
+    <input type="range" id="op" min="0" max="100" value="90">
+  </div>
+</div>
+<div id="pos" class="panel">經度 --，緯度 --</div>
+<div id="tip"></div>
+<div class="hint">切換底圖與疊加圖層・滑過車站看名稱</div>
+
+<script src="https://cdn.jsdelivr.net/npm/ol@10.10.0/dist/ol.js"></script>
+<script>
+// OpenLayers layer switcher: four raster base maps, HSR vector layer, heatmap and graticule overlays.
+// OSM raster drawn three ways via per-layer CSS filters, plus OpenFreeMap Natural Earth shaded relief.
+const osmLayer = (cls) => new ol.layer.Tile({ className: `ol-layer ${cls}`, source: new ol.source.OSM(), visible: false });
+const bases = {
+  dark: osmLayer("tiles-dark"),
+  osm: osmLayer("tiles-std"),
+  gray: osmLayer("tiles-gray"),
+  relief: new ol.layer.Tile({
+    className: "ol-layer tiles-relief",
+    visible: false,
+    source: new ol.source.XYZ({
+      url: "https://tiles.openfreemap.org/natural_earth/ne2sr/{z}/{x}/{y}.png", tileSize: 512, maxZoom: 6, crossOrigin: "anonymous",
+      attributions: '<a href="https://openfreemap.org">OpenFreeMap</a>，<a href="https://www.naturalearthdata.com">Natural Earth</a>',
+    }),
+  }),
+};
+bases.dark.setVisible(true);
+
+// Taiwan High Speed Rail stations (approximate coordinates)
+const HSR = [
+  ["南港", 121.6069, 25.0533], ["台北", 121.5170, 25.0478], ["板橋", 121.4637, 25.0143], ["桃園", 121.2149, 25.0129],
+  ["新竹", 121.0402, 24.8081], ["苗栗", 120.8253, 24.6053], ["台中", 120.6157, 24.1121], ["彰化", 120.5745, 23.8740],
+  ["雲林", 120.4163, 23.7363], ["嘉義", 120.3233, 23.4593], ["台南", 120.2857, 22.9250], ["左營", 120.3075, 22.6871],
+];
+const hsrSource = new ol.source.Vector();
+hsrSource.addFeature(new ol.Feature({ kind: "line", geometry: new ol.geom.LineString(HSR.map(([, x, y]) => ol.proj.fromLonLat([x, y]))) }));
+for (const [name, x, y] of HSR) hsrSource.addFeature(new ol.Feature({ kind: "station", name, geometry: new ol.geom.Point(ol.proj.fromLonLat([x, y])) }));
+
+const lineStyle = [
+  new ol.style.Style({ stroke: new ol.style.Stroke({ color: "rgba(0,0,0,.55)", width: 7 }) }),
+  new ol.style.Style({ stroke: new ol.style.Stroke({ color: "#f7df1e", width: 3.5 }) }),
+];
+const stationStyle = (f, hover) => new ol.style.Style({
+  image: new ol.style.Circle({ radius: hover ? 8 : 5.5, fill: new ol.style.Fill({ color: "#0e1013" }), stroke: new ol.style.Stroke({ color: "#f7df1e", width: hover ? 4 : 2.5 }) }),
+  text: new ol.style.Text({
+    text: f.get("name"), offsetX: 12, textAlign: "left", font: '600 12px "Noto Sans TC","Microsoft JhengHei",sans-serif',
+    fill: new ol.style.Fill({ color: "#ecebe6" }), stroke: new ol.style.Stroke({ color: "#0e1013", width: 3 }),
+  }),
+});
+let hovered = null;
+const hsrLayer = new ol.layer.Vector({
+  source: hsrSource,
+  style: (f) => (f.get("kind") === "line" ? lineStyle : stationStyle(f, f === hovered)),
+  zIndex: 10,
+});
+
+// Illustrative population heat points clustered around major cities
+const CITIES = [[121.52, 25.04, 1.0], [121.46, 25.01, 0.8], [121.30, 24.99, 0.6], [120.67, 24.15, 0.75], [120.21, 23.0, 0.55], [120.31, 22.63, 0.7], [120.97, 24.80, 0.4], [121.60, 23.98, 0.2], [120.45, 23.48, 0.3], [121.75, 24.75, 0.25]];
+let seed = 7;
+const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+const gauss = () => Math.sqrt(-2 * Math.log(rand() + 1e-9)) * Math.cos(2 * Math.PI * rand());
+const heatSource = new ol.source.Vector();
+for (const [x, y, w] of CITIES) {
+  for (let i = 0; i < 220 * w; i++) {
+    heatSource.addFeature(new ol.Feature({ weight: 0.08 + rand() * 0.3, geometry: new ol.geom.Point(ol.proj.fromLonLat([x + gauss() * 0.09, y + gauss() * 0.07])) }));
+  }
+}
+const heatLayer = new ol.layer.Heatmap({
+  source: heatSource, blur: 18, radius: 7, weight: (f) => f.get("weight"),
+  gradient: ["#1b2a4a", "#4cc9f0", "#9d8cff", "#f72585", "#f7df1e"], zIndex: 5,
+});
+
+const gridLayer = new ol.layer.Graticule({
+  strokeStyle: new ol.style.Stroke({ color: "rgba(157,140,255,0.6)", width: 1, lineDash: [3, 4] }),
+  showLabels: true, wrapX: false, visible: false, zIndex: 4,
+  lonLabelStyle: new ol.style.Text({ font: "11px Consolas, monospace", textBaseline: "bottom", fill: new ol.style.Fill({ color: "#9d8cff" }) }),
+  latLabelStyle: new ol.style.Text({ font: "11px Consolas, monospace", textAlign: "end", fill: new ol.style.Fill({ color: "#9d8cff" }) }),
+});
+
+const map = new ol.Map({
+  target: "map",
+  layers: [...Object.values(bases), gridLayer, heatLayer, hsrLayer],
+  view: new ol.View({ center: ol.proj.fromLonLat([120.95, 23.75]), zoom: 7.4, minZoom: 5, maxZoom: 18 }),
+  controls: ol.control.defaults.defaults().extend([new ol.control.ScaleLine()]),
+});
+
+function fit() {
+  const narrow = innerWidth < 560;
+  map.getView().fit(hsrSource.getExtent(), { padding: narrow ? [60, 30, 60, 30] : [50, 60, 50, 230], maxZoom: 9 });
+}
+fit();
+
+// Layer switcher wiring
+document.querySelectorAll("input[name=base]").forEach((r) => r.addEventListener("change", () => {
+  for (const [k, l] of Object.entries(bases)) l.setVisible(k === r.value);
+}));
+const bind = (id, layer) => document.getElementById(id).addEventListener("change", (e) => layer.setVisible(e.target.checked));
+bind("lyHsr", hsrLayer);
+bind("lyHeat", heatLayer);
+bind("lyGrid", gridLayer);
+const op = document.getElementById("op");
+function applyOpacity() {
+  const v = op.value / 100;
+  hsrLayer.setOpacity(v);
+  heatLayer.setOpacity(v);
+  gridLayer.setOpacity(v);
+  document.getElementById("opv").textContent = `${op.value}%`;
+}
+op.addEventListener("input", applyOpacity);
+applyOpacity();
+
+// Coordinate readout and station hover tooltip
+const tip = new ol.Overlay({ element: document.getElementById("tip"), positioning: "bottom-center" });
+map.addOverlay(tip);
+const pos = document.getElementById("pos");
+map.on("pointermove", (e) => {
+  const [lon, lat] = ol.proj.toLonLat(e.coordinate);
+  pos.textContent = `經度 ${lon.toFixed(4)}，緯度 ${lat.toFixed(4)}`;
+  const f = map.forEachFeatureAtPixel(e.pixel, (ft) => (ft.get("kind") === "station" ? ft : null), { layerFilter: (l) => l === hsrLayer, hitTolerance: 6 });
+  if (f !== hovered) {
+    hovered = f;
+    hsrLayer.changed();
+    tip.setPosition(f ? f.getGeometry().getCoordinates() : undefined);
+    if (f) tip.getElement().textContent = `高鐵${f.get("name")}站`;
+    map.getTargetElement().style.cursor = f ? "pointer" : "";
+  }
+});
+
+const panel = document.getElementById("layers");
+document.getElementById("toggle").addEventListener("click", () => panel.classList.toggle("closed"));
+window.addEventListener("resize", () => map.updateSize());
+</script>
+</body>
+</html>

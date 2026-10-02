@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>glfx.js 示範：WebGL 即時濾鏡</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  .app {
+    position: fixed; inset: 0; padding: 12px 12px 46px;
+    display: grid; grid-template-rows: auto minmax(0, 1fr) auto; grid-template-columns: minmax(0, 1fr); gap: 10px;
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips .btn { padding: 7px 11px; font-size: 12px; }
+  .view { position: relative; min-height: 0; overflow: hidden; display: grid; place-items: center; }
+  #fx { border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,.5); cursor: crosshair; touch-action: none; }
+  .sliders { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; padding: 10px 14px; }
+  .sliders label { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  .sliders input { width: 130px; }
+  .sliders output { font: 12px var(--mono); color: var(--fg); min-width: 38px; }
+  .sliders .tip { font-size: 12px; color: var(--c2); }
+  .sliders .spacer { flex: 1; }
+  .err { color: #ff8a8a; }
+  @media (max-width: 520px) { .sliders input { width: 96px; } .sliders { gap: 6px 12px; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="chips" id="chips"></div>
+  <div class="view" id="view"></div>
+  <div class="panel sliders" id="sliders"></div>
+</div>
+<div class="hint">選濾鏡後拖動滑桿・在照片上按住拖曳移動效果中心</div>
+
+<script src="https://cdn.jsdelivr.net/npm/glfx@0.0.4/glfx.js"></script>
+<script>
+// glfx.js: GPU image filters chained on a WebGL canvas, re-rendered on every slider / pointer change.
+const FILTERS = [
+  { id: "swirl", name: "漩渦", center: true, params: [
+      ["radius", "半徑", 50, 600, 1, 320], ["angle", "角度", -20, 20, 0.1, 4]],
+    apply: (c, p, x, y) => c.swirl(x, y, p.radius, p.angle) },
+  { id: "bulge", name: "鼓起收縮", center: true, params: [
+      ["radius", "半徑", 50, 600, 1, 300], ["strength", "強度", -1, 1, 0.01, 0.7]],
+    apply: (c, p, x, y) => c.bulgePinch(x, y, p.radius, p.strength) },
+  { id: "tilt", name: "移軸攝影", center: true, params: [
+      ["blur", "模糊", 0, 50, 1, 22], ["gradient", "清晰帶", 20, 500, 1, 160]],
+    apply: (c, p, x, y, w) => c.tiltShift(0, y, w, y, p.blur, p.gradient) },
+  { id: "hex", name: "六角馬賽克", center: true, params: [["scale", "格子", 6, 80, 1, 22]],
+    apply: (c, p, x, y) => c.hexagonalPixelate(x, y, p.scale) },
+  { id: "halftone", name: "彩色網點", center: true, params: [
+      ["size", "網點", 3, 20, 0.5, 6], ["angle", "角度", 0, 1.57, 0.01, 0.25]],
+    apply: (c, p, x, y) => c.colorHalftone(x, y, p.angle, p.size) },
+  { id: "ink", name: "墨水素描", center: false, params: [["strength", "強度", 0, 1, 0.01, 0.6]],
+    apply: (c, p) => c.ink(p.strength) },
+  { id: "grade", name: "電影調色", center: false, params: [
+      ["hue", "色相", -1, 1, 0.01, -0.08], ["sat", "飽和", -1, 1, 0.01, 0.35],
+      ["contrast", "對比", -1, 1, 0.01, 0.2], ["vig", "暗角", 0, 1, 0.01, 0.6]],
+    apply: (c, p) => c.hueSaturation(p.hue, p.sat).brightnessContrast(0, p.contrast).vignette(0.5, p.vig) },
+];
+const PHOTOS = [5, 1, 2, 3, 6, 7].map((n) => `_shared/img/photo-${n}.jpg`);
+
+const view = document.getElementById("view");
+const chips = document.getElementById("chips");
+const sliders = document.getElementById("sliders");
+let canvas, texture, current = FILTERS[0], values = {}, cx = 600, cy = 400, photo = 0, queued = false;
+
+function render() {
+  queued = false;
+  if (!texture) return;
+  const c = canvas.draw(texture);
+  current.apply(c, values, cx, cy, canvas.width).update();
+}
+const schedule = () => { if (!queued) { queued = true; requestAnimationFrame(render); } };
+
+function fit() {
+  const r = view.getBoundingClientRect();
+  const s = Math.min(r.width / canvas.width, r.height / canvas.height);
+  canvas.style.width = `${canvas.width * s}px`;
+  canvas.style.height = `${canvas.height * s}px`;
+}
+
+function buildChips() {
+  FILTERS.forEach((f) => {
+    const b = document.createElement("button");
+    b.className = "btn";
+    b.textContent = f.name;
+    b.setAttribute("aria-pressed", f === current);
+    b.onclick = () => select(f);
+    chips.append(b);
+  });
+  const swap = document.createElement("button");
+  swap.className = "btn primary";
+  swap.textContent = "換照片";
+  swap.onclick = () => { photo = (photo + 1) % PHOTOS.length; loadPhoto(); };
+  chips.append(swap);
+}
+
+function select(f) {
+  current = f;
+  [...chips.children].forEach((b, i) => FILTERS[i] && b.setAttribute("aria-pressed", FILTERS[i] === f));
+  values = {};
+  sliders.innerHTML = "";
+  for (const [key, label, min, max, step, val] of f.params) {
+    values[key] = val;
+    const l = document.createElement("label");
+    l.innerHTML = `${label}<input type="range" min="${min}" max="${max}" step="${step}" value="${val}"><output>${val}</output>`;
+    const input = l.querySelector("input"), out = l.querySelector("output");
+    input.oninput = () => { values[key] = Number(input.value); out.textContent = input.value; schedule(); };
+    sliders.append(l);
+  }
+  const sp = document.createElement("span");
+  sp.className = "spacer";
+  const tip = document.createElement("span");
+  tip.className = "tip";
+  tip.textContent = f.center ? "可在照片上拖曳中心點" : "整張照片套用";
+  sliders.append(sp, tip);
+  schedule();
+}
+
+function loadPhoto() {
+  const img = new Image();
+  img.onload = () => {
+    if (texture) texture.destroy();
+    texture = canvas.texture(img);
+    cx = img.width / 2; cy = img.height / 2;
+    canvas.draw(texture).update();
+    fit();
+    schedule();
+  };
+  img.src = PHOTOS[photo];
+}
+
+function pointer(e) {
+  if (!current.center) return;
+  const r = canvas.getBoundingClientRect();
+  cx = ((e.clientX - r.left) / r.width) * canvas.width;
+  cy = ((e.clientY - r.top) / r.height) * canvas.height;
+  schedule();
+}
+
+try {
+  canvas = fx.canvas();
+  canvas.id = "fx";
+  view.append(canvas);
+  buildChips();
+  select(current);
+  loadPhoto();
+  canvas.addEventListener("pointerdown", (e) => { canvas.setPointerCapture(e.pointerId); pointer(e); });
+  canvas.addEventListener("pointermove", (e) => { if (e.buttons) pointer(e); });
+  window.addEventListener("resize", fit);
+} catch (err) {
+  view.innerHTML = '<div class="panel err">此瀏覽器無法使用 WebGL，glfx.js 需要 WebGL 才能執行。</div>';
+  console.warn(err);
+}
+</script>
+</body>
+</html>

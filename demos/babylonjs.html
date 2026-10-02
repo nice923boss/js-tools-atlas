@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Babylon.js 示範：Havok 物理推倒積木塔</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","size":"約 2.5 MB","note":"物理引擎為 Havok（WebAssembly），控制面板是 Babylon GUI 直接畫在 canvas 上"}</script>
+<style>
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; outline: none; touch-action: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">點畫面發射球・拖曳旋轉視角・右上面板調整物理參數</div>
+
+<script src="_shared/gate.js"></script>
+<script type="module">
+const CDN = "https://cdn.jsdelivr.net/npm";
+const status = demoStatus("載入 Babylon.js 與 Havok 物理引擎中…");
+const loadScript = (src) => new Promise((ok, fail) => {
+  const s = document.createElement("script");
+  s.src = src;
+  s.onload = ok;
+  s.onerror = () => fail(new Error("load failed: " + src));
+  document.head.append(s);
+});
+let havok;
+try {
+  await Promise.all([
+    loadScript(`${CDN}/babylonjs@9.29.0/babylon.js`).then(() => { status.progress(0.6); return loadScript(`${CDN}/babylonjs-gui@9.29.0/babylon.gui.min.js`); }),
+    loadScript(`${CDN}/@babylonjs/havok@1.3.14/lib/umd/HavokPhysics_umd.js`),
+  ]);
+  status.progress(0.85);
+  havok = await HavokPhysics({ locateFile: () => `${CDN}/@babylonjs/havok@1.3.14/lib/umd/HavokPhysics.wasm` });
+} catch (err) {
+  status.error("引擎載入失敗，請檢查網路後重新整理");
+  throw err;
+}
+status.done();
+
+const B = BABYLON, GUI = BABYLON.GUI;
+const canvas = document.getElementById("c");
+const engine = new B.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
+const scene = new B.Scene(engine);
+scene.clearColor = B.Color4.FromHexString("#0e1013ff");
+scene.fogMode = B.Scene.FOGMODE_EXP2;
+scene.fogDensity = 0.012;
+scene.fogColor = B.Color3.FromHexString("#0e1013");
+
+const camera = new B.ArcRotateCamera("cam", -Math.PI / 2 - 0.4, 1.22, 26, new B.Vector3(0, 3.6, 0), scene);
+camera.attachControl(canvas, true);
+camera.lowerRadiusLimit = 10;
+camera.upperRadiusLimit = 50;
+camera.upperBetaLimit = 1.48;
+camera.wheelDeltaPercentage = 0.01;
+
+const hemi = new B.HemisphericLight("hemi", new B.Vector3(0.2, 1, -0.3), scene);
+hemi.intensity = 0.55;
+hemi.groundColor = B.Color3.FromHexString("#1c2030");
+const sun = new B.DirectionalLight("sun", new B.Vector3(-0.6, -1, 0.5), scene);
+sun.position = new B.Vector3(18, 30, -14);
+sun.intensity = 1.6;
+const shadows = new B.ShadowGenerator(1024, sun);
+shadows.usePercentageCloserFiltering = true;
+shadows.bias = 0.002;
+const glow = new B.GlowLayer("glow", scene, { mainTextureSamples: 1, blurKernelSize: 32 });
+glow.intensity = 0.7;
+
+// Havok physics (v2 API); the step size is set every frame so slow motion is easy
+const plugin = new B.HavokPlugin(false, havok);
+scene.enablePhysics(new B.Vector3(0, -9.81, 0), plugin);
+let timeScale = 1;
+scene.onBeforePhysicsObservable.add(() => {
+  plugin.setTimeStep(Math.min(engine.getDeltaTime() / 1000 || 1 / 60, 1 / 30) * timeScale);
+});
+
+// Ground with a checker texture
+const ground = B.MeshBuilder.CreateBox("ground", { width: 60, height: 1, depth: 60 }, scene);
+ground.position.y = -0.5;
+const gmat = new B.StandardMaterial("gmat", scene);
+const tex = new B.DynamicTexture("checker", 512, scene, true);
+const ctx = tex.getContext();
+for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+  ctx.fillStyle = (x + y) % 2 ? "#1d2129" : "#252a34";
+  ctx.fillRect(x * 64, y * 64, 64, 64);
+}
+tex.update();
+tex.uScale = tex.vScale = 7;
+gmat.diffuseTexture = tex;
+gmat.specularColor = new B.Color3(0.08, 0.08, 0.08);
+ground.material = gmat;
+ground.receiveShadows = true;
+new B.PhysicsAggregate(ground, B.PhysicsShapeType.BOX, { mass: 0, friction: 0.8 }, scene);
+
+const PALETTE = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#9d8cff"].map((h) => {
+  const m = new B.StandardMaterial("m" + h, scene);
+  m.diffuseColor = B.Color3.FromHexString(h);
+  m.specularColor = new B.Color3(0.25, 0.25, 0.25);
+  m.specularPower = 48;
+  return m;
+});
+
+// ---- Build: Jenga tower in the middle, cube pyramids on both sides ----
+let blocks = [];
+function addBlock(w, h, d, pos, matIndex, rotY = 0) {
+  const mesh = B.MeshBuilder.CreateBox("blk", { width: w, height: h, depth: d }, scene);
+  mesh.position.copyFrom(pos);
+  mesh.rotation.y = rotY;
+  mesh.material = PALETTE[matIndex % PALETTE.length];
+  mesh.receiveShadows = true;
+  shadows.addShadowCaster(mesh);
+  const agg = new B.PhysicsAggregate(mesh, B.PhysicsShapeType.BOX, { mass: 0.6, friction: 0.7, restitution: 0.05 }, scene);
+  blocks.push({ mesh, agg, start: pos.clone() });
+}
+function build() {
+  for (const b of blocks) { b.agg.dispose(); b.mesh.dispose(); }
+  blocks = [];
+  const H = 0.6;
+  for (let layer = 0; layer < 14; layer++) {
+    const y = H / 2 + layer * H;
+    for (let i = -1; i <= 1; i++) {
+      const along = layer % 2 === 0;
+      const pos = along ? new B.Vector3(0, y, i * 1.02) : new B.Vector3(i * 1.02, y, 0);
+      addBlock(3, H, 1, pos, layer, along ? 0 : Math.PI / 2);
+    }
+  }
+  for (const side of [-1, 1]) {
+    for (let row = 0; row < 4; row++) {
+      for (let k = 0; k < 4 - row; k++) {
+        const x = side * 6.5 + (k - (3 - row) / 2) * 1.05;
+        addBlock(1, 1, 1, new B.Vector3(x, 0.5 + row, 0), side > 0 ? 1 : 2);
+      }
+    }
+  }
+  fired = 0;
+}
+
+// ---- Balls ----
+const ballMat = new B.StandardMaterial("ball", scene);
+ballMat.diffuseColor = new B.Color3(1, 1, 1);
+ballMat.emissiveColor = B.Color3.FromHexString("#f7df1e").scale(0.8);
+let balls = [], fired = 0, ballSize = 0.7, ballSpeed = 30;
+function fireBall(dir, origin = camera.position) {
+  const s = B.MeshBuilder.CreateSphere("ball", { diameter: ballSize, segments: 16 }, scene);
+  s.position = origin.add(dir.scale(1.5));
+  s.material = ballMat;
+  shadows.addShadowCaster(s);
+  const agg = new B.PhysicsAggregate(s, B.PhysicsShapeType.SPHERE, { mass: 3 * ballSize ** 3 * 4, restitution: 0.35, friction: 0.4 }, scene);
+  agg.body.setLinearVelocity(dir.scale(ballSpeed));
+  balls.push({ s, agg });
+  if (balls.length > 30) { const old = balls.shift(); old.agg.dispose(); old.s.dispose(); }
+  fired++;
+  tag.linkWithMesh(s); // the GUI tag follows the newest ball in 3D
+  tag.isVisible = true;
+  tagText.text = `第 ${fired} 球`;
+}
+
+// Tap (not drag) on the scene shoots toward that point; GUI controls block the pointer
+scene.onPointerObservable.add((pi) => {
+  if (pi.type !== B.PointerEventTypes.POINTERTAP) return;
+  const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, B.Matrix.Identity(), camera);
+  fireBall(ray.direction);
+});
+
+// ---- Babylon GUI: control panel, live counter, 3D-linked tag ----
+const ui = GUI.AdvancedDynamicTexture.CreateFullscreenUI("ui", true, scene);
+const FONT = getComputedStyle(document.body).fontFamily;
+const ACCENT = "#f7df1e";
+
+const panel = new GUI.Rectangle("panel");
+panel.width = "220px";
+panel.adaptHeightToChildren = true;
+panel.cornerRadius = 10;
+panel.thickness = 1;
+panel.color = "rgba(255,255,255,0.14)";
+panel.background = "rgba(18,20,24,0.82)";
+panel.horizontalAlignment = GUI.Control.HORIZONTAL_ALIGNMENT_RIGHT;
+panel.verticalAlignment = GUI.Control.VERTICAL_ALIGNMENT_TOP;
+panel.top = "12px";
+panel.left = "-12px";
+panel.isPointerBlocker = true;
+ui.addControl(panel);
+const stack = new GUI.StackPanel();
+stack.paddingTop = "10px";
+stack.paddingBottom = "12px";
+stack.paddingLeft = "14px";
+stack.paddingRight = "14px";
+panel.addControl(stack);
+
+function text(str, size = 13, color = "#ecebe6", h = 22) {
+  const t = new GUI.TextBlock();
+  t.text = str;
+  t.fontFamily = FONT;
+  t.fontSize = size;
+  t.color = color;
+  t.height = h + "px";
+  t.textHorizontalAlignment = GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+  return t;
+}
+function slider(label, min, max, value, fmt, onChange) {
+  const t = text(`${label}　${fmt(value)}`, 12, "#9b998f", 20);
+  const s = new GUI.Slider();
+  s.minimum = min; s.maximum = max; s.value = value;
+  s.height = "20px";
+  s.color = ACCENT;
+  s.background = "#33363d";
+  s.borderColor = "transparent";
+  s.thumbColor = "#ffffff";
+  s.isThumbCircle = true;
+  s.thumbWidth = "16px";
+  s.onValueChangedObservable.add((v) => { t.text = `${label}　${fmt(v)}`; onChange(v); });
+  stack.addControl(t);
+  stack.addControl(s);
+  return s;
+}
+function button(label, primary, onClick) {
+  const b = GUI.Button.CreateSimpleButton("btn", label);
+  b.height = "32px";
+  b.width = "100%";
+  b.cornerRadius = 8;
+  b.thickness = primary ? 0 : 1;
+  b.color = primary ? "#1a1a14" : "#ecebe6";
+  b.background = primary ? ACCENT : "rgba(255,255,255,0.06)";
+  b.fontFamily = FONT;
+  b.fontSize = 13;
+  b.fontWeight = primary ? "bold" : "normal";
+  b.paddingTop = "6px";
+  b.height = "38px";
+  b.onPointerUpObservable.add(onClick);
+  return b;
+}
+
+stack.addControl(text("物理控制台", 15, ACCENT, 26));
+const gravity = slider("重力", -25, 0, -9.81, (v) => `${v.toFixed(1)} m/s²`, (v) => scene.getPhysicsEngine().setGravity(new B.Vector3(0, v, 0)));
+slider("球徑", 0.3, 1.6, ballSize, (v) => `${v.toFixed(1)} m`, (v) => { ballSize = v; });
+slider("球速", 10, 60, ballSpeed, (v) => `${Math.round(v)} m/s`, (v) => { ballSpeed = v; });
+
+const slowRow = new GUI.StackPanel();
+slowRow.isVertical = false;
+slowRow.height = "30px";
+slowRow.paddingTop = "6px";
+const slow = new GUI.Checkbox();
+slow.width = slow.height = "18px";
+slow.color = ACCENT;
+slow.background = "#33363d";
+slow.onIsCheckedChangedObservable.add((on) => { timeScale = on ? 0.2 : 1; });
+const slowLabel = text("　慢動作（0.2 倍）", 13, "#ecebe6", 24);
+slowLabel.width = "170px";
+slowRow.addControl(slow);
+slowRow.addControl(slowLabel);
+stack.addControl(slowRow);
+
+const btnRow = new GUI.Grid();
+btnRow.height = "38px";
+btnRow.addColumnDefinition(0.5);
+btnRow.addColumnDefinition(0.5);
+const rain = button("連發 8 球", true, () => {
+  const base = camera.target.subtract(camera.position).normalize();
+  for (let i = 0; i < 8; i++) {
+    setTimeout(() => fireBall(base.add(new B.Vector3((Math.random() - 0.5) * 0.2, (Math.random() - 0.3) * 0.12, (Math.random() - 0.5) * 0.2)).normalize()), i * 90);
+  }
+});
+rain.paddingRight = "4px";
+const reset = button("重建積木", false, () => {
+  for (const b of balls) { b.agg.dispose(); b.s.dispose(); }
+  balls = [];
+  tag.isVisible = false;
+  gravity.value = -9.81;
+  build();
+});
+reset.paddingLeft = "4px";
+btnRow.addControl(rain, 0, 0);
+btnRow.addControl(reset, 0, 1);
+stack.addControl(btnRow);
+
+// Live counter (top-left)
+const counter = new GUI.Rectangle("counter");
+counter.adaptWidthToChildren = true;
+counter.height = "34px";
+counter.cornerRadius = 17;
+counter.thickness = 1;
+counter.color = "rgba(255,255,255,0.14)";
+counter.background = "rgba(18,20,24,0.82)";
+counter.horizontalAlignment = GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+counter.verticalAlignment = GUI.Control.VERTICAL_ALIGNMENT_TOP;
+counter.left = "12px";
+counter.top = "12px";
+const counterText = text("", 13, "#ecebe6", 34);
+counterText.resizeToFit = true;
+counterText.paddingLeft = "14px";
+counterText.paddingRight = "14px";
+counter.addControl(counterText);
+ui.addControl(counter);
+
+// Tag linked to the newest ball
+const tag = new GUI.Rectangle("tag");
+tag.width = "68px";
+tag.height = "24px";
+tag.cornerRadius = 12;
+tag.thickness = 0;
+tag.background = ACCENT;
+tag.linkOffsetY = -34;
+tag.isVisible = false;
+tag.isHitTestVisible = false;
+const tagText = text("", 12, "#1a1a14", 24);
+tagText.textHorizontalAlignment = GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
+tag.addControl(tagText);
+ui.addControl(tag);
+
+let lastCount = -1;
+scene.onAfterRenderObservable.add(() => {
+  let down = 0;
+  for (const b of blocks) if (B.Vector3.DistanceSquared(b.mesh.position, b.start) > 0.25) down++;
+  if (down !== lastCount) { counterText.text = `已移位 ${down} / ${blocks.length} 塊`; lastCount = down; }
+});
+
+// Responsive layout: on narrow screens the panel docks to the bottom
+function layout() {
+  const w = engine.getRenderWidth() / engine.getHardwareScalingLevel(), h = engine.getRenderHeight();
+  const narrow = canvas.clientWidth < 560;
+  panel.width = narrow ? `${canvas.clientWidth - 24}px` : "220px";
+  panel.verticalAlignment = narrow ? GUI.Control.VERTICAL_ALIGNMENT_BOTTOM : GUI.Control.VERTICAL_ALIGNMENT_TOP;
+  panel.top = narrow ? "-46px" : "12px";
+  camera.radius = narrow ? 34 : 26;
+  camera.target.y = narrow ? 1.2 : 3.6;
+  void w; void h;
+}
+addEventListener("resize", () => { engine.resize(); layout(); });
+layout();
+
+build();
+// Opening shot so the physics is visible right away
+setTimeout(() => fireBall(new B.Vector3(0, 3.4, 0).subtract(camera.position).normalize()), 900);
+
+engine.runRenderLoop(() => scene.render());
+</script>
+</body>
+</html>

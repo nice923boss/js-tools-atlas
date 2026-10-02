@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TensorFlow.js 示範：瀏覽器內即時訓練分類器</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"模型在瀏覽器內即時訓練，不需要伺服器；小型網路使用 CPU 後端反而最快"}</script>
+<style>
+  #app { position: fixed; inset: 0; overflow: auto; padding: 14px 16px 50px; display: grid; grid-template-columns: auto 250px; gap: 14px; justify-content: center; align-content: start; }
+  #stage { position: relative; }
+  #board { display: block; border-radius: 12px; border: 1px solid var(--line); cursor: crosshair; touch-action: none; }
+  #epochBadge { position: absolute; left: 10px; top: 10px; padding: 3px 9px; border-radius: 999px; font: 12px var(--mono); background: rgba(0,0,0,.55); color: var(--fg); pointer-events: none; }
+  .side { display: grid; gap: 10px; align-content: start; }
+  .side h1 { margin: 0; font-size: 15px; }
+  .side h1 small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .group { display: grid; gap: 6px; }
+  .group > span { font-size: 12px; color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips .btn { padding: 5px 10px; font-size: 12px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: 0; }
+  .slider { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .slider input { flex: 1; min-width: 0; }
+  .slider b { min-width: 22px; text-align: right; color: var(--fg); font-family: var(--mono); }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .stats div { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font-size: 11px; color: var(--muted); }
+  .stats b { display: block; font: 700 16px var(--mono); color: var(--fg); }
+  #loss { width: 100%; height: 64px; display: block; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); }
+  @media (max-width: 640px) {
+    /* stacked layout scrolls under the fixed hint: show it briefly, then fade it out */
+    .hint { animation: hint-fade .5s 8s forwards; }
+    #app { grid-template-columns: minmax(0, 1fr); padding: 10px 10px 46px; gap: 10px; }
+    .side h1 { display: none; }
+    .stats { grid-template-columns: repeat(4, 1fr); }
+    .stats b { font-size: 13px; }
+    #loss { height: 44px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage"><canvas id="board"></canvas><div id="epochBadge">載入 TensorFlow.js…</div></div>
+  <div class="side">
+    <h1>神經網路即時學分類<small>背景顏色是模型目前的判斷，邊界會隨訓練慢慢成形</small></h1>
+    <div class="group">
+      <span>資料集</span>
+      <div class="chips" id="sets">
+        <button class="btn" data-set="spiral" aria-pressed="true">螺旋</button>
+        <button class="btn" data-set="circle">同心圓</button>
+        <button class="btn" data-set="xor">XOR 四象限</button>
+        <button class="btn" data-set="empty">自己點</button>
+      </div>
+    </div>
+    <div class="group">
+      <span>點畫面新增資料點</span>
+      <div class="chips" id="paint">
+        <button class="btn" data-c="0" aria-pressed="true"><i class="dot" style="background:#4cc9f0"></i>青色類</button>
+        <button class="btn" data-c="1"><i class="dot" style="background:#f72585"></i>粉紅類</button>
+      </div>
+    </div>
+    <div class="slider">隱藏層<input type="range" id="layers" min="1" max="3" value="2"><b id="lv">2</b></div>
+    <div class="slider">每層神經元<input type="range" id="units" min="2" max="24" value="12"><b id="uv">12</b></div>
+    <div class="chips">
+      <button class="btn primary" id="run">暫停訓練</button>
+      <button class="btn" id="reset">重新初始化</button>
+    </div>
+    <div class="stats">
+      <div>訓練回合<b id="sEpoch">0</b></div>
+      <div>準確率<b id="sAcc">-</b></div>
+      <div>損失<b id="sLoss">-</b></div>
+      <div>參數量<b id="sParams">-</b></div>
+    </div>
+    <canvas id="loss" width="500" height="128"></canvas>
+  </div>
+</div>
+<div class="hint" id="hint">點畫面加資料點・調整網路大小看邊界變化</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script>
+// TensorFlow.js: a small MLP trained live in the browser (tf.layers + trainOnBatch), decision boundary redrawn every frame.
+const $ = (id) => document.getElementById(id);
+const COL = [[76, 201, 240], [247, 37, 133]];
+const GRID = 64;
+const MAX_EPOCH = 3000;
+const STEPS = 10;
+
+let seed = 5;
+const rand = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+const noise = (s) => (rand() - 0.5) * s;
+
+const DATASETS = {
+  spiral() {
+    const pts = [];
+    for (let c = 0; c < 2; c++) {
+      for (let i = 0; i < 90; i++) {
+        const r = (i / 90) * 0.92 + 0.05;
+        const t = (i / 90) * 3.3 * Math.PI + c * Math.PI;
+        pts.push({ x: r * Math.cos(t) + noise(0.08), y: r * Math.sin(t) + noise(0.08), c });
+      }
+    }
+    return pts;
+  },
+  circle() {
+    const pts = [];
+    for (let i = 0; i < 180; i++) {
+      const inner = i % 2 === 0;
+      const r = inner ? rand() * 0.38 : 0.6 + rand() * 0.3;
+      const t = rand() * Math.PI * 2;
+      pts.push({ x: r * Math.cos(t), y: r * Math.sin(t), c: inner ? 0 : 1 });
+    }
+    return pts;
+  },
+  xor() {
+    const pts = [];
+    for (let i = 0; i < 180; i++) {
+      let x = rand() * 1.8 - 0.9, y = rand() * 1.8 - 0.9;
+      x += x > 0 ? 0.05 : -0.05; y += y > 0 ? 0.05 : -0.05;
+      pts.push({ x, y, c: x * y > 0 ? 0 : 1 });
+    }
+    return pts;
+  },
+  empty() {
+    return [{ x: -0.4, y: 0.3, c: 0 }, { x: 0.4, y: -0.3, c: 1 }];
+  },
+};
+
+const state = { set: "spiral", paint: 0, layers: 2, units: 12, running: true, epoch: 0, history: [] };
+let points = DATASETS.spiral();
+let model, xs, ys, gridT;
+const cv = $("board");
+const ctx = cv.getContext("2d");
+const off = document.createElement("canvas");
+off.width = off.height = GRID;
+const offCtx = off.getContext("2d");
+const img = offCtx.createImageData(GRID, GRID);
+
+function buildModel() {
+  if (model) model.dispose();
+  model = tf.sequential();
+  for (let i = 0; i < state.layers; i++) {
+    model.add(tf.layers.dense({ units: state.units, activation: "tanh", ...(i === 0 ? { inputShape: [2] } : {}) }));
+  }
+  model.add(tf.layers.dense({ units: 1, activation: "sigmoid" }));
+  model.compile({ optimizer: tf.train.adam(0.03), loss: "binaryCrossentropy", metrics: ["accuracy"] });
+  state.epoch = 0;
+  state.history = [];
+  $("sParams").textContent = model.countParams();
+  resume();
+}
+
+function syncData() {
+  if (xs) { xs.dispose(); ys.dispose(); }
+  xs = tf.tensor2d(points.map((p) => [p.x, p.y]));
+  ys = tf.tensor2d(points.map((p) => [p.c]), [points.length, 1]);
+}
+
+function resume() {
+  state.running = true;
+  $("run").textContent = "暫停訓練";
+}
+
+// Canvas sizing: square board that fits beside (or above) the side panel
+function layout() {
+  const narrow = innerWidth <= 640;
+  const side = narrow
+    ? Math.min(innerWidth - 22, innerHeight - 300)
+    : Math.min(innerWidth - 300, innerHeight - 70);
+  const size = Math.max(200, Math.floor(side));
+  const dpr = Math.min(2, devicePixelRatio || 1);
+  cv.style.width = cv.style.height = `${size}px`;
+  cv.width = cv.height = Math.round(size * dpr);
+  draw();
+}
+
+const toCanvas = (v) => ((v + 1) / 2) * cv.width;
+
+let lastPred = null;
+function draw() {
+  ctx.fillStyle = "#0b0d10";
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  if (lastPred) {
+    for (let i = 0; i < GRID * GRID; i++) {
+      const p = lastPred[i];
+      const k = Math.min(1, Math.abs(p - 0.5) * 2.2);
+      const c = p < 0.5 ? COL[0] : COL[1];
+      img.data[i * 4] = 11 + (c[0] - 11) * k * 0.55;
+      img.data[i * 4 + 1] = 13 + (c[1] - 13) * k * 0.55;
+      img.data[i * 4 + 2] = 16 + (c[2] - 16) * k * 0.55;
+      img.data[i * 4 + 3] = 255;
+    }
+    offCtx.putImageData(img, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(off, 0, 0, cv.width, cv.height);
+  }
+  // axes
+  ctx.strokeStyle = "rgba(255,255,255,.08)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(cv.width / 2, 0); ctx.lineTo(cv.width / 2, cv.height);
+  ctx.moveTo(0, cv.height / 2); ctx.lineTo(cv.width, cv.height / 2);
+  ctx.stroke();
+  const r = Math.max(3.5, cv.width / 110);
+  for (const p of points) {
+    ctx.beginPath();
+    ctx.arc(toCanvas(p.x), toCanvas(-p.y), r, 0, Math.PI * 2);
+    ctx.fillStyle = `rgb(${COL[p.c]})`;
+    ctx.fill();
+    ctx.lineWidth = Math.max(1, r / 3);
+    ctx.strokeStyle = "#fff";
+    ctx.stroke();
+  }
+}
+
+function drawLoss() {
+  const c = $("loss");
+  const g = c.getContext("2d");
+  const h = state.history;
+  g.clearRect(0, 0, c.width, c.height);
+  if (h.length < 2) return;
+  const max = Math.max(...h, 0.1);
+  const grad = g.createLinearGradient(0, 0, c.width, 0);
+  grad.addColorStop(0, "#f72585"); grad.addColorStop(1, "#4cc9f0");
+  g.strokeStyle = grad;
+  g.lineWidth = 3;
+  g.beginPath();
+  h.forEach((v, i) => {
+    const x = (i / (h.length - 1)) * (c.width - 8) + 4;
+    const y = c.height - 6 - (v / max) * (c.height - 12);
+    i ? g.lineTo(x, y) : g.moveTo(x, y);
+  });
+  g.stroke();
+}
+
+async function predictGrid() {
+  const out = tf.tidy(() => model.predict(gridT));
+  lastPred = await out.data();
+  out.dispose();
+}
+
+// Data / model changes are applied between training steps so no tensor is disposed mid-step
+const pending = { sync: false, rebuild: false };
+
+async function loop() {
+  if (pending.sync) { syncData(); pending.sync = false; }
+  if (pending.rebuild) { buildModel(); pending.rebuild = false; }
+  if (state.running && points.length >= 2) {
+    let res;
+    for (let i = 0; i < STEPS; i++) res = await model.trainOnBatch(xs, ys);
+    state.epoch += STEPS;
+    const [loss, acc] = res;
+    if (state.epoch % 10 === 0) {
+      state.history.push(loss);
+      if (state.history.length > 250) state.history.shift();
+      drawLoss();
+    }
+    await predictGrid();
+    draw();
+    $("sEpoch").textContent = state.epoch;
+    $("sLoss").textContent = loss.toFixed(3);
+    $("sAcc").textContent = `${Math.round(acc * 100)}%`;
+    $("epochBadge").textContent = `訓練中・第 ${state.epoch} 回`;
+    if (state.epoch >= MAX_EPOCH || (acc === 1 && loss < 0.02)) {
+      state.running = false;
+      $("run").textContent = "繼續訓練";
+      $("epochBadge").textContent = `已收斂・第 ${state.epoch} 回（點畫面加點可繼續）`;
+    }
+  }
+  requestAnimationFrame(loop);
+}
+
+// UI
+$("sets").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-set]");
+  if (!b) return;
+  state.set = b.dataset.set;
+  seed = 5;
+  points = DATASETS[state.set]();
+  document.querySelectorAll("[data-set]").forEach((x) => x.setAttribute("aria-pressed", x === b));
+  pending.sync = pending.rebuild = true;
+  draw();
+});
+$("paint").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-c]");
+  if (!b) return;
+  state.paint = +b.dataset.c;
+  document.querySelectorAll("[data-c]").forEach((x) => x.setAttribute("aria-pressed", x === b));
+});
+cv.addEventListener("pointerdown", (e) => {
+  const rect = cv.getBoundingClientRect();
+  const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  const y = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
+  points.push({ x, y, c: e.shiftKey ? 1 - state.paint : state.paint });
+  pending.sync = true;
+  if (state.epoch >= MAX_EPOCH) state.epoch = MAX_EPOCH - 600;
+  resume();
+  draw();
+});
+$("layers").addEventListener("input", (e) => { state.layers = +e.target.value; $("lv").textContent = state.layers; pending.rebuild = true; });
+$("units").addEventListener("input", (e) => { state.units = +e.target.value; $("uv").textContent = state.units; pending.rebuild = true; });
+$("run").addEventListener("click", () => {
+  state.running = !state.running;
+  if (state.running && state.epoch >= MAX_EPOCH) state.epoch = 0;
+  $("run").textContent = state.running ? "暫停訓練" : "繼續訓練";
+});
+$("reset").addEventListener("click", () => { pending.rebuild = true; });
+addEventListener("resize", layout);
+
+(async () => {
+  // A network this small trains faster on the CPU backend than paying WebGL upload / readback costs each step
+  await tf.setBackend("cpu");
+  await tf.ready();
+  $("hint").textContent = `後端 ${tf.getBackend().toUpperCase()}・點畫面加資料點，Shift＋點擊加另一類`;
+  const cells = [];
+  for (let j = 0; j < GRID; j++) for (let i = 0; i < GRID; i++) cells.push([(i + 0.5) / GRID * 2 - 1, -((j + 0.5) / GRID * 2 - 1)]);
+  gridT = tf.tensor2d(cells);
+  syncData();
+  buildModel();
+  layout();
+  loop();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WEBMIDI.js 示範：MIDI 鍵盤監看器</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["midi","audio"],"note":"沒有 MIDI 裝置時可用螢幕鍵盤"}</script>
+<style>
+  .app { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 46px; }
+  .top { display: flex; gap: 10px; align-items: flex-start; }
+  .state {
+    flex: 1; min-width: 0; padding: 8px 12px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line);
+    font-size: 13px; line-height: 1.45;
+  }
+  .state .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #777; margin-right: 6px; vertical-align: 1px; }
+  .state.ok .dot { background: #7bd389; box-shadow: 0 0 8px #7bd389; }
+  .state.err .dot { background: #ff6b6b; }
+  .state small { display: block; color: var(--muted); font-size: 12px; }
+  .btns { display: flex; gap: 8px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
+  .mid { position: relative; flex: 1; min-height: 0; border-radius: 12px; overflow: hidden; background: #0b0d10; border: 1px solid var(--line); }
+  #roll { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .log {
+    position: absolute; right: 10px; top: 10px; width: 290px; max-width: 46%; max-height: calc(100% - 20px); overflow: hidden;
+    padding: 8px 10px; border-radius: 10px; background: rgba(14, 16, 19, 0.82); border: 1px solid var(--line);
+    font: 11.5px/1.55 var(--mono); color: var(--muted);
+  }
+  .log b { color: var(--fg); font-weight: 600; }
+  .log .on { color: #7bd389; }
+  .log .off { color: #9d8cff; }
+  .log .cc { color: #ff8c42; }
+  .log h4 { margin: 0 0 4px; font: 600 12px var(--font); color: var(--fg); }
+  .piano { position: relative; height: 150px; display: flex; user-select: none; touch-action: none; flex: none; }
+  .w {
+    flex: 1; position: relative; border: 1px solid #2b2e35; border-top: 0; border-radius: 0 0 7px 7px; cursor: pointer;
+    background: linear-gradient(#f4f2ea, #dedbd0); display: flex; flex-direction: column; justify-content: flex-end;
+    align-items: center; gap: 2px; padding-bottom: 6px; color: #333; font: 600 11px var(--font);
+  }
+  .b {
+    position: absolute; top: 0; height: 60%; z-index: 2; border-radius: 0 0 5px 5px; border: 1px solid #000; cursor: pointer;
+    background: linear-gradient(#2d3038, #111317); display: flex; flex-direction: column; justify-content: flex-end;
+    align-items: center; padding-bottom: 4px; color: #ddd; font: 600 10px var(--font);
+  }
+  .piano kbd { font: 600 10px var(--mono); padding: 0 4px; border-radius: 4px; background: rgba(0,0,0,0.08); }
+  .b kbd { background: rgba(255,255,255,0.14); }
+  .piano span { font-size: 10px; opacity: 0.6; }
+  .w.down { background: linear-gradient(#ffe6f2, var(--hc)); }
+  .b.down { background: linear-gradient(var(--hc), #401530); }
+  @media (max-width: 620px) {
+    .app { gap: 7px; padding: 10px 10px 46px; }
+    .top { flex-direction: column; align-items: stretch; }
+    .btns { justify-content: flex-start; }
+    .btns .btn { padding: 7px 10px; font-size: 12px; }
+    .state { font-size: 12px; padding: 6px 10px; }
+    .log { width: auto; left: 8px; right: 8px; max-width: none; top: 8px; max-height: 84px; font-size: 10.5px; }
+    .log h4 { display: none; }
+    .piano { height: 118px; }
+    .piano span { display: none; }
+    .piano kbd { font-size: 8px; padding: 0 2px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="top">
+    <div class="state" id="state"><span class="dot"></span><b id="stTitle">尚未連接 MIDI 裝置</b>
+      <small id="stDesc">沒有 MIDI 裝置時可用螢幕鍵盤或電腦鍵盤（A W S E D F T G Y H U J K O L P）演奏</small></div>
+    <div class="btns">
+      <button class="btn primary" id="demo">▶ 播放示範</button>
+      <button class="btn" id="connect">連接 MIDI 裝置</button>
+      <button class="btn" id="outBtn" aria-pressed="false" hidden>同步送到輸出</button>
+    </div>
+  </div>
+  <div class="mid">
+    <canvas id="roll"></canvas>
+    <div class="log" id="log"><h4>MIDI 訊息</h4><div id="lines"><div>等待演奏…</div></div></div>
+  </div>
+  <div class="piano" id="piano"></div>
+</div>
+<div class="hint">滑鼠點琴鍵越下方力度越大，電腦鍵盤也能彈</div>
+
+<script src="https://cdn.jsdelivr.net/npm/webmidi@3.3.1/dist/iife/webmidi.iife.min.js"></script>
+<script>
+// WEBMIDI.js: enable Web MIDI, listen to every input (noteon / noteoff / controlchange / pitchbend),
+// optionally mirror notes to outputs. The on-screen piano feeds the same pipeline with WEBMIDI.js Note objects.
+const LOW = 60, HIGH = 83;   // C4..B5
+const KEYMAP = ["KeyA", "KeyW", "KeyS", "KeyE", "KeyD", "KeyF", "KeyT", "KeyG", "KeyY", "KeyH", "KeyU", "KeyJ",
+  "KeyK", "KeyO", "KeyL", "KeyP", "Semicolon", "Quote"];
+const KEYLBL = ["A", "W", "S", "E", "D", "F", "T", "G", "Y", "H", "U", "J", "K", "O", "L", "P", ";", "'"];
+const isBlack = (m) => [1, 3, 6, 8, 10].includes(m % 12);
+const hue = (m) => (m % 12) * 30 + 300;
+
+// ---------- piano ----------
+const piano = document.getElementById("piano");
+const keyEls = new Map();
+const whites = [];
+for (let m = LOW; m <= HIGH; m++) if (!isBlack(m)) whites.push(m);
+for (let m = LOW; m <= HIGH; m++) {
+  const el = document.createElement("div");
+  const n = new Note(m);
+  const k = KEYLBL[m - LOW];
+  if (isBlack(m)) {
+    const wi = whites.filter((w) => w < m).length, bw = 0.6 / whites.length;
+    el.className = "b";
+    el.style.left = `${(wi / whites.length - bw / 2) * 100}%`;
+    el.style.width = `${bw * 100}%`;
+  } else el.className = "w";
+  el.style.setProperty("--hc", `hsl(${hue(m)}, 85%, 62%)`);
+  el.innerHTML = (k ? `<kbd>${k}</kbd>` : "") + (n.name === "C" && !n.accidental ? `<span>${n.identifier}</span>` : "");
+  el.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    const r = el.getBoundingClientRect();
+    const vel = Math.min(1, Math.max(0.25, (e.clientY - r.top) / r.height));
+    noteOn(m, vel, "螢幕鍵盤");
+  });
+  const up = () => noteOff(m, "螢幕鍵盤");
+  el.addEventListener("pointerup", up);
+  el.addEventListener("pointercancel", up);
+  piano.append(el);
+  keyEls.set(m, el);
+}
+addEventListener("keydown", (e) => {
+  const i = KEYMAP.indexOf(e.code);
+  if (i < 0 || e.repeat || e.metaKey || e.ctrlKey) return;
+  noteOn(LOW + i, 0.8, "電腦鍵盤");
+});
+addEventListener("keyup", (e) => {
+  const i = KEYMAP.indexOf(e.code);
+  if (i >= 0) noteOff(LOW + i, "電腦鍵盤");
+});
+
+// ---------- synth (Web Audio) ----------
+let ac = null, bus = null;
+const voices = new Map();
+function ensureAudio() {
+  if (!ac) {
+    ac = new AudioContext();
+    bus = ac.createDynamicsCompressor();
+    bus.connect(ac.destination);
+  }
+  ac.resume();
+}
+function synthOn(m, vel) {
+  ensureAudio();
+  synthOff(m);
+  const t = ac.currentTime, f = 440 * Math.pow(2, (m - 69) / 12);
+  const g = ac.createGain();
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(0.25 * vel, t + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.09 * vel + 0.001, t + 0.6);
+  g.connect(bus);
+  const oscs = [[1, 1], [2, 0.25], [3, 0.08]].map(([mul, vol]) => {
+    const o = ac.createOscillator(), v = ac.createGain();
+    o.frequency.value = f * mul; v.gain.value = vol;
+    o.connect(v); v.connect(g); o.start(t);
+    return o;
+  });
+  voices.set(m, { g, oscs });
+}
+function synthOff(m) {
+  const v = voices.get(m);
+  if (!v) return;
+  const t = ac.currentTime;
+  v.g.gain.cancelScheduledValues(t);
+  v.g.gain.setValueAtTime(v.g.gain.value, t);
+  v.g.gain.exponentialRampToValueAtTime(0.0001, t + 0.35);
+  v.oscs.forEach((o) => o.stop(t + 0.4));
+  voices.delete(m);
+}
+
+// ---------- shared note pipeline ----------
+let sendOut = false;
+const bars = [];
+function noteOn(m, vel, src) {
+  stopAttract();
+  const note = new Note(m, { attack: vel });
+  synthOn(m, vel);
+  keyEls.get(m)?.classList.add("down");
+  bars.push({ m, vel, start: performance.now(), end: 0 });
+  log("on", "noteon", `${note.identifier.padEnd(3)} 力度 ${vel.toFixed(2)}`, src);
+  if (sendOut && WebMidi.enabled && !src.startsWith("MIDI")) WebMidi.outputs.forEach((o) => o.playNote(note));
+}
+function noteOff(m, src) {
+  if (!keyEls.get(m)?.classList.contains("down")) return;
+  synthOff(m);
+  keyEls.get(m).classList.remove("down");
+  const b = [...bars].reverse().find((x) => x.m === m && !x.end);
+  if (b) b.end = performance.now();
+  log("off", "noteoff", new Note(m).identifier, src);
+  if (sendOut && WebMidi.enabled && !src.startsWith("MIDI")) WebMidi.outputs.forEach((o) => o.stopNote(m));
+}
+
+const lines = document.getElementById("lines");
+const logRows = [];
+function log(cls, type, text, src) {
+  const t = (performance.now() / 1000).toFixed(2).padStart(7);
+  logRows.unshift(`<div><span class="${cls}">${t} ${type.padEnd(7)}</span> <b>${text}</b> <span>${src}</span></div>`);
+  logRows.length = Math.min(logRows.length, 9);
+  lines.innerHTML = logRows.join("");
+}
+
+// ---------- WEBMIDI.js connection ----------
+const stEl = document.getElementById("state"), stTitle = document.getElementById("stTitle"), stDesc = document.getElementById("stDesc");
+function setState(kind, title, desc) {
+  stEl.className = "state " + kind;
+  stTitle.textContent = title;
+  stDesc.textContent = desc;
+}
+function attach(input) {
+  input.removeListener();
+  const src = `MIDI ${input.name}`;
+  input.addListener("noteon", (e) => noteOn(e.note.number, e.note.attack, src));
+  input.addListener("noteoff", (e) => noteOff(e.note.number, src));
+  input.addListener("controlchange", (e) => log("cc", "CC", `#${e.controller.number} = ${e.rawValue}`, src));
+  input.addListener("pitchbend", (e) => log("cc", "彎音", e.value.toFixed(2), src));
+}
+function refresh() {
+  WebMidi.inputs.forEach(attach);
+  document.getElementById("outBtn").hidden = WebMidi.outputs.length === 0;
+  if (WebMidi.inputs.length) {
+    setState("ok", `已連接 ${WebMidi.inputs.length} 個輸入裝置`, WebMidi.inputs.map((i) => i.name).join("、"));
+  } else {
+    setState("ok", "Web MIDI 已啟用，尚未偵測到輸入裝置", "插上 MIDI 鍵盤後會自動出現；現在仍可用螢幕鍵盤演奏");
+  }
+}
+document.getElementById("connect").addEventListener("click", async () => {
+  stopAttract();
+  setState("", "正在要求 MIDI 權限…", "瀏覽器可能會跳出授權視窗");
+  try {
+    await WebMidi.enable();
+    WebMidi.addListener("connected", refresh);
+    WebMidi.addListener("disconnected", refresh);
+    refresh();
+  } catch (err) {
+    console.warn("WebMidi.enable failed:", err);
+    setState("err", "無法啟用 Web MIDI",
+      "瀏覽器不支援、權限被拒，或嵌入頁面未開放 MIDI。可改用螢幕鍵盤或電腦鍵盤演奏。");
+  }
+});
+document.getElementById("outBtn").addEventListener("click", (e) => {
+  sendOut = !sendOut;
+  e.currentTarget.setAttribute("aria-pressed", sendOut);
+});
+
+// ---------- demo phrase (Ode to Joy, public domain) ----------
+const BEAT = 0.5;
+const MEL = [["E5", 1], ["E5", 1], ["F5", 1], ["G5", 1], ["G5", 1], ["F5", 1], ["E5", 1], ["D5", 1],
+  ["C5", 1], ["C5", 1], ["D5", 1], ["E5", 1], ["E5", 1.5], ["D5", 0.5], ["D5", 2]];
+const LH = [[["C4", "E4", "G4"], 0], [["D4", "G4", "B4"], 4], [["C4", "E4", "G4"], 8], [["D4", "G4", "B4"], 12]];
+function phrase() {
+  const ev = [];
+  let t = 0;
+  for (const [n, d] of MEL) { ev.push([t, new Note(n).number, 0.85, d * 0.9]); t += d; }
+  for (const [ns, at] of LH) ns.forEach((n) => ev.push([at, new Note(n).number, 0.45, 3.8]));
+  return { ev, len: t };
+}
+let demoTimers = [];
+document.getElementById("demo").addEventListener("click", () => {
+  stopAttract();
+  demoTimers.forEach(clearTimeout);
+  demoTimers = [];
+  const { ev } = phrase();
+  for (const [at, m, vel, d] of ev) {
+    demoTimers.push(setTimeout(() => noteOn(m, vel, "示範"), at * BEAT * 1000));
+    demoTimers.push(setTimeout(() => noteOff(m, "示範"), (at + d) * BEAT * 1000));
+  }
+});
+
+// Silent "attract" bars so the roll is not empty before anyone plays
+let attract = true, attractTimers = [];
+function runAttract() {
+  if (!attract) return;
+  const { ev, len } = phrase();
+  const t0 = performance.now();
+  for (const [at, m, vel, d] of ev) {
+    bars.push({ m, vel: vel * 0.55, start: t0 + at * BEAT * 1000, end: t0 + (at + d) * BEAT * 1000, ghost: true });
+  }
+  attractTimers.push(setTimeout(runAttract, (len + 2) * BEAT * 1000));
+}
+function stopAttract() {
+  if (!attract) return;
+  attract = false;
+  attractTimers.forEach(clearTimeout);
+  for (let i = bars.length - 1; i >= 0; i--) if (bars[i].ghost) bars.splice(i, 1);
+}
+// Pre-fill: start the attract loop as if it began a few seconds ago
+(function prefill() {
+  const { ev, len } = phrase();
+  const t0 = performance.now() - 5200;
+  for (const [at, m, vel, d] of ev) {
+    bars.push({ m, vel: vel * 0.55, start: t0 + at * BEAT * 1000, end: t0 + (at + d) * BEAT * 1000, ghost: true });
+  }
+  attractTimers.push(setTimeout(runAttract, (len + 2) * BEAT * 1000 - 5200));
+})();
+
+// ---------- piano roll ----------
+const cv = document.getElementById("roll"), g = cv.getContext("2d");
+let geo = new Map(), dpr = 1;
+function layout() {
+  dpr = Math.min(devicePixelRatio || 1, 2);
+  cv.width = cv.clientWidth * dpr;
+  cv.height = cv.clientHeight * dpr;
+  const cr = cv.getBoundingClientRect();
+  geo = new Map();
+  keyEls.forEach((el, m) => {
+    const r = el.getBoundingClientRect();
+    geo.set(m, [(r.left - cr.left) * dpr, r.width * dpr]);
+  });
+}
+layout();
+addEventListener("resize", layout);
+const SPEED = 0.09;   // px (css) per ms
+(function draw() {
+  const now = performance.now(), W = cv.width, H = cv.height;
+  g.clearRect(0, 0, W, H);
+  // octave guides
+  g.fillStyle = "rgba(255,255,255,0.05)";
+  for (const [m, [x]] of geo) if (m % 12 === 0) g.fillRect(x, 0, 1, H);
+  for (let i = bars.length - 1; i >= 0; i--) {
+    const b = bars[i];
+    if (b.start > now) continue;
+    const top = H - (now - b.start) * SPEED * dpr;
+    const bottom = b.end && b.end < now ? H - (now - b.end) * SPEED * dpr : H;
+    if (bottom < 0) { bars.splice(i, 1); continue; }
+    const [x, w] = geo.get(b.m) || [0, 0];
+    const pad = w * 0.12;
+    g.shadowColor = `hsl(${hue(b.m)}, 90%, 60%)`;
+    g.shadowBlur = b.ghost ? 6 : 16;
+    g.fillStyle = `hsla(${hue(b.m)}, 85%, ${50 + b.vel * 20}%, ${b.ghost ? 0.4 : 0.35 + b.vel * 0.6})`;
+    g.beginPath();
+    g.roundRect(x + pad, top, w - pad * 2, Math.max(4, bottom - top), Math.min(6 * dpr, (w - pad * 2) / 2));
+    g.fill();
+  }
+  g.shadowBlur = 0;
+  requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>

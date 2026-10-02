@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CountUp.js 示範：台灣數位生活儀表板</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"各項數字為約略或虛構的示意資料"}</script>
+<style>
+  body { background: radial-gradient(70% 60% at 50% 0%, #1c1b14 0%, var(--bg) 70%); }
+  .title { position: fixed; left: 14px; top: 12px; z-index: 40; }
+  .title h1 { margin: 0; font-size: 16px; }
+  .title p { margin: 0; font-size: 12px; color: var(--muted); }
+  .board { position: fixed; left: 12px; right: 12px; top: 64px; bottom: 48px; display: grid; gap: 10px;
+    grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1fr); }
+  .card { position: relative; overflow: hidden; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 10px 14px; display: flex; flex-direction: column; justify-content: center; min-width: 0; }
+  .card .label { font-size: 12px; color: var(--muted); }
+  .card .num { font: 700 clamp(20px, 3.4vw, 32px)/1.15 var(--mono); color: var(--fg); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .card .unit { font: 500 13px var(--font); color: var(--muted); margin-left: 4px; }
+  .card .delta { font-size: 11px; color: #7bd389; }
+  .card .meter { position: absolute; left: 0; bottom: 0; height: 3px; width: 0; background: var(--c); transition: width 2.4s cubic-bezier(.16, 1, .3, 1); }
+  .card::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 3px; background: var(--c); }
+  .hero { grid-column: 1 / -1; background: linear-gradient(120deg, rgba(247, 223, 30, 0.10), transparent 60%), var(--bg-2); }
+  .hero .num { font-size: clamp(36px, 8vw, 68px); color: var(--accent); }
+  .hero .label { font-size: 13px; color: var(--fg); }
+  .hero .live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .hero .live i { width: 8px; height: 8px; border-radius: 50%; background: #f72585; animation: pulse 1.4s infinite; }
+  @keyframes pulse { 50% { opacity: 0.25; } }
+  @media (max-width: 640px) {
+    .title { top: 52px; }
+    .board { top: 98px; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: minmax(0, 1.3fr) repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .card { padding: 6px 10px; }
+    .card .num { font-size: 19px; }
+    .card .unit { font-size: 11px; }
+    .hero .num { font-size: 38px; }
+  }
+</style>
+</head>
+<body>
+<div class="title"><h1>台灣數位生活儀表板</h1><p>示意資料・數字由 CountUp.js 滾動呈現</p></div>
+<div class="controls">
+  <button class="btn" id="ease">緩動：指數</button>
+  <button class="btn" id="numerals">國字數字</button>
+  <button class="btn primary" id="replay">重新播放</button>
+</div>
+<div class="board" id="board"></div>
+<div class="hint">切換緩動或國字數字會重播・上方大數字每 1.5 秒即時更新</div>
+
+<script src="https://cdn.jsdelivr.net/npm/countup.js@2.10.1/dist/countUp.umd.js"></script>
+<script>
+// CountUp.js: animated counters with grouping, decimals, custom easing, numeral substitution and live update().
+const { CountUp } = countUp;
+const KPIS = [
+  { label: "全台人口", end: 23400220, unit: "人", delta: "約略值", pct: 92, c: "#4cc9f0" },
+  { label: "高鐵年旅運量", end: 7512.6, decimals: 1, unit: "萬人次", delta: "▲ 6.8% 較去年", pct: 78, c: "#f72585" },
+  { label: "YouBike 今日租借", end: 128450, unit: "次", delta: "▲ 3.1% 較上週同日", pct: 64, c: "#7bd389" },
+  { label: "固網平均下載", end: 312.48, decimals: 2, unit: "Mbps", delta: "▲ 41.2 Mbps 較去年", pct: 70, c: "#ff8c42" },
+  { label: "再生能源發電占比", end: 11.6, decimals: 1, unit: "%", delta: "▲ 1.7 個百分點", pct: 46, c: "#9d8cff" },
+  { label: "便利商店家數", end: 13912, unit: "間", delta: "▲ 287 間", pct: 58, c: "#f7df1e" },
+];
+const CN = ["〇", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
+const EASE = {
+  指數: {},
+  線性: { useEasing: false },
+  回彈: { easingFn: (t, b, c, d) => { const s = 1.9; t = t / d - 1; return c * (t * t * ((s + 1) * t + s) + 1) + b; } },
+};
+
+const board = document.getElementById("board");
+board.innerHTML =
+  `<div class="card hero" style="--c:#f7df1e"><span class="label">台北捷運今日累計進站</span>` +
+  `<div><span class="num" id="hero">0</span><span class="unit">人次</span></div>` +
+  `<span class="live"><i></i>即時更新中・本次 <b id="tick">+0</b> 人次</span><span class="meter"></span></div>` +
+  KPIS.map((k, i) => `<div class="card" style="--c:${k.c}"><span class="label">${k.label}</span>` +
+    `<div><span class="num" id="k${i}">0</span><span class="unit">${k.unit}</span></div>` +
+    `<span class="delta">${k.delta}</span><span class="meter" data-pct="${k.pct}"></span></div>`).join("");
+
+let ease = "指數", useCN = false, live = 1856320, hero, counters = [];
+
+function opts(extra) {
+  return { duration: 2.4, ...EASE[ease], ...(useCN ? { numerals: CN } : {}), ...extra };
+}
+
+function play() {
+  counters = KPIS.map((k, i) => new CountUp(`k${i}`, k.end, opts({ decimalPlaces: k.decimals || 0 })));
+  hero = new CountUp("hero", live, opts({ duration: 2.8 }));
+  [...counters, hero].forEach((c) => (c.error ? console.error(c.error) : c.start()));
+  // Restart the meters so they grow alongside the numbers.
+  board.querySelectorAll(".meter").forEach((m) => {
+    m.style.transition = "none";
+    m.style.width = "0";
+    m.offsetWidth;
+    m.style.transition = "";
+    m.style.width = `${m.dataset.pct || 100}%`;
+  });
+}
+
+// Live feed: update() continues smoothly from the current value.
+setInterval(() => {
+  const add = 280 + Math.floor(Math.random() * 640);
+  live += add;
+  document.getElementById("tick").textContent = `+${add.toLocaleString()}`;
+  if (hero) hero.update(live);
+}, 1500);
+
+const easeBtn = document.getElementById("ease");
+easeBtn.addEventListener("click", () => {
+  const names = Object.keys(EASE);
+  ease = names[(names.indexOf(ease) + 1) % names.length];
+  easeBtn.textContent = `緩動：${ease}`;
+  play();
+});
+const cnBtn = document.getElementById("numerals");
+cnBtn.addEventListener("click", () => {
+  useCN = !useCN;
+  cnBtn.setAttribute("aria-pressed", String(useCN));
+  play();
+});
+document.getElementById("replay").addEventListener("click", play);
+play();
+</script>
+</body>
+</html>

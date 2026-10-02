@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transformers.js 示範：瀏覽器內英文情緒分析</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"click","size":"約 67 MB","note":"模型下載後在瀏覽器內推論，文字不會上傳；請輸入英文"}</script>
+<style>
+  #app { position: fixed; inset: 0; overflow: auto; padding: 14px 16px 50px; display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; align-content: start; }
+  h1 { margin: 0; font-size: 16px; grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+  .chip { font: 400 11px var(--mono); color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; }
+  .main { display: grid; gap: 12px; align-content: start; min-width: 0; }
+  textarea { width: 100%; height: 92px; resize: none; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg-2); color: var(--fg); font: 15px/1.5 var(--font); outline: none; }
+  textarea:focus { border-color: var(--c2); }
+  .card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .verdict { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .verdict b { font-size: 30px; transition: color .3s; }
+  .verdict span { font: 700 22px var(--mono); }
+  .verdict small { color: var(--muted); font-size: 12px; margin-left: auto; }
+  .gauge { position: relative; height: 14px; border-radius: 7px; margin: 14px 0 6px; background: linear-gradient(90deg, #f72585, #9d8cff 50%, #4cc9f0); }
+  .gauge i { position: absolute; top: -6px; width: 6px; height: 26px; margin-left: -3px; border-radius: 3px; background: #fff; box-shadow: 0 0 0 3px rgba(0,0,0,.45); transition: left .45s cubic-bezier(.3,1.4,.5,1); left: 50%; }
+  .ends { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .card h2 { margin: 0 0 8px; font-size: 13px; color: var(--muted); font-weight: 500; }
+  #words { font-size: 16px; line-height: 2; }
+  #words span { padding: 2px 4px; border-radius: 5px; margin-right: 2px; transition: background .3s; }
+  .scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 6px; }
+  .wall h2 { margin: 0 0 8px; font-size: 13px; color: var(--muted); font-weight: 500; }
+  #wall { display: grid; gap: 8px; }
+  .rev { text-align: left; border: 1px solid var(--line); border-left: 4px solid var(--k, var(--line)); background: var(--bg-2); color: var(--fg); border-radius: 10px; padding: 8px 10px; font: 13px/1.45 var(--font); cursor: pointer; animation: slide .35s ease-out both; }
+  .rev:hover { border-color: var(--k); }
+  .rev em { display: flex; justify-content: space-between; font-style: normal; font-size: 11px; color: var(--k); margin-top: 4px; }
+  @keyframes slide { from { opacity: 0; transform: translateX(10px); } }
+  .muted { color: var(--muted); }
+  @media (max-width: 680px) {
+    #app { grid-template-columns: minmax(0, 1fr); padding: 10px 10px 46px; }
+    textarea { height: 76px; }
+    .verdict b { font-size: 24px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>英文情緒分析<span class="chip">DistilBERT SST-2・int8 量化</span><span class="chip" id="dev">WASM</span></h1>
+  <div class="main">
+    <textarea id="input" spellcheck="false" aria-label="英文句子">I love the beef noodles in Taipei, but the queue was way too long.</textarea>
+    <div class="card">
+      <div class="verdict"><b id="label">等待模型</b><span id="score"></span><small id="ms"></small></div>
+      <div class="gauge"><i id="needle"></i></div>
+      <div class="ends"><span>負面</span><span>中性</span><span>正面</span></div>
+    </div>
+    <div class="card">
+      <h2>關鍵字影響（逐一拿掉每個字重新推論）</h2>
+      <div id="words" class="muted">等待模型</div>
+      <div class="scale"><span style="color:var(--c3)">■ 拉向負面</span><span style="color:var(--c2)">■ 拉向正面</span></div>
+    </div>
+    <div class="row">
+      <button class="btn primary" id="add">加入評論牆</button>
+      <button class="btn" id="rerun">重新分析全部</button>
+    </div>
+  </div>
+  <div class="wall">
+    <h2>評論牆（點一則放進輸入框）</h2>
+    <div id="wall"></div>
+  </div>
+</div>
+<div class="hint">輸入英文句子，停止打字後自動推論</div>
+
+<script src="_shared/gate.js"></script>
+<script type="module">
+// Transformers.js: Hugging Face sentiment pipeline (DistilBERT SST-2, int8 ONNX) running on onnxruntime-web WASM.
+const $ = (id) => document.getElementById(id);
+const MODEL = "Xenova/distilbert-base-uncased-finetuned-sst-2-english";
+const REVIEWS = [
+  "The night market in Tainan was amazing, every snack was delicious!",
+  "Our flight was delayed for six hours and nobody told us anything.",
+  "Taipei MRT is clean, cheap and incredibly easy to use.",
+  "The hotel room smelled terrible and the air conditioner was broken.",
+  "Sun Moon Lake at sunrise is the most peaceful place I have ever seen.",
+  "The typhoon ruined our whole trip to Kenting.",
+  "Bubble tea here is way too sweet for me.",
+  "Locals were so friendly and helped us find the right bus.",
+];
+
+await demoGate({
+  icon: "🤗",
+  title: "瀏覽器內情緒分析",
+  desc: "按下後從 Hugging Face 下載 DistilBERT 量化模型，之後完全在瀏覽器內推論，輸入的文字不會上傳。",
+  tags: ["約 67 MB", "WebAssembly", "英文輸入"],
+  button: "下載模型並開始",
+});
+
+const status = demoStatus("載入 Transformers.js…");
+let classify;
+try {
+  const { pipeline, env } = await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.0/dist/transformers.min.js");
+  env.allowLocalModels = false;
+  const files = {};
+  classify = await pipeline("sentiment-analysis", MODEL, {
+    dtype: "q8",
+    device: "wasm",
+    progress_callback: (p) => {
+      if (p.status === "progress" && p.total) {
+        files[p.file] = [p.loaded, p.total];
+        const all = Object.values(files);
+        const loaded = all.reduce((a, f) => a + f[0], 0);
+        const total = all.reduce((a, f) => a + f[1], 0);
+        status.progress(loaded / total);
+        status.text(`下載模型中… ${(loaded / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)} MB`);
+      } else if (p.status === "ready") {
+        status.text("初始化推論引擎…");
+      }
+    },
+  });
+  status.done();
+} catch (err) {
+  console.warn(err);
+  status.error(`模型載入失敗：${err.message}`);
+  throw err;
+}
+
+// P(positive) from the top label
+async function score(text) {
+  const [r] = await classify(text);
+  return r.label === "POSITIVE" ? r.score : 1 - r.score;
+}
+
+const color = (p) => (p > 0.6 ? "var(--c2)" : p < 0.4 ? "var(--c3)" : "var(--c6)");
+const word = (p) => (p > 0.6 ? "正面" : p < 0.4 ? "負面" : "中性");
+
+async function analyse() {
+  const text = $("input").value.trim();
+  if (!text) { $("label").textContent = "請輸入英文"; $("score").textContent = ""; return; }
+  const t0 = performance.now();
+  const p = await score(text);
+  const ms = performance.now() - t0;
+  $("label").textContent = word(p);
+  $("label").style.color = color(p);
+  $("score").textContent = `${(Math.max(p, 1 - p) * 100).toFixed(1)}%`;
+  $("ms").textContent = `推論 ${ms.toFixed(0)} ms`;
+  $("needle").style.left = `${(p * 100).toFixed(1)}%`;
+  explain(text, p);
+}
+
+// Occlusion: drop one word at a time and measure how far P(positive) moves
+let explainRun = 0;
+async function explain(text, base) {
+  const run = ++explainRun;
+  const words = text.split(/\s+/).slice(0, 40);
+  const deltas = [];
+  for (let i = 0; i < words.length; i++) {
+    const p = await score(words.filter((_, j) => j !== i).join(" "));
+    if (run !== explainRun) return;
+    deltas.push(base - p);
+  }
+  const max = Math.max(0.05, ...deltas.map(Math.abs));
+  $("words").classList.remove("muted");
+  $("words").innerHTML = words.map((w, i) => {
+    const d = deltas[i] / max;
+    const rgb = d >= 0 ? "76,201,240" : "247,37,133";
+    return `<span style="background:rgba(${rgb},${(Math.abs(d) * 0.75).toFixed(2)})" title="${(deltas[i] * 100).toFixed(1)}%">${esc(w)}</span>`;
+  }).join(" ");
+}
+
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+async function addReview(text, prepend = false) {
+  const p = await score(text);
+  const el = document.createElement("button");
+  el.className = "rev";
+  el.style.setProperty("--k", color(p));
+  el.innerHTML = `${esc(text)}<em><span>${word(p)}</span><span>信心 ${(Math.max(p, 1 - p) * 100).toFixed(0)}%</span></em>`;
+  el.addEventListener("click", () => { $("input").value = text; analyse(); });
+  prepend ? $("wall").prepend(el) : $("wall").append(el);
+}
+
+async function fillWall(list) {
+  $("wall").innerHTML = "";
+  for (const t of list) await addReview(t);
+}
+
+let timer;
+$("input").addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(analyse, 300); });
+$("add").addEventListener("click", () => { const t = $("input").value.trim(); if (t) addReview(t, true); });
+$("rerun").addEventListener("click", () => fillWall([...$("wall").querySelectorAll(".rev")].map((r) => r.firstChild.textContent)));
+
+await analyse();
+await fillWall(REVIEWS);
+</script>
+</body>
+</html>

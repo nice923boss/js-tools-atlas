@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo Sphere Viewer 示範：小行星開場與熱點標記</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/core@5.15.1/index.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/markers-plugin@5.15.1/index.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.185.1/build/three.module.js",
+    "@photo-sphere-viewer/core": "https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/core@5.15.1/index.module.js",
+    "@photo-sphere-viewer/markers-plugin": "https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/markers-plugin@5.15.1/index.module.js",
+    "@photo-sphere-viewer/autorotate-plugin": "https://cdn.jsdelivr.net/npm/@photo-sphere-viewer/autorotate-plugin@5.15.1/index.module.js"
+  }
+}
+</script>
+<style>
+  #viewer { position: fixed; inset: 0; }
+  .hint { bottom: 52px; }
+  .psv-navbar { background: rgba(14,16,19,.72); backdrop-filter: blur(6px); }
+  .psv-caption-content { font-family: var(--font); }
+  .pin {
+    position: relative; display: flex; align-items: center; gap: 6px; cursor: pointer;
+    font: 600 12px/1 var(--font); color: #fff; white-space: nowrap;
+  }
+  .pin i {
+    width: 16px; height: 16px; border-radius: 50%; background: var(--accent);
+    box-shadow: 0 0 0 3px rgba(0,0,0,.35); position: relative; flex: none;
+  }
+  .pin i::after {
+    content: ""; position: absolute; inset: -6px; border-radius: 50%; border: 2px solid var(--accent);
+    animation: ring 1.8s ease-out infinite;
+  }
+  .pin span { padding: 4px 8px; border-radius: 999px; background: rgba(0,0,0,.55); backdrop-filter: blur(4px); }
+  .pin.sky i { background: var(--c2); } .pin.sky i::after { border-color: var(--c2); }
+  .pin.ground i { background: var(--c5); } .pin.ground i::after { border-color: var(--c5); }
+  @keyframes ring { from { transform: scale(.6); opacity: 1; } to { transform: scale(1.8); opacity: 0; } }
+  .psv-tooltip-content { font-family: var(--font); font-size: 13px; line-height: 1.55; }
+  .psv-panel-content h2 { margin: 0 0 6px; font-size: 18px; }
+  .psv-panel-content p { margin: 0 0 10px; line-height: 1.7; }
+  .psv-panel-content img { width: 100%; border-radius: 8px; }
+  @media (max-width: 520px) { .pin span { display: none; } }
+</style>
+</head>
+<body>
+<div id="viewer"></div>
+<div class="controls">
+  <button class="btn primary" id="replay">重播小行星開場</button>
+  <button class="btn" id="toggle">隱藏標記</button>
+</div>
+<div class="hint">拖曳環顧四周・點黃點看介紹・左下按鈕開關自動旋轉</div>
+
+<script type="module">
+// Photo Sphere Viewer: three.js-based 360 viewer; fisheye "little planet" intro, markers plugin, autorotate plugin.
+import { Viewer, utils } from "@photo-sphere-viewer/core";
+import { MarkersPlugin } from "@photo-sphere-viewer/markers-plugin";
+import { AutorotatePlugin } from "@photo-sphere-viewer/autorotate-plugin";
+
+const deg = (d) => (d * Math.PI) / 180;
+const pin = (label, cls = "") => `<div class="pin ${cls}"><i></i><span>${label}</span></div>`;
+const panel = (title, text) => `<h2>${title}</h2><p>${text}</p>`;
+
+const MARKERS = [
+  { id: "sun", position: { yaw: deg(36), pitch: deg(3.5) }, html: pin("夕陽", "sky"),
+    tooltip: "太陽正沉入潟湖對岸，水面拉出一條金色光帶。",
+    content: panel("潟湖上的夕陽", "從這段水岸往西望，太陽落在遠方的城市天際線上。晴天傍晚，天空會從粉紅漸層到深藍，是全景攝影最受歡迎的時段。") },
+  { id: "tower", position: { yaw: deg(55), pitch: deg(4) }, html: pin("遠方鐘樓"),
+    tooltip: "對岸天際線上高聳的鐘樓。",
+    content: panel("天際線上的鐘樓", "在 360 度照片裡放大這一區，可以看清對岸的鐘樓與教堂圓頂。用滾輪或雙指縮放試試。") },
+  { id: "villa", polygon: [[deg(136), deg(-4.5)], [deg(136), deg(21)], [deg(177), deg(21)], [deg(177), deg(-4.5)]],
+    svgStyle: { fill: "rgba(247,223,30,0.16)", stroke: "#f7df1e", strokeWidth: "2px" },
+    tooltip: { content: "紅窗黃牆的老別墅，這是一個多邊形標記。", position: "top center" },
+    content: panel("水岸別墅", "多邊形標記會貼著球面變形，轉動視角時始終框住建築本身，適合標示整棟房子或一片區域。") },
+  { id: "bollard", position: { yaw: deg(-77), pitch: deg(-22) }, html: pin("繫船柱", "ground"),
+    tooltip: "老式鑄鐵繫船柱，過去用來綁貢多拉船。",
+    content: panel("鑄鐵繫船柱", "水岸邊每隔一段距離就有一根繫船柱，表面的鏽色是海風長年吹拂留下的痕跡。") },
+  { id: "steps", position: { yaw: deg(97), pitch: deg(-11) }, html: pin("水岸石階", "ground"),
+    tooltip: "有人坐在石階上等日落。",
+    content: panel("下到水邊的石階", "石階一路延伸到水面，漲潮時下面幾階會被淹沒，長出一層綠色的海藻。") },
+  { id: "houses", position: { yaw: deg(-135), pitch: deg(7) }, html: pin("運河老房子"),
+    tooltip: "沿岸的粉色與磚紅色老房子。",
+    content: panel("沿岸的老房子", "轉到背面可以看到沿著步道排列的住宅與庭園，跟前方開闊的水面形成對比。") },
+];
+
+const viewer = new Viewer({
+  container: document.getElementById("viewer"),
+  panorama: "_shared/img/panorama.jpg",
+  caption: "威尼斯水岸．日落時分",
+  defaultYaw: deg(180),
+  defaultPitch: deg(-90),
+  defaultZoomLvl: 0,
+  fisheye: 2,
+  mousewheelCtrlKey: false,
+  navbar: ["autorotate", "zoom", "markersList", "caption", "fullscreen"],
+  lang: {
+    zoom: "縮放", zoomOut: "縮小", zoomIn: "放大", moveUp: "向上", moveDown: "向下", moveLeft: "向左", moveRight: "向右",
+    description: "說明", download: "下載", fullscreen: "全螢幕", loading: "載入中", menu: "選單", close: "關閉",
+    twoFingers: "請用兩指拖曳", ctrlZoom: "按住 Ctrl 再滾動來縮放", loadError: "全景圖無法載入",
+    webglError: "瀏覽器不支援 WebGL", markers: "標記", markersList: "標記列表", autorotate: "自動旋轉",
+  },
+  plugins: [
+    [MarkersPlugin, { markers: MARKERS, defaultHoverScale: true }],
+    [AutorotatePlugin, { autostartDelay: 4000, autostartOnIdle: true, autorotatePitch: deg(4), autorotateSpeed: "1rpm" }],
+  ],
+});
+const markers = viewer.getPlugin(MarkersPlugin);
+const autorotate = viewer.getPlugin(AutorotatePlugin);
+
+// Little-planet intro: animate pitch, yaw, zoom and fisheye together, then hand over to autorotate.
+let intro = null;
+function playIntro() {
+  if (intro) intro.cancel();
+  autorotate.stop();
+  viewer.setOption("fisheye", 2);
+  viewer.rotate({ yaw: deg(180), pitch: deg(-90) });
+  viewer.zoom(0);
+  intro = new utils.Animation({
+    properties: {
+      pitch: { start: deg(-90), end: deg(3) },
+      yaw: { start: deg(180), end: deg(30) },
+      zoom: { start: 0, end: 45 },
+      fisheye: { start: 2, end: 0 },
+    },
+    duration: 2200,
+    easing: "inOutQuad",
+    onTick: (p) => {
+      viewer.setOption("fisheye", p.fisheye);
+      viewer.rotate({ yaw: p.yaw, pitch: p.pitch });
+      viewer.zoom(p.zoom);
+    },
+  });
+  intro.then((done) => { if (done) autorotate.start(); });
+}
+viewer.addEventListener("ready", playIntro, { once: true });
+
+markers.addEventListener("select-marker", ({ marker }) => {
+  autorotate.stop();
+  markers.gotoMarker(marker.id, "4rpm");
+});
+
+document.getElementById("replay").onclick = playIntro;
+let shown = true;
+document.getElementById("toggle").onclick = (e) => {
+  shown = !shown;
+  if (shown) markers.showAllMarkers(); else markers.hideAllMarkers();
+  e.target.textContent = shown ? "隱藏標記" : "顯示標記";
+};
+</script>
+</body>
+</html>

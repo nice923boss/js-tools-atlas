@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>opentype.js 示範：把字型拆成向量粒子</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"字型取自思源黑體（Noto Sans TC）的 3 個分段子集，只含示範用到的字"}</script>
+<style>
+  body { background: radial-gradient(70% 70% at 50% 50%, #12222c, var(--bg) 75%); }
+  canvas.fill { position: fixed; inset: 0; touch-action: none; }
+  .info { position: fixed; left: 50%; bottom: 52px; transform: translateX(-50%); width: max-content; max-width: calc(100% - 24px); text-align: center; font: 12px/1.6 var(--mono); color: var(--muted); pointer-events: none; }
+  .info b { color: var(--c2); font-weight: 700; }
+</style>
+</head>
+<body>
+<canvas class="fill" id="cv"></canvas>
+<div class="controls" id="ctl">
+  <button class="btn" data-mode="particles" aria-pressed="true">粒子</button>
+  <button class="btn" data-mode="outline">向量輪廓</button>
+  <button class="btn primary" id="next">換字</button>
+</div>
+<div class="info" id="info"></div>
+<div class="status" id="st">正在下載並解析字型…</div>
+<div class="hint">滑鼠或手指撥開粒子，切到「向量輪廓」看控制點</div>
+
+<script src="https://cdn.jsdelivr.net/npm/opentype.js@2.0.0/dist/opentype.min.js"></script>
+<script>
+const WORDS = ["字形向量", "你好世界", "點線成面", "向量字型"];
+// Noto Sans TC 900 is split into unicode-range chunks; these three hold every glyph used above.
+// opentype.js reads WOFF (not WOFF2), so the .woff files are used.
+const CHUNKS = [116, 117, 118].map((n) =>
+  `https://cdn.jsdelivr.net/npm/@fontsource/noto-sans-tc@5.3.0/files/noto-sans-tc-${n}-900-normal.woff`);
+
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+const info = document.getElementById("info");
+let W = 0, H = 0, dpr = 1, fonts = [], wordIdx = 0, mode = "particles";
+let glyphs = [], particles = [], cmdCount = 0;
+const mouse = { x: -1e4, y: -1e4 };
+
+function resize() {
+  dpr = Math.min(devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (fonts.length) layout();
+}
+
+// Sample a glyph path into evenly spaced points along every segment
+function sample(cmds, step) {
+  const pts = [];
+  let cx = 0, cy = 0, sx = 0, sy = 0;
+  const seg = (f) => {
+    let len = 0, px = cx, py = cy;
+    for (let i = 1; i <= 8; i++) { const [x, y] = f(i / 8); len += Math.hypot(x - px, y - py); px = x; py = y; }
+    const n = Math.max(1, Math.round(len / step));
+    for (let i = 1; i <= n; i++) pts.push(f(i / n));
+  };
+  for (const c of cmds) {
+    const x0 = cx, y0 = cy;
+    if (c.type === "M") { cx = sx = c.x; cy = sy = c.y; pts.push([cx, cy]); continue; }
+    if (c.type === "L") seg((t) => [x0 + (c.x - x0) * t, y0 + (c.y - y0) * t]);
+    else if (c.type === "Q") seg((t) => { const u = 1 - t; return [u * u * x0 + 2 * u * t * c.x1 + t * t * c.x, u * u * y0 + 2 * u * t * c.y1 + t * t * c.y]; });
+    else if (c.type === "C") seg((t) => { const u = 1 - t; return [u * u * u * x0 + 3 * u * u * t * c.x1 + 3 * u * t * t * c.x2 + t * t * t * c.x, u * u * u * y0 + 3 * u * u * t * c.y1 + 3 * u * t * t * c.y2 + t * t * t * c.y]; });
+    else if (c.type === "Z") { seg((t) => [x0 + (sx - x0) * t, y0 + (sy - y0) * t]); cx = sx; cy = sy; continue; }
+    cx = c.x; cy = c.y;
+  }
+  return pts;
+}
+
+function layout() {
+  const word = WORDS[wordIdx];
+  const size = Math.min((W - 40) / word.length, H * 0.42, 220);
+  // each character comes from whichever chunk contains it
+  const parts = [...word].map((ch) => {
+    const font = fonts.find((f) => f.charToGlyphIndex(ch) > 0) || fonts[0];
+    return { font, glyph: font.charToGlyph(ch) };
+  });
+  const total = parts.reduce((s, p) => s + p.glyph.advanceWidth * size / p.font.unitsPerEm, 0);
+  let x = (W - total) / 2;
+  const baseline = H / 2 + size * 0.36;
+  glyphs = parts.map((p) => {
+    const path = p.glyph.getPath(x, baseline, size);
+    x += p.glyph.advanceWidth * size / p.font.unitsPerEm;
+    return path;
+  });
+  cmdCount = glyphs.reduce((s, g) => s + g.commands.length, 0);
+
+  // re-target particles: reuse old ones so the letters morph into each other
+  const pts = glyphs.flatMap((g) => sample(g.commands, Math.max(2.6, size / 50)));
+  for (let i = 0; i < pts.length; i++) {
+    const p = particles[i] || (particles[i] = { x: Math.random() * W, y: Math.random() * H, vx: 0, vy: 0 });
+    p.hx = pts[i][0]; p.hy = pts[i][1]; p.dead = false;
+  }
+  for (let i = pts.length; i < particles.length; i++) particles[i].dead = true;
+  particles.length = Math.max(pts.length, Math.min(particles.length, pts.length + 400));
+
+  const f = fonts[0];
+  info.innerHTML = `<b>${f.getEnglishName("fullName") || f.getEnglishName("fontFamily")}</b> · 每 em ${f.unitsPerEm} 單位 · 路徑指令 <b>${cmdCount}</b> 個 · 輪廓取樣 <b>${pts.length}</b> 點`;
+}
+
+function drawOutline() {
+  for (const g of glyphs) {
+    const p2 = new Path2D(g.toPathData(2));
+    ctx.fillStyle = "rgba(76,201,240,.12)"; ctx.fill(p2);
+    ctx.strokeStyle = "rgba(230,240,255,.85)"; ctx.lineWidth = 1.4; ctx.stroke(p2);
+    // handles: off-curve control points joined to their on-curve neighbours
+    let cx = 0, cy = 0;
+    ctx.lineWidth = 1;
+    for (const c of g.commands) {
+      if (c.type === "Q" || c.type === "C") {
+        ctx.strokeStyle = "rgba(247,37,133,.6)";
+        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(c.x1, c.y1);
+        if (c.type === "C") { ctx.moveTo(c.x2, c.y2); }
+        ctx.lineTo(c.x, c.y); ctx.stroke();
+        ctx.fillStyle = "#f72585";
+        ctx.beginPath(); ctx.arc(c.x1, c.y1, 2.2, 0, 7); ctx.fill();
+        if (c.type === "C") { ctx.beginPath(); ctx.arc(c.x2, c.y2, 2.2, 0, 7); ctx.fill(); }
+      }
+      if (c.type !== "Z") {
+        ctx.fillStyle = "#f7df1e";
+        ctx.fillRect(c.x - 2, c.y - 2, 4, 4);
+        cx = c.x; cy = c.y;
+      }
+    }
+  }
+}
+
+function drawParticles() {
+  const R = Math.max(60, Math.min(W, H) * 0.14);
+  for (let i = 0; i < particles.length; i++) {
+    const p = particles[i];
+    if (p.dead) { p.vy += 0.15; p.x += p.vx; p.y += p.vy; continue; }
+    // spring toward the glyph outline, pushed away by the pointer
+    p.vx += (p.hx - p.x) * 0.05; p.vy += (p.hy - p.y) * 0.05;
+    const dx = p.x - mouse.x, dy = p.y - mouse.y, d2 = dx * dx + dy * dy;
+    if (d2 < R * R) { const d = Math.sqrt(d2) || 1, f = (1 - d / R) * 6; p.vx += dx / d * f; p.vy += dy / d * f; }
+    p.vx *= 0.82; p.vy *= 0.82;
+    p.x += p.vx; p.y += p.vy;
+  }
+  for (let i = 0; i < particles.length; i++) {
+    const p = particles[i];
+    if (p.dead && p.y > H + 10) continue;
+    const sp = Math.min(1, Math.hypot(p.vx, p.vy) / 6);
+    ctx.fillStyle = p.dead ? "rgba(157,140,255,.35)" : `hsl(${190 + sp * 140 + (p.hx / W) * 40} 90% ${62 + sp * 18}%)`;
+    ctx.fillRect(p.x - 1.2, p.y - 1.2, 2.4, 2.4);
+  }
+}
+
+function frame() {
+  ctx.clearRect(0, 0, W, H);
+  if (mode === "outline") drawOutline(); else drawParticles();
+  requestAnimationFrame(frame);
+}
+
+cv.addEventListener("pointermove", (e) => { mouse.x = e.clientX; mouse.y = e.clientY; });
+cv.addEventListener("pointerleave", () => { mouse.x = mouse.y = -1e4; });
+addEventListener("resize", resize);
+document.getElementById("ctl").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-mode]");
+  if (!b) return;
+  mode = b.dataset.mode;
+  document.querySelectorAll("[data-mode]").forEach((x) => x.setAttribute("aria-pressed", x === b));
+});
+document.getElementById("next").addEventListener("click", () => { wordIdx = (wordIdx + 1) % WORDS.length; layout(); });
+
+(async () => {
+  const st = document.getElementById("st");
+  try {
+    fonts = await Promise.all(CHUNKS.map(async (url) => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}：${url}`);
+      return opentype.parse(await res.arrayBuffer());
+    }));
+  } catch (err) {
+    st.textContent = "字型載入失敗：" + err.message;
+    console.error(err);
+    return;
+  }
+  st.hidden = true;
+  resize();
+  requestAnimationFrame(frame);
+})();
+resize();
+</script>
+</body>
+</html>

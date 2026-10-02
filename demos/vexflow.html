@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VexFlow 示範：大調音階與吉他指法譜</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"]}</script>
+<style>
+  .app {
+    position: fixed; inset: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr);
+    gap: 10px; padding: 12px 14px 46px;
+  }
+  .top { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .keys { display: flex; flex-wrap: wrap; gap: 4px; }
+  .keys button {
+    min-width: 38px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: #fff;
+    font: 700 14px var(--font); color: var(--fg); cursor: pointer;
+  }
+  .keys button[aria-pressed="true"] { background: var(--fg); color: #fff; border-color: var(--fg); }
+  .spacer { flex: 1; }
+  #play { min-width: 92px; }
+  .info { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; font-size: 13px; color: var(--muted); }
+  .info b { font-size: 18px; color: var(--fg); }
+  .now {
+    margin-left: auto; padding: 3px 12px; border-radius: 999px; background: #fff; border: 1px solid var(--line);
+    font-weight: 700; color: var(--c3); min-width: 120px; text-align: center;
+  }
+  .sheet {
+    min-height: 0; background: #fff; border-radius: 12px; border: 1px solid var(--line);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.06); padding: 8px 10px; display: grid; place-items: center;
+  }
+  #score { width: 100%; height: 100%; cursor: pointer; }
+  #score svg { display: block; width: 100%; height: 100%; }
+  @media (max-width: 620px) {
+    .app { padding: 10px 10px 46px; gap: 8px; }
+    .keys button { min-width: 0; padding: 5px 7px; font-size: 13px; }
+    .spacer { display: none; }
+    .info b { font-size: 16px; }
+    .now { min-width: 0; }
+  }
+</style>
+</head>
+<body class="paper">
+<div class="app">
+  <div class="top">
+    <div class="keys" id="keys"></div>
+    <div class="spacer"></div>
+    <button class="btn" id="tab" aria-pressed="true">吉他指法譜</button>
+    <button class="btn primary" id="play">▶ 播放</button>
+  </div>
+  <div class="info"><b id="title"></b><span id="sig"></span><span class="now" id="now">點音符試聽</span></div>
+  <div class="sheet"><div id="score"></div></div>
+</div>
+<div class="hint">換調號看升降記號變化，點任一音符可試聽</div>
+
+<script src="https://cdn.jsdelivr.net/npm/vexflow@5.0.0/build/cjs/vexflow.min.js"></script>
+<script>
+// VexFlow: engrave a one-octave major scale (up and down) with solfege annotations and a linked guitar TabStave.
+const VF = window.VexFlow;
+const { Renderer, Stave, TabStave, StaveNote, TabNote, Voice, Formatter, Beam, Annotation, StaveConnector, Fraction } = VF;
+
+// [VexFlow key spec, display name, root letter, root accidental, written octave]
+const KEYS = [["C", "C", "C", 0, 4], ["G", "G", "G", 0, 4], ["D", "D", "D", 0, 4], ["A", "A", "A", 0, 4],
+  ["E", "E", "E", 0, 4], ["F", "F", "F", 0, 4], ["Bb", "B♭", "B", -1, 3], ["Eb", "E♭", "E", -1, 4]];
+const LETTERS = "CDEFGAB", NAT = [0, 2, 4, 5, 7, 9, 11], STEPS = [2, 2, 1, 2, 2, 2, 1];
+const SOLFEGE = ["Do", "Re", "Mi", "Fa", "Sol", "La", "Si", "Do"];
+const OPEN = [64, 59, 55, 50, 45, 40];   // guitar strings 1..6 (sounding pitch)
+
+let keyIdx = 1, showTab = true, playing = -1, notes = [], timer = null;
+
+function buildScale([, , letter, acc, oct]) {
+  const li = LETTERS.indexOf(letter);
+  let midi = 12 * (oct + 1) + NAT[li] + acc;
+  const up = [];
+  for (let i = 0; i < 8; i++) {
+    const L = LETTERS[(li + i) % 7], o = oct + Math.floor((li + i) / 7);
+    const a = midi - (12 * (o + 1) + NAT[(li + i) % 7]);
+    up.push({ L, o, a, midi, sol: SOLFEGE[i] });
+    midi += STEPS[i % 7];
+  }
+  return up.concat(up.slice().reverse());
+}
+const accTxt = (a) => (a > 0 ? "♯" : a < 0 ? "♭" : "");
+const vfKey = (n) => `${n.L.toLowerCase()}${n.a > 0 ? "#" : n.a < 0 ? "b" : ""}/${n.o}`;
+
+// Guitar sounds an octave below written pitch; keep fingers inside one 4-fret box.
+function tabPositions(scale) {
+  const root = scale[0].midi - 12;
+  let base = 5;
+  for (let s = 6; s >= 4; s--) { const f = root - OPEN[s - 1]; if (f >= 1 && f <= 8) { base = f; break; } }
+  return scale.map((n) => {
+    const m = n.midi - 12;
+    for (let s = 6; s >= 1; s--) {
+      const f = m - OPEN[s - 1];
+      if (f >= Math.max(0, base - 1) && f <= base + 3) return { str: s, fret: f };
+    }
+    let best = { str: 1, fret: Math.max(0, m - OPEN[0]) };
+    for (let s = 6; s >= 1; s--) {
+      const f = m - OPEN[s - 1];
+      if (f >= 0 && Math.abs(f - base) < Math.abs(best.fret - base)) best = { str: s, fret: f };
+    }
+    return best;
+  });
+}
+
+const box = document.getElementById("score");
+
+function draw() {
+  const key = KEYS[keyIdx];
+  const scale = buildScale(key);
+  const tabs = tabPositions(scale);
+  const narrow = box.clientWidth < 520;
+  // Logical drawing size; the SVG is then scaled to fit the card.
+  const LW = narrow ? 470 : 800;
+  const sysH = showTab ? 250 : 150;
+  const LH = (narrow ? 2 : 1) * sysH + 20;
+  box.innerHTML = "";
+  const renderer = new Renderer(box, Renderer.Backends.SVG);
+  renderer.resize(LW, LH);
+  const ctx = renderer.getContext();
+  notes = [];
+
+  const measures = [scale.slice(0, 8), scale.slice(8)];
+  const tabMeasures = [tabs.slice(0, 8), tabs.slice(8)];
+  let x = 10, y = 10;
+  const firstW = narrow ? LW - 20 : 430;
+  measures.forEach((m, mi) => {
+    const lineStart = mi === 0 || narrow;
+    const w = narrow ? LW - 20 : (mi === 0 ? firstW : LW - 20 - firstW);
+    if (narrow && mi === 1) { x = 10; y += sysH; }
+    const stave = new Stave(x, y + 20, w);
+    if (lineStart) stave.addClef("treble").addKeySignature(key[0]);
+    if (mi === 0) stave.addTimeSignature("4/4");
+    if (mi === 1) stave.setEndBarType(VF.BarlineType.END);
+    stave.setContext(ctx);
+    let tab = null;
+    if (showTab) {
+      tab = new TabStave(x, y + 140, w);
+      if (lineStart) tab.addTabGlyph();
+      if (mi === 1) tab.setEndBarType(VF.BarlineType.END);
+      tab.setContext(ctx);
+      Stave.formatBegModifiers([stave, tab]);
+    }
+    stave.draw();
+    if (tab) tab.draw();
+    if (tab && lineStart) {
+      new StaveConnector(stave, tab).setType("bracket").setContext(ctx).draw();
+      new StaveConnector(stave, tab).setType("singleLeft").setContext(ctx).draw();
+    }
+
+    const sn = m.map((n, i) => {
+      const idx = mi * 8 + i;
+      const note = new StaveNote({ keys: [vfKey(n)], duration: "8", autoStem: true });
+      note.addModifier(new Annotation(n.sol).setVerticalJustification(Annotation.VerticalJustify.BOTTOM), 0);
+      if (idx === playing) note.setStyle({ fillStyle: "#d61f69", strokeStyle: "#d61f69" });
+      notes.push({ note, n, idx });
+      return note;
+    });
+    const voice = new Voice("4/4").addTickables(sn);
+    const beams = Beam.generateBeams(sn, { groups: [new Fraction(4, 8)] });
+    const fmt = new Formatter().joinVoices([voice]);
+    let tv = null;
+    if (tab) {
+      const tn = tabMeasures[mi].map((p, i) => {
+        const t = new TabNote({ positions: [p], duration: "8" });
+        if (mi * 8 + i === playing) t.setStyle({ fillStyle: "#d61f69", strokeStyle: "#d61f69" });
+        return t;
+      });
+      tv = new Voice("4/4").addTickables(tn);
+      fmt.joinVoices([tv]);
+    }
+    const avail = w - (stave.getNoteStartX() - stave.getX()) - 18;
+    fmt.format(tv ? [voice, tv] : [voice], avail);
+    voice.draw(ctx, stave);
+    beams.forEach((b) => b.setContext(ctx).draw());
+    if (tv) tv.draw(ctx, tab);
+    x += w;
+  });
+
+  const svg = box.querySelector("svg");
+  svg.setAttribute("viewBox", `0 0 ${LW} ${LH}`);
+  svg.removeAttribute("width"); svg.removeAttribute("height");
+  svg.style.width = "100%"; svg.style.height = "100%";
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+}
+
+function updateInfo() {
+  const key = KEYS[keyIdx];
+  const scale = buildScale(key);
+  document.getElementById("title").textContent = `${key[1]} 大調音階`;
+  // List accidentals in key-signature order (sharps FCGDAEB, flats BEADGCF)
+  const order = scale.some((n) => n.a > 0) ? "FCGDAEB" : "BEADGCF";
+  const accs = scale.slice(0, 7).filter((n) => n.a)
+    .sort((p, q) => order.indexOf(p.L) - order.indexOf(q.L)).map((n) => n.L + accTxt(n.a));
+  document.getElementById("sig").textContent = accs.length
+    ? `調號：${accs.length} 個${scale.some((n) => n.a > 0) ? "升" : "降"}記號（${accs.join("、")}）`
+    : "調號：沒有升降記號";
+  document.querySelectorAll("#keys button").forEach((b, i) => b.setAttribute("aria-pressed", i === keyIdx));
+}
+
+// Simple plucked tone with Web Audio
+let ac = null;
+function pluck(midi, when = 0) {
+  ac = ac || new AudioContext();
+  const t = ac.currentTime + when, f = 440 * Math.pow(2, (midi - 69) / 12);
+  const o = ac.createOscillator(), o2 = ac.createOscillator(), g = ac.createGain(), lp = ac.createBiquadFilter();
+  o.type = "triangle"; o.frequency.value = f;
+  o2.type = "sine"; o2.frequency.value = f * 2;
+  lp.type = "lowpass"; lp.frequency.setValueAtTime(f * 8, t); lp.frequency.exponentialRampToValueAtTime(f * 1.5, t + 0.6);
+  g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.35, t + 0.008);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
+  o.connect(lp); o2.connect(lp); lp.connect(g); g.connect(ac.destination);
+  [o, o2].forEach((osc) => { osc.start(t); osc.stop(t + 1); });
+}
+
+function showNow(item) {
+  const n = item.n;
+  document.getElementById("now").textContent = `${n.sol}・${n.L}${accTxt(n.a)}${n.o}`;
+}
+
+function stop() {
+  clearInterval(timer); timer = null; playing = -1;
+  document.getElementById("play").textContent = "▶ 播放";
+  draw();
+}
+
+document.getElementById("play").addEventListener("click", async () => {
+  if (timer) { stop(); return; }
+  ac = ac || new AudioContext();
+  await ac.resume();
+  const scale = buildScale(KEYS[keyIdx]);
+  playing = 0;
+  document.getElementById("play").textContent = "■ 停止";
+  const tick = () => {
+    if (playing >= scale.length) { stop(); return; }
+    pluck(scale[playing].midi);
+    draw();
+    showNow(notes[playing]);
+    playing++;
+  };
+  tick();
+  timer = setInterval(tick, 260);
+});
+
+// Click on the score: map to SVG coordinates and play the nearest note.
+box.addEventListener("click", (e) => {
+  const svg = box.querySelector("svg");
+  const pt = new DOMPoint(e.clientX, e.clientY).matrixTransform(svg.getScreenCTM().inverse());
+  let best = null, bestD = Infinity;
+  for (const item of notes) {
+    const nx = item.note.getAbsoluteX() + 6;
+    const ys = item.note.getYs();
+    const d = Math.abs(nx - pt.x) + 0.15 * Math.min(...ys.map((v) => Math.abs(v - pt.y)));
+    if (d < bestD) { bestD = d; best = item; }
+  }
+  if (!best || bestD > 60) return;
+  pluck(best.n.midi);
+  showNow(best);
+  if (!timer) { playing = best.idx; draw(); playing = -1; }
+});
+
+const keysEl = document.getElementById("keys");
+KEYS.forEach((k, i) => {
+  const b = document.createElement("button");
+  b.textContent = k[1];
+  b.addEventListener("click", () => { if (timer) stop(); keyIdx = i; updateInfo(); draw(); });
+  keysEl.append(b);
+});
+document.getElementById("tab").addEventListener("click", (e) => {
+  showTab = !showTab;
+  e.currentTarget.setAttribute("aria-pressed", showTab);
+  draw();
+});
+
+let lastW = 0;
+new ResizeObserver(() => {
+  if (Math.abs(box.clientWidth - lastW) > 4) { lastW = box.clientWidth; draw(); }
+}).observe(box);
+
+// Music fonts are embedded in this build; wait until the browser has them before drawing.
+Promise.all([document.fonts.load("30px Bravura"), document.fonts.load("12px Academico")])
+  .catch(() => {})
+  .then(() => { updateInfo(); draw(); });
+</script>
+</body>
+</html>

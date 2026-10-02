@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dexie.js 示範：離線待辦資料庫</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"資料存在瀏覽器的 IndexedDB，重新整理後仍在"}</script>
+<style>
+  .app { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); }
+  .todo { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; gap: 10px; padding: 14px 16px 50px; min-height: 0; }
+  .head { display: flex; align-items: baseline; gap: 10px; }
+  .head h1 { font-size: 17px; margin: 0; }
+  .head .visits { margin-left: auto; font-size: 12px; color: var(--muted); }
+  .head .visits b { color: var(--c6); font-family: var(--mono); }
+  .add { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; }
+  .field { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg-2); outline: none; font-size: 14px; min-width: 0; }
+  .field:focus { border-color: var(--c6); }
+  select.field { padding: 8px 6px; }
+  .filters { display: flex; gap: 6px; align-items: center; }
+  .filters button { border: 1px solid var(--line); background: var(--bg-2); border-radius: 999px; padding: 4px 12px; font: 12px var(--font); cursor: pointer; color: var(--fg); }
+  .filters button[aria-pressed="true"] { background: var(--c6); color: #fff; border-color: var(--c6); }
+  .filters input { margin-left: auto; width: 130px; padding: 4px 10px; font-size: 12px; border-radius: 999px; }
+  .list { overflow-y: auto; display: grid; align-content: start; gap: 6px; }
+  .item { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto 24px; align-items: center; gap: 8px; padding: 9px 10px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; animation: in .25s; }
+  @keyframes in { from { opacity: 0; transform: translateY(-4px); } }
+  .item input { accent-color: var(--c6); width: 16px; height: 16px; margin: 0; }
+  .item .t { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item.done .t { text-decoration: line-through; color: var(--muted); }
+  .tag { font-size: 11px; padding: 1px 8px; border-radius: 999px; }
+  .tag.工作 { background: rgba(31, 143, 184, .14); color: var(--c2); }
+  .tag.學習 { background: rgba(106, 90, 224, .14); color: var(--c6); }
+  .tag.生活 { background: rgba(224, 106, 27, .14); color: var(--c5); }
+  .del { border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 16px; padding: 0; }
+  .del:hover { color: var(--c3); }
+  .empty { color: var(--muted); font-size: 13px; padding: 10px 2px; }
+  .query { font: 12px/1.5 var(--mono); padding: 8px 10px; border-radius: 8px; background: #1c1d21; color: #e6e4dc; white-space: pre-wrap; word-break: break-all; }
+  .query .c { color: #7f848e; } .query .f { color: #82aaff; } .query .s { color: #c3e88d; }
+  .db { border-left: 1px solid var(--line); background: #17181c; color: #e6e4dc; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto minmax(0, 30%); min-height: 0; padding-bottom: 46px; }
+  .db h2 { font-size: 13px; margin: 0; padding: 12px 14px 6px; display: flex; gap: 8px; align-items: center; color: #b9b7ae; font-weight: 600; }
+  .db h2 .live { font: 11px var(--mono); color: #7bd389; }
+  .db h2 .live::before { content: "● "; animation: pulse 1.4s infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .db h2 .sp { margin-left: auto; display: flex; gap: 6px; }
+  .db .btn { white-space: nowrap; padding: 5px 9px; font-size: 12px; background: #24262c; color: #e6e4dc; border-color: #34363d; }
+  .schema { margin: 0 14px 8px; font: 12px var(--mono); color: #c3e88d; background: #101114; border-radius: 8px; padding: 6px 10px; white-space: pre-wrap; }
+  .rows { overflow: auto; margin: 0 14px; border: 1px solid #2b2d33; border-radius: 8px; }
+  .rows table { border-collapse: collapse; width: 100%; font: 12px var(--mono); }
+  .rows th { position: sticky; top: 0; background: #22242a; color: #9b998f; font-weight: 500; text-align: left; }
+  .rows th, .rows td { padding: 5px 8px; border-bottom: 1px solid #26282e; white-space: nowrap; }
+  .rows td.t { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+  .rows tr.flash td { animation: rowflash 1.2s; }
+  @keyframes rowflash { from { background: rgba(123, 211, 137, .28); } }
+  .log { overflow-y: auto; margin: 0 14px; font: 11.5px/1.5 var(--mono); }
+  .log div { padding: 3px 0; border-bottom: 1px dashed #2b2d33; display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+  .log span { word-break: break-all; }
+  .log small { color: #7f848e; }
+  .log .w { color: #f7df1e; }
+  @media (max-width: 640px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: minmax(0, 52%) minmax(0, 48%); }
+    .todo { padding: 10px 12px 8px; gap: 7px; }
+    .query { display: none; }
+    .db { border-left: 0; grid-template-rows: auto minmax(0, 1fr) auto minmax(0, 24%); padding-bottom: 42px; }
+    .db h2 { white-space: nowrap; padding: 8px 12px 6px; }
+    .db h2 .live { display: none; }
+    .rows, .log { margin: 0 12px; }
+    .schema, .rows .c-created { display: none; }
+    .filters input { width: 96px; }
+  }
+</style>
+</head>
+<body class="paper">
+<div class="app">
+  <section class="todo">
+    <div class="head"><h1>待辦清單</h1><span class="visits" id="visits"></span></div>
+    <form class="add" id="add">
+      <input class="field" id="title" placeholder="新增待辦，按 Enter" autocomplete="off" aria-label="待辦內容">
+      <select class="field" id="tag" aria-label="標籤"><option>工作</option><option>學習</option><option>生活</option></select>
+      <button class="btn primary">新增</button>
+    </form>
+    <div class="filters" id="filters">
+      <button data-f="all">全部</button><button data-f="open">未完成</button><button data-f="done">已完成</button>
+      <input class="field" id="q" placeholder="標題開頭搜尋" aria-label="標題開頭搜尋">
+    </div>
+    <div class="list" id="list"></div>
+    <div class="query" id="query"></div>
+  </section>
+  <aside class="db">
+    <h2>IndexedDB：todos 資料表 <span class="live">liveQuery</span>
+      <span class="sp"><button class="btn" id="reload">重新整理頁面</button><button class="btn" id="reset">重設</button></span></h2>
+    <div class="schema" id="schema"></div>
+    <div class="rows" id="rows"></div>
+    <h2>操作紀錄</h2>
+    <div class="log" id="log"></div>
+  </aside>
+</div>
+<div class="hint">新增或勾選後按「重新整理頁面」，資料還在</div>
+
+<script src="https://cdn.jsdelivr.net/npm/dexie@4.4.6/dist/dexie.min.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const SCHEMA = { todos: "++id, title, done, tag, createdAt", meta: "key" };
+const SEED = [
+  ["整理 Q3 課程回饋", "工作", 1], ["讀完 IndexedDB 文件", "學習", 0], ["預約牙醫", "生活", 0],
+  ["準備 Dexie 分享簡報", "學習", 0], ["回覆合作邀約信", "工作", 1],
+];
+
+let db;
+function openDb() {
+  db = new Dexie("atlas-dexie-demo");
+  db.version(1).stores(SCHEMA);
+  // populate runs only once, when the database is created for the first time
+  db.on("populate", (tx) => {
+    const now = Date.now();
+    tx.todos.bulkAdd(SEED.map(([title, tag, done], i) => ({ title, tag, done, createdAt: now - (SEED.length - i) * 3600e3 })));
+    log("populate：首次建立資料庫，寫入 5 筆示意資料", 0, true);
+  });
+}
+
+function log(text, ms, warn) {
+  const row = document.createElement("div");
+  row.innerHTML = `<span class="${warn ? "w" : ""}">${esc(text)}</span><small>${ms ? ms.toFixed(1) + " ms" : ""}</small>`;
+  $("log").prepend(row);
+  while ($("log").children.length > 30) $("log").lastChild.remove();
+}
+async function op(label, fn) {
+  const t0 = performance.now();
+  const r = await fn();
+  log(typeof label === "function" ? label(r) : label, performance.now() - t0);
+  return r;
+}
+
+// ---- Filtered list (liveQuery re-runs whenever the touched rows change) ----
+let filter = "all", listSub;
+function querySpec() {
+  const q = $("q").value.trim();
+  const doneVal = filter === "open" ? 0 : filter === "done" ? 1 : null;
+  if (q) {
+    return {
+      code: `db.todos.<span class="f">where</span>(<span class="s">"title"</span>).<span class="f">startsWithIgnoreCase</span>(<span class="s">"${esc(q)}"</span>)${doneVal === null ? "" : `\n  .<span class="f">filter</span>(t =&gt; t.done === ${doneVal})`}.<span class="f">toArray</span>()`,
+      run: () => { let c = db.todos.where("title").startsWithIgnoreCase(q); if (doneVal !== null) c = c.filter((t) => t.done === doneVal); return c.toArray(); },
+    };
+  }
+  if (doneVal === null) {
+    return { code: `db.todos.<span class="f">orderBy</span>(<span class="s">"createdAt"</span>).<span class="f">reverse</span>().<span class="f">toArray</span>()`, run: () => db.todos.orderBy("createdAt").reverse().toArray() };
+  }
+  return {
+    code: `db.todos.<span class="f">where</span>(<span class="s">"done"</span>).<span class="f">equals</span>(${doneVal})\n  .<span class="f">reverse</span>().<span class="f">sortBy</span>(<span class="s">"createdAt"</span>)`,
+    run: () => db.todos.where("done").equals(doneVal).reverse().sortBy("createdAt"),
+  };
+}
+function subscribeList() {
+  listSub?.unsubscribe();
+  const spec = querySpec();
+  $("query").innerHTML = `<span class="c">// 目前清單用的查詢</span>\n${spec.code}`;
+  document.querySelectorAll("#filters button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.f === filter));
+  listSub = Dexie.liveQuery(spec.run).subscribe({
+    next: (items) => {
+      $("list").innerHTML = items.length ? items.map((t) => `<div class="item${t.done ? " done" : ""}" data-id="${t.id}">
+        <input type="checkbox" ${t.done ? "checked" : ""} aria-label="完成">
+        <span class="t">${esc(t.title)}</span><span class="tag ${esc(t.tag)}">${esc(t.tag)}</span>
+        <button class="del" aria-label="刪除">×</button></div>`).join("") : '<div class="empty">沒有符合的項目</div>';
+    },
+    error: (err) => { $("list").innerHTML = `<div class="empty">查詢失敗：${esc(err.message)}</div>`; },
+  });
+}
+
+// ---- Raw table inspector ----
+let rowSub, prevIds = new Set();
+function subscribeRows() {
+  rowSub?.unsubscribe();
+  rowSub = Dexie.liveQuery(() => db.todos.toArray()).subscribe({
+    next: (rows) => {
+      const fresh = rows.filter((r) => !prevIds.has(r.id) && prevIds.size).map((r) => r.id);
+      prevIds = new Set(rows.map((r) => r.id));
+      $("rows").innerHTML = `<table><thead><tr><th>id</th><th>title</th><th>done</th><th>tag</th><th class="c-created">createdAt</th></tr></thead><tbody>${rows.map((r) =>
+        `<tr${fresh.includes(r.id) ? ' class="flash"' : ""}><td>${r.id}</td><td class="t">${esc(r.title)}</td><td>${r.done}</td><td>${esc(r.tag)}</td><td class="c-created">${new Date(r.createdAt).toLocaleString("zh-TW", { hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</td></tr>`).join("")}</tbody></table>`;
+    },
+  });
+}
+
+async function start() {
+  openDb();
+  $("schema").textContent = `db.version(1).stores(${JSON.stringify(SCHEMA).replace(/,"/g, ', "').replace(/":/g, '": ')})`;
+  const visits = ((await db.meta.get("visits"))?.value || 0) + 1;
+  await db.meta.put({ key: "visits", value: visits });
+  const count = await db.todos.count();
+  $("visits").innerHTML = `本頁第 <b>${visits}</b> 次載入`;
+  log(`開啟資料庫 atlas-dexie-demo，目前 ${count} 筆`, 0);
+  subscribeList();
+  subscribeRows();
+}
+
+$("add").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const title = $("title").value.trim();
+  if (!title) return;
+  const tag = $("tag").value;
+  await op((id) => `db.todos.add({ title: "${title}", tag: "${tag}", done: 0 }) → id ${id}`, () => db.todos.add({ title, tag, done: 0, createdAt: Date.now() }));
+  $("title").value = "";
+});
+$("list").addEventListener("click", async (e) => {
+  const item = e.target.closest(".item"); if (!item) return;
+  const id = +item.dataset.id;
+  if (e.target.matches("input")) {
+    const done = e.target.checked ? 1 : 0;
+    await op(`db.todos.update(${id}, { done: ${done} })`, () => db.todos.update(id, { done }));
+  } else if (e.target.matches(".del")) {
+    await op(`db.todos.delete(${id})`, () => db.todos.delete(id));
+  }
+});
+$("filters").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { filter = b.dataset.f; subscribeList(); } });
+$("q").addEventListener("input", subscribeList);
+$("reload").addEventListener("click", () => location.reload());
+$("reset").addEventListener("click", async () => {
+  listSub?.unsubscribe(); rowSub?.unsubscribe();
+  db.close();
+  await Dexie.delete("atlas-dexie-demo");
+  prevIds = new Set();
+  $("log").innerHTML = "";
+  log("Dexie.delete(\"atlas-dexie-demo\")：資料庫已刪除", 0, true);
+  start();
+});
+
+start().catch((err) => {
+  $("list").innerHTML = `<div class="empty">無法開啟 IndexedDB：${esc(err.message)}（無痕模式或瀏覽器設定可能封鎖儲存）</div>`;
+  console.error(err);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PixiJS 示範：數萬顆發光粒子的霓虹漩渦</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body { background: #07080d; }
+  canvas { position: fixed; inset: 0; display: block; }
+  .stats {
+    position: fixed; left: 12px; top: 12px; z-index: 50;
+    padding: 8px 12px; font-size: 12px; line-height: 1.5;
+  }
+  .stats b { color: var(--accent); font-family: var(--mono); font-size: 15px; }
+  .sep { width: 1px; background: var(--line); margin: 0 2px; }
+  @media (max-width: 560px) { .stats { top: auto; bottom: 52px; } }
+</style>
+</head>
+<body>
+<div class="panel stats">
+  <div><b id="count">0</b> 個粒子</div>
+  <div class="muted"><span class="mono" id="fps">0</span> fps・<span id="renderer">WebGL</span> 批次渲染</div>
+</div>
+<div class="controls">
+  <button class="btn" data-n="10000">1 萬</button>
+  <button class="btn" data-n="30000" aria-pressed="true">3 萬</button>
+  <button class="btn" data-n="60000">6 萬</button>
+  <span class="sep"></span>
+  <button class="btn" id="mode">模式：漩渦</button>
+</div>
+<div class="hint">移動滑鼠捲起漩渦・點擊引爆衝擊波</div>
+
+<script src="https://cdn.jsdelivr.net/npm/pixi.js@8.22.0/dist/pixi.min.js"></script>
+<script>
+// Tens of thousands of glowing sprites in a single ParticleContainer (one draw call, additive blend).
+// Physics runs in typed arrays; each frame we only copy x/y into the Particle objects.
+const PALETTE = [0xf7df1e, 0x4cc9f0, 0xf72585, 0x7bd389, 0xff8c42, 0x9d8cff];
+
+(async () => {
+  const app = new PIXI.Application();
+  await app.init({ resizeTo: window, background: "#07080d", preference: "webgl", antialias: false });
+  document.body.prepend(app.canvas);
+  document.getElementById("renderer").textContent = app.renderer.type === 2 ? "WebGPU" : "WebGL";
+
+  // Soft round glow texture drawn once on a 2D canvas
+  const g = document.createElement("canvas");
+  g.width = g.height = 32;
+  const gx = g.getContext("2d");
+  const rg = gx.createRadialGradient(16, 16, 0, 16, 16, 16);
+  rg.addColorStop(0, "rgba(255,255,255,1)");
+  rg.addColorStop(0.25, "rgba(255,255,255,0.75)");
+  rg.addColorStop(1, "rgba(255,255,255,0)");
+  gx.fillStyle = rg;
+  gx.fillRect(0, 0, 32, 32);
+  const texture = PIXI.Texture.from(g);
+
+  const container = new PIXI.ParticleContainer({ texture, dynamicProperties: { position: true } });
+  container.blendMode = "add";
+  app.stage.addChild(container);
+
+  let N = 0, px, py, vx, vy;
+  const attractor = { x: innerWidth / 2, y: innerHeight / 2, tx: 0, ty: 0, active: false };
+  let mode = "vortex";
+
+  function populate(n) {
+    container.removeParticles();
+    N = n;
+    px = new Float32Array(n); py = new Float32Array(n);
+    vx = new Float32Array(n); vy = new Float32Array(n);
+    const w = app.screen.width, h = app.screen.height;
+    const list = new Array(n);
+    for (let i = 0; i < n; i++) {
+      px[i] = Math.random() * w;
+      py[i] = Math.random() * h;
+      const big = Math.random() < 0.03;
+      const s = big ? 0.55 + Math.random() * 0.3 : 0.12 + Math.random() * 0.22;
+      list[i] = new PIXI.Particle({
+        texture, x: px[i], y: py[i], anchorX: 0.5, anchorY: 0.5,
+        scaleX: s, scaleY: s, tint: PALETTE[i % PALETTE.length], alpha: big ? 0.9 : 0.55,
+      });
+    }
+    // Add in chunks to stay well under the engine's argument-count limit
+    for (let i = 0; i < n; i += 5000) container.addParticle(...list.slice(i, i + 5000));
+    document.getElementById("count").textContent = n.toLocaleString("zh-TW");
+  }
+
+  function burst(x, y) {
+    for (let i = 0; i < N; i++) {
+      const dx = px[i] - x, dy = py[i] - y;
+      const d2 = dx * dx + dy * dy + 400;
+      const k = 9000 / d2;
+      const d = Math.sqrt(d2);
+      vx[i] += (dx / d) * k;
+      vy[i] += (dy / d) * k;
+    }
+  }
+
+  let time = 0;
+  app.ticker.add((tk) => {
+    const dt = Math.min(2, tk.deltaTime);
+    time += 0.01 * dt;
+    const w = app.screen.width, h = app.screen.height;
+    // Idle attractor drifts on a Lissajous path so the scene is alive without input
+    if (!attractor.active) {
+      attractor.tx = w * (0.5 + 0.3 * Math.cos(time * 0.7));
+      attractor.ty = h * (0.5 + 0.28 * Math.sin(time * 1.1));
+    }
+    attractor.x += (attractor.tx - attractor.x) * 0.1;
+    attractor.y += (attractor.ty - attractor.y) * 0.1;
+    const ax = attractor.x, ay = attractor.y;
+    const R = Math.min(w, h) * 0.45;
+    const sign = mode === "vortex" ? 1 : -1;
+    const ps = container.particleChildren;
+    for (let i = 0; i < N; i++) {
+      let x = px[i], y = py[i];
+      // Gentle flow field from layered sines
+      const ang = (Math.sin(x * 0.0042 + time) + Math.cos(y * 0.0047 - time * 0.8) + Math.sin((x - y) * 0.0021 + time * 0.5)) * 2.1;
+      let fx = Math.cos(ang) * 0.06, fy = Math.sin(ang) * 0.06;
+      const dx = x - ax, dy = y - ay;
+      const d = Math.sqrt(dx * dx + dy * dy) + 1;
+      if (d < R) {
+        const f = (1 - d / R);
+        if (sign > 0) {
+          // Swirl: tangential spin plus a slight pull toward the centre
+          fx += (-dy / d) * f * 0.9 - (dx / d) * f * 0.35;
+          fy += (dx / d) * f * 0.9 - (dy / d) * f * 0.35;
+        } else {
+          fx += (dx / d) * f * 1.4;
+          fy += (dy / d) * f * 1.4;
+        }
+      }
+      let u = (vx[i] + fx * dt) * 0.955, v = (vy[i] + fy * dt) * 0.955;
+      x += u * dt; y += v * dt;
+      if (x < -10) x += w + 20; else if (x > w + 10) x -= w + 20;
+      if (y < -10) y += h + 20; else if (y > h + 10) y -= h + 20;
+      px[i] = x; py[i] = y; vx[i] = u; vy[i] = v;
+      const p = ps[i];
+      p.x = x; p.y = y;
+    }
+  });
+
+  let frames = 0, last = performance.now();
+  app.ticker.add(() => {
+    frames++;
+    const now = performance.now();
+    if (now - last > 500) {
+      document.getElementById("fps").textContent = Math.round((frames * 1000) / (now - last));
+      frames = 0; last = now;
+    }
+  });
+
+  app.canvas.addEventListener("pointermove", (e) => { attractor.tx = e.clientX; attractor.ty = e.clientY; attractor.active = true; });
+  app.canvas.addEventListener("pointerleave", () => { attractor.active = false; });
+  app.canvas.addEventListener("pointerdown", (e) => burst(e.clientX, e.clientY));
+
+  document.querySelectorAll("[data-n]").forEach((b) => b.addEventListener("click", () => {
+    document.querySelectorAll("[data-n]").forEach((x) => x.setAttribute("aria-pressed", x === b));
+    populate(Number(b.dataset.n));
+  }));
+  const modeBtn = document.getElementById("mode");
+  modeBtn.addEventListener("click", () => {
+    mode = mode === "vortex" ? "repel" : "vortex";
+    modeBtn.textContent = mode === "vortex" ? "模式：漩渦" : "模式：排斥";
+  });
+
+  populate(30000);
+})();
+</script>
+</body>
+</html>

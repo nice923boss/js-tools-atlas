@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>heatmap.js 示範：網頁點擊與展場人流熱區</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  header { position: fixed; left: 16px; top: 12px; z-index: 40; right: 330px; }
+  header h1 { margin: 0; font-size: 17px; }
+  header h1 b { color: var(--accent); }
+  header p { margin: 0; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); }
+  .seg button { border: 0; background: transparent; color: var(--muted); padding: 8px 11px; font: 600 13px/1 var(--font); cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+
+  #board { position: fixed; left: 12px; right: 12px; top: 64px; bottom: 52px; border-radius: 12px; overflow: hidden;
+    border: 1px solid var(--line); background: #f4f5f7; cursor: crosshair; touch-action: none; }
+  .heat { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
+  .scene { position: absolute; inset: 0; display: none; color: #22252b; }
+  .scene.on { display: block; }
+
+  /* Mock landing page */
+  .chrome { height: 30px; display: flex; align-items: center; gap: 6px; padding: 0 12px; background: #e3e5ea; border-bottom: 1px solid #d3d6dd; }
+  .chrome i { width: 10px; height: 10px; border-radius: 50%; background: #c9ccd3; }
+  .chrome i:nth-child(1) { background: #ff6159; } .chrome i:nth-child(2) { background: #ffbd2e; } .chrome i:nth-child(3) { background: #28c941; }
+  .chrome .url { margin-left: 10px; flex: 1; max-width: 360px; background: #fff; border-radius: 6px; padding: 2px 10px; font: 11px var(--mono); color: #6b7080; white-space: nowrap; overflow: hidden; }
+  .page { position: absolute; top: 30px; left: 0; right: 0; bottom: 0; display: grid; grid-template-rows: auto 1fr auto auto; background: #fff; }
+  .page nav { display: flex; align-items: center; gap: 4%; padding: 10px 4%; border-bottom: 1px solid #eef0f3; font-size: 13px; }
+  .page nav .logo { font-weight: 800; font-size: 16px; color: #1f6feb; margin-right: auto; }
+  .page nav span { padding: 4px 6px; color: #4a4f5c; }
+  .page nav .login { border: 1px solid #1f6feb; color: #1f6feb; border-radius: 6px; padding: 4px 12px; }
+  .hero { display: grid; grid-template-columns: 1.2fr 1fr; gap: 4%; align-items: center; padding: 3% 4%; min-height: 0; }
+  .hero .tag { display: inline-block; font-size: 11px; background: #fff4c2; color: #7a5d00; padding: 2px 8px; border-radius: 999px; }
+  .hero h2 { margin: 8px 0 6px; font-size: clamp(18px, 3.4vw, 32px); line-height: 1.2; }
+  .hero p { margin: 0 0 14px; color: #5b6070; font-size: clamp(12px, 1.5vw, 14px); }
+  .cta { display: flex; gap: 10px; flex-wrap: wrap; }
+  .cta span { padding: 9px 18px; border-radius: 8px; font-weight: 700; font-size: 14px; }
+  .cta .b1 { background: #1f6feb; color: #fff; }
+  .cta .b2 { border: 1px solid #c9ced8; color: #3b4150; }
+  .art { height: 78%; min-height: 80px; border-radius: 12px; background: linear-gradient(135deg, #e8f1ff, #f5ecff); display: flex; align-items: flex-end; gap: 7%; padding: 8% 10%; }
+  .art i { flex: 1; border-radius: 4px 4px 0 0; background: #8ab4ff; }
+  .art i:nth-child(2) { background: #a58bff; } .art i:nth-child(4) { background: #ff9fc0; }
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3%; padding: 0 4% 3%; }
+  .card { border: 1px solid #e6e8ee; border-radius: 10px; padding: 10px; font-size: 12px; display: grid; gap: 4px; }
+  .card i { height: 36px; border-radius: 6px; background: var(--c); opacity: .85; }
+  .card b { font-size: 13px; }
+  .card small { color: #7a8090; }
+  .page footer { padding: 8px 4%; font-size: 11px; color: #8b90a0; border-top: 1px solid #eef0f3; }
+
+  /* Mock floor plan */
+  .floor { background: repeating-linear-gradient(0deg, transparent 0 23px, rgba(0,0,0,.035) 23px 24px), repeating-linear-gradient(90deg, transparent 0 23px, rgba(0,0,0,.035) 23px 24px), #eceef1; }
+  .zone { position: absolute; display: grid; place-items: center; text-align: center; border-radius: 8px; font-size: 12px; font-weight: 700; line-height: 1.25;
+    background: #fff; border: 1px solid #cfd3da; color: #3b4150; padding: 2px; }
+  .zone small { display: block; font-weight: 400; color: #7a8090; font-size: 11px; }
+  .zone.stage { background: #2b2f3a; color: #fff; border: 0; }
+  .zone.stage small { color: #c3c7d1; }
+  .zone.food { background: #fff4e5; border-color: #f3c58f; }
+  .zone.rest { background: #eaf6ee; border-color: #a9d9b8; }
+  .zone.door { background: transparent; border: 2px dashed #8b90a0; color: #5b6070; }
+  .zone.svc { background: #eef3ff; border-color: #b7c8f5; }
+
+  .legend { position: fixed; right: 12px; bottom: 12px; z-index: 50; display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 12px; }
+  .legend .bar { width: 120px; height: 8px; margin: 0; border-radius: 4px; }
+  .legend .num { font-family: var(--mono); color: var(--muted); }
+  #tip { position: fixed; z-index: 60; pointer-events: none; padding: 3px 8px; border-radius: 6px; font: 12px var(--mono);
+    background: rgba(14,16,19,.88); color: #fff; transform: translate(12px, -28px); display: none; white-space: nowrap; }
+  #stats { color: var(--muted); }
+  #stats b { color: var(--fg); font-family: var(--mono); }
+
+  @media (max-width: 620px) {
+    header { right: 12px; }
+    header p { display: none; }
+    .controls { top: 44px; left: 12px; right: 12px; justify-content: flex-start; }
+    .seg button, .controls .btn { padding: 7px 9px; font-size: 12px; }
+    #board { top: 90px; bottom: 50px; }
+    .hint { display: none; }
+    .legend { left: 12px; justify-content: space-between; }
+    .legend .bar { width: 70px; }
+    .hero { grid-template-columns: 1fr; }
+    .art { display: none; }
+    .page nav { font-size: 12px; gap: 2%; }
+    .page nav span:nth-child(3) { display: none; }
+    .card { padding: 6px; font-size: 11px; }
+    .card i { height: 24px; }
+    .card small { display: none; }
+    .cta span { padding: 7px 12px; font-size: 13px; }
+    .zone { font-size: 11px; }
+    .zone small { display: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1><b>heatmap.js</b> 熱區分析</h1>
+  <p>示意資料：模擬訪客持續累積，加上你的滑鼠軌跡</p>
+</header>
+<div class="controls">
+  <div class="seg" id="sceneSeg" role="group" aria-label="切換場景">
+    <button data-scene="web" aria-pressed="true">網頁點擊</button>
+    <button data-scene="floor" aria-pressed="false">展場人流</button>
+  </div>
+  <button class="btn" id="simBtn" aria-pressed="true">模擬中</button>
+  <button class="btn" id="clearBtn">清除</button>
+</div>
+
+<div id="board">
+  <div class="scene web on" id="scene-web">
+    <div class="chrome"><i></i><i></i><i></i><span class="url">https://example.com/dataviz（示意網頁）</span></div>
+    <div class="page">
+      <nav>
+        <span class="logo" data-hot="3">學點課</span>
+        <span data-hot="6">課程</span>
+        <span data-hot="2">講師</span>
+        <span data-hot="3">方案</span>
+        <span class="login" data-hot="4">登入</span>
+      </nav>
+      <section class="hero">
+        <div>
+          <span class="tag">秋季班開放報名</span>
+          <h2 data-hot="4">30 天學會資料視覺化</h2>
+          <p data-hot="2">從 Chart.js 到 D3，用台灣開放資料做出會說故事的圖表。</p>
+          <div class="cta"><span class="b1" data-hot="12">立即報名</span><span class="b2" data-hot="5">看課綱</span></div>
+        </div>
+        <div class="art" data-hot="2"><i style="height:45%"></i><i style="height:80%"></i><i style="height:60%"></i><i style="height:95%"></i></div>
+      </section>
+      <section class="cards">
+        <div class="card" data-hot="7"><i style="--c:#4cc9f0"></i><b>Chart.js 入門</b><small>12 堂・NT$ 2,400</small></div>
+        <div class="card" data-hot="4"><i style="--c:#9d8cff"></i><b>D3.js 實戰</b><small>18 堂・NT$ 3,600</small></div>
+        <div class="card" data-hot="2"><i style="--c:#7bd389"></i><b>地圖視覺化</b><small>10 堂・NT$ 2,200</small></div>
+      </section>
+      <footer data-hot="1">常見問題・聯絡我們・隱私權政策</footer>
+    </div>
+  </div>
+
+  <div class="scene floor" id="scene-floor">
+    <div class="zone svc" data-hot="4" style="left:3%;top:4%;width:21%;height:13%">報到處<small>領取識別證</small></div>
+    <div class="zone stage" data-hot="10" style="left:30%;top:4%;width:40%;height:17%">主舞台<small>14:00 新品發表</small></div>
+    <div class="zone" data-hot="2" style="left:76%;top:4%;width:21%;height:13%">洗手間</div>
+    <div class="zone" data-hot="6" style="left:3%;top:24%;width:21%;height:12%">A1<small>AI 助理</small></div>
+    <div class="zone" data-hot="3" style="left:3%;top:39%;width:21%;height:12%">A2<small>智慧家電</small></div>
+    <div class="zone" data-hot="2" style="left:3%;top:54%;width:21%;height:12%">A3<small>穿戴裝置</small></div>
+    <div class="zone" data-hot="4" style="left:3%;top:69%;width:21%;height:12%">A4<small>電競周邊</small></div>
+    <div class="zone" data-hot="8" style="left:34%;top:31%;width:32%;height:14%">C1 體驗區<small>VR 賽車</small></div>
+    <div class="zone" data-hot="3" style="left:34%;top:51%;width:32%;height:13%">C2<small>無人機展示</small></div>
+    <div class="zone" data-hot="3" style="left:76%;top:24%;width:21%;height:12%">B1<small>3D 列印</small></div>
+    <div class="zone" data-hot="2" style="left:76%;top:39%;width:21%;height:12%">B2<small>機器人</small></div>
+    <div class="zone" data-hot="2" style="left:76%;top:54%;width:21%;height:12%">B3<small>新創區</small></div>
+    <div class="zone food" data-hot="7" style="left:72%;top:70%;width:25%;height:24%">餐飲區<small>咖啡・便當</small></div>
+    <div class="zone rest" data-hot="3" style="left:3%;top:85%;width:21%;height:11%">休息區</div>
+    <div class="zone svc" data-hot="3" style="left:30%;top:70%;width:14%;height:11%">服務台</div>
+    <div class="zone door" id="door" data-hot="5" style="left:42%;top:88%;width:18%;height:10%">入口</div>
+  </div>
+</div>
+
+<div class="legend panel"><span class="num" id="minV">0</span><div class="bar" id="legendBar"></div><span class="num" id="maxV">0</span><span id="stats">共 <b id="count">0</b> 點</span></div>
+<div id="tip"></div>
+<div class="hint">移動滑鼠累積熱區・點一下加重・停在色塊上看熱度</div>
+
+<script src="https://cdn.jsdelivr.net/npm/heatmap.js@2.0.5/build/heatmap.min.js"></script>
+<script>
+// heatmap.js demo: simulated visitors plus the real pointer feed one heatmap overlay.
+const $ = (s) => document.querySelector(s);
+const board = $("#board");
+const GRADIENT = { 0.15: "#4cc9f0", 0.4: "#7bd389", 0.65: "#f7df1e", 0.85: "#ff8c42", 1: "#f72585" };
+const SIM_LIMIT = 4000;
+
+let sceneName = "web";
+let heat = null;
+let heatEl = null;
+let points = [];          // normalized points {u, v, value} kept so we can rebuild after resize
+let simOn = true;
+let simCount = 0;
+let currentMax = 0;
+let lastPointer = null;
+
+const randn = () => {
+  let u = 0, v = 0;
+  while (u === 0) u = Math.random();
+  while (v === 0) v = Math.random();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+};
+const boardSize = () => board.getBoundingClientRect();
+const radiusFor = (r) => Math.max(14, Math.round(Math.min(r.width, r.height) * 0.07));
+
+// The max value controls how quickly colors saturate; scale it with point count for a stable look.
+const maxFor = (n) => Math.max(3, Math.round(n / 40));
+
+function updateLegend(data) {
+  const stops = Object.entries(data.gradient || GRADIENT)
+    .map(([k, c]) => [Number(k), c]).sort((a, b) => a[0] - b[0])
+    .map(([k, c]) => `${c} ${Math.round(k * 100)}%`);
+  $("#legendBar").style.background = `linear-gradient(90deg, rgba(76,201,240,0) 0%, ${stops.join(", ")})`;
+  $("#minV").textContent = data.min;
+  $("#maxV").textContent = data.max;
+}
+
+function createHeat() {
+  heatEl?.remove();
+  heatEl = document.createElement("div");
+  heatEl.className = "heat";
+  board.append(heatEl);
+  const r = boardSize();
+  heat = h337.create({
+    container: heatEl,
+    radius: radiusFor(r),
+    maxOpacity: 0.78,
+    minOpacity: 0.03,
+    blur: 0.85,
+    gradient: GRADIENT,
+    onExtremaChange: updateLegend,
+  });
+  currentMax = maxFor(points.length);
+  heat.setData({
+    min: 0,
+    max: currentMax,
+    data: points.map((p) => ({ x: Math.round(p.u * r.width), y: Math.round(p.v * r.height), value: p.value })),
+  });
+}
+
+function addPoint(x, y, value) {
+  const r = boardSize();
+  if (x < 0 || y < 0 || x >= r.width || y >= r.height) return;
+  points.push({ u: x / r.width, v: y / r.height, value });
+  heat.addData({ x: Math.round(x), y: Math.round(y), value });
+  const target = maxFor(points.length);
+  if (target > currentMax) {
+    currentMax = target;
+    heat.setDataMax(currentMax);
+  }
+  $("#count").textContent = points.length.toLocaleString("zh-TW");
+}
+
+// Hot elements carry a data-hot weight; visitors land near them with gaussian jitter.
+function hotspots() {
+  const b = boardSize();
+  return [...document.querySelectorAll(`#scene-${sceneName} [data-hot]`)].map((el) => {
+    const r = el.getBoundingClientRect();
+    return { w: Number(el.dataset.hot), x: r.left - b.left, y: r.top - b.top, width: r.width, height: r.height };
+  }).filter((h) => h.width > 0 && h.height > 0);
+}
+
+function simulate(n) {
+  const spots = hotspots();
+  const total = spots.reduce((s, h) => s + h.w, 0);
+  if (!total) return;
+  const door = sceneName === "floor" ? spots[spots.length - 1] : null;
+  for (let i = 0; i < n; i++) {
+    let pick = Math.random() * total;
+    const h = spots.find((s) => (pick -= s.w) < 0) || spots[0];
+    const cx = h.x + h.width / 2 + randn() * h.width * 0.22;
+    const cy = h.y + h.height / 2 + randn() * h.height * 0.22;
+    addPoint(cx, cy, 1);
+    // On the floor plan, visitors also leave traces along the aisle from the entrance.
+    if (door && Math.random() < 0.45) {
+      const t = Math.random();
+      const dx = door.x + door.width / 2, dy = door.y + door.height / 2;
+      addPoint(dx + (cx - dx) * t + randn() * 8, dy + (cy - dy) * t + randn() * 8, 1);
+    }
+    simCount++;
+  }
+}
+
+function resetScene() {
+  points = [];
+  simCount = 0;
+  createHeat();
+  simulate(450);
+}
+
+setInterval(() => {
+  if (!simOn) return;
+  if (simCount >= SIM_LIMIT) { setSim(false); return; }
+  simulate(3);
+}, 90);
+
+function setSim(on) {
+  simOn = on;
+  const b = $("#simBtn");
+  b.setAttribute("aria-pressed", on);
+  b.textContent = on ? "模擬中" : "模擬已暫停";
+}
+
+// Pointer trail: add a point every few pixels, show the value under the cursor.
+const tip = $("#tip");
+board.addEventListener("pointermove", (e) => {
+  const r = boardSize();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  if (!lastPointer || Math.hypot(x - lastPointer.x, y - lastPointer.y) > 6) {
+    addPoint(x, y, 2);
+    lastPointer = { x, y };
+  }
+  const v = heat.getValueAt({ x: Math.round(x), y: Math.round(y) });
+  tip.style.display = "block";
+  tip.style.left = `${e.clientX}px`;
+  tip.style.top = `${e.clientY}px`;
+  tip.textContent = `熱度 ${v}`;
+});
+board.addEventListener("pointerleave", () => { tip.style.display = "none"; lastPointer = null; });
+board.addEventListener("pointerdown", (e) => {
+  const r = boardSize();
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  for (let i = 0; i < 10; i++) addPoint(x + randn() * 6, y + randn() * 6, 3);
+});
+
+$("#sceneSeg").addEventListener("click", (e) => {
+  const btn = e.target.closest("button");
+  if (!btn || btn.dataset.scene === sceneName) return;
+  sceneName = btn.dataset.scene;
+  $("#sceneSeg").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", b === btn));
+  document.querySelectorAll(".scene").forEach((s) => s.classList.toggle("on", s.id === `scene-${sceneName}`));
+  setSim(true);
+  resetScene();
+});
+$("#simBtn").addEventListener("click", () => {
+  if (!simOn && simCount >= SIM_LIMIT) simCount = 0;
+  setSim(!simOn);
+});
+$("#clearBtn").addEventListener("click", () => {
+  points = [];
+  simCount = 0;
+  createHeat();
+  $("#count").textContent = "0";
+});
+
+let resizeTimer = 0;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(createHeat, 150);
+});
+
+resetScene();
+</script>
+</body>
+</html>

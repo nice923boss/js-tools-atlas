@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>force-graph 示範：大學社團社群網絡</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"人名與關係為隨機產生的示意資料"}</script>
+<style>
+  #graph { position: fixed; inset: 0; }
+  #card { position: fixed; left: 12px; top: 12px; z-index: 40; width: 220px; font-size: 13px; padding: 12px 14px; }
+  #card h3 { margin: 0 0 2px; font-size: 16px; }
+  #card .sub { color: var(--muted); margin-bottom: 8px; }
+  #card .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; font-size: 12px; color: var(--muted); }
+  #card .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
+  #card .friends { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  #card .friends span { font-size: 12px; padding: 0 7px; border-radius: 999px; background: rgba(255,255,255,.07); }
+  @media (max-width: 520px) {
+    #card { width: auto; right: 12px; top: auto; bottom: 46px; padding: 8px 10px; }
+    #card .legend { display: none; }
+    .controls { top: 12px; }
+  }
+</style>
+</head>
+<body>
+<div id="graph"></div>
+<div id="card" class="panel">
+  <h3 id="who">校園社團網絡</h3>
+  <div class="sub" id="sub">72 位同學、5 個社團，光點是正在傳遞的訊息</div>
+  <div class="legend" id="legend"></div>
+  <div class="friends" id="friends"></div>
+</div>
+<div class="controls">
+  <button class="btn" id="flow" aria-pressed="true">訊息流動</button>
+  <button class="btn" id="shake">重新散開</button>
+  <button class="btn" id="fit">全覽</button>
+</div>
+<div class="hint">拖曳節點・滑過看好友圈・點人物拉近</div>
+
+<script src="https://cdn.jsdelivr.net/npm/force-graph@1.52.0/dist/force-graph.min.js"></script>
+<script>
+// Seeded random so every reload shows the same fictional network.
+let seed = 20261003;
+const rand = () => ((seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296);
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+const CLUBS = [
+  { name: "攝影社", color: "#4cc9f0" },
+  { name: "登山社", color: "#7bd389" },
+  { name: "程式設計社", color: "#f7df1e" },
+  { name: "熱舞社", color: "#f72585" },
+  { name: "桌遊社", color: "#9d8cff" },
+];
+const SURNAMES = "陳林黃張李王吳劉蔡楊許鄭謝洪郭邱曾廖賴徐周葉蘇莊呂江何蕭羅高".split("");
+const GIVEN = ["怡君", "雅婷", "家豪", "冠宇", "宗翰", "承恩", "思妤", "品妍", "宥廷", "柏翰", "子晴", "欣妤",
+  "俊傑", "佳穎", "建宏", "詩涵", "彥廷", "郁婷", "昱安", "語彤", "冠廷", "芷瑜", "博文", "芸萱", "哲瑋", "沛恩"];
+
+const nodes = [];
+const links = [];
+const used = new Set();
+const newName = () => {
+  let n;
+  do n = pick(SURNAMES) + pick(GIVEN); while (used.has(n));
+  used.add(n);
+  return n;
+};
+CLUBS.forEach((club, ci) => {
+  const size = 12 + Math.floor(rand() * 5);
+  const members = [];
+  for (let i = 0; i < size; i++) {
+    const node = { id: newName(), club: ci, leader: i === 0 };
+    members.push(node);
+    nodes.push(node);
+  }
+  members.slice(1).forEach((m, i) => {
+    if (rand() < 0.75) links.push({ source: members[0].id, target: m.id });
+    const other = members[1 + Math.floor(rand() * (size - 1))];
+    if (other !== m) links.push({ source: m.id, target: other.id });
+    if (i % 3 === 0) links.push({ source: m.id, target: pick(members).id });
+  });
+});
+// A few bridges between clubs: students who joined two clubs.
+for (let i = 0; i < 14; i++) {
+  const a = pick(nodes);
+  const b = pick(nodes);
+  if (a.club !== b.club) links.push({ source: a.id, target: b.id, bridge: true });
+}
+const clean = links.filter((l) => l.source !== l.target);
+
+// Neighbour index for hover highlighting.
+const byId = new Map(nodes.map((n) => [n.id, Object.assign(n, { neighbors: new Set(), links: new Set() })]));
+clean.forEach((l) => {
+  const a = byId.get(l.source);
+  const b = byId.get(l.target);
+  a.neighbors.add(b); b.neighbors.add(a);
+  a.links.add(l); b.links.add(l);
+});
+
+let hoverNode = null;
+const hiNodes = new Set();
+const hiLinks = new Set();
+let flowing = true;
+
+const el = document.getElementById("graph");
+const graph = new ForceGraph(el)
+  .backgroundColor("#0e1013")
+  .graphData({ nodes, links: clean })
+  .nodeRelSize(4)
+  .nodeVal((n) => (n.leader ? 6 : 1 + n.neighbors.size * 0.35))
+  .nodeLabel(() => "")
+  .linkColor((l) => (hiLinks.has(l) ? "rgba(247,223,30,.9)" : l.bridge ? "rgba(255,255,255,.28)" : "rgba(255,255,255,.12)"))
+  .linkWidth((l) => (hiLinks.has(l) ? 2.4 : l.bridge ? 1.2 : 0.8))
+  .linkLineDash((l) => (l.bridge ? [3, 3] : null))
+  .linkDirectionalParticles((l) => (hiLinks.has(l) ? 4 : 1))
+  .linkDirectionalParticleWidth((l) => (hiLinks.has(l) ? 3.5 : 2))
+  .linkDirectionalParticleSpeed(() => (flowing ? 0.006 : 0))
+  .linkDirectionalParticleColor((l) => CLUBS[(typeof l.source === "object" ? l.source : byId.get(l.source)).club].color)
+  .nodeCanvasObject((node, ctx, scale) => {
+    const r = Math.sqrt(graph.nodeVal()(node)) * 4;
+    const dim = hoverNode && !hiNodes.has(node);
+    ctx.globalAlpha = dim ? 0.18 : 1;
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
+    ctx.fillStyle = CLUBS[node.club].color;
+    ctx.fill();
+    if (node.leader || node === hoverNode) {
+      ctx.lineWidth = 2 / scale;
+      ctx.strokeStyle = "#ffffff";
+      ctx.stroke();
+    }
+    // Labels: leaders always, others once zoomed in or highlighted.
+    if (node.leader || scale > 2.2 || hiNodes.has(node)) {
+      const fs = (node.leader ? 13 : 11) / scale;
+      ctx.font = `${node.leader ? 700 : 500} ${fs}px "Noto Sans TC", "Microsoft JhengHei", sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      const label = node.leader ? `${node.id}（${CLUBS[node.club].name}社長）` : node.id;
+      ctx.lineWidth = 3 / scale;
+      ctx.strokeStyle = "#0e1013";
+      ctx.strokeText(label, node.x, node.y + r + 2 / scale);
+      ctx.fillStyle = "#ecebe6";
+      ctx.fillText(label, node.x, node.y + r + 2 / scale);
+    }
+    ctx.globalAlpha = 1;
+  })
+  .nodePointerAreaPaint((node, color, ctx) => {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, Math.sqrt(graph.nodeVal()(node)) * 4 + 2, 0, 2 * Math.PI);
+    ctx.fill();
+  })
+  .onNodeHover((node) => {
+    hiNodes.clear(); hiLinks.clear();
+    if (node) {
+      hiNodes.add(node);
+      node.neighbors.forEach((n) => hiNodes.add(n));
+      node.links.forEach((l) => hiLinks.add(l));
+    }
+    hoverNode = node || null;
+    el.style.cursor = node ? "pointer" : "";
+    showCard(node);
+  })
+  .onNodeClick((node) => {
+    graph.centerAt(node.x, node.y, 800);
+    graph.zoom(3, 800);
+  })
+  .onBackgroundClick(() => graph.zoomToFit(600, 40));
+
+graph.d3Force("charge").strength(-60);
+graph.d3Force("link").distance((l) => (l.bridge ? 110 : 34));
+
+function showCard(node) {
+  const who = document.getElementById("who");
+  const sub = document.getElementById("sub");
+  const friends = document.getElementById("friends");
+  if (!node) {
+    who.textContent = "校園社團網絡";
+    sub.textContent = `${nodes.length} 位同學、${CLUBS.length} 個社團，光點是正在傳遞的訊息`;
+    friends.innerHTML = "";
+    document.getElementById("legend").style.display = "";
+    return;
+  }
+  document.getElementById("legend").style.display = "none";
+  who.textContent = node.id;
+  who.style.color = CLUBS[node.club].color;
+  sub.textContent = `${CLUBS[node.club].name}${node.leader ? "社長" : "社員"}，好友 ${node.neighbors.size} 人`;
+  friends.innerHTML = [...node.neighbors].map((n) => `<span style="color:${CLUBS[n.club].color}">${n.id}</span>`).join("");
+}
+document.getElementById("legend").innerHTML = CLUBS.map((c) => `<span><i style="background:${c.color}"></i>${c.name}</span>`).join("");
+showCard(null);
+
+function resize() { graph.width(innerWidth).height(innerHeight); }
+addEventListener("resize", resize);
+resize();
+graph.cooldownTime(4000);
+setTimeout(() => graph.zoomToFit(600, 40), 1600);
+
+document.getElementById("flow").addEventListener("click", (e) => {
+  flowing = !flowing;
+  e.currentTarget.setAttribute("aria-pressed", String(flowing));
+  graph.linkDirectionalParticleSpeed(graph.linkDirectionalParticleSpeed());
+});
+document.getElementById("shake").addEventListener("click", () => {
+  nodes.forEach((n) => { n.fx = undefined; n.fy = undefined; n.vx = (rand() - 0.5) * 30; n.vy = (rand() - 0.5) * 30; });
+  graph.d3ReheatSimulation();
+  setTimeout(() => graph.zoomToFit(600, 40), 1500);
+});
+document.getElementById("fit").addEventListener("click", () => graph.zoomToFit(600, 40));
+</script>
+</body>
+</html>

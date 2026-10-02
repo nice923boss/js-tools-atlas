@@ -1,0 +1,734 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>xterm.js 示範：可輸入指令的網頁終端機</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"終端機畫面由 xterm.js 渲染，指令由示範程式解析，不會執行任何真實系統指令"}</script>
+<style>
+  .app { position: fixed; inset: 0; padding: 12px 12px 46px; display: flex; flex-direction: column; gap: 10px; }
+  .top { flex: none; display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .top .title { flex: none; font-weight: 700; font-size: 14px; }
+  .quick { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; min-width: 0; padding: 1px; }
+  .quick::-webkit-scrollbar { display: none; }
+  .quick .btn { flex: none; padding: 6px 10px; font: 500 12px/1 var(--mono); }
+  .tour { margin-left: auto; flex: none; font-size: 11.5px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .tour::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--c4); animation: blink 1.2s infinite; }
+  .tour.off::before { background: var(--muted); animation: none; }
+  @keyframes blink { 50% { opacity: .25; } }
+  .win {
+    flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+    border: 1px solid var(--line); border-radius: var(--radius); background: #0b0d10;
+    box-shadow: 0 18px 40px rgba(0, 0, 0, .35);
+  }
+  .chrome { flex: none; display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--bg-2); border-bottom: 1px solid var(--line); min-width: 0; }
+  .dots { flex: none; display: flex; gap: 6px; }
+  .dots i { width: 10px; height: 10px; border-radius: 50%; background: #ff5f57; }
+  .dots i:nth-child(2) { background: #febc2e; }
+  .dots i:nth-child(3) { background: #28c840; }
+  .chrome .path { font: 600 12.5px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .chrome .size { margin-left: auto; flex: none; font: 11.5px var(--mono); color: var(--muted); }
+  #term { flex: 1; min-height: 0; padding: 8px 2px 4px 10px; }
+  #term .xterm { height: 100%; }
+  @media (max-width: 560px) {
+    .app { padding: 8px 8px 46px; gap: 8px; }
+    .top .title, .tour { display: none; }
+    .chrome .ver { display: none; }
+    #term { padding: 6px 0 2px 6px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="top">
+    <span class="title">xterm.js</span>
+    <div class="quick" id="quick"></div>
+    <span class="tour" id="tour">自動示範中，按任意鍵接手</span>
+  </div>
+  <section class="win">
+    <div class="chrome">
+      <span class="dots"><i></i><i></i><i></i></span>
+      <span class="path" id="path">clare@atlas: ~</span>
+      <span class="size"><span class="ver">xterm.js 6.0.0・</span><span id="size">80×24</span></span>
+    </div>
+    <div id="term"></div>
+  </section>
+</div>
+<div class="hint">點終端機即可輸入，Tab 補完、↑↓ 翻歷史</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/lib/xterm.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.11.0/lib/addon-fit.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.12.0/lib/addon-web-links.js"></script>
+<script>
+(() => {
+  // ---------- ANSI helpers ----------
+  const R = "\x1b[0m", B = "\x1b[1m";
+  const fg = (r, g, b) => `\x1b[38;2;${r};${g};${b}m`;
+  const bg = (r, g, b) => `\x1b[48;2;${r};${g};${b}m`;
+  const ACC = fg(247, 223, 30), CY = fg(76, 201, 240), GR = fg(123, 211, 137), PK = fg(247, 37, 133),
+        MU = fg(140, 138, 130);
+
+  // Cell width, mirroring xterm.js' built-in Unicode v6 provider
+  function wcw(ch) {
+    const cp = ch.codePointAt(0);
+    if (cp < 32 || (cp >= 0x7f && cp < 0xa0)) return 0;
+    if ((cp >= 0x300 && cp <= 0x36f) || (cp >= 0x200b && cp <= 0x200f)) return 0;
+    if (cp < 0x1100) return 1;
+    if (cp <= 0x115f || cp === 0x2329 || cp === 0x232a ||
+        (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) || (cp >= 0xac00 && cp <= 0xd7a3) ||
+        (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe10 && cp <= 0xfe19) || (cp >= 0xfe30 && cp <= 0xfe6f) ||
+        (cp >= 0xff00 && cp <= 0xff60) || (cp >= 0xffe0 && cp <= 0xffe6) ||
+        (cp >= 0x20000 && cp <= 0x2fffd) || (cp >= 0x30000 && cp <= 0x3fffd)) return 2;
+    return 1;
+  }
+  const strW = (s) => Array.from(s).reduce((n, ch) => n + wcw(ch), 0);
+  const padW = (s, w) => s + " ".repeat(Math.max(0, w - strW(s)));
+  const nl = (s) => s.replace(/\n/g, "\r\n");
+
+  // ---------- Terminal ----------
+  const narrow = matchMedia("(max-width: 560px)").matches;
+  const term = new Terminal({
+    fontFamily: '"JetBrains Mono", "Cascadia Mono", Consolas, "Microsoft JhengHei", monospace',
+    fontSize: narrow ? 12 : 13,
+    lineHeight: 1.15,
+    cursorBlink: true,
+    scrollback: 2000,
+    theme: {
+      background: "#0b0d10", foreground: "#e6e4dc", cursor: "#f7df1e", cursorAccent: "#0b0d10",
+      selectionBackground: "rgba(247, 223, 30, 0.28)",
+      black: "#1b1e23", red: "#ff6b6b", green: "#7bd389", yellow: "#f7df1e",
+      blue: "#4cc9f0", magenta: "#f72585", cyan: "#5ee6d0", white: "#d8d6cf",
+      brightBlack: "#5c5f66", brightRed: "#ff8f8f", brightGreen: "#a5e6b1", brightYellow: "#fff07a",
+      brightBlue: "#8adcf7", brightMagenta: "#ff6fae", brightCyan: "#9af2e4", brightWhite: "#ffffff",
+    },
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.loadAddon(new WebLinksAddon.WebLinksAddon());
+  const host = document.getElementById("term");
+  term.open(host);
+  fit.fit();
+
+  const sizeEl = document.getElementById("size");
+  const pathEl = document.getElementById("path");
+  const tourEl = document.getElementById("tour");
+  const t0 = Date.now();
+
+  // ---------- Fake file system (sample data) ----------
+  const COURSES = [
+    ["JavaScript 入門", "台北", "週六 09:30", "剩 12 位"],
+    ["Node.js 實戰", "台中", "週日 13:30", "剩 5 位"],
+    ["前端效能調校", "高雄", "週三 19:00", "額滿"],
+  ];
+  const FILES = {
+    "~/README.txt": [
+      "歡迎來到 atlas 終端機（示意環境）",
+      "這不是真的 shell：畫面由 xterm.js 渲染，指令由頁面上的 JavaScript 解析。",
+      "官方網站：https://xtermjs.org",
+    ].join("\n"),
+    "~/課程.md": [
+      "# 2026 秋季課程（示意資料）",
+      "",
+      ...COURSES.map((c) => `- ${padW(c[0], 16)}${c[1]}  ${c[2]}  ${c[3]}`),
+      "",
+      "> 報名截止：10 月 31 日",
+    ].join("\n"),
+    "~/todo.txt": [
+      "[x] 把 xterm.js 放進網頁",
+      "[x] 接上 FitAddon，視窗縮放自動調整欄列",
+      "[ ] 讓甜甜圈轉起來（輸入 donut）",
+      "[ ] 下一場數位雨（輸入 matrix）",
+    ].join("\n"),
+    "~/.bashrc": [
+      "# 示意設定，這裡沒有真的 bash",
+      "export LANG=zh_TW.UTF-8",
+      "export TZ=Asia/Taipei",
+      "alias ll='ls -l'",
+    ].join("\n"),
+    "~/projects/atlas.js": [
+      "// 示意程式：列出各縣市的工具數量",
+      'const tools = { "台北": 42, "台中": 18, "高雄": 11 };',
+      "for (const [city, n] of Object.entries(tools)) {",
+      "  console.log(`${city}：${n} 個工具`);",
+      "}",
+    ].join("\n"),
+    "~/projects/hello.py": [
+      "# 示意程式",
+      'name = "台灣"',
+      'print(f"哈囉，{name}！")',
+    ].join("\n"),
+  };
+  const DIRS = {
+    "~": ["projects", "README.txt", "課程.md", "todo.txt", ".bashrc"],
+    "~/projects": ["atlas.js", "hello.py"],
+  };
+  const MTIME = { "projects": "10月  3 09:30", "README.txt": "10月  2 21:10", "課程.md": "10月  3 08:45",
+    "todo.txt": "10月  1 17:20", ".bashrc": " 9月 28 11:02", "atlas.js": "10月  3 09:12", "hello.py": " 9月 30 22:41" };
+  let cwd = "~";
+
+  function resolve(p) {
+    if (!p || p === ".") return cwd;
+    const parts = p.startsWith("~") ? [] : cwd.split("/").slice(1);
+    for (const seg of p.replace(/^~\/?/, "").split("/")) {
+      if (!seg || seg === ".") continue;
+      if (seg === "..") parts.pop(); else parts.push(seg);
+    }
+    return ["~", ...parts].join("/");
+  }
+  const isDir = (p) => Object.prototype.hasOwnProperty.call(DIRS, p);
+  const isFile = (p) => Object.prototype.hasOwnProperty.call(FILES, p);
+
+  // ---------- Output helpers ----------
+  const out = (s) => term.write(s);
+  const println = (s = "") => term.write(nl(s) + "\r\n");
+
+  function colorCode(line) {
+    if (/^\s*(\/\/|#)/.test(line)) return MU + line + R;
+    return line.split(/("[^"]*"|'[^']*'|`[^`]*`)/).map((part, i) =>
+      i % 2 ? GR + part + R : part.replace(/\b(const|for|of|let|print|import|def|return)\b/g, PK + "$1" + R)
+    ).join("");
+  }
+  function colorFile(path, body) {
+    const lines = body.split("\n");
+    if (path.endsWith(".md")) return lines.map((l) => {
+      if (l.startsWith("# ")) return B + ACC + l + R;
+      if (l.startsWith("> ")) return MU + l + R;
+      if (l.startsWith("- ")) return CY + "•" + R + l.slice(1).replace(/(剩 \d+ 位)/, GR + "$1" + R).replace("額滿", PK + "額滿" + R);
+      return l;
+    });
+    if (path.endsWith("todo.txt")) return lines.map((l) => l.startsWith("[x]") ? GR + "[x]" + R + l.slice(3) : MU + l + R);
+    if (/\.(js|py)$/.test(path)) return lines.map(colorCode);
+    if (path.endsWith(".bashrc")) return lines.map((l) => l.startsWith("#") ? MU + l + R : l.replace(/^(\w+)/, PK + "$1" + R));
+    return lines;
+  }
+
+  // ---------- Commands ----------
+  const HELP = [
+    ["help", "顯示這份說明"],
+    ["ls [-la] [目錄]", "列出檔案"],
+    ["cd <目錄>", "切換目錄"],
+    ["pwd", "顯示目前路徑"],
+    ["cat <檔案>", "印出檔案內容"],
+    ["echo <文字>", "原樣輸出文字"],
+    ["date", "台北現在時間"],
+    ["whoami", "目前使用者"],
+    ["history", "指令歷史"],
+    ["neofetch", "終端機資訊"],
+    ["colors", "16 色、256 色與全彩"],
+    ["donut", "旋轉甜甜圈動畫"],
+    ["matrix", "數位雨動畫"],
+    ["clear", "清除畫面（Ctrl+L）"],
+  ];
+
+  function lsEntries(dir, all) {
+    return DIRS[dir].filter((n) => all || !n.startsWith("."));
+  }
+  const fileSize = (p) => new TextEncoder().encode(FILES[p]).length;
+  const nameColor = (dir, n) => isDir(dir + "/" + n) ? B + CY + n + "/" + R : n.endsWith(".md") ? ACC + n + R : /\.(js|py)$/.test(n) ? GR + n + R : n;
+
+  const COMMANDS = {
+    help() {
+      println(`${B}可用指令${R}`);
+      const w = Math.max(...HELP.map((h) => strW(h[0]))) + 2;
+      for (const [c, d] of HELP) println(`  ${ACC}${padW(c, w)}${R}${d}`);
+      println(`${MU}快捷鍵：↑↓ 翻歷史、Tab 補完、Ctrl+C 中斷、Ctrl+L 清畫面${R}`);
+    },
+    ls(args) {
+      const flags = args.filter((a) => a.startsWith("-")).join("");
+      const target = resolve(args.find((a) => !a.startsWith("-")));
+      if (isFile(target)) { println(target.split("/").pop()); return; }
+      if (!isDir(target)) { println(`ls: ${args.find((a) => !a.startsWith("-"))}：沒有此檔案或目錄`); return; }
+      const names = lsEntries(target, flags.includes("a"));
+      if (flags.includes("l")) {
+        println(`總計 ${names.length}`);
+        for (const n of names) {
+          const p = target + "/" + n, d = isDir(p);
+          const size = String(d ? 4096 : fileSize(p)).padStart(5);
+          println(`${MU}${d ? "drwxr-xr-x" : "-rw-r--r--"} 1 clare staff${R} ${size} ${MU}${MTIME[n] || "10月  3 09:00"}${R} ${nameColor(target, n)}`);
+        }
+        return;
+      }
+      // Pack names into rows that fit the current width
+      let row = "", rowW = 0;
+      for (const n of names) {
+        const w = strW(n) + (isDir(target + "/" + n) ? 1 : 0);
+        if (rowW && rowW + 2 + w > term.cols) { println(row); row = ""; rowW = 0; }
+        row += (rowW ? "  " : "") + nameColor(target, n);
+        rowW += (rowW ? 2 : 0) + w;
+      }
+      if (row) println(row);
+    },
+    cd(args) {
+      const target = resolve(args[0] || "~");
+      if (isFile(target)) { println(`cd: ${args[0]}：不是目錄`); return; }
+      if (!isDir(target)) { println(`cd: ${args[0]}：沒有此檔案或目錄`); return; }
+      cwd = target;
+      pathEl.textContent = `clare@atlas: ${cwd}`;
+    },
+    pwd() { println("/home/clare" + cwd.slice(1)); },
+    cat(args) {
+      if (!args.length) { println("cat: 請指定檔案，例如 cat 課程.md"); return; }
+      for (const a of args) {
+        const p = resolve(a);
+        if (isDir(p)) println(`cat: ${a}：是一個目錄`);
+        else if (!isFile(p)) println(`cat: ${a}：沒有此檔案或目錄`);
+        else colorFile(p, FILES[p]).forEach((l) => println(l));
+      }
+    },
+    echo(args) { println(args.join(" ")); },
+    date() {
+      const s = new Intl.DateTimeFormat("zh-TW", { timeZone: "Asia/Taipei", dateStyle: "full", timeStyle: "long" }).format(new Date());
+      println(s);
+    },
+    whoami() { println("clare"); },
+    history() {
+      hist.forEach((h, i) => println(`${MU}${String(i + 1).padStart(4)}${R}  ${h}`));
+    },
+    neofetch() {
+      const up = Math.floor((Date.now() - t0) / 1000);
+      const renderer = term.element.querySelector("canvas") ? "Canvas／WebGL" : "DOM";
+      const info = [
+        `${B}${GR}clare${R}@${B}${GR}atlas${R}`,
+        "─".repeat(15),
+        ["作業系統", "瀏覽器沙盒（示意）"],
+        ["主機", "js-tools-atlas"],
+        ["終端核心", "xterm.js 6.0.0"],
+        ["Shell", "示範用指令解析器"],
+        ["終端尺寸", `${term.cols} × ${term.rows}`],
+        ["渲染器", renderer],
+        ["語系", "zh-TW・Asia/Taipei"],
+        ["運行時間", `${Math.floor(up / 60)} 分 ${up % 60} 秒`],
+        "",
+        [0, 1, 2, 3, 4, 5, 6, 7].map((i) => `\x1b[4${i}m   `).join("") + R,
+      ].map((x) => Array.isArray(x) ? `${ACC}${B}${padW(x[0], 9)}${R}${x[1]}` : x);
+      // JS badge drawn with background colors so rows join without gaps
+      const logo = [
+        "..................", "..................", "..................",
+        "........##..#####.", "........##..##....", "........##..#####.",
+        "....##..##.....##.", ".....####...#####.", "..................",
+      ].map((l) => Array.from(l).map((p) => (p === "#" ? bg(26, 26, 20) : bg(247, 223, 30)) + " ").join("") + R);
+      if (term.cols < 52) { info.forEach((l) => println(l)); return; }
+      const n = Math.max(logo.length, info.length);
+      for (let i = 0; i < n; i++) println(` ${logo[i] || " ".repeat(18)}   ${info[i] || ""}`);
+    },
+    colors() {
+      const W = Math.max(16, Math.min(term.cols - 1, 72));
+      println(`${MU}16 色 ANSI${R}`);
+      println([0, 1, 2, 3, 4, 5, 6, 7].map((i) => `\x1b[4${i}m    `).join("") + R);
+      println([0, 1, 2, 3, 4, 5, 6, 7].map((i) => `\x1b[10${i}m    `).join("") + R);
+      println(`${MU}256 色調色盤${R}`);
+      for (let r = 0; r < 6; r++) {
+        let s = "";
+        for (let g = 0; g < 6; g++) for (let b = 0; b < 6; b++) s += `\x1b[48;5;${16 + 36 * r + 6 * g + b}m `;
+        println(s + R);
+      }
+      let gray = "";
+      for (let i = 0; i < 24; i++) gray += `\x1b[48;5;${232 + i}m `;
+      println(gray + R);
+      println(`${MU}24-bit 全彩（上下半格各一色）${R}`);
+      for (let row = 0; row < 3; row++) {
+        let s = "";
+        for (let x = 0; x < W; x++) {
+          const h = x / W;
+          const top = hsl(h, 0.9, 0.72 - row * 0.14), bot = hsl(h, 0.9, 0.65 - row * 0.14);
+          s += fg(...top) + bg(...bot) + "▀";
+        }
+        println(s + R);
+      }
+    },
+    clear() { out("\x1b[2J\x1b[3J\x1b[H"); },
+    donut() { startAnim("donut", donutFrame, 40); },
+    matrix() { startAnim("matrix", matrixFrame, 50); },
+  };
+  COMMANDS.ll = (args) => COMMANDS.ls(["-l", ...args]);
+  const VISIBLE_CMDS = HELP.map((h) => h[0].split(" ")[0]);
+
+  function hsl(h, s, l) {
+    const f = (n) => {
+      const k = (n + h * 12) % 12, a = s * Math.min(l, 1 - l);
+      return Math.round(255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))));
+    };
+    return [f(0), f(8), f(4)];
+  }
+
+  // ---------- Animations (alternate screen buffer) ----------
+  let anim = null;
+  function startAnim(name, frameFn, interval) {
+    mode = "anim";
+    const state = {};
+    const me = { name, timer: 0, stopped: false };
+    out("\x1b[?1049h\x1b[?25l\x1b[2J");
+    const loop = () => {
+      if (me.stopped) return;
+      term.write(frameFn(state), () => { if (!me.stopped) me.timer = setTimeout(loop, interval); });
+    };
+    me.stop = () => {
+      if (me.stopped) return;
+      me.stopped = true;
+      clearTimeout(me.timer);
+      anim = null;
+      out(`${R}\x1b[?1049l\x1b[?25h`);
+      println(`${MU}（${name} 已停止）${R}`);
+      prompt();
+    };
+    anim = me;
+    loop();
+  }
+
+  const DONUT_CHARS = ".,-~:;=!*#$@";
+  const DONUT_PAL = Array.from({ length: 12 }, (_, i) => {
+    const t = i / 11;
+    return fg(Math.round(150 + 105 * t), Math.round(60 + 175 * t), Math.round(20 + 40 * t * t));
+  });
+  function donutFrame(s) {
+    const W = term.cols, H = term.rows - 1;
+    s.A = (s.A || 0) + 0.07; s.B = (s.B || 0) + 0.035;
+    const lum = new Int8Array(W * H).fill(-1), z = new Float32Array(W * H);
+    const cA = Math.cos(s.A), sA = Math.sin(s.A), cB = Math.cos(s.B), sB = Math.sin(s.B);
+    const k = Math.min(W / 52, H / 22), kx = 30 * k, ky = 15 * k;
+    for (let j = 0; j < 6.28; j += 0.07) {
+      const ct = Math.cos(j), st = Math.sin(j);
+      for (let i = 0; i < 6.28; i += 0.02) {
+        const sp = Math.sin(i), cp = Math.cos(i);
+        const h = ct + 2, D = 1 / (sp * h * sA + st * cA + 5), t = sp * h * cA - st * sA;
+        const x = (W / 2 + kx * D * (cp * h * cB - t * sB)) | 0;
+        const y = (H / 2 + ky * D * (cp * h * sB + t * cB)) | 0;
+        if (x < 0 || x >= W || y < 0 || y >= H) continue;
+        const o = x + W * y;
+        if (D > z[o]) {
+          z[o] = D;
+          const N = (8 * ((st * sA - sp * ct * cA) * cB - sp * ct * sA - st * cA - cp * ct * sB)) | 0;
+          lum[o] = Math.max(0, Math.min(11, N));
+        }
+      }
+    }
+    let str = "\x1b[H";
+    for (let y = 0; y < H; y++) {
+      let last = -2, line = "";
+      for (let x = 0; x < W; x++) {
+        const L = lum[x + W * y];
+        if (L < 0) { line += " "; continue; }
+        if (L !== last) { line += DONUT_PAL[L]; last = L; }
+        line += DONUT_CHARS[L];
+      }
+      str += line + R + (y < H - 1 ? "\r\n" : "");
+    }
+    return str + `\x1b[${H + 1};1H${MU} 按任意鍵或 Ctrl+C 停止${R}\x1b[K`;
+  }
+
+  const KANA = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ0123456789:=*+<>";
+  const rnd = (n) => (Math.random() * n) | 0;
+  const pick = () => KANA[rnd(KANA.length)];
+  function matrixFrame(s) {
+    const W = term.cols, H = term.rows;
+    let str = "";
+    if (s.W !== W || s.H !== H) {
+      s.W = W; s.H = H;
+      s.cols = Array.from({ length: Math.ceil(W / 2) }, () => ({ y: -rnd(H), len: 6 + rnd(H / 2), slow: Math.random() < 0.3, tick: 0 }));
+      str += "\x1b[2J";
+    }
+    s.cols.forEach((c, i) => {
+      const x = i * 2 + 1;
+      c.tick++;
+      if (c.slow && c.tick % 2) return;
+      if (c.y >= 1 && c.y - 1 <= H) str += `\x1b[${c.y - 1};${x}H${fg(60, 210, 110)}${pick()}`;
+      if (c.y >= 1 && c.y <= H) str += `\x1b[${c.y};${x}H${B}${fg(225, 255, 225)}${pick()}${R}`;
+      const tail = c.y - c.len;
+      if (tail >= 1 && tail <= H) str += `\x1b[${tail};${x}H `;
+      if (Math.random() < 0.15) {
+        const ry = c.y - 2 - rnd(c.len);
+        if (ry >= 1 && ry <= H) str += `\x1b[${ry};${x}H${fg(30, 130 + rnd(60), 70)}${pick()}`;
+      }
+      c.y++;
+      if (tail > H) { c.y = -rnd(H / 2); c.len = 6 + rnd(H / 2); }
+    });
+    return str + `\x1b[${H};1H${bg(11, 13, 16)}${MU} 按任意鍵或 Ctrl+C 停止 ${R}`;
+  }
+
+  // ---------- Line editor ----------
+  let mode = "input", buf = [], cur = 0, P = 0, cr = 0, cc = 0;
+  const hist = [];
+  let hIdx = 0, draft = [];
+
+  function layout(chars) {
+    const cols = term.cols;
+    let r = 0, c = P;
+    const pos = [];
+    for (const ch of chars) {
+      const w = wcw(ch);
+      if (c + w > cols) { r++; c = 0; }
+      pos.push([r, c]);
+      c += w;
+    }
+    return { pos, end: [r, c] };
+  }
+  // Repaint the input after the prompt and park the cursor at `cur`
+  function redraw() {
+    const cols = term.cols;
+    const { pos, end } = layout(buf);
+    let s = cr > 0 ? `\x1b[${cr}A` : "";
+    s += "\r" + (P ? `\x1b[${P}C` : "") + "\x1b[J" + buf.join("");
+    let [er, ec] = end;
+    if (ec >= cols) { s += "\r\n"; er++; ec = 0; }
+    const [tr, tc] = cur < buf.length ? pos[cur] : [er, ec];
+    if (er > tr) s += `\x1b[${er - tr}A`;
+    s += "\r" + (tc ? `\x1b[${tc}C` : "");
+    cr = tr; cc = tc;
+    out(s);
+  }
+  function promptText() {
+    P = strW(`clare@atlas:${cwd}$ `);
+    return `${B}${GR}clare@atlas${R}:${B}${CY}${cwd}${R}$ `;
+  }
+  function prompt() {
+    mode = "input"; buf = []; cur = 0; hIdx = hist.length;
+    out(promptText());
+    cr = 0; cc = P;
+  }
+  function reprompt() {
+    out(promptText());
+    cr = 0; cc = P;
+    redraw();
+  }
+  function insert(text) {
+    const chars = Array.from(text).filter((ch) => ch.codePointAt(0) >= 32 && ch !== "\x7f");
+    if (!chars.length) return;
+    buf.splice(cur, 0, ...chars);
+    cur += chars.length;
+    redraw();
+  }
+  function submit() {
+    if (mode !== "input") return;
+    cur = buf.length; redraw();
+    out("\r\n");
+    const line = buf.join("").trim();
+    if (line && hist[hist.length - 1] !== line) hist.push(line);
+    mode = "busy";
+    if (line) run(line);
+    if (mode === "busy") prompt();
+  }
+  function tokenize(line) {
+    return [...line.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map((m) => m[1] ?? m[2] ?? m[3]);
+  }
+  function run(line) {
+    const [cmd, ...args] = tokenize(line);
+    const fn = Object.prototype.hasOwnProperty.call(COMMANDS, cmd) ? COMMANDS[cmd] : null;
+    if (!fn) { println(`${PK}${cmd}${R}：找不到指令，輸入 ${ACC}help${R} 查看可用指令`); return; }
+    fn(args);
+  }
+  function complete() {
+    const left = buf.slice(0, cur).join("");
+    const word = left.match(/(\S*)$/)[1];
+    const first = left.slice(0, left.length - word.length).trim() === "";
+    let cands, dirPath = "", base = word;
+    if (first) {
+      cands = VISIBLE_CMDS.filter((c) => c.startsWith(word)).map((c) => [c, " "]);
+    } else {
+      const slash = word.lastIndexOf("/");
+      dirPath = slash >= 0 ? word.slice(0, slash + 1) : "";
+      base = word.slice(slash + 1);
+      const dir = resolve(dirPath || ".");
+      if (!isDir(dir)) return;
+      cands = DIRS[dir].filter((n) => n.startsWith(base) && (base.startsWith(".") || !n.startsWith(".")))
+        .map((n) => [n, isDir(dir + "/" + n) ? "/" : " "]);
+    }
+    if (!cands.length) return;
+    if (cands.length === 1) { insert(cands[0][0].slice(base.length) + cands[0][1]); return; }
+    let pre = cands[0][0];
+    for (const [c] of cands) while (!c.startsWith(pre)) pre = pre.slice(0, -1);
+    if (pre.length > base.length) { insert(pre.slice(base.length)); return; }
+    const keep = cur;
+    cur = buf.length; redraw();
+    out("\r\n");
+    println(cands.map(([c, sfx]) => sfx === "/" ? B + CY + c + "/" + R : c).join("  "));
+    cur = keep;
+    reprompt();
+  }
+  function historyMove(d) {
+    if (!hist.length) return;
+    if (hIdx === hist.length) draft = buf.slice();
+    hIdx = Math.max(0, Math.min(hist.length, hIdx + d));
+    buf = hIdx === hist.length ? draft.slice() : Array.from(hist[hIdx]);
+    cur = buf.length;
+    redraw();
+  }
+
+  function handleInput(data) {
+    if (mode === "anim") { if (anim) anim.stop(); return; }
+    if (mode !== "input") return;
+    const re = /\x1b(?:\[[0-9;]*[A-Za-z~]|O[A-Za-z])|[\s\S]/gu;
+    let text = "";
+    const flush = () => { if (text) { insert(text); text = ""; } };
+    for (const [tok] of data.matchAll(re)) {
+      // A pasted line that launched an animation: drop the rest of the paste
+      if (mode !== "input") return;
+      const code = tok.codePointAt(0);
+      if (tok[0] !== "\x1b" && code >= 32 && code !== 0x7f) { text += tok; continue; }
+      flush();
+      switch (tok) {
+        case "\r": case "\n": submit(); break;
+        case "\x7f": case "\b":
+          if (cur > 0) { buf.splice(cur - 1, 1); cur--; redraw(); }
+          break;
+        case "\x1b[3~": if (cur < buf.length) { buf.splice(cur, 1); redraw(); } break;
+        case "\x1b[D": if (cur > 0) { cur--; redraw(); } break;
+        case "\x1b[C": if (cur < buf.length) { cur++; redraw(); } break;
+        case "\x1b[A": historyMove(-1); break;
+        case "\x1b[B": historyMove(1); break;
+        case "\x1b[H": case "\x1bOH": case "\x01": cur = 0; redraw(); break;
+        case "\x1b[F": case "\x1bOF": case "\x05": cur = buf.length; redraw(); break;
+        case "\x15": buf.splice(0, cur); cur = 0; redraw(); break;
+        case "\t": complete(); break;
+        case "\x03":
+          cur = buf.length; redraw();
+          out(`${MU}^C${R}\r\n`);
+          prompt();
+          break;
+        case "\x0c":
+          out("\x1b[2J\x1b[3J\x1b[H");
+          reprompt();
+          break;
+        default: break;
+      }
+    }
+    flush();
+  }
+
+  // ---------- Scripted tour + quick buttons ----------
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let tourOn = true, typeGen = 0;
+  async function typeOut(text, speed) {
+    const g = ++typeGen;
+    for (const ch of text) {
+      if (g !== typeGen) return false;
+      insert(ch);
+      await sleep(speed);
+    }
+    return g === typeGen;
+  }
+  function clearLine() {
+    if (mode !== "input" || !buf.length) return;
+    buf = []; cur = 0; redraw();
+  }
+  function stopTour() {
+    if (!tourOn) return;
+    tourOn = false;
+    typeGen++;
+    clearLine();
+    tourEl.textContent = "手動模式";
+    tourEl.classList.add("off");
+  }
+  async function tour() {
+    const steps = [["help", 2800], ["ls -l", 2400], ["cat 課程.md", 2800], ["colors", 3200], ["donut", 5200],
+      ["neofetch", 3600], ["matrix", 4600], ["date", 1800], ["clear", 400]];
+    await sleep(1000);
+    while (tourOn) {
+      for (const [cmd, hold] of steps) {
+        if (!tourOn || mode !== "input") return;
+        if (!(await typeOut(cmd, 55)) || !tourOn) return;
+        await sleep(160);
+        if (!tourOn) return;
+        submit();
+        await sleep(hold);
+        if (!tourOn) return;
+        if (anim) anim.stop();
+      }
+    }
+  }
+
+  const QUICK = ["help", "ls -la", "cat 課程.md", "neofetch", "colors", "donut", "matrix", "date", "clear"];
+  const quickEl = document.getElementById("quick");
+  for (const cmd of QUICK) {
+    const b = document.createElement("button");
+    b.className = "btn";
+    b.textContent = cmd;
+    b.title = `執行 ${cmd}`;
+    b.addEventListener("click", async () => {
+      stopTour();
+      if (anim) anim.stop();
+      typeGen++;
+      clearLine();
+      term.focus();
+      if (await typeOut(cmd, 22)) submit();
+    });
+    quickEl.appendChild(b);
+  }
+
+  term.onData((data) => { stopTour(); typeGen++; handleInput(data); });
+  // Clicking into the terminal hands control to the user, including ending a tour animation
+  host.addEventListener("pointerdown", () => {
+    if (!tourOn) return;
+    stopTour();
+    if (anim) anim.stop();
+  });
+
+  // ---------- Resize ----------
+  term.onResize(({ cols, rows }) => {
+    sizeEl.textContent = `${cols}×${rows}`;
+    if (mode === "input") {
+      const { pos, end } = layout(buf);
+      [cr, cc] = cur < buf.length ? pos[cur] : end;
+    }
+  });
+  sizeEl.textContent = `${term.cols}×${term.rows}`;
+  let raf = 0;
+  new ResizeObserver(() => {
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() => { try { fit.fit(); } catch (e) { console.warn("fit failed", e); } });
+  }).observe(host);
+
+  // ---------- Banner ----------
+  // 5-row pixel font; "#" marks a lit pixel
+  const FONT = {
+    x: ["....", "#..#", ".##.", ".##.", "#..#"],
+    t: [".#.", "###", ".#.", ".#.", ".##"],
+    e: ["....", ".##.", "####", "#...", ".###"],
+    r: ["....", "#.##", "##..", "#...", "#..."],
+    m: [".....", "##.#.", "#.#.#", "#.#.#", "#.#.#"],
+    ".": [".", ".", ".", ".", "#"],
+    j: ["..#", "...", "..#", "#.#", ".#."],
+    s: ["....", ".###", "##..", "..##", "###."],
+  };
+  const PIX = [0, 1, 2, 3, 4].map((r) => Array.from("xterm.js").map((ch) => FONT[ch][r]).join("."));
+  const pixColor = (x) => {
+    const t = x / (PIX[0].length - 1);
+    return [Math.round(247 - 171 * t), Math.round(223 - 22 * t), Math.round(30 + 210 * t)];
+  };
+  function bannerLines() {
+    const w = PIX[0].length;
+    if (term.cols >= w * 2 + 2) {
+      // Two cells per pixel: square pixels painted with background color
+      return PIX.map((row) => " " + Array.from(row).map((p, x) => p === "#" ? bg(...pixColor(x)) + "  " + R : "  ").join(""));
+    }
+    if (term.cols >= w + 2) {
+      // Half blocks: two pixel rows per text row
+      const lines = [];
+      for (let r = 0; r < PIX.length; r += 2) {
+        let line = " ";
+        for (let x = 0; x < w; x++) {
+          const top = PIX[r][x] === "#", bot = r + 1 < PIX.length && PIX[r + 1][x] === "#";
+          line += top || bot ? fg(...pixColor(x)) + (top && bot ? "█" : top ? "▀" : "▄") : " ";
+        }
+        lines.push(line + R);
+      }
+      return lines;
+    }
+    return [`${B}${ACC}xterm.js${R}`];
+  }
+  function banner() {
+    bannerLines().forEach((l) => println(l));
+    println();
+    println(`${MU}歡迎使用 xterm.js 示範終端機（示意環境，不會碰到你的電腦）${R}`);
+    println(`輸入 ${ACC}help${R} 查看指令，或試試 ${ACC}donut${R}、${ACC}matrix${R}。`);
+    println();
+  }
+  banner();
+  prompt();
+  tour();
+})();
+</script>
+</body>
+</html>

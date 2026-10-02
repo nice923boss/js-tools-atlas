@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rapier 示範：角色控制器遊樂場</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"物理與角色控制全部由 Rapier（Rust 編譯成 WebAssembly）計算，3D 繪圖使用 three.js 0.186.1"}</script>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"}}</script>
+<style>
+  body { background: radial-gradient(circle at 50% 30%, #1b2536 0%, #0b0e14 75%); }
+  #stage { position: fixed; inset: 0; touch-action: none; }
+  #stage canvas { display: block; }
+  .heading { position: fixed; left: 16px; top: 14px; z-index: 40; pointer-events: none; }
+  .heading h1 { margin: 0; font-size: clamp(18px, 4vw, 26px); letter-spacing: .06em; }
+  .heading p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+  .stats { position: fixed; right: 12px; bottom: 12px; z-index: 40; padding: 5px 10px; border-radius: 999px; font-size: 12px; pointer-events: none; }
+  .bubble {
+    position: fixed; left: 0; top: 0; z-index: 30; pointer-events: none; white-space: nowrap;
+    padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    background: var(--accent); color: var(--accent-ink); transform: translate(-50%, -100%);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, .35); transition: opacity .2s;
+  }
+  .bubble[hidden] { display: none; }
+  @media (max-width: 600px) { .heading { top: 58px; } .heading p { max-width: 220px; } .stats { bottom: 46px; } }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div class="heading"><h1>角色控制器遊樂場</h1><p>Rapier 運動學角色：自動跨階、爬緩坡、陡坡滑落、推開木箱</p></div>
+<div class="controls">
+  <button class="btn primary" id="rain">球雨 300 顆</button>
+  <button class="btn" id="jump">跳躍</button>
+  <button class="btn" id="reset">重置</button>
+  <button class="btn" id="auto" aria-pressed="true">自動導覽</button>
+</div>
+<div class="bubble" id="bubble" hidden></div>
+<div class="panel stats mono" id="stats">載入中</div>
+<div class="hint">點地面讓角色走過去・WASD 或方向鍵操作・點物體踢飛</div>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
+import * as RAPIER from "https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.21.0/dist/rapier.mjs";
+
+await RAPIER.init();
+
+const STEP = 1 / 60;
+const DEG = Math.PI / 180;
+const CHAR = { r: 0.3, hh: 0.35, speed: 3.2, jump: 6.5, gravity: 18 };
+const START = { x: 0, y: 1.2, z: 5 };
+const MAX_BALLS = 700;
+const PALETTE = [0xf7df1e, 0x4cc9f0, 0xf72585, 0x7bd389, 0xff8c42, 0x9d8cff];
+
+// --- three.js scene ---------------------------------------------------------------------
+const stage = document.getElementById("stage");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+stage.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0e14);
+scene.fog = new THREE.Fog(0x0b0e14, 16, 34);
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI * 0.46;
+controls.minDistance = 5;
+controls.maxDistance = 26;
+controls.enablePan = false;
+
+scene.add(new THREE.HemisphereLight(0xdfe9ff, 0x1a1f2a, 1.3));
+const sun = new THREE.DirectionalLight(0xffffff, 2.4);
+sun.position.set(6, 12, 7);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -11, right: 11, top: 11, bottom: -11, near: 1, far: 40 });
+sun.shadow.bias = -0.0006;
+scene.add(sun);
+
+// --- Rapier world -----------------------------------------------------------------------
+const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
+world.timestep = STEP;
+
+// Static level geometry: every piece is a Rapier cuboid collider plus a matching mesh.
+function addStatic(hx, hy, hz, pos, rotZ, rotX, color) {
+  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(rotX || 0, 0, rotZ || 0));
+  const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(pos[0], pos[1], pos[2]).setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }));
+  world.createCollider(RAPIER.ColliderDesc.cuboid(hx, hy, hz).setFriction(0.8), body);
+  if (color === null) return;
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2), new THREE.MeshStandardMaterial({ color, roughness: 0.8 }));
+  mesh.position.set(pos[0], pos[1], pos[2]);
+  mesh.quaternion.copy(q);
+  mesh.castShadow = mesh.receiveShadow = true;
+  scene.add(mesh);
+}
+
+// Ground
+addStatic(14, 0.5, 14, [0, -0.5, 0], 0, 0, null);
+const groundMesh = new THREE.Mesh(new THREE.PlaneGeometry(90, 90), new THREE.MeshStandardMaterial({ color: 0x1c2432, roughness: 0.95 }));
+groundMesh.rotation.x = -Math.PI / 2;
+groundMesh.receiveShadow = true;
+scene.add(groundMesh);
+const grid = new THREE.GridHelper(28, 28, 0x34425a, 0x263043);
+grid.position.y = 0.003;
+scene.add(grid);
+
+// Low rim around the arena keeps rolling balls on the ground.
+for (const s of [-1, 1]) {
+  addStatic(10.2, 0.18, 0.2, [0, 0.18, s * 10], 0, 0, 0x2b3854);
+  addStatic(0.2, 0.18, 10.2, [s * 10, 0.18, 0], 0, 0, 0x2b3854);
+}
+
+// Mesa: top at y = 1.2, x in [-2, 2], z in [-4.5, -1.5]
+const MESA_H = 1.2;
+addStatic(2, MESA_H / 2, 1.5, [0, MESA_H / 2, -3], 0, 0, 0x3a4860);
+// Stairs rising toward +x along the mesa's west side: 6 steps of 0.2 m
+for (let i = 0; i < 6; i++) {
+  const top = (i + 1) * 0.2;
+  addStatic(0.25, top / 2, 1, [-4.75 + i * 0.5, top / 2, -3], 0, 0, i % 2 ? 0x5b6d8c : 0x4f6080);
+}
+// Gentle ramp (20 degrees) descending toward +x from the mesa's east edge
+{
+  const a = 20 * DEG, len = MESA_H / Math.sin(a), run = MESA_H / Math.tan(a);
+  const mx = 2 + run / 2, my = MESA_H / 2;
+  addStatic(len / 2, 0.1, 1.5, [mx - Math.sin(a) * 0.1, my - Math.cos(a) * 0.1, -3], -a, 0, 0x2f7a5f);
+}
+// Steep ramp (55 degrees) on the mesa's south face, rising toward -z
+{
+  const a = 55 * DEG, len = MESA_H / Math.sin(a), run = MESA_H / Math.tan(a);
+  const mz = -1.5 + run / 2, my = MESA_H / 2;
+  addStatic(1, 0.1, len / 2, [0, my - Math.cos(a) * 0.1, mz - Math.sin(a) * 0.1], 0, a, 0x93304f);
+}
+
+// Floating labels drawn with canvas textures.
+function label(text, color, pos, scale = 1) {
+  const c = document.createElement("canvas");
+  const g = c.getContext("2d");
+  const font = "700 44px 'Noto Sans TC', 'Microsoft JhengHei', 'PingFang TC', sans-serif";
+  g.font = font;
+  const w = Math.ceil(g.measureText(text).width) + 48;
+  c.width = w; c.height = 76;
+  g.font = font;
+  g.fillStyle = "rgba(10, 13, 20, 0.82)";
+  g.beginPath(); g.roundRect(2, 2, w - 4, 72, 36); g.fill();
+  g.strokeStyle = color; g.lineWidth = 4; g.stroke();
+  g.fillStyle = color; g.textBaseline = "middle"; g.textAlign = "center";
+  g.fillText(text, w / 2, 40);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthWrite: false }));
+  s.scale.set((w / 76) * 0.42 * scale, 0.42 * scale, 1);
+  s.position.set(pos[0], pos[1], pos[2]);
+  scene.add(s);
+}
+label("階梯：自動跨階", "#9fb6dd", [-3.5, 2.0, -3]);
+label("緩坡 20°：可攀爬", "#7bd389", [4.1, 1.6, -3]);
+label("陡坡 55°：會滑落", "#f72585", [0, 2.15, -1.2]);
+label("可推動的木箱", "#ff8c42", [0, 2.3, 1.6]);
+
+// --- dynamic bodies ---------------------------------------------------------------------
+const CRATE = 0.25;
+const crateMesh = new THREE.InstancedMesh(
+  new RoundedBoxGeometry(CRATE * 2, CRATE * 2, CRATE * 2, 2, 0.04),
+  new THREE.MeshStandardMaterial({ roughness: 0.55 }),
+  12,
+);
+crateMesh.castShadow = crateMesh.receiveShadow = true;
+scene.add(crateMesh);
+let crates = [];
+
+const ballMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 18, 12), new THREE.MeshStandardMaterial({ roughness: 0.3, metalness: 0.05 }), MAX_BALLS);
+ballMesh.castShadow = ballMesh.receiveShadow = true;
+ballMesh.count = 0;
+scene.add(ballMesh);
+let balls = [];       // { body, r, color }
+let ballsDirty = true;
+let rainQueue = 0;
+
+function buildCrates() {
+  for (const b of crates) world.removeRigidBody(b);
+  crates = [];
+  const col = new THREE.Color();
+  // A 3 x 3 wall plus a small stack, standing across the patrol path.
+  for (let y = 0; y < 3; y++) for (let z = 0; z < 3; z++) {
+    const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(0, CRATE + y * CRATE * 2.02, 1.0 + z * CRATE * 2.02));
+    world.createCollider(RAPIER.ColliderDesc.cuboid(CRATE, CRATE, CRATE).setDensity(1.6).setFriction(0.7), body);
+    crates.push(body);
+  }
+  for (let i = 0; i < 3; i++) {
+    const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(-5.5, CRATE + i * CRATE * 2.02, 2.6));
+    world.createCollider(RAPIER.ColliderDesc.cuboid(CRATE, CRATE, CRATE).setDensity(1.6).setFriction(0.7), body);
+    crates.push(body);
+  }
+  crates.forEach((_, i) => crateMesh.setColorAt(i, col.setHSL(0.07 + (i % 3) * 0.015, 0.75, 0.52 + (i % 2) * 0.06)));
+  crateMesh.instanceColor.needsUpdate = true;
+}
+
+function addBall(x, y, z) {
+  if (balls.length >= MAX_BALLS) removeBall(0);
+  const r = 0.12 + Math.random() * 0.12;
+  const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(x, y, z));
+  world.createCollider(RAPIER.ColliderDesc.ball(r).setDensity(0.8).setRestitution(0.45).setFriction(0.5), body);
+  balls.push({ body, r, color: PALETTE[(Math.random() * PALETTE.length) | 0] });
+  ballsDirty = true;
+}
+function removeBall(i) {
+  world.removeRigidBody(balls[i].body);
+  balls.splice(i, 1);
+  ballsDirty = true;
+}
+function clearBalls() { while (balls.length) removeBall(balls.length - 1); }
+
+// --- kinematic character controller -----------------------------------------------------
+const charBody = world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(START.x, START.y, START.z));
+const charCol = world.createCollider(RAPIER.ColliderDesc.capsule(CHAR.hh, CHAR.r), charBody);
+const cc = world.createCharacterController(0.02);
+cc.enableAutostep(0.3, 0.15, true);          // climb steps up to 0.3 m
+cc.enableSnapToGround(0.3);                   // stick to the ground when walking down steps or ramps
+cc.setMaxSlopeClimbAngle(40 * DEG);           // the 20 degree ramp is fine, the 55 degree one is not
+cc.setMinSlopeSlideAngle(40 * DEG);
+cc.setApplyImpulsesToDynamicBodies(true);     // walking into crates and balls pushes them
+cc.setCharacterMass(5);
+
+const hero = new THREE.Group();
+{
+  const bodyM = new THREE.Mesh(new THREE.CapsuleGeometry(CHAR.r, CHAR.hh * 2, 8, 20), new THREE.MeshStandardMaterial({ color: 0xf7df1e, roughness: 0.35 }));
+  const visor = new THREE.Mesh(new THREE.CapsuleGeometry(0.1, 0.3, 4, 12), new THREE.MeshStandardMaterial({ color: 0x14161c, roughness: 0.2, metalness: 0.4 }));
+  visor.rotation.z = Math.PI / 2;
+  visor.position.set(0, 0.22, CHAR.r - 0.04);
+  bodyM.castShadow = visor.castShadow = true;
+  hero.add(bodyM, visor);
+}
+scene.add(hero);
+
+const marker = new THREE.Mesh(new THREE.RingGeometry(0.22, 0.32, 40), new THREE.MeshBasicMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0.9, side: THREE.DoubleSide }));
+marker.rotation.x = -Math.PI / 2;
+marker.visible = false;
+scene.add(marker);
+
+// Patrol route used by the auto tour; each stop shows a speech bubble.
+const ROUTE = [
+  { p: [-6.0, -3.0], say: "走向階梯" },
+  { p: [0.0, -3.0], say: "自動跨上階梯" },
+  { p: [6.2, -3.0], say: "走下 20° 緩坡" },
+  { p: [5.0, 1.8], say: "" },
+  { p: [-4.0, 1.8], say: "推開木箱" },
+  { p: [0.0, 0.6], say: "" },
+  { p: [0.0, -2.6], say: "挑戰 55° 陡坡", steep: true },
+  { p: [-4.0, 0.2], say: "" },
+];
+let auto = true, routeIdx = 0, best = Infinity, bestAt = 0;
+let target = null;           // manual walk target {x, z}
+let vy = 0, grounded = false, jumpReq = false;
+const vel = new THREE.Vector2();
+let facing = 0, simTime = 0;
+let bubbleText = "", bubbleUntil = 0;
+const keys = new Set();
+
+function say(text, secs = 2.2) { bubbleText = text; bubbleUntil = simTime + secs; }
+
+function desiredDir() {
+  // Keyboard input, relative to the camera heading.
+  let kx = 0, kz = 0;
+  if (keys.has("KeyW") || keys.has("ArrowUp")) kz -= 1;
+  if (keys.has("KeyS") || keys.has("ArrowDown")) kz += 1;
+  if (keys.has("KeyA") || keys.has("ArrowLeft")) kx -= 1;
+  if (keys.has("KeyD") || keys.has("ArrowRight")) kx += 1;
+  if (kx || kz) {
+    const yaw = Math.atan2(camera.position.x - controls.target.x, camera.position.z - controls.target.z);
+    const c = Math.cos(yaw), s = Math.sin(yaw);
+    const v = new THREE.Vector2(kx * c + kz * s, -kx * s + kz * c);
+    return v.normalize();
+  }
+  const p = charBody.translation();
+  let goal = target;
+  if (auto) {
+    const stop = ROUTE[routeIdx];
+    goal = { x: stop.p[0], z: stop.p[1] };
+    const d = Math.hypot(goal.x - p.x, goal.z - p.z);
+    if (d < best - 0.08) { best = d; bestAt = simTime; }
+    const stuck = simTime - bestAt > (stop.steep ? 2.0 : 2.5);
+    if (d < 0.45 || stuck) {
+      if (stop.steep && stuck) say("太陡了，爬不上去", 3.2);
+      routeIdx = (routeIdx + 1) % ROUTE.length;
+      best = Infinity; bestAt = simTime;
+      if (ROUTE[routeIdx].say && simTime > bubbleUntil - 0.5) say(ROUTE[routeIdx].say);
+      if (stop.steep && stuck) jumpReq = true;
+    }
+  }
+  if (!goal) return new THREE.Vector2();
+  const dx = goal.x - p.x, dz = goal.z - p.z, d = Math.hypot(dx, dz);
+  if (d < 0.2) { if (!auto) { target = null; marker.visible = false; } return new THREE.Vector2(); }
+  return new THREE.Vector2(dx / d, dz / d).multiplyScalar(Math.min(1, d / 0.6));
+}
+
+function stepCharacter(dt) {
+  const dir = desiredDir();
+  vel.lerp(dir.multiplyScalar(CHAR.speed), grounded ? 0.25 : 0.06);
+  vy -= CHAR.gravity * dt;
+  if (jumpReq && grounded) { vy = CHAR.jump; }
+  jumpReq = false;
+  const want = { x: vel.x * dt, y: vy * dt, z: vel.y * dt };
+  cc.computeColliderMovement(charCol, want);
+  const mv = cc.computedMovement();
+  const p = charBody.translation();
+  charBody.setNextKinematicTranslation({ x: p.x + mv.x, y: p.y + mv.y, z: p.z + mv.z });
+  grounded = cc.computedGrounded();
+  if (grounded && vy < 0) vy = -0.5;
+  if (vy > 0 && mv.y < want.y * 0.5) vy = 0;   // bumped the head
+  if (vel.lengthSq() > 0.05) facing = Math.atan2(vel.x, vel.y);
+  if (p.y < -8) resetCharacter();
+}
+
+function resetCharacter() {
+  charBody.setTranslation(START, true);
+  charBody.setNextKinematicTranslation(START);
+  vy = 0; vel.set(0, 0);
+}
+
+function rain(n) { rainQueue += n; }
+
+function resetAll() {
+  clearBalls();
+  buildCrates();
+  resetCharacter();
+  routeIdx = 0; best = Infinity; bestAt = simTime;
+  target = null; marker.visible = false;
+  rain(100);
+  say(ROUTE[0].say);
+}
+
+// --- input ------------------------------------------------------------------------------
+const autoBtn = document.getElementById("auto");
+function setAuto(on) {
+  auto = on;
+  autoBtn.setAttribute("aria-pressed", String(on));
+  if (on) { target = null; marker.visible = false; best = Infinity; bestAt = simTime; }
+}
+autoBtn.addEventListener("click", () => setAuto(!auto));
+document.getElementById("rain").addEventListener("click", () => rain(300));
+document.getElementById("jump").addEventListener("click", () => { jumpReq = true; });
+document.getElementById("reset").addEventListener("click", resetAll);
+
+addEventListener("keydown", (e) => {
+  if (e.code === "Space") { e.preventDefault(); jumpReq = true; return; }
+  if (/^(Key[WASD]|Arrow)/.test(e.code)) { e.preventDefault(); keys.add(e.code); setAuto(false); target = null; marker.visible = false; }
+});
+addEventListener("keyup", (e) => keys.delete(e.code));
+addEventListener("blur", () => keys.clear());
+
+// Clicks are resolved with Rapier's own ray cast against the colliders.
+const ndc = new THREE.Vector2(), tray = new THREE.Raycaster();
+let down = null;
+renderer.domElement.addEventListener("pointerdown", (e) => { down = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener("pointerup", (e) => {
+  if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return;
+  ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  tray.setFromCamera(ndc, camera);
+  const o = tray.ray.origin, d = tray.ray.direction;
+  const hit = world.castRay(new RAPIER.Ray({ x: o.x, y: o.y, z: o.z }, { x: d.x, y: d.y, z: d.z }), 100, true, undefined, undefined, charCol);
+  if (!hit) return;
+  const body = hit.collider.parent();
+  if (body && body.isDynamic()) {
+    const k = body.mass() * 7;
+    body.applyImpulse({ x: d.x * k, y: Math.abs(d.y) * k * 0.4 + body.mass() * 2, z: d.z * k }, true);
+    return;
+  }
+  const t = hit.timeOfImpact;
+  target = { x: o.x + d.x * t, z: o.z + d.z * t };
+  marker.position.set(target.x, o.y + d.y * t + 0.03, target.z);
+  marker.visible = true;
+  setAuto(false);
+});
+
+const CENTER = new THREE.Vector3(0, 0.6, -1);
+let camDist = 13;
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  // Portrait screens need the camera further back to fit the playground.
+  camDist = 13 / Math.min(1, camera.aspect * 1.2);
+  const dir = new THREE.Vector3(0.42, 0.62, 0.66).normalize();
+  camera.position.copy(controls.target).addScaledVector(dir, camDist);
+  controls.update();
+}
+
+// --- loop -------------------------------------------------------------------------------
+const m4 = new THREE.Matrix4(), pos = new THREE.Vector3(), quat = new THREE.Quaternion(), scl = new THREE.Vector3(), colr = new THREE.Color();
+const bubble = document.getElementById("bubble");
+const statsEl = document.getElementById("stats");
+const tmp = new THREE.Vector3(), prevTarget = new THREE.Vector3();
+let last = performance.now(), acc = 0, frameNo = 0;
+
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000);
+  last = now;
+  acc += dt;
+  let n = 0;
+  while (acc >= STEP && n < 3) {
+    for (let i = 0; i < 12 && rainQueue > 0; i++, rainQueue--) {
+      addBall((Math.random() - 0.5) * 14, 7 + Math.random() * 4, (Math.random() - 0.5) * 12 - 0.5);
+    }
+    stepCharacter(STEP);
+    world.step();
+    simTime += STEP;
+    acc -= STEP;
+    n++;
+  }
+  if (n === 3) acc = 0;
+
+  // Drop balls that rolled off the edge of the world.
+  for (let i = balls.length - 1; i >= 0; i--) if (balls[i].body.translation().y < -6) removeBall(i);
+
+  crates.forEach((b, i) => {
+    const t = b.translation(), r = b.rotation();
+    crateMesh.setMatrixAt(i, m4.compose(pos.set(t.x, t.y, t.z), quat.set(r.x, r.y, r.z, r.w), scl.set(1, 1, 1)));
+  });
+  crateMesh.count = crates.length;
+  crateMesh.instanceMatrix.needsUpdate = true;
+  crateMesh.computeBoundingSphere();
+
+  balls.forEach((b, i) => {
+    const t = b.body.translation(), r = b.body.rotation();
+    ballMesh.setMatrixAt(i, m4.compose(pos.set(t.x, t.y, t.z), quat.set(r.x, r.y, r.z, r.w), scl.setScalar(b.r)));
+    if (ballsDirty) ballMesh.setColorAt(i, colr.setHex(b.color));
+  });
+  ballMesh.count = balls.length;
+  ballMesh.instanceMatrix.needsUpdate = true;
+  if (ballsDirty && ballMesh.instanceColor) ballMesh.instanceColor.needsUpdate = true;
+  ballsDirty = false;
+  ballMesh.computeBoundingSphere();
+
+  const cp = charBody.translation();
+  hero.position.set(cp.x, cp.y, cp.z);
+  let dy = facing - hero.rotation.y;
+  dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+  hero.rotation.y += dy * 0.2;
+  marker.material.opacity = 0.55 + 0.35 * Math.sin(now / 160);
+
+  // Camera target sits between the playground center and the character.
+  prevTarget.copy(controls.target);
+  tmp.set(cp.x, cp.y, cp.z).lerp(CENTER, 0.55);
+  controls.target.lerp(tmp, 0.06);
+  camera.position.add(tmp.subVectors(controls.target, prevTarget));
+  controls.update();
+  renderer.render(scene, camera);
+
+  if (simTime < bubbleUntil) {
+    tmp.set(cp.x, cp.y + 1.0, cp.z).project(camera);
+    bubble.style.left = ((tmp.x + 1) / 2) * innerWidth + "px";
+    bubble.style.top = ((1 - tmp.y) / 2) * innerHeight + "px";
+    bubble.textContent = bubbleText;
+    bubble.hidden = false;
+  } else bubble.hidden = true;
+
+  if (frameNo++ % 10 === 0) {
+    statsEl.textContent = "剛體 " + (balls.length + crates.length + 1) + " 個・角色" + (grounded ? "著地" : "騰空");
+  }
+  requestAnimationFrame(frame);
+}
+
+addEventListener("resize", resize);
+controls.target.copy(CENTER);
+resize();
+resetAll();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

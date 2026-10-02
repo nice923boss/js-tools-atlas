@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hls.js 示範：串流畫質與緩衝監控台</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"],"note":"串流為 Mux 公開 HLS 測試片源，預設靜音自動播放"}</script>
+<style>
+  body {
+    display: grid; grid-template-columns: minmax(0, 1fr) 270px; gap: 12px; padding: 12px 12px 46px; height: 100%;
+  }
+  .left { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+  .vwrap { position: relative; width: 100%; aspect-ratio: 16 / 9; max-height: calc(100vh - 190px); background: #000; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  video { width: 100%; height: 100%; display: block; object-fit: contain; background: #000; }
+  .badge { position: absolute; left: 10px; top: 10px; display: flex; gap: 6px; }
+  .badge span { font: 600 12px var(--mono); padding: 3px 8px; border-radius: 6px; background: rgba(0, 0, 0, 0.65); border: 1px solid rgba(255, 255, 255, 0.15); }
+  .badge .lv { color: #0e1013; background: var(--accent); border-color: transparent; }
+  .vbtns { position: absolute; right: 10px; bottom: 10px; display: flex; gap: 6px; }
+  .timeline { position: relative; }
+  .timeline canvas { width: 100%; height: 64px; display: block; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); }
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--muted); margin-top: 5px; }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  aside { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+  aside h2 { margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: .04em; }
+  .levels { display: flex; flex-direction: column; gap: 5px; }
+  .levels button {
+    all: unset; box-sizing: border-box; cursor: pointer; display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 10px; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); font-size: 13px;
+  }
+  .levels button small { color: var(--muted); font: 11px var(--mono); }
+  .levels button.sel { border-color: var(--accent); background: rgba(247, 223, 30, 0.1); }
+  .levels button.play::after { content: "播放中"; font-size: 10px; color: #0e1013; background: var(--c4); border-radius: 4px; padding: 1px 5px; margin-left: 6px; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .stats div { padding: 6px 9px; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); }
+  .stats small { display: block; font-size: 11px; color: var(--muted); }
+  .stats b { font: 600 14px var(--mono); }
+  #bw { width: 100%; height: 46px; display: block; }
+  .log { flex: 1; min-height: 0; overflow: hidden; font: 11px/1.55 var(--mono); color: var(--muted); padding: 6px 9px; border-radius: 8px; background: #0a0b0d; border: 1px solid var(--line); }
+  .log div:first-child { color: var(--fg); }
+  .log em { font-style: normal; color: var(--c2); }
+  @media (max-width: 640px) {
+    body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); padding: 10px 10px 42px; gap: 8px; }
+    .levels { flex-direction: row; flex-wrap: wrap; }
+    .levels button { padding: 4px 8px; font-size: 12px; }
+    .levels button small, .log, #bwbox, .legend { display: none; }
+    .levels button.play::after { content: "●"; background: none; color: var(--c4); padding: 0 0 0 4px; }
+    .stats b { font-size: 12px; }
+    .timeline canvas { height: 44px; }
+  }
+  @media (min-width: 641px) and (max-height: 480px) {
+    #bwbox { display: none; }
+    .levels button { padding: 4px 10px; }
+  }
+  @media (max-width: 640px) and (max-height: 480px) {
+    .vwrap { max-height: calc(100vh - 240px); }
+    .stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  }
+</style>
+</head>
+<body>
+<div class="left">
+  <div class="vwrap">
+    <video id="v" muted playsinline></video>
+    <div class="badge"><span class="lv" id="lvBadge">載入中</span><span id="bufBadge">緩衝 0.0 秒</span></div>
+    <div class="vbtns"><button class="btn" id="sound">開啟聲音</button><button class="btn" id="pp">暫停</button></div>
+  </div>
+  <div class="timeline">
+    <canvas id="tl"></canvas>
+    <div class="legend" id="legend"></div>
+  </div>
+</div>
+<aside>
+  <div>
+    <h2>畫質層級（點選鎖定）</h2>
+    <div class="levels" id="levels"></div>
+  </div>
+  <div class="stats">
+    <div><small>頻寬估計</small><b id="sBw">-</b></div>
+    <div><small>已下載片段</small><b id="sFrag">0</b></div>
+    <div><small>前方緩衝</small><b id="sBuf">0.0 s</b></div>
+    <div><small>丟棄影格</small><b id="sDrop">0</b></div>
+  </div>
+  <div id="bwbox"><h2>頻寬變化</h2><canvas id="bw"></canvas></div>
+  <div class="log" id="log"></div>
+</aside>
+<div class="hint">點畫質層級手動切換・選「自動」交給 ABR</div>
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js"></script>
+<script>
+// hls.js monitor: adaptive bitrate levels, manual switching, buffer timeline and live event log.
+const SRC = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8";
+const LEVEL_COLORS = ["#4cc9f0", "#7bd389", "#9d8cff", "#ff8c42", "#f72585"];
+const video = document.getElementById("v");
+const $ = (id) => document.getElementById(id);
+const frags = []; // {start, end, level}
+const bwHistory = [];
+let fragCount = 0;
+
+function log(msg) {
+  const el = $("log");
+  const d = document.createElement("div");
+  d.innerHTML = `${new Date().toLocaleTimeString("zh-TW", { hour12: false })} ${msg}`;
+  el.prepend(d);
+  while (el.children.length > 14) el.lastChild.remove();
+}
+const kbps = (b) => (b >= 1e6 ? `${(b / 1e6).toFixed(1)} Mbps` : `${Math.round(b / 1e3)} kbps`);
+
+if (!Hls.isSupported()) {
+  $("lvBadge").textContent = "此瀏覽器不支援 MSE";
+  log("Hls.isSupported() 為 false，無法用 hls.js 播放");
+} else {
+  const hls = new Hls({
+    startLevel: 0, // start at the lowest rung so ABR visibly climbs
+    maxBufferLength: 30,
+    abrBandWidthFactor: 0.8, // conservative ABR: only step up with clear bandwidth headroom
+    abrBandWidthUpFactor: 0.5,
+  });
+  hls.loadSource(SRC);
+  hls.attachMedia(video);
+
+  hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
+    log(`<em>MANIFEST_PARSED</em> 找到 ${data.levels.length} 個畫質層級`);
+    buildLevels(hls);
+    video.play().catch(() => log("自動播放被瀏覽器擋下，請按播放"));
+  });
+  hls.on(Hls.Events.LEVEL_SWITCHED, (_, d) => {
+    const lv = hls.levels[d.level];
+    log(`<em>LEVEL_SWITCHED</em> 切到 ${lv.height}p`);
+    refreshLevels(hls);
+  });
+  hls.on(Hls.Events.FRAG_LOADED, (_, d) => {
+    const f = d.frag;
+    fragCount++;
+    frags.push({ start: f.start, end: f.start + f.duration, level: f.level });
+    const ms = Math.round(f.stats.loading.end - f.stats.loading.start);
+    log(`<em>FRAG_LOADED</em> #${f.sn} ${hls.levels[f.level].height}p ${(f.stats.loaded / 1024).toFixed(0)} KB ${ms} ms`);
+  });
+  hls.on(Hls.Events.FRAG_LOAD_EMERGENCY_ABORTED, (_, d) => {
+    log(`<em>EMERGENCY_ABORTED</em> 頻寬不足，放棄 ${hls.levels[d.frag.level].height}p 片段並降級`);
+  });
+  hls.on(Hls.Events.ERROR, (_, d) => {
+    log(`<em>ERROR</em> ${d.details}${d.fatal ? "（致命）" : ""}`);
+    if (d.fatal && d.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+    else if (d.fatal && d.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+  });
+
+  setInterval(() => {
+    const bw = hls.bandwidthEstimate;
+    if (bw) { bwHistory.push(bw); if (bwHistory.length > 60) bwHistory.shift(); }
+    $("sBw").textContent = bw ? kbps(bw) : "-";
+    $("sFrag").textContent = fragCount;
+    const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
+    $("sDrop").textContent = q ? q.droppedVideoFrames : "-";
+    drawBw();
+  }, 1000);
+  window.hls = hls;
+}
+
+function sortedLevels(hls) {
+  return hls.levels.map((l, i) => ({ ...l, index: i, height: l.height, bitrate: l.bitrate })).sort((a, b) => b.height - a.height);
+}
+
+function buildLevels(hls) {
+  const box = $("levels");
+  box.innerHTML = "";
+  const auto = document.createElement("button");
+  auto.dataset.index = "-1";
+  auto.innerHTML = `<span>自動（ABR）</span><small id="autoNow"></small>`;
+  box.append(auto);
+  for (const l of sortedLevels(hls)) {
+    const b = document.createElement("button");
+    b.dataset.index = l.index;
+    b.innerHTML = `<span>${l.height}p</span><small>${kbps(l.bitrate)}</small>`;
+    box.append(b);
+  }
+  box.onclick = (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    const i = Number(b.dataset.index);
+    hls.currentLevel = i; // -1 restores automatic level selection
+    log(i < 0 ? "切回自動畫質選擇" : `手動鎖定 ${hls.levels[i].height}p，清除舊緩衝`);
+    refreshLevels(hls);
+  };
+  $("legend").innerHTML = sortedLevels(hls).map((l) => `<span><i style="background:${LEVEL_COLORS[l.index % 5]}"></i>${l.height}p</span>`).join("")
+    + `<span><i style="background:#ecebe6"></i>播放位置</span>`;
+  refreshLevels(hls);
+}
+
+function refreshLevels(hls) {
+  const playing = hls.currentLevel;
+  const manual = hls.autoLevelEnabled ? -1 : hls.manualLevel ?? hls.loadLevel;
+  for (const b of $("levels").children) {
+    const i = Number(b.dataset.index);
+    b.classList.toggle("sel", i === manual);
+    b.classList.toggle("play", i === playing && i >= 0);
+  }
+  const lv = hls.levels[playing];
+  $("lvBadge").textContent = lv ? `${lv.height}p${hls.autoLevelEnabled ? "・自動" : "・手動"}` : "載入中";
+}
+
+function bufferAhead() {
+  const t = video.currentTime;
+  for (let i = 0; i < video.buffered.length; i++) {
+    if (t >= video.buffered.start(i) - 0.2 && t <= video.buffered.end(i)) return video.buffered.end(i) - t;
+  }
+  return 0;
+}
+
+function fitCanvas(c) {
+  const r = c.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  if (c.width !== Math.round(r.width * dpr) || c.height !== Math.round(r.height * dpr)) {
+    c.width = Math.round(r.width * dpr);
+    c.height = Math.round(r.height * dpr);
+  }
+  const ctx = c.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [ctx, r.width, r.height];
+}
+
+function drawTimeline() {
+  const [ctx, w, h] = fitCanvas($("tl"));
+  ctx.clearRect(0, 0, w, h);
+  const t = video.currentTime || 0;
+  const from = Math.max(0, t - 15), span = 60, to = from + span;
+  const x = (s) => ((s - from) / span) * w;
+  // Buffered ranges (what the browser actually holds)
+  ctx.fillStyle = "rgba(255,255,255,0.10)";
+  for (let i = 0; i < video.buffered.length; i++) {
+    const a = video.buffered.start(i), b = video.buffered.end(i);
+    if (b < from || a > to) continue;
+    ctx.fillRect(x(a), 6, x(b) - x(a), h - 22);
+  }
+  // Downloaded fragments, coloured by quality level
+  for (const f of frags) {
+    if (f.end < from || f.start > to) continue;
+    ctx.fillStyle = LEVEL_COLORS[f.level % 5];
+    ctx.fillRect(x(f.start) + 1, h - 30, Math.max(2, x(f.end) - x(f.start) - 2), 12);
+  }
+  // Ticks
+  ctx.fillStyle = "#9b998f";
+  ctx.font = "10px ui-monospace, Consolas, monospace";
+  for (let s = Math.ceil(from / 10) * 10; s <= to; s += 10) {
+    ctx.fillRect(x(s), h - 14, 1, 4);
+    ctx.fillText(`${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`, x(s) + 3, h - 4);
+  }
+  // Playhead
+  ctx.fillStyle = "#ecebe6";
+  ctx.fillRect(x(t) - 1, 2, 2, h - 18);
+  const ahead = bufferAhead();
+  $("sBuf").textContent = `${ahead.toFixed(1)} s`;
+  $("bufBadge").textContent = `緩衝 ${ahead.toFixed(1)} 秒`;
+  requestAnimationFrame(drawTimeline);
+}
+
+function drawBw() {
+  const c = $("bw");
+  if (!c.offsetParent) return;
+  const [ctx, w, h] = fitCanvas(c);
+  ctx.clearRect(0, 0, w, h);
+  if (bwHistory.length < 2) return;
+  const max = Math.max(...bwHistory) * 1.15;
+  ctx.beginPath();
+  bwHistory.forEach((b, i) => {
+    const px = (i / (bwHistory.length - 1)) * w, py = h - (b / max) * (h - 4) - 2;
+    i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+  });
+  ctx.strokeStyle = "#f7df1e";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.lineTo(w, h);
+  ctx.lineTo(0, h);
+  ctx.fillStyle = "rgba(247,223,30,0.12)";
+  ctx.fill();
+}
+
+$("sound").onclick = () => { video.muted = !video.muted; $("sound").textContent = video.muted ? "開啟聲音" : "靜音"; };
+$("pp").onclick = () => (video.paused ? video.play() : video.pause());
+video.addEventListener("play", () => { $("pp").textContent = "暫停"; });
+video.addEventListener("pause", () => { $("pp").textContent = "播放"; });
+requestAnimationFrame(drawTimeline);
+</script>
+</body>
+</html>

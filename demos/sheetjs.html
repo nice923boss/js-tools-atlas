@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SheetJS 示範：網頁匯入匯出 Excel</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"可拖曳自己的 xlsx、csv、ods 檔進來預覽"}</script>
+<style>
+  .app { position: fixed; inset: 0; display: grid; grid-template-rows: auto auto auto 1fr; }
+  .tb { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; background: #1d6f42; color: #fff; }
+  .tb h1 { font-size: 15px; margin: 0 auto 0 0; display: flex; gap: 8px; align-items: baseline; }
+  .tb h1 small { font-weight: 400; opacity: .8; font-size: 12px; }
+  .tb .btn { background: rgba(255,255,255,.14); color: #fff; border-color: rgba(255,255,255,.25); }
+  .tb .btn.primary { background: #fff; color: #1d6f42; }
+  .seg { display: inline-flex; border: 1px solid rgba(255,255,255,.3); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; background: transparent; color: #fff; padding: 7px 10px; font: 600 12px var(--mono); cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: #fff; color: #1d6f42; }
+  .fx { display: flex; align-items: center; gap: 0; border-bottom: 1px solid var(--line); background: #fff; font: 13px var(--mono); }
+  .fx .ref { width: 70px; padding: 6px 10px; border-right: 1px solid var(--line); color: var(--muted); text-align: center; }
+  .fx .lbl { padding: 6px 10px; color: #1d6f42; font-style: italic; font-weight: 700; border-right: 1px solid var(--line); }
+  .fx .val { padding: 6px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tabs { display: flex; gap: 2px; padding: 6px 10px 0; background: #e9e8e3; border-bottom: 1px solid var(--line); align-items: flex-end; }
+  .tabs button { border: 1px solid var(--line); border-bottom: 0; background: #dddcd6; padding: 6px 14px; border-radius: 6px 6px 0 0; font: 13px var(--font); cursor: pointer; color: var(--muted); }
+  .tabs button[aria-pressed="true"] { background: #fff; color: #1d6f42; font-weight: 700; box-shadow: inset 0 3px 0 #1d6f42; }
+  .tabs .meta { margin-left: auto; font: 12px var(--mono); color: var(--muted); padding-bottom: 6px; white-space: nowrap; }
+  .grid { overflow: auto; background: #fff; position: relative; }
+  table { border-collapse: collapse; font-size: 13px; min-width: 100%; }
+  th, td { border: 1px solid #e1e0da; padding: 5px 10px; white-space: nowrap; }
+  thead th, tbody th { background: #f1f0eb; color: var(--muted); font: 500 12px var(--mono); position: sticky; }
+  thead th { top: 0; z-index: 2; text-align: center; }
+  tbody th { left: 0; z-index: 1; width: 36px; text-align: center; }
+  thead th:first-child { left: 0; z-index: 3; }
+  td { cursor: cell; }
+  td.num { text-align: right; font-family: var(--mono); }
+  td.f { background: #f3fbf6; }
+  td.hdr { font-weight: 700; background: #fafaf7; }
+  td.sel { outline: 2px solid #1d6f42; outline-offset: -2px; }
+  .drop { position: absolute; inset: 0; display: none; place-items: center; background: rgba(29,111,66,.12); border: 3px dashed #1d6f42; font-size: 18px; color: #1d6f42; font-weight: 700; z-index: 10; }
+  .grid.dragging .drop { display: grid; }
+  @media (max-width: 600px) {
+    /* stacked layout scrolls under the fixed hint: show it briefly, then fade it out */
+    .hint { animation: hint-fade .5s 8s forwards; }
+    .tb h1 small { display: none; }
+    .tabs .meta { display: none; }
+  }
+</style>
+</head>
+<body class="paper">
+<div class="app">
+  <div class="tb">
+    <h1>SheetJS <small>產生活頁簿 → 寫成檔案 → 再讀回來顯示</small></h1>
+    <div class="seg" id="fmt" role="group" aria-label="匯出格式">
+      <button data-fmt="xlsx" aria-pressed="true">xlsx</button>
+      <button data-fmt="ods" aria-pressed="false">ods</button>
+      <button data-fmt="csv" aria-pressed="false">csv</button>
+    </div>
+    <button class="btn" id="shuffle">換一組資料</button>
+    <button class="btn" id="importBtn">匯入檔案</button>
+    <button class="btn primary" id="download">下載</button>
+    <input type="file" id="file" accept=".xlsx,.xls,.xlsb,.ods,.csv,.numbers" hidden>
+  </div>
+  <div class="fx"><span class="ref" id="ref">A1</span><span class="lbl">fx</span><span class="val" id="fxval"></span></div>
+  <div class="tabs" id="tabs"></div>
+  <div class="grid" id="grid"><div class="drop">放開以匯入試算表</div><table id="table"></table></div>
+</div>
+<div class="hint">點儲存格看公式・可拖曳 Excel 檔進來</div>
+
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const CITIES = ["臺北市", "新北市", "桃園市", "臺中市", "臺南市", "高雄市", "新竹市"];
+const COURSES = ["資料視覺化", "Node.js 實戰", "AI 工具應用", "前端動畫"];
+const NAMES = ["林怡君", "陳冠宇", "張雅婷", "王柏翰", "李佳穎", "黃子軒", "吳欣怡", "劉承恩", "蔡佩珊", "楊宗翰"];
+let format = "xlsx", wb = null, active = 0, metaText = "";
+
+const rnd = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
+
+// Build a workbook in memory: one summary sheet with formulas, one roster with dates and currency.
+function makeWorkbook() {
+  const book = XLSX.utils.book_new();
+  const rows = CITIES.map((c) => {
+    const q = [rnd(20, 160), rnd(20, 160), rnd(20, 160), rnd(20, 160)];
+    return [c, ...q, q.reduce((s, x) => s + x, 0)];
+  });
+  const sumCol = (j) => rows.reduce((s, r) => s + r[j], 0);
+  const last = rows.length + 1;
+  const aoa = [
+    ["縣市（示意資料）", "第一季", "第二季", "第三季", "第四季", "合計"],
+    ...rows.map((r, i) => [...r.slice(0, 5), { t: "n", v: r[5], f: `SUM(B${i + 2}:E${i + 2})` }]),
+    ["總計", ..."BCDEF".split("").map((col, k) => ({ t: "n", v: sumCol(k + 1), f: `SUM(${col}2:${col}${last})` }))],
+  ];
+  const ws1 = XLSX.utils.aoa_to_sheet(aoa);
+  ws1["!cols"] = [{ wch: 16 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 9 }];
+  XLSX.utils.book_append_sheet(book, ws1, "報名統計");
+
+  const roster = NAMES.map((n, i) => ({
+    姓名: n,
+    縣市: CITIES[rnd(0, CITIES.length - 1)],
+    課程: COURSES[i % COURSES.length],
+    報名日期: new Date(2026, rnd(0, 8), rnd(1, 28)),
+    費用: [3600, 4800, 5200, 6800][rnd(0, 3)],
+  }));
+  const ws2 = XLSX.utils.json_to_sheet(roster, { cellDates: true });
+  for (let r = 2; r <= roster.length + 1; r++) {
+    ws2[`D${r}`].z = "yyyy-mm-dd";
+    ws2[`E${r}`].z = '"NT$"#,##0';
+  }
+  ws2["!cols"] = [{ wch: 8 }, { wch: 8 }, { wch: 12 }, { wch: 12 }, { wch: 10 }];
+  XLSX.utils.book_append_sheet(book, ws2, "學員名單");
+  return book;
+}
+
+// Write to real file bytes, then parse those bytes back: what you see is the file's content.
+function roundTrip() {
+  const t0 = performance.now();
+  const bytes = XLSX.write(source, { bookType: format, type: "array" });
+  wb = XLSX.read(bytes, { type: "array", cellFormula: true, cellNF: true, cellDates: false });
+  const ms = (performance.now() - t0).toFixed(1);
+  setMeta(`報名統計.${format}・${(bytes.byteLength / 1024).toFixed(1)} KB・${wb.SheetNames.length} 個工作表・寫入加讀回 ${ms} ms`);
+  active = 0;
+  render();
+}
+
+function setMeta(text) { metaText = text; }
+let source = makeWorkbook();
+
+function render() {
+  const tabs = $("tabs");
+  tabs.replaceChildren();
+  wb.SheetNames.forEach((n, i) => {
+    const b = document.createElement("button");
+    b.textContent = n;
+    b.setAttribute("aria-pressed", i === active);
+    b.addEventListener("click", () => { active = i; render(); });
+    tabs.append(b);
+  });
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  meta.textContent = metaText;
+  tabs.append(meta);
+
+  const ws = wb.Sheets[wb.SheetNames[active]];
+  const table = $("table");
+  table.replaceChildren();
+  if (!ws["!ref"]) return;
+  const range = XLSX.utils.decode_range(ws["!ref"]);
+  const head = table.createTHead().insertRow();
+  head.append(document.createElement("th"));
+  for (let c = range.s.c; c <= Math.min(range.e.c, 25); c++) {
+    const th = document.createElement("th");
+    th.textContent = XLSX.utils.encode_col(c);
+    head.append(th);
+  }
+  const body = table.createTBody();
+  for (let r = range.s.r; r <= Math.min(range.e.r, 300); r++) {
+    const tr = body.insertRow();
+    const th = document.createElement("th");
+    th.textContent = r + 1;
+    tr.append(th);
+    for (let c = range.s.c; c <= Math.min(range.e.c, 25); c++) {
+      const addr = XLSX.utils.encode_cell({ r, c });
+      const cell = ws[addr];
+      const td = tr.insertCell();
+      td.dataset.addr = addr;
+      if (!cell) continue;
+      td.textContent = cell.w ?? XLSX.utils.format_cell(cell);
+      if (cell.t === "n") td.classList.add("num");
+      if (cell.f) td.classList.add("f");
+      if (r === range.s.r) td.classList.add("hdr");
+    }
+  }
+  select(body.querySelector("td.f") || body.querySelector("td"));
+}
+
+function select(td) {
+  if (!td) return;
+  document.querySelectorAll("td.sel").forEach((x) => x.classList.remove("sel"));
+  td.classList.add("sel");
+  const cell = wb.Sheets[wb.SheetNames[active]][td.dataset.addr];
+  $("ref").textContent = td.dataset.addr;
+  $("fxval").textContent = cell ? (cell.f ? `=${cell.f}` : String(cell.v)) : "";
+}
+
+$("table").addEventListener("click", (e) => { const td = e.target.closest("td"); if (td) select(td); });
+$("fmt").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  format = b.dataset.fmt;
+  $("fmt").querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", x === b));
+  roundTrip();
+});
+$("shuffle").addEventListener("click", () => { source = makeWorkbook(); roundTrip(); });
+$("download").addEventListener("click", () => XLSX.writeFile(source, `報名統計.${format}`, { bookType: format }));
+$("importBtn").addEventListener("click", () => $("file").click());
+
+async function importFile(f) {
+  try {
+    const t0 = performance.now();
+    wb = XLSX.read(await f.arrayBuffer(), { cellFormula: true, cellNF: true });
+    setMeta(`${f.name}・${(f.size / 1024).toFixed(1)} KB・${wb.SheetNames.length} 個工作表・解析 ${(performance.now() - t0).toFixed(1)} ms`);
+    active = 0;
+    render();
+  } catch (err) {
+    setMeta(`無法讀取 ${f.name}：${err.message}`);
+    render();
+  }
+}
+$("file").addEventListener("change", (e) => e.target.files[0] && importFile(e.target.files[0]));
+const grid = $("grid");
+grid.addEventListener("dragover", (e) => { e.preventDefault(); grid.classList.add("dragging"); });
+grid.addEventListener("dragleave", (e) => { if (e.target === grid || e.target.classList.contains("drop")) grid.classList.remove("dragging"); });
+grid.addEventListener("drop", (e) => {
+  e.preventDefault();
+  grid.classList.remove("dragging");
+  const f = e.dataTransfer.files[0];
+  if (f) importFile(f);
+});
+
+roundTrip();
+</script>
+</body>
+</html>

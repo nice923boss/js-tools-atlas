@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Snap.svg 示範：湖畔晝夜</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body { background: #0b1033; }
+  #scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  .clock {
+    position: fixed; left: 12px; top: 12px; z-index: 50; padding: 10px 14px; min-width: 150px;
+    background: rgba(10, 14, 40, 0.42); border-color: rgba(255, 255, 255, 0.18); color: #fff;
+    backdrop-filter: blur(6px);
+  }
+  .clock b { display: block; font: 700 28px/1.1 var(--mono); letter-spacing: 1px; }
+  .clock span { font-size: 12px; opacity: .85; }
+  /* Only the sun and moon take pointer input, so clouds passing in front never block a drag */
+  #scene * { pointer-events: none; }
+  #scene .grab, #scene .grab * { pointer-events: auto; }
+  .grab { cursor: grab; }
+  .grab:active { cursor: grabbing; }
+  .tw { animation: tw 2.4s ease-in-out infinite alternate; }
+  @keyframes tw { from { opacity: 1; } to { opacity: .25; } }
+  .gl { animation: gl 1.6s ease-in-out infinite alternate; }
+  @keyframes gl { from { opacity: .95; } to { opacity: .15; } }
+  @media (max-width: 560px) {
+    .clock { top: 96px; padding: 8px 12px; min-width: 0; }
+    .clock b { font-size: 22px; }
+  }
+</style>
+</head>
+<body>
+<svg id="scene" preserveAspectRatio="xMidYMid slice"></svg>
+<div class="panel clock"><b id="time">00:00</b><span id="phase"></span></div>
+<div class="controls">
+  <button class="btn" data-goto="0.14">日出</button>
+  <button class="btn" data-goto="1.5708">正午</button>
+  <button class="btn" data-goto="2.98">黃昏</button>
+  <button class="btn" data-goto="4.7124">深夜</button>
+  <button class="btn" id="flow" aria-pressed="true">時間流動</button>
+</div>
+<div class="hint">拖曳太陽或月亮改變時間・湖面倒影即時跟著變</div>
+
+<script src="https://cdn.jsdelivr.net/npm/snapsvg@0.5.1/dist/snap.svg-min.js"></script>
+<script>
+const s = Snap("#scene");
+// OY sits above the waterline so the sun sinks behind the ridges while the sky is still golden
+const H0 = 600, HY = 400, OY = 352, CX = 500, TAU = Math.PI * 2;
+let vw = 1000, vx = 0, rx = 430, ry = 300;
+
+// ---------- palette helpers ----------
+const hex2rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+const rgb2hex = (c) => "#" + c.map((v) => Math.round(v).toString(16).padStart(2, "0")).join("");
+const mix = (a, b, t) => rgb2hex(hex2rgb(a).map((v, i) => v + (hex2rgb(b)[i] - v) * t));
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+// Per-frame transforms go straight to the DOM; Snap builds and styles everything else
+const tf = (el, v) => el.node.setAttribute("transform", v);
+// Keyframes on sun elevation: night, twilight, golden hour, day
+const KEYS = [-0.35, -0.05, 0.08, 0.35];
+function pick(stops, e) {
+  if (e <= KEYS[0]) return stops[0];
+  for (let i = 1; i < KEYS.length; i++) {
+    if (e <= KEYS[i]) return mix(stops[i - 1], stops[i], (e - KEYS[i - 1]) / (KEYS[i] - KEYS[i - 1]));
+  }
+  return stops[stops.length - 1];
+}
+const PAL = {
+  skyTop: ["#070b26", "#1c2260", "#3d5fa8", "#2f80d8"],
+  skyMid: ["#141a48", "#6b4a8e", "#f2a07b", "#7dbbf0"],
+  skyBot: ["#262b5c", "#f08a6a", "#ffd59a", "#d2ecff"],
+  far:    ["#1b2150", "#6a5a94", "#b48aa8", "#9cc0e0"],
+  mid:    ["#151a40", "#4b4378", "#8a6e93", "#6f9fc6"],
+  near:   ["#0f1330", "#2e2d55", "#4f5a6e", "#4f8a6a"],
+  shore:  ["#070a1c", "#1a1a33", "#2b3a3a", "#2f5d46"],
+  cloud:  ["#3a3f6b", "#f6a38f", "#ffe0c2", "#ffffff"],
+  wall:   ["#2a2c4a", "#8a7aa0", "#f0d9c0", "#f3ead8"],
+  roof:   ["#2a1c3a", "#6a3a5a", "#c4554d", "#c9544a"],
+  water:  ["#0a1030", "#3a2f60", "#4a5f8a", "#2a6fa8"],
+  sun:    ["#ff7a3d", "#ff7a3d", "#ffb469", "#fff3c4"],
+};
+
+// Deterministic pseudo random so the landscape is the same on every load
+let seed = 7;
+const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+
+// ---------- defs ----------
+const skyGrad = s.gradient("l(0,0,0,1)#2f80d8-#7dbbf0:60-#d2ecff");
+const waterGrad = s.gradient("l(0,0,0,1)#2a6fa8-#2a6fa8");
+const sunGlow = s.gradient("r(0.5,0.5,0.5)rgba(255,214,140,0.75)-rgba(255,214,140,0)");
+const moonGlow = s.gradient("r(0.5,0.5,0.5)rgba(220,230,255,0.45)-rgba(220,230,255,0)");
+const lampGlow = s.gradient("r(0.5,0.5,0.5)rgba(255,210,110,0.8)-rgba(255,210,110,0)");
+// Gentle horizontal ripple distortion for the reflection
+const ripple = s.filter('<feTurbulence type="fractalNoise" baseFrequency="0.004 0.09" numOctaves="2" seed="3" result="n"/><feDisplacementMap in="SourceGraphic" in2="n" scale="12" xChannelSelector="R" yChannelSelector="G"/>');
+
+// ---------- everything above the waterline (this group gets mirrored) ----------
+const above = s.g();
+const sky = s.rect(-600, -50, 2200, HY + 60).attr({ fill: skyGrad });
+const stars = s.g().attr({ opacity: 0 });
+for (let i = 0; i < 140; i++) {
+  const c = s.circle(-500 + rnd() * 2000, rnd() * 330, 0.5 + rnd() * 1.4).attr({ fill: "#fff" });
+  if (rnd() < 0.5) c.attr({ class: "tw", style: `animation-delay:${(rnd() * 2.4).toFixed(2)}s` });
+  stars.add(c);
+}
+
+const sunHalo = s.circle(0, 0, 110).attr({ fill: sunGlow });
+const sunDisc = s.circle(0, 0, 30).attr({ fill: "#fff3c4" });
+const sun = s.g(sunHalo, sunDisc).addClass("grab");
+const moonHalo = s.circle(0, 0, 80).attr({ fill: moonGlow });
+const moonDisc = s.circle(0, 0, 22).attr({ fill: "#f3efe0" });
+const craters = s.g(
+  s.circle(-7, -5, 5), s.circle(6, 7, 3.5), s.circle(8, -8, 2.5), s.circle(-4, 10, 2)
+).attr({ fill: "#ddd5bd" });
+const moon = s.g(moonHalo, moonDisc, craters).addClass("grab");
+const orbit = s.ellipse(CX, OY, rx, ry).attr({ fill: "none", stroke: "#fff", "stroke-width": 1.2, "stroke-dasharray": "3 7", opacity: 0.22 });
+const bodies = s.g(orbit, sun, moon).attr({ clipPath: s.rect(-600, -50, 2200, HY + 50) });
+
+function cloud(w) {
+  const g = s.g();
+  const n = 4 + Math.floor(rnd() * 3);
+  for (let i = 0; i < n; i++) {
+    const r = w * (0.16 + rnd() * 0.14);
+    g.add(s.circle(-w / 2 + (i + 0.5) * (w / n), -r * 0.5 - rnd() * 6, r));
+  }
+  g.add(s.rect(-w / 2, -w * 0.12, w, w * 0.14, w * 0.07));
+  return g;
+}
+const clouds = [];
+for (let i = 0; i < 6; i++) {
+  const w = 80 + rnd() * 90;
+  clouds.push({ el: cloud(w), x: -300 + rnd() * 1600, y: 105 + rnd() * 125, v: 6 + rnd() * 10, w });
+}
+const cloudLayer = s.g(...clouds.map((c) => c.el)).attr({ opacity: 0.92 });
+
+function ridge(base, amp, waves) {
+  const pts = [];
+  for (let x = -650; x <= 1650; x += 20) {
+    let y = base;
+    waves.forEach(([f, a, p]) => { y -= Math.sin(x * f + p) * a * amp; });
+    pts.push([x, y]);
+  }
+  return pts;
+}
+const toPath = (pts) => "M-650," + (HY + 2) + pts.map(([x, y]) => `L${x},${y.toFixed(1)}`).join("") + `L1650,${HY + 2}Z`;
+const farPts = ridge(300, 1, [[0.011, 38, 1], [0.023, 18, 2], [0.051, 7, 0.3]]);
+const midPts = ridge(338, 1, [[0.008, 34, 4], [0.019, 16, 1.2], [0.047, 6, 2]]);
+const nearPts = ridge(378, 1, [[0.006, 18, 2.4], [0.017, 9, 0.5], [0.04, 3, 1]]);
+const far = s.path(toPath(farPts));
+const midM = s.path(toPath(midPts));
+const near = s.path(toPath(nearPts));
+const ridgeY = (pts, x) => {
+  const i = clamp(Math.round((x + 650) / 20), 0, pts.length - 1);
+  return pts[i][1];
+};
+
+// Little village on the near hill; windows light up after dusk
+const village = s.g();
+const walls = [], roofs = [], windows = [], lamps = [];
+[[520, 1], [556, 0.8], [600, 1.15], [640, 0.9], [690, 1]].forEach(([x, k]) => {
+  const y = ridgeY(nearPts, x) + 4;
+  const w = 26 * k, h = 18 * k;
+  lamps.push(s.circle(x, y - h / 2, 30 * k).attr({ fill: lampGlow, opacity: 0 }));
+  walls.push(s.rect(x - w / 2, y - h, w, h));
+  roofs.push(s.polygon([x - w / 2 - 3, y - h, x, y - h - 13 * k, x + w / 2 + 3, y - h]));
+  windows.push(s.rect(x - w / 4 - 2.5, y - h * 0.62, 5 * k, 5 * k), s.rect(x + w / 4 - 2.5, y - h * 0.62, 5 * k, 5 * k));
+});
+village.add(...lamps, ...walls, ...roofs, ...windows);
+
+above.add(sky, stars, bodies, cloudLayer, far, midM, near, village);
+
+// ---------- lake: mirrored copy of the scene above ----------
+const reflection = above.use().attr({ filter: ripple });
+reflection.node.setAttribute("transform", `matrix(1,0,0,-1,0,${HY * 2})`);
+const lake = s.g(reflection).attr({ clipPath: s.rect(-600, HY, 2200, H0 - HY + 50) });
+const waterTint = s.rect(-600, HY, 2200, H0 - HY + 50).attr({ fill: waterGrad });
+const glints = s.g();
+for (let i = 0; i < 16; i++) {
+  const y = HY + 6 + i * 11 + rnd() * 4;
+  const w = 6 + i * 2.6 + rnd() * 8;
+  glints.add(s.rect(-w / 2 + (rnd() - 0.5) * (8 + i * 2), y, w, 1.6, 0.8).attr({ class: "gl", style: `animation-delay:${(rnd() * 1.6).toFixed(2)}s` }));
+}
+const waves = s.g().attr({ stroke: "#fff", "stroke-width": 1, opacity: 0.2, fill: "none" });
+for (let i = 0; i < 26; i++) {
+  const x = -500 + rnd() * 2000, y = HY + 12 + rnd() * 180, w = 20 + rnd() * 50;
+  waves.add(s.path(`M${x},${y}q${w / 4},-2 ${w / 2},0t${w / 2},0`));
+}
+
+// ---------- foreground shores, anchored to the visible left and right edges ----------
+// Local coordinates: x = 0 is the screen edge, y = 600 is the bottom
+const shoreL = s.path("M-20,620L-20,498C70,494,160,516,240,546S340,592,390,620Z");
+const shoreR = s.path("M20,620L20,540C-70,540,-160,562,-230,588S-290,612,-310,620Z");
+const pinesL = s.g(), pinesR = s.g();
+function pine(g, x, y, k) {
+  for (let j = 0; j < 3; j++) {
+    const ty = y - j * 22 * k, tw = (34 - j * 8) * k;
+    g.add(s.polygon([x - tw / 2, ty, x, ty - 36 * k, x + tw / 2, ty]));
+  }
+}
+[[24, 512, 1.5], [70, 506, 1.1], [118, 520, 1.7], [168, 532, 1.05]].forEach(([x, y, k]) => pine(pinesL, x, y, k));
+[[-40, 556, 1.4], [-92, 566, 1]].forEach(([x, y, k]) => pine(pinesR, x, y, k));
+const reedsL = s.g(), reedsR = s.g();
+function reedClump(g, x0, n, lean) {
+  for (let i = 0; i < n; i++) {
+    const x = x0 + i * 8 + rnd() * 6, h = 34 + rnd() * 46, bend = (rnd() - lean) * 18;
+    g.add(s.path(`M${x},600q${bend / 2},${-h / 2} ${bend},${-h}`).attr({ fill: "none" }));
+    if (i % 3 === 0) g.add(s.ellipse(x + bend, 600 - h, 2.6, 8).attr({ stroke: "none" }));
+  }
+}
+reedClump(reedsL, 236, 14, 0.3);
+reedClump(reedsR, -250, 12, 0.6);
+const reedSets = [reedsL, reedsR];
+reedSets.forEach((g) => g.attr({ "stroke-width": 2, "stroke-linecap": "round" }));
+const fgL = s.g(shoreL, pinesL, reedsL), fgR = s.g(shoreR, pinesR, reedsR);
+
+// ---------- time state ----------
+let theta = 2.84, flowing = true, dragging = false, anim = null;
+const elT = document.getElementById("time"), elP = document.getElementById("phase");
+
+function phaseName(h) {
+  if (h >= 5 && h < 7) return "清晨";
+  if (h >= 7 && h < 11) return "上午";
+  if (h >= 11 && h < 13) return "正午";
+  if (h >= 13 && h < 16) return "下午";
+  if (h >= 16 && h < 19) return "黃昏";
+  if (h >= 19 && h < 23) return "夜晚";
+  return "深夜";
+}
+
+function bodyPos(a) { return [CX - rx * Math.cos(a), OY - ry * Math.sin(a)]; }
+
+function render() {
+  theta = ((theta % TAU) + TAU) % TAU;
+  const e = Math.sin(theta);
+  const night = clamp((0.05 - e) / 0.3, 0, 1);
+  const [sx, sy] = bodyPos(theta);
+  const [mx, my] = bodyPos(theta + Math.PI);
+  tf(sun, `translate(${sx.toFixed(1)},${sy.toFixed(1)})`);
+  tf(moon, `translate(${mx.toFixed(1)},${my.toFixed(1)})`);
+  sunDisc.attr({ fill: pick(PAL.sun, e) });
+  sunHalo.attr({ r: 110 + (1 - clamp(e * 3, 0, 1)) * 60 });
+
+  skyGrad.setStops(`${pick(PAL.skyTop, e)}-${pick(PAL.skyMid, e)}:60-${pick(PAL.skyBot, e)}`);
+  const wc = pick(PAL.water, e);
+  waterGrad.setStops(`${wc}-${mix(wc, "#000000", 0.35)}`);
+  waterTint.attr({ opacity: 0.38 + night * 0.12 });
+  far.attr({ fill: pick(PAL.far, e) });
+  midM.attr({ fill: pick(PAL.mid, e) });
+  near.attr({ fill: pick(PAL.near, e) });
+  const sc = pick(PAL.shore, e);
+  [shoreL, shoreR].forEach((el) => el.attr({ fill: sc }));
+  [pinesL, pinesR].forEach((el) => el.attr({ fill: mix(sc, "#000000", 0.15) }));
+  reedSets.forEach((el) => el.attr({ stroke: mix(sc, "#000000", 0.2), fill: mix(sc, "#000000", 0.2) }));
+  cloudLayer.attr({ fill: pick(PAL.cloud, e), opacity: 0.92 - night * 0.45 });
+  walls.forEach((w) => w.attr({ fill: pick(PAL.wall, e) }));
+  roofs.forEach((r) => r.attr({ fill: pick(PAL.roof, e) }));
+  windows.forEach((w) => w.attr({ fill: mix("#5a6a80", "#ffd46b", night) }));
+  lamps.forEach((l) => l.attr({ opacity: night }));
+  stars.attr({ opacity: night });
+  orbit.attr({ opacity: 0.12 + night * 0.1 });
+
+  // Sparkle column follows whichever body is up
+  const sunUp = e > -0.04;
+  const gx = sunUp ? sx : mx;
+  tf(glints, `translate(${gx.toFixed(1)},0)`);
+  glints.attr({ fill: sunUp ? pick(PAL.sun, e) : "#e6ecff", opacity: sunUp ? 0.85 : 0.55 * night });
+
+  const hours = (6 + (theta / TAU) * 24) % 24;
+  const hh = Math.floor(hours), mm = Math.floor((hours - hh) * 60);
+  elT.textContent = `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+  const alt = Math.round(Math.asin(e) * 180 / Math.PI);
+  elP.textContent = `${phaseName(hours)}・太陽高度 ${alt}°`;
+}
+
+// ---------- drag sun or moon along the orbit ----------
+function svgPoint(x, y) {
+  const pt = s.node.createSVGPoint();
+  pt.x = x; pt.y = y;
+  return pt.matrixTransform(s.node.getScreenCTM().inverse());
+}
+function makeDraggable(el, offset) {
+  el.drag(
+    (dx, dy, x, y) => {
+      const p = svgPoint(x, y);
+      theta = Math.atan2((OY - p.y) / ry, (CX - p.x) / rx) - offset;
+      render();
+    },
+    () => { dragging = true; if (anim) { anim.stop(); anim = null; } },
+    () => { dragging = false; }
+  );
+}
+makeDraggable(sun, 0);
+makeDraggable(moon, Math.PI);
+
+// ---------- buttons ----------
+const flowBtn = document.getElementById("flow");
+flowBtn.addEventListener("click", () => {
+  flowing = !flowing;
+  flowBtn.setAttribute("aria-pressed", flowing);
+});
+document.querySelectorAll("[data-goto]").forEach((b) => b.addEventListener("click", () => {
+  if (anim) anim.stop();
+  let target = parseFloat(b.dataset.goto);
+  while (target <= theta + 0.01) target += TAU; // always move time forward
+  const from = theta;
+  anim = Snap.animate(from, target, (v) => { theta = v; render(); }, 700 + (target - from) * 380, mina.easeinout, () => { anim = null; });
+}));
+
+// ---------- layout ----------
+function layout() {
+  vw = H0 * innerWidth / innerHeight;
+  vx = CX - vw / 2;
+  s.attr({ viewBox: `${vx} 0 ${vw} ${H0}` });
+  rx = Math.min(vw / 2 - 46, 440);
+  ry = Math.min(262, rx * 1.5);
+  orbit.attr({ rx, ry });
+  // Keep the ripple filter region tight: only the mirrored strip that shows in the lake
+  const fk = clamp(vw / 1000, 0.5, 1);
+  tf(fgL, `translate(${vx},${H0}) scale(${fk}) translate(0,${-H0})`);
+  tf(fgR, `translate(${vx + vw},${H0}) scale(${fk}) translate(0,${-H0})`);
+  ripple.attr({ x: vx - 30, y: HY - (H0 - HY) - 30, width: vw + 60, height: H0 - HY + 60 });
+  render();
+}
+addEventListener("resize", layout);
+layout();
+
+let last = performance.now();
+function tick(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  if (flowing && !dragging && !anim) theta += dt * TAU / 48;
+  clouds.forEach((c) => {
+    c.x += c.v * dt;
+    if (c.x - c.w > vx + vw + 40) c.x = vx - c.w - 40;
+    tf(c.el, `translate(${c.x.toFixed(1)},${c.y})`);
+  });
+  tf(waves, `translate(${((now / 120) % 40).toFixed(1)},0)`);
+  if (!anim && !dragging) render();
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

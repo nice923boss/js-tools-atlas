@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cropper.js 示範：大頭貼裁切</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  .app {
+    position: fixed; inset: 0; padding: 12px 12px 48px;
+    display: grid; grid-template-columns: 1fr 220px; gap: 12px;
+  }
+  .crop-wrap {
+    position: relative; min-height: 0; border-radius: var(--radius); overflow: hidden;
+    border: 1px solid var(--line); background: #08090b;
+  }
+  .crop-wrap img { display: none; }
+  cropper-canvas { width: 100%; height: 100%; }
+  .side { display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow: hidden; }
+  .side h3 { margin: 0; font-size: 13px; color: var(--muted); font-weight: 500; letter-spacing: .04em; }
+  .preview-main { width: 150px; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: #08090b; }
+  .avatars { display: flex; align-items: flex-end; gap: 12px; }
+  .avatars cropper-viewer { border-radius: 50%; overflow: hidden; background: #08090b; box-shadow: 0 0 0 2px var(--accent), 0 6px 18px rgba(0,0,0,.4); }
+  .av-l { width: 76px; height: 76px; }
+  .av-m { width: 48px; height: 48px; }
+  .av-s { width: 30px; height: 30px; }
+  .seg { display: flex; gap: 4px; flex-wrap: wrap; }
+  .seg .btn { padding: 6px 9px; font-size: 12px; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .row .btn { padding: 7px 10px; font-size: 12px; }
+  .meta { font: 12px/1.4 var(--mono); color: var(--muted); }
+  .result {
+    position: fixed; inset: 0; z-index: 80; display: grid; place-items: center;
+    background: rgba(8, 9, 11, .72); backdrop-filter: blur(4px);
+  }
+  .result[hidden] { display: none; }
+  .result .panel { text-align: center; display: grid; gap: 10px; justify-items: center; }
+  .result img { width: 160px; height: 160px; border-radius: 50%; box-shadow: 0 0 0 3px var(--accent); }
+  .result img.rect { border-radius: 8px; width: auto; height: auto; max-width: 260px; max-height: 180px; }
+  @media (max-width: 620px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: 1fr auto; padding-bottom: 44px; }
+    .side { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .side h3, .preview-main, .meta { display: none; }
+    .av-l { width: 52px; height: 52px; } .av-m { width: 36px; height: 36px; } .av-s { width: 24px; height: 24px; }
+    .avatars { gap: 8px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="crop-wrap" id="wrap">
+    <img id="src" src="_shared/img/photo-4.jpg" alt="披毯巴哥犬">
+  </div>
+  <div class="side">
+    <h3>輸出預覽</h3>
+    <cropper-viewer class="preview-main" selection="#sel" resize="vertical"></cropper-viewer>
+    <h3>大頭貼尺寸</h3>
+    <div class="avatars">
+      <cropper-viewer class="av-l" selection="#sel" resize="none"></cropper-viewer>
+      <cropper-viewer class="av-m" selection="#sel" resize="none"></cropper-viewer>
+      <cropper-viewer class="av-s" selection="#sel" resize="none"></cropper-viewer>
+    </div>
+    <h3>裁切比例</h3>
+    <div class="seg" id="ratios">
+      <button class="btn" data-r="1" aria-pressed="true">1:1</button>
+      <button class="btn" data-r="1.3333">4:3</button>
+      <button class="btn" data-r="1.7778">16:9</button>
+      <button class="btn" data-r="0">自由</button>
+    </div>
+    <div class="row">
+      <button class="btn" id="rot" title="旋轉 90 度">旋轉</button>
+      <button class="btn" id="zin">放大</button>
+      <button class="btn" id="zout">縮小</button>
+      <button class="btn" id="swap">換照片</button>
+    </div>
+    <button class="btn primary" id="crop">裁切輸出</button>
+    <div class="meta" id="meta">選取：0 × 0</div>
+  </div>
+</div>
+<div class="result" id="result" hidden>
+  <div class="panel">
+    <img id="out" alt="裁切結果">
+    <div class="meta" id="outMeta"></div>
+    <div class="row">
+      <a class="btn primary" id="dl" download="avatar.png" style="text-decoration:none">下載 PNG</a>
+      <button class="btn" id="close">關閉</button>
+    </div>
+  </div>
+</div>
+<div class="hint">拖曳裁切框移動或拉角縮放・滾輪縮放照片</div>
+
+<script src="https://cdn.jsdelivr.net/npm/cropperjs@2.2.0/dist/cropper.min.js"></script>
+<script>
+// Cropper.js v2 (web components): avatar cropping with live viewers, ratio lock, rotate, zoom, export.
+// [src, focusX, focusY, focusSize] where focus values are fractions of the photo (size is relative to height).
+const PHOTOS = [
+  ["_shared/img/photo-4.jpg", 0.5, 0.3, 0.5],
+  ["_shared/img/photo-7.jpg", 0.48, 0.5, 0.78],
+  ["_shared/img/photo-8.jpg", 0.83, 0.4, 0.5],
+];
+let photoIdx = 0;
+
+const handle = (a) => `<cropper-handle action="${a}" theme-color="#f7df1e"></cropper-handle>`;
+const template =
+  '<cropper-canvas background>' +
+  '<cropper-image rotatable scalable translatable initial-fit="cover"></cropper-image>' +
+  '<cropper-shade theme-color="rgba(0,0,0,0.6)"></cropper-shade>' +
+  '<cropper-handle action="move" plain></cropper-handle>' +
+  '<cropper-selection id="sel" initial-coverage="0.6" aspect-ratio="1" movable resizable outlined theme-color="#f7df1e">' +
+  '<cropper-grid role="grid" bordered covered theme-color="rgba(247,223,30,0.35)"></cropper-grid>' +
+  '<cropper-crosshair centered></cropper-crosshair>' +
+  '<cropper-handle action="move" theme-color="rgba(255,255,255,0.12)"></cropper-handle>' +
+  ["n-resize", "e-resize", "s-resize", "w-resize", "ne-resize", "nw-resize", "se-resize", "sw-resize"].map(handle).join("") +
+  '</cropper-selection></cropper-canvas>';
+
+const cropper = new Cropper.default(document.getElementById("src"), { template });
+const image = cropper.getCropperImage();
+const selection = cropper.getCropperSelection();
+const meta = document.getElementById("meta");
+
+// Viewers were parsed before the selection existed; re-attach them now.
+document.querySelectorAll("cropper-viewer").forEach((v) => {
+  const parent = v.parentNode, next = v.nextSibling;
+  parent.removeChild(v);
+  parent.insertBefore(v, next);
+});
+
+selection.addEventListener("change", (e) => {
+  const { width, height } = e.detail;
+  meta.textContent = `選取：${Math.round(width)} × ${Math.round(height)}`;
+});
+
+document.getElementById("ratios").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-r]");
+  if (!b) return;
+  document.querySelectorAll("#ratios .btn").forEach((x) => x.setAttribute("aria-pressed", x === b));
+  const r = Number(b.dataset.r);
+  selection.aspectRatio = r > 0 ? r : NaN;
+  focusSubject();
+});
+
+document.getElementById("rot").onclick = () => image.$rotate("90deg");
+document.getElementById("zin").onclick = () => image.$zoom(0.1);
+document.getElementById("zout").onclick = () => image.$zoom(-0.1);
+document.getElementById("swap").onclick = () => {
+  photoIdx = (photoIdx + 1) % PHOTOS.length;
+  image.$image.addEventListener("load", recenter, { once: true });
+  image.src = PHOTOS[photoIdx][0];
+};
+
+// Place the selection over the subject's face using the image's on-screen rect.
+function focusSubject() {
+  const [, fx, fy, fs] = PHOTOS[photoIdx];
+  const c = cropper.getCropperCanvas().getBoundingClientRect();
+  const r = image.getBoundingClientRect();
+  const size = Math.min(fs * r.height, c.width * 0.9, c.height * 0.9);
+  const ratio = selection.aspectRatio > 0 ? selection.aspectRatio : 1;
+  let w = size * Math.max(1, ratio), h = w / ratio;
+  const k = Math.min(1, (c.width * 0.92) / w, (c.height * 0.92) / h);
+  w *= k; h *= k;
+  const clamp = (v, max) => Math.max(0, Math.min(v, max));
+  selection.$change(
+    clamp(r.x - c.x + fx * r.width - w / 2, c.width - w),
+    clamp(r.y - c.y + fy * r.height - h / 2, c.height - h), w, h);
+}
+
+function recenter() {
+  image.$resetTransform();
+  image.$center("cover");
+  setTimeout(focusSubject, 30);
+}
+image.$ready().then(() => setTimeout(focusSubject, 60));
+
+document.getElementById("crop").onclick = async () => {
+  const square = selection.aspectRatio === 1;
+  const canvas = await selection.$toCanvas({ width: square ? 256 : 480 });
+  const url = canvas.toDataURL("image/png");
+  const out = document.getElementById("out");
+  out.src = url;
+  out.className = square ? "" : "rect";
+  document.getElementById("dl").href = url;
+  document.getElementById("outMeta").textContent = `輸出尺寸：${canvas.width} × ${canvas.height} px`;
+  document.getElementById("result").hidden = false;
+};
+document.getElementById("close").onclick = () => { document.getElementById("result").hidden = true; };
+
+let t;
+window.addEventListener("resize", () => {
+  clearTimeout(t);
+  t = setTimeout(recenter, 150);
+});
+</script>
+</body>
+</html>

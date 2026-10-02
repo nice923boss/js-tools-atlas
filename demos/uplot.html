@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>uPlot 示範：十萬點電力負載時序圖</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.min.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"用電與發電數值為示意資料"}</script>
+<style>
+  .title { position: fixed; left: 14px; top: 12px; z-index: 40; }
+  .title h1 { margin: 0; font-size: 16px; }
+  .title p { margin: 0; font-size: 12px; color: var(--muted); }
+  .stats { position: fixed; left: 14px; top: 58px; z-index: 40; display: flex; gap: 8px; font-size: 12px; }
+  .stats span { padding: 3px 9px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); }
+  .stats b { color: var(--accent); font: 600 12px var(--mono); }
+  #plot { position: fixed; left: 6px; right: 10px; top: 92px; bottom: 44px; }
+  .uplot { font-family: var(--font); color: var(--fg); }
+  .u-legend { font-size: 12px; color: var(--fg); margin-top: 2px; }
+  .u-legend .u-marker { border-radius: 3px; }
+  .u-legend th { font-weight: 500; }
+  .u-legend td { font-family: var(--mono); }
+  .u-select { background: rgba(247, 223, 30, 0.12); border-left: 1px solid #f7df1e; border-right: 1px solid #f7df1e; }
+  @media (max-width: 640px) {
+    .title { top: 52px; } .stats { top: 96px; } #plot { top: 126px; }
+    .u-legend { font-size: 11px; } .u-legend .u-series { padding: 0 4px; }
+  }
+</style>
+</head>
+<body>
+<div class="title"><h1>全台電力負載 35 天秒級監測</h1><p>示意資料・三條序列同時繪製</p></div>
+<div class="stats"><span>資料點 <b id="pts">0</b></span><span>產生＋繪製 <b id="ms">0</b> ms</span></div>
+<div class="controls">
+  <button class="btn" data-n="100000" aria-pressed="true">10 萬點</button>
+  <button class="btn" data-n="500000">50 萬點</button>
+  <button class="btn" data-n="1000000">100 萬點</button>
+</div>
+<div id="plot"></div>
+<div class="hint">拖曳框選放大・滾輪縮放・雙擊還原</div>
+
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.32/dist/uPlot.iife.min.js"></script>
+<script>
+// uPlot renders hundreds of thousands of points per series on a single canvas in milliseconds.
+const DAYS = 35, START = Math.floor(new Date(2024, 6, 1).getTime() / 1000);
+
+// Synthetic grid data: daily demand cycle, weekend dip, solar bell curve, wandering wind.
+function makeData(n) {
+  const step = (DAYS * 86400) / n;
+  const x = new Float64Array(n), load = new Float32Array(n), solar = new Float32Array(n), wind = new Float32Array(n);
+  let w = 1.6, cloud = 1, noise = 0;
+  for (let i = 0; i < n; i++) {
+    const t = START + i * step, hour = ((t / 3600) + 8) % 24, day = Math.floor((t + 8 * 3600) / 86400);
+    const weekend = (day + 4) % 7 >= 5 ? 0.9 : 1;
+    if (i % 200 === 0) cloud = Math.min(1, Math.max(0.35, cloud + (Math.random() - 0.5) * 0.25));
+    noise = noise * 0.995 + (Math.random() - 0.5) * 0.08;
+    const sun = Math.max(0, Math.sin(((hour - 6) / 12) * Math.PI));
+    x[i] = t;
+    load[i] = (27 + 9 * Math.max(0, Math.sin(((hour - 8) / 14) * Math.PI)) + 2 * Math.sin(day / 5)) * weekend + noise;
+    solar[i] = 11 * sun ** 1.5 * cloud + (sun > 0 ? noise * 0.3 : 0);
+    w = Math.min(3.4, Math.max(0.2, w + (Math.random() - 0.5) * 0.02));
+    wind[i] = w;
+  }
+  return [x, load, solar, wind];
+}
+
+const pad = (v) => String(v).padStart(2, "0");
+function fmtTime(ts, withDate) {
+  const d = new Date(ts * 1000);
+  return withDate ? `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}` : `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// Mouse-wheel zoom around the cursor (uPlot leaves wheel handling to plugins).
+function wheelZoom() {
+  return { hooks: { ready: (u) => {
+    u.over.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const { min, max } = u.scales.x, [lo, hi] = [u.data[0][0], u.data[0][u.data[0].length - 1]];
+      const at = u.posToVal(e.offsetX, "x"), k = e.deltaY < 0 ? 0.75 : 1 / 0.75;
+      let nMin = at - (at - min) * k, nMax = at + (max - at) * k;
+      if (nMax - nMin >= hi - lo) { nMin = lo; nMax = hi; }
+      u.setScale("x", { min: Math.max(lo, nMin), max: Math.min(hi, nMax) });
+    }, { passive: false });
+  } } };
+}
+
+function gradient(color) {
+  return (u) => {
+    if (!u.bbox || !Number.isFinite(u.bbox.height)) return color + "33"; // legend markers ask before layout
+    const g = u.ctx.createLinearGradient(0, u.bbox.top, 0, u.bbox.top + u.bbox.height);
+    g.addColorStop(0, color + "55");
+    g.addColorStop(1, color + "00");
+    return g;
+  };
+}
+
+const axisBase = { stroke: "#9b998f", grid: { stroke: "rgba(255,255,255,0.06)", width: 1 }, ticks: { stroke: "rgba(255,255,255,0.15)", width: 1 },
+  font: "11px Noto Sans TC, Microsoft JhengHei, sans-serif", labelFont: "12px Noto Sans TC, Microsoft JhengHei, sans-serif" };
+const box = document.getElementById("plot");
+let u;
+
+function size() {
+  const legendH = innerWidth < 640 ? 56 : 32; // legend wraps to two rows on narrow screens
+  return { width: box.clientWidth, height: box.clientHeight - legendH };
+}
+
+function build(n) {
+  const t0 = performance.now();
+  const data = makeData(n);
+  if (u) u.destroy();
+  u = new uPlot({
+    ...size(),
+    plugins: [wheelZoom()],
+    cursor: { drag: { x: true, y: false }, points: { size: 7 } },
+    scales: { x: { time: true }, y: { range: [0, 42] } },
+    series: [
+      { value: (self, v) => (v == null ? "滑過圖表" : fmtTime(v, true)) },
+      { label: "總負載", stroke: "#4cc9f0", width: 1, fill: gradient("#4cc9f0"), value: (s, v) => (v == null ? "-" : `${v.toFixed(2)} GW`) },
+      { label: "太陽光電", stroke: "#f7df1e", width: 1, fill: gradient("#f7df1e"), value: (s, v) => (v == null ? "-" : `${v.toFixed(2)} GW`) },
+      { label: "風力", stroke: "#7bd389", width: 1, value: (s, v) => (v == null ? "-" : `${v.toFixed(2)} GW`) },
+    ],
+    axes: [
+      { ...axisBase, space: 70, values: (self, splits, ax, space, incr) =>
+          splits.map((v) => (incr >= 86400 ? `${new Date(v * 1000).getMonth() + 1}/${new Date(v * 1000).getDate()}` : fmtTime(v, new Date(v * 1000).getHours() === 0))) },
+      { ...axisBase, label: "GW", size: 46, values: (self, splits) => splits.map((v) => v.toFixed(0)) },
+    ],
+  }, data, box);
+  const ms = performance.now() - t0;
+  document.getElementById("pts").textContent = (n * 3).toLocaleString();
+  document.getElementById("ms").textContent = ms.toFixed(0);
+}
+
+build(100000);
+
+document.querySelectorAll("[data-n]").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll("[data-n]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  document.getElementById("ms").textContent = "…";
+  setTimeout(() => build(+b.dataset.n), 30);
+}));
+addEventListener("resize", () => u && u.setSize(size()));
+</script>
+</body>
+</html>

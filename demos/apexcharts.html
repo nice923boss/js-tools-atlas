@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ApexCharts 示範：捷運即時監控儀表板</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  .board {
+    position: fixed; inset: 0; padding: 52px 12px 44px;
+    display: grid; gap: 10px; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas: "kpi kpi" "live gauge" "live top";
+  }
+  .card { position: relative; min-height: 0; padding: 8px 10px 10px; display: flex; flex-direction: column; overflow: hidden; }
+  .card h2 { margin: 0; font-size: 13px; font-weight: 600; }
+  .card h2 small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+  .card .box { flex: 1; min-height: 0; }
+  .live { grid-area: live; } .gauge { grid-area: gauge; } .top { grid-area: top; }
+  .kpis { grid-area: kpi; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .kpi { padding: 8px 12px; display: flex; align-items: center; gap: 10px; }
+  .kpi .txt { min-width: 92px; }
+  .kpi b { display: block; font: 700 20px/1.1 var(--mono); }
+  .kpi span { font-size: 11px; color: var(--muted); }
+  .kpi .spark { flex: 1; min-width: 0; height: 36px; }
+  #top .apexcharts-datalabels { opacity: 1 !important; }
+  .title { position: fixed; left: 14px; top: 13px; z-index: 40; font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  .title small { font-size: 12px; font-weight: 400; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c3); box-shadow: 0 0 0 0 rgba(247,37,133,.7); animation: pulse 1.6s infinite; }
+  @keyframes pulse { 70% { box-shadow: 0 0 0 8px rgba(247,37,133,0); } 100% { box-shadow: 0 0 0 0 rgba(247,37,133,0); } }
+  @media (max-width: 640px) {
+    .board { padding-top: 88px; grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1.2fr) minmax(0, 1fr); grid-template-areas: "kpi" "live" "gauge"; }
+    .top { display: none; }
+    .kpis { gap: 6px; }
+    .kpi { padding: 6px 8px; } .kpi .spark { display: none; } .kpi .txt { min-width: 0; }
+    .kpi b { font-size: 15px; }
+    .title { top: 54px; }
+  }
+</style>
+</head>
+<body>
+<div class="title"><i class="dot"></i>捷運即時監控<small>示意資料</small></div>
+<div class="controls">
+  <button class="btn" id="pause">暫停</button>
+  <button class="btn primary" id="rush">模擬尖峰</button>
+</div>
+<div class="board">
+  <div class="kpis">
+    <div class="panel kpi"><div class="txt"><b id="k1">0</b><span>本分鐘進站人次</span></div><div class="spark" id="s1"></div></div>
+    <div class="panel kpi"><div class="txt"><b id="k2">0</b><span>平均班距（秒）</span></div><div class="spark" id="s2"></div></div>
+    <div class="panel kpi"><div class="txt"><b id="k3">0%</b><span>準點率</span></div><div class="spark" id="s3"></div></div>
+  </div>
+  <div class="panel card live"><h2>全線進站人次<small>每秒更新</small></h2><div class="box" id="live"></div></div>
+  <div class="panel card gauge"><h2>各線擁擠度</h2><div class="box" id="gauge"></div></div>
+  <div class="panel card top"><h2>熱門車站 Top 5</h2><div class="box" id="top"></div></div>
+</div>
+<div class="hint">即時串流更新・滑過看數值・按「模擬尖峰」看圖表反應</div>
+
+<script src="https://cdn.jsdelivr.net/npm/apexcharts@7.8.0/dist/apexcharts.min.js"></script>
+<script>
+// Live ApexCharts dashboard: streaming area chart, radial gauges, ranked bars and sparklines.
+const C = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#9d8cff"];
+const FONT = getComputedStyle(document.body).fontFamily;
+const base = {
+  chart: { background: "transparent", fontFamily: FONT, foreColor: "#9b998f", toolbar: { show: false }, parentHeightOffset: 0 },
+  theme: { mode: "dark" },
+  grid: { borderColor: "rgba(255,255,255,0.07)", padding: { left: 6, right: 8 } },
+  tooltip: { theme: "dark" },
+};
+
+const WINDOW = 60;
+let surge = 0, paused = false;
+let t0 = Date.now() - WINDOW * 1000;
+const flow = Array.from({ length: WINDOW }, (_, i) => ({ x: t0 + i * 1000, y: 0 }));
+let level = 820;
+function nextFlow() {
+  level += (Math.random() - 0.5) * 60 + (900 - level) * 0.05 + surge * 40;
+  return Math.max(200, Math.round(level + Math.sin(Date.now() / 4000) * 80));
+}
+flow.forEach((p) => (p.y = nextFlow()));
+
+const live = new ApexCharts(document.getElementById("live"), {
+  ...base,
+  chart: { ...base.chart, type: "area", height: "100%", animations: { enabled: true, easing: "linear", dynamicAnimation: { speed: 950 } }, zoom: { enabled: false } },
+  series: [{ name: "進站人次", data: flow.slice() }],
+  colors: [C[1]],
+  stroke: { curve: "smooth", width: 2.5 },
+  fill: { type: "gradient", gradient: { shadeIntensity: 1, opacityFrom: 0.55, opacityTo: 0.02, stops: [0, 95] } },
+  dataLabels: { enabled: false },
+  markers: { size: 0 },
+  xaxis: { type: "datetime", range: WINDOW * 1000, labels: { datetimeUTC: false, format: "HH:mm:ss" } },
+  yaxis: { min: 0, max: 2200, tickAmount: 4, labels: { formatter: (v) => Math.round(v) } },
+  annotations: { yaxis: [{ y: 1500, borderColor: C[2], strokeDashArray: 4,
+    label: { text: "擁擠警戒", style: { background: C[2], color: "#fff" }, borderColor: C[2] } }] },
+});
+
+const LINES = ["文湖線", "淡水信義線", "板南線", "松山新店線"];
+const crowd = [62, 78, 85, 54];
+const gauge = new ApexCharts(document.getElementById("gauge"), {
+  ...base,
+  chart: { ...base.chart, type: "radialBar", height: "100%" },
+  series: crowd.slice(),
+  labels: LINES,
+  colors: ["#c48c3c", "#e3002c", "#0070bd", "#008659"],
+  plotOptions: { radialBar: {
+    hollow: { size: "28%" }, track: { background: "rgba(255,255,255,0.06)", margin: 3 },
+    dataLabels: { name: { fontSize: "12px" }, value: { fontSize: "16px", color: "#ecebe6", formatter: (v) => `${Math.round(v)}%` },
+      total: { show: true, label: "平均", color: "#9b998f", formatter: (w) => `${Math.round(w.globals.series.reduce((a, b) => a + b, 0) / 4)}%` } },
+  } },
+  stroke: { lineCap: "round" },
+  legend: { show: true, position: "left", fontSize: "11px", offsetY: 0, markers: { size: 5 }, itemMargin: { vertical: 0 } },
+});
+
+const STATIONS = ["台北車站", "西門", "市政府", "忠孝復興", "中山", "南京復興", "板橋"];
+const stationVal = STATIONS.map(() => 300 + Math.random() * 400);
+function topFive() {
+  return STATIONS.map((n, i) => ({ x: n, y: Math.round(stationVal[i]) })).sort((a, b) => b.y - a.y).slice(0, 5);
+}
+const topChart = new ApexCharts(document.getElementById("top"), {
+  ...base,
+  chart: { ...base.chart, type: "bar", height: "100%", animations: { enabled: true, speed: 500, dynamicAnimation: { enabled: false } } },
+  series: [{ name: "每分鐘進站", data: topFive() }],
+  plotOptions: { bar: { horizontal: true, borderRadius: 4, barHeight: "62%", distributed: true } },
+  colors: C,
+  legend: { show: false },
+  dataLabels: { enabled: true, style: { fontSize: "10px", colors: ["#0e1013"] } },
+  xaxis: { labels: { show: false }, axisBorder: { show: false } },
+  yaxis: { labels: { style: { colors: "#ecebe6", fontSize: "11px" } } },
+  grid: { ...base.grid, xaxis: { lines: { show: false } } },
+});
+
+function sparkChart(el, color, data) {
+  return new ApexCharts(el, {
+    chart: { type: "line", height: 36, sparkline: { enabled: true }, animations: { enabled: false }, background: "transparent" },
+    series: [{ data }], colors: [color], stroke: { width: 2, curve: "smooth" }, tooltip: { enabled: false },
+  });
+}
+const hist = { a: Array.from({ length: 20 }, () => 800 + Math.random() * 200), b: Array.from({ length: 20 }, () => 150 + Math.random() * 40),
+  c: Array.from({ length: 20 }, () => 96 + Math.random() * 3) };
+const sparks = [sparkChart(document.getElementById("s1"), C[1], hist.a), sparkChart(document.getElementById("s2"), C[4], hist.b),
+  sparkChart(document.getElementById("s3"), C[3], hist.c)];
+
+Promise.all([live.render(), gauge.render(), topChart.render(), ...sparks.map((s) => s.render())]).then(() => {
+  setInterval(tick, 1000);
+  tick();
+});
+
+const k1 = document.getElementById("k1"), k2 = document.getElementById("k2"), k3 = document.getElementById("k3");
+let n = 0;
+function tick() {
+  if (paused) return;
+  n++;
+  const y = nextFlow();
+  flow.push({ x: Date.now(), y });
+  if (flow.length > WINDOW + 10) flow.shift();
+  live.updateSeries([{ data: flow.slice() }]);
+
+  const headway = Math.round(150 + Math.random() * 30 - surge * 15);
+  const onTime = Math.min(99.9, 97 + Math.random() * 2.5 - surge * 1.2);
+  k1.textContent = y.toLocaleString();
+  k2.textContent = headway;
+  k3.textContent = `${onTime.toFixed(1)}%`;
+
+  if (n % 2 === 0) {
+    crowd.forEach((v, i) => (crowd[i] = Math.max(20, Math.min(99, v + (Math.random() - 0.5) * 14 + surge * 3))));
+    gauge.updateSeries(crowd.map(Math.round));
+    stationVal.forEach((v, i) => (stationVal[i] = Math.max(120, v + (Math.random() - 0.48) * 120 + surge * 25)));
+    topChart.updateSeries([{ data: topFive() }]);
+    hist.a.push(y); hist.a.shift(); hist.b.push(headway); hist.b.shift(); hist.c.push(onTime); hist.c.shift();
+    sparks[0].updateSeries([{ data: hist.a.slice() }]);
+    sparks[1].updateSeries([{ data: hist.b.slice() }]);
+    sparks[2].updateSeries([{ data: hist.c.slice() }]);
+  }
+  surge = Math.max(0, surge - 0.25);
+}
+
+document.getElementById("rush").addEventListener("click", () => { surge = 6; level += 400; });
+const pauseBtn = document.getElementById("pause");
+pauseBtn.addEventListener("click", () => {
+  paused = !paused;
+  pauseBtn.textContent = paused ? "繼續" : "暫停";
+  pauseBtn.setAttribute("aria-pressed", String(paused));
+});
+</script>
+</body>
+</html>

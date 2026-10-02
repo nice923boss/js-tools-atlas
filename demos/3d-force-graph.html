@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3d-force-graph 示範：npm 套件相依星系</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","size":"約 3 MB","note":"相依關係為簡化示意，非完整套件清單"}</script>
+<style>
+  #graph { position: fixed; inset: 0; }
+  #card { position: fixed; left: 12px; top: 12px; z-index: 40; width: 240px; font-size: 13px; padding: 12px 14px; }
+  #card h3 { margin: 0 0 2px; font-size: 16px; font-family: var(--mono); }
+  #card .sub { color: var(--muted); margin-bottom: 6px; }
+  #card .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; font-size: 12px; color: var(--muted); }
+  #card .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
+  #card .deps { font-size: 12px; line-height: 1.7; }
+  #card .deps code { font-family: var(--mono); background: rgba(255,255,255,.07); padding: 0 5px; border-radius: 4px; margin-right: 3px; white-space: nowrap; }
+  .graph-tooltip { font-family: var(--mono) !important; }
+  @media (max-width: 520px) {
+    #card { width: auto; right: 12px; top: auto; bottom: 46px; padding: 8px 10px; }
+    #card .legend { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="graph"></div>
+<div id="card" class="panel">
+  <h3 id="name">npm 生態系</h3>
+  <div class="sub" id="sub">球越大，代表被越多套件依賴</div>
+  <div class="legend" id="legend"></div>
+  <div class="deps" id="deps"></div>
+</div>
+<div class="controls">
+  <button class="btn" id="spin" aria-pressed="true">自動旋轉</button>
+  <button class="btn" id="home">回到全景</button>
+</div>
+<div class="hint">拖曳旋轉・滾輪縮放・點套件飛過去</div>
+
+<script type="module">
+import ForceGraph3D from "https://cdn.jsdelivr.net/npm/3d-force-graph@1.80.1/+esm";
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.186.1/+esm";
+import { forceX, forceY, forceZ } from "https://cdn.jsdelivr.net/npm/d3-force-3d@3.0.6/+esm";
+
+// Simplified dependency graph: [package, category, ...dependencies]
+const CATS = {
+  fw: { label: "框架", color: "#f72585" },
+  build: { label: "建置工具", color: "#ff8c42" },
+  test: { label: "測試與品質", color: "#9d8cff" },
+  server: { label: "伺服器", color: "#7bd389" },
+  util: { label: "工具函式", color: "#4cc9f0" },
+  viz: { label: "視覺化", color: "#f7df1e" },
+};
+const PKGS = [
+  ["react", "fw"], ["react-dom", "fw", "react", "scheduler"], ["scheduler", "fw"],
+  ["next", "fw", "react", "react-dom", "postcss", "styled-jsx", "@swc/helpers"], ["styled-jsx", "fw"], ["@swc/helpers", "build"],
+  ["vue", "fw", "@vue/runtime-dom", "@vue/compiler-dom", "@vue/shared"], ["@vue/runtime-dom", "fw", "@vue/runtime-core", "@vue/shared"],
+  ["@vue/runtime-core", "fw", "@vue/reactivity", "@vue/shared"], ["@vue/reactivity", "fw", "@vue/shared"], ["@vue/compiler-dom", "fw", "@vue/shared"], ["@vue/shared", "fw"],
+  ["nuxt", "fw", "vue", "vite", "h3", "defu"], ["h3", "server", "defu"], ["defu", "util"],
+  ["svelte", "fw", "acorn", "magic-string"], ["magic-string", "build"],
+  ["vite", "build", "esbuild", "rollup", "postcss"], ["esbuild", "build"], ["rollup", "build"],
+  ["postcss", "build", "nanoid", "picocolors", "source-map-js"], ["source-map-js", "build"],
+  ["tailwindcss", "build", "postcss", "chokidar"], ["chokidar", "util", "readdirp"], ["readdirp", "util"],
+  ["webpack", "build", "acorn", "enhanced-resolve", "terser", "browserslist"], ["enhanced-resolve", "build"], ["terser", "build", "acorn"],
+  ["browserslist", "build", "caniuse-lite", "picocolors"], ["caniuse-lite", "build"], ["acorn", "build"],
+  ["@babel/core", "build", "@babel/parser", "@babel/traverse", "@babel/generator", "debug", "semver", "browserslist"],
+  ["@babel/parser", "build"], ["@babel/traverse", "build", "@babel/parser", "@babel/generator", "debug"], ["@babel/generator", "build"],
+  ["jest", "test", "@babel/core", "chalk"], ["vitest", "test", "vite", "chai", "picocolors"], ["chai", "test"],
+  ["eslint", "test", "espree", "debug", "minimatch", "chalk"], ["espree", "test", "acorn"],
+  ["express", "server", "body-parser", "debug", "cookie", "qs", "send", "accepts"], ["body-parser", "server", "debug", "qs", "raw-body"],
+  ["raw-body", "server"], ["send", "server", "debug", "mime-types", "ms"], ["accepts", "server", "mime-types"], ["cookie", "server"], ["qs", "server"],
+  ["koa", "server", "debug", "accepts", "cookies"], ["cookies", "server"],
+  ["debug", "util", "ms"], ["ms", "util"], ["mime-types", "util"], ["semver", "util"], ["nanoid", "util"], ["picocolors", "util"],
+  ["chalk", "util"], ["glob", "util", "minimatch"], ["minimatch", "util"],
+  ["axios", "util", "follow-redirects", "form-data"], ["follow-redirects", "util"], ["form-data", "util", "mime-types"],
+  ["three", "viz"], ["d3", "viz", "d3-scale", "d3-selection", "d3-force"], ["d3-scale", "viz", "d3-array"], ["d3-array", "viz"],
+  ["d3-selection", "viz"], ["d3-force", "viz", "d3-quadtree", "d3-timer"], ["d3-quadtree", "viz"], ["d3-timer", "viz"],
+  ["chart.js", "viz", "@kurkle/color"], ["@kurkle/color", "viz"],
+  ["3d-force-graph", "viz", "three", "three-forcegraph"], ["three-forcegraph", "viz", "three", "d3-force-3d"], ["d3-force-3d", "viz", "d3-quadtree", "d3-timer"],
+];
+
+const nodes = PKGS.map(([id, cat]) => ({ id, cat, deps: [], users: [] }));
+const byId = new Map(nodes.map((n) => [n.id, n]));
+const links = [];
+for (const [id, , ...deps] of PKGS) {
+  for (const d of deps) {
+    links.push({ source: id, target: d });
+    byId.get(id).deps.push(d);
+    byId.get(d).users.push(id);
+  }
+}
+
+// Text label sprite drawn on a canvas texture, attached on top of each node sphere.
+function labelSprite(text, color) {
+  const fs = 44;
+  const c = document.createElement("canvas");
+  const ctx = c.getContext("2d");
+  ctx.font = `600 ${fs}px Consolas, monospace`;
+  c.width = Math.ceil(ctx.measureText(text).width) + 16;
+  c.height = fs + 14;
+  ctx.font = `600 ${fs}px Consolas, monospace`;
+  ctx.fillStyle = color;
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, 8, c.height / 2);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
+  const h = 6;
+  sprite.scale.set((h * c.width) / c.height, h, 1);
+  return sprite;
+}
+
+let selected = null;
+const el = document.getElementById("graph");
+const graph = new ForceGraph3D(el, { controlType: "orbit" })
+  .backgroundColor("#0b0d10")
+  .showNavInfo(false)
+  .cooldownTicks(150)
+  .graphData({ nodes, links })
+  .nodeVal((n) => 1 + n.users.length * 2.2)
+  .nodeRelSize(3.5)
+  .nodeOpacity(0.95)
+  .nodeResolution(16)
+  .nodeColor((n) => {
+    if (!selected) return CATS[n.cat].color;
+    if (n === selected) return "#ffffff";
+    return selected.deps.includes(n.id) || selected.users.includes(n.id) ? CATS[n.cat].color : "#2a2e35";
+  })
+  .nodeLabel((n) => `${n.id}（${CATS[n.cat].label}）`)
+  .nodeThreeObjectExtend(true)
+  .nodeThreeObject((n) => {
+    const s = labelSprite(n.id, "#ecebe6");
+    s.position.y = Math.sqrt(1 + n.users.length * 2.2) * 3 + 3;
+    return s;
+  })
+  .linkColor((l) => (selected && (l.source === selected || l.target === selected) ? "#f7df1e" : "rgba(180,190,210,0.35)"))
+  .linkWidth((l) => (selected && (l.source === selected || l.target === selected) ? 1.2 : 0))
+  .linkOpacity(0.5)
+  .linkDirectionalArrowLength(3)
+  .linkDirectionalArrowRelPos(1)
+  .linkDirectionalParticles(1)
+  .linkDirectionalParticleWidth(1.2)
+  .linkDirectionalParticleSpeed(0.006)
+  .onNodeClick(focus)
+  .onBackgroundClick(() => select(null));
+
+graph.d3Force("charge").strength(-60);
+graph.d3Force("link").distance(26);
+// Gentle pull toward the origin keeps small disconnected clusters from drifting away.
+graph.d3Force("x", forceX(0).strength(0.06)).d3Force("y", forceY(0).strength(0.06)).d3Force("z", forceZ(0).strength(0.06));
+
+const controls = graph.controls();
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.8;
+
+function select(n) {
+  selected = n;
+  graph.nodeColor(graph.nodeColor()).linkColor(graph.linkColor()).linkWidth(graph.linkWidth());
+  const name = document.getElementById("name");
+  const sub = document.getElementById("sub");
+  const deps = document.getElementById("deps");
+  document.getElementById("legend").style.display = n ? "none" : "";
+  if (!n) {
+    name.textContent = "npm 生態系";
+    name.style.color = "";
+    sub.textContent = "球越大，代表被越多套件依賴";
+    deps.innerHTML = "";
+    return;
+  }
+  name.textContent = n.id;
+  name.style.color = CATS[n.cat].color;
+  sub.textContent = `${CATS[n.cat].label}・依賴 ${n.deps.length} 個・被 ${n.users.length} 個依賴`;
+  const list = (arr) => (arr.length ? arr.map((x) => `<code>${x}</code>`).join(" ") : "無");
+  deps.innerHTML = `<div>依賴：${list(n.deps)}</div><div>被依賴：${list(n.users)}</div>`;
+}
+
+function focus(n) {
+  select(n);
+  controls.autoRotate = false;
+  document.getElementById("spin").setAttribute("aria-pressed", "false");
+  const dist = 90;
+  const ratio = 1 + dist / Math.hypot(n.x, n.y, n.z);
+  graph.cameraPosition({ x: n.x * ratio, y: n.y * ratio, z: n.z * ratio }, n, 1400);
+}
+
+document.getElementById("legend").innerHTML = Object.values(CATS).map((c) => `<span><i style="background:${c.color}"></i>${c.label}</span>`).join("");
+document.getElementById("spin").addEventListener("click", (e) => {
+  controls.autoRotate = !controls.autoRotate;
+  e.currentTarget.setAttribute("aria-pressed", String(controls.autoRotate));
+});
+document.getElementById("home").addEventListener("click", () => {
+  select(null);
+  overview(1000);
+});
+
+function resize() { graph.width(innerWidth).height(innerHeight); }
+addEventListener("resize", resize);
+resize();
+// Fit the whole graph, then dolly in a bit: the bounding sphere fit leaves wide margins.
+function overview(ms) {
+  graph.zoomToFit(0, 0);
+  const p = graph.cameraPosition();
+  const k = innerWidth < 520 ? 0.85 : 0.68;
+  graph.cameraPosition({ x: p.x * k, y: p.y * k, z: p.z * k }, { x: 0, y: 0, z: 0 }, ms);
+}
+let fitted = false;
+graph.onEngineStop(() => {
+  if (fitted) return;
+  fitted = true;
+  overview(800);
+});
+setTimeout(() => { if (!fitted) overview(0); }, 1500);
+</script>
+</body>
+</html>

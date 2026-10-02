@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>markmap 示範：Markdown 變心智圖</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","size":"約 1 MB（含 d3 與 markdown-it）"}</script>
+<style>
+  #app { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(230px, 32%) 1fr; }
+  #app.no-src { grid-template-columns: 0 1fr; }
+  #app.no-src #pane { visibility: hidden; }
+  #pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden;
+    background: #101117; border-right: 1px solid var(--line); }
+  #pane .head { display: flex; justify-content: space-between; gap: 8px; padding: 10px 14px 4px; font-size: 12px; color: var(--muted); }
+  #pane .head b { color: var(--fg); }
+  #src { flex: 1; min-height: 0; resize: none; border: 0; outline: 0; background: transparent; color: #cfd2dc;
+    padding: 6px 14px 48px; font: 12.5px/1.7 var(--mono); white-space: pre; overflow: auto; font-variant-ligatures: none; }
+  #mm { width: 100%; height: 100%; display: block; min-width: 0;
+    background: radial-gradient(ellipse at 30% 40%, #1d1b33 0%, var(--bg) 70%); }
+  #mm.markmap {
+    --markmap-text-color: #ecebe6;
+    --markmap-font: 400 15px/20px "Noto Sans TC", "Microsoft JhengHei", "PingFang TC", sans-serif;
+    --markmap-circle-open-bg: #15161c;
+    --markmap-code-bg: #2a2c3a;
+    --markmap-code-color: #ffd36b;
+  }
+  .markmap-foreign strong { color: #fff; }
+  .hint { left: auto; right: 12px; }
+  /* the fitted map can place nodes under the hint at any size: show it briefly, then fade it out */
+  .hint { animation: hint-fade .5s 8s forwards; }
+  @media (max-width: 640px) {
+    #app { grid-template-columns: 1fr; grid-template-rows: 34% 1fr; }
+    #app.no-src { grid-template-columns: 1fr; grid-template-rows: 0 1fr; }
+    #pane { border-right: 0; border-bottom: 1px solid var(--line); }
+    #src { padding-bottom: 10px; font-size: 12px; }
+    #app:not(.no-src) ~ .controls { top: calc(34% + 8px); }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <section id="pane">
+    <div class="head"><b>Markdown 原始碼</b><span id="stat">標題與清單都會變成節點</span></div>
+    <textarea id="src" spellcheck="false" wrap="off" aria-label="Markdown 原始碼"></textarea>
+  </section>
+  <svg id="mm"></svg>
+</div>
+<div class="controls">
+  <button class="btn" id="tSrc" aria-pressed="true">原始碼</button>
+  <button class="btn" data-lv="-1" aria-pressed="true">全部展開</button>
+  <button class="btn" data-lv="2" aria-pressed="false">只看主幹</button>
+  <button class="btn" id="fit">置中</button>
+</div>
+<div class="hint">點圓點收合分支・滾輪縮放・拖曳平移</div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/markmap-lib@0.18.12/dist/browser/index.iife.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/markmap-view@0.18.12/dist/browser/index.js"></script>
+<script>
+const MD = `# 如何學 JavaScript
+
+## 基礎語法
+- 變數：\`let\`、\`const\`
+- 型別與運算子
+- 條件判斷與迴圈
+- 函式與箭頭函式
+
+## 資料處理
+- 陣列方法：\`map\`、\`filter\`
+- 物件與解構賦值
+- **JSON** 讀寫
+
+## 瀏覽器
+- DOM 操作
+- 事件與事件委派
+- \`fetch\` 呼叫 API
+
+## 非同步
+- 回呼函式
+- Promise
+- \`async\`／\`await\`
+
+## 工具鏈
+- npm 套件管理
+- Vite 開發伺服器
+- ESLint 與 Prettier
+
+## 練習專案
+- [x] 待辦清單
+- [x] 天氣查詢小工具
+- [ ] 個人作品集網站
+
+## 下一步
+- TypeScript
+- React、Vue 或 Svelte
+- 寫測試：Vitest
+`;
+
+const { Transformer, Markmap, deriveOptions } = window.markmap;
+const transformer = new Transformer();
+// Freeze colours at level 2 so every main branch keeps one hue down to its leaves.
+const baseOpts = deriveOptions({
+  color: ["#ffd36b", "#ff7aa8", "#7cc7ff", "#8be3a6", "#b49cff", "#ffa66b", "#5ee0d6"],
+  colorFreezeLevel: 2,
+  spacingVertical: 8,
+  spacingHorizontal: 70,
+  paddingX: 10,
+  duration: 450,
+  fitRatio: 0.86,
+  maxWidth: 260,
+});
+
+const app = document.getElementById("app");
+const src = document.getElementById("src");
+const stat = document.getElementById("stat");
+const mm = Markmap.create("#mm", baseOpts);
+let level = -1;
+
+async function draw(refit) {
+  const { root } = transformer.transform(src.value);
+  let count = 0;
+  (function walk(n) { count += 1; (n.children || []).forEach(walk); })(root);
+  await mm.setData(root, { initialExpandLevel: level });
+  if (refit) await mm.fit();
+  stat.textContent = `共 ${count} 個節點`;
+}
+
+let timer;
+src.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => draw(false), 250); });
+
+document.querySelectorAll("[data-lv]").forEach((b) => b.addEventListener("click", () => {
+  level = Number(b.dataset.lv);
+  document.querySelectorAll("[data-lv]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  draw(true);
+}));
+document.getElementById("fit").addEventListener("click", () => mm.fit());
+
+const tSrc = document.getElementById("tSrc");
+function showSource(on) {
+  app.classList.toggle("no-src", !on);
+  tSrc.setAttribute("aria-pressed", String(on));
+  // The svg size changes with the grid, so refit after layout settles.
+  requestAnimationFrame(() => mm.fit());
+}
+tSrc.addEventListener("click", () => showSource(app.classList.contains("no-src")));
+
+let rz;
+addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(() => mm.fit(), 120); });
+
+src.value = MD;
+// Narrow frames start with the map only; the source is one tap away.
+if (innerWidth <= 640) { app.classList.add("no-src"); tSrc.setAttribute("aria-pressed", "false"); }
+draw(true);
+</script>
+</body>
+</html>

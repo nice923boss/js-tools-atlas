@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DuckDB-Wasm 示範：瀏覽器裡的分析型 SQL</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"click","size":"約 34 MB","note":"按下後才下載 DuckDB 的 WebAssembly 引擎，瀏覽器會快取"}</script>
+<style>
+  :root { --duck: #fff000; }
+  .app { position: fixed; inset: 0; display: grid; grid-template-columns: 220px minmax(0, 1fr); }
+  .side { background: var(--bg-2); border-right: 1px solid var(--line); padding: 14px 14px 52px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+  .side h1 { font-size: 16px; margin: 0; display: flex; align-items: center; gap: 8px; }
+  .side h1 .logo { width: 22px; height: 22px; border-radius: 50%; background: var(--duck); box-shadow: inset -5px 0 0 #1a1a14; flex: none; }
+  .side h1 small { display: block; font-size: 11px; font-weight: 400; color: var(--muted); }
+  .lab { font-size: 11px; color: var(--muted); letter-spacing: .04em; margin-top: 4px; }
+  .objs { display: flex; flex-direction: column; gap: 6px; }
+  .obj { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--bg); cursor: pointer; }
+  .obj:hover { border-color: var(--duck); }
+  .obj header { display: flex; align-items: center; gap: 6px; font: 600 12px var(--mono); min-width: 0; }
+  .obj header span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .obj header i { font-style: normal; font-size: 10px; padding: 0 5px; border-radius: 4px; background: rgba(255, 240, 0, .16); color: var(--duck); flex: none; }
+  .obj header i.f { background: rgba(76, 201, 240, .16); color: var(--c2); }
+  .obj header small { margin-left: auto; font-weight: 400; color: var(--muted); flex: none; }
+  .cols { margin-top: 3px; font: 11px/1.55 var(--mono); color: var(--muted); }
+  .cols b { color: var(--fg); font-weight: 500; }
+  .note { font-size: 11px; color: var(--muted); line-height: 1.5; }
+  .main { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); gap: 8px; padding: 12px 14px; min-width: 0; min-height: 0; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { border: 1px solid var(--line); background: var(--bg-2); color: var(--fg); border-radius: 999px; padding: 3px 11px; font: 12px var(--font); cursor: pointer; }
+  .chip:hover { border-color: var(--duck); }
+  .chip[aria-pressed="true"] { background: var(--duck); border-color: var(--duck); color: #1a1a14; }
+  .ed { position: relative; }
+  textarea { width: 100%; height: 118px; resize: none; display: block; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: #0a0b0d; color: #e6e4dc; font: 13px/1.55 var(--mono); outline: none; tab-size: 2; }
+  textarea:focus { border-color: var(--duck); }
+  .ed kbd { position: absolute; right: 10px; bottom: 8px; font: 10px var(--mono); color: #7f848e; }
+  .tool { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .tool .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .msg { font: 12px var(--mono); color: var(--muted); margin-left: auto; text-align: right; }
+  .msg.ok b { color: var(--duck); }
+  .msg.err { color: var(--c3); white-space: normal; }
+  .res { overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-2); min-height: 0; }
+  table { border-collapse: collapse; font-size: 13px; min-width: 100%; }
+  th, td { padding: 5px 12px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+  th { position: sticky; top: 0; background: #22252b; font-weight: 600; font-size: 12px; z-index: 1; }
+  th small { display: block; font: 10px var(--mono); color: var(--muted); font-weight: 400; }
+  td.n { text-align: right; font-family: var(--mono); font-size: 12px; }
+  td.bar2 { position: relative; }
+  td.bar2 span { position: relative; }
+  td.bar2::before { content: ""; position: absolute; right: 6px; top: 5px; bottom: 5px; width: calc(var(--w) * (100% - 12px)); background: linear-gradient(90deg, rgba(255, 240, 0, .04), rgba(255, 240, 0, .22)); border-radius: 4px; }
+  td.null { color: var(--muted); font-style: italic; }
+  tr:hover td { background: rgba(255, 240, 0, .04); }
+  .empty { padding: 18px; color: var(--muted); font-size: 13px; }
+  .drop { position: fixed; inset: 0; display: none; place-items: center; background: rgba(255, 240, 0, .1); border: 3px dashed var(--duck); font-size: 18px; font-weight: 700; color: var(--duck); z-index: 60; }
+  body.dragging .drop { display: grid; }
+  @media (max-width: 640px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+    .side { border-right: 0; border-bottom: 1px solid var(--line); padding: 8px 12px; flex-direction: row; align-items: center; overflow-x: auto; overflow-y: hidden; gap: 8px; }
+    .side h1 { font-size: 14px; white-space: nowrap; }
+    .side h1 small, .side .lab, .side .note, .cols { display: none; }
+    .objs { flex-direction: row; }
+    .obj { padding: 3px 8px; white-space: nowrap; }
+    .main { padding: 8px 10px 44px; gap: 6px; }
+    .chips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; }
+    .chip { white-space: nowrap; }
+    textarea { height: 92px; font-size: 12px; }
+    .msg { width: 100%; text-align: left; margin-left: 0; }
+    th, td { padding: 4px 8px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <h1><span class="logo"></span><span>DuckDB-Wasm<small>分析型 SQL 引擎</small></span></h1>
+    <div class="lab">資料表與檔案（點一下查看）</div>
+    <div class="objs" id="objs"></div>
+    <div class="note">縣市人口為示意資料（約略數字，非官方統計），以 CSV 檔交給 DuckDB 自動偵測欄位型別再建表。也能拖入自己的 CSV 或 Parquet 直接查詢。</div>
+  </aside>
+  <main class="main">
+    <div class="chips" id="chips"></div>
+    <div class="ed">
+      <textarea id="sql" spellcheck="false" aria-label="SQL 指令"></textarea>
+      <kbd>Ctrl + Enter 執行</kbd>
+    </div>
+    <div class="tool">
+      <button class="btn primary" id="run" disabled>▶ 執行</button>
+      <button class="btn" id="pq" disabled>結果匯出 Parquet</button>
+      <label class="btn" for="up">開啟 CSV／Parquet</label>
+      <input type="file" id="up" accept=".csv,.parquet,.json,.tsv" hidden>
+      <span class="msg" id="msg">等待載入 DuckDB</span>
+    </div>
+    <div class="res" id="res"><div class="empty">DuckDB 引擎尚未載入。</div></div>
+  </main>
+</div>
+<div class="drop">放開以註冊檔案，直接用 SQL 查詢</div>
+<div class="hint">改 SQL 後按執行，或點上方範例</div>
+
+<script src="_shared/gate.js"></script>
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+// ---- Sample data: Taiwan counties (illustrative numbers, not official statistics) ----
+// [code, name, region, area_km2, population_2025, annual_growth]
+const COUNTIES = [
+  ["NWT", "新北市", "北部", 2052.6, 4040000, -0.002], ["TXG", "臺中市", "中部", 2214.9, 2850000, 0.004],
+  ["KHH", "高雄市", "南部", 2951.9, 2730000, -0.003], ["TPE", "臺北市", "北部", 271.8, 2480000, -0.010],
+  ["TAO", "桃園市", "北部", 1221.0, 2330000, 0.010], ["TNN", "臺南市", "南部", 2191.7, 1850000, -0.003],
+  ["CHA", "彰化縣", "中部", 1074.4, 1240000, -0.006], ["PIF", "屏東縣", "南部", 2775.6, 800000, -0.009],
+  ["YUN", "雲林縣", "中部", 1290.8, 660000, -0.009], ["HSQ", "新竹縣", "北部", 1427.5, 590000, 0.013],
+  ["MIA", "苗栗縣", "中部", 1820.3, 535000, -0.006], ["CYQ", "嘉義縣", "南部", 1903.6, 480000, -0.011],
+  ["NAN", "南投縣", "中部", 4106.4, 480000, -0.009], ["ILA", "宜蘭縣", "北部", 2143.6, 450000, -0.004],
+  ["HSZ", "新竹市", "北部", 104.2, 455000, 0.008], ["KEE", "基隆市", "北部", 132.8, 362000, -0.008],
+  ["HUA", "花蓮縣", "東部", 4628.6, 318000, -0.008], ["CYI", "嘉義市", "南部", 60.0, 262000, -0.006],
+  ["TTT", "臺東縣", "東部", 3515.3, 212000, -0.008], ["KIN", "金門縣", "離島", 151.7, 145000, 0.004],
+  ["PEN", "澎湖縣", "離島", 126.9, 108000, 0.002], ["LIE", "連江縣", "離島", 28.8, 14000, 0.005],
+];
+const countyCsv = ["code,name,region,area_km2", ...COUNTIES.map(([c, n, r, a]) => `${c},${n},${r},${a}`)].join("\n");
+const popCsv = ["code,year,people", ...COUNTIES.flatMap(([c, , , , pop, g]) =>
+  Array.from({ length: 7 }, (_, i) => `${c},${2019 + i},${Math.round(pop / Math.pow(1 + g, 6 - i))}`))].join("\n");
+
+const EXAMPLES = [
+  { name: "視窗函數排名", sql: "-- 各區域人口前兩名：RANK() OVER + DuckDB 的 QUALIFY\nSELECT c.region AS 區域, c.name AS 縣市, p.people AS 人口,\n       RANK() OVER (PARTITION BY c.region ORDER BY p.people DESC) AS 區內排名\nFROM population p JOIN county c USING (code)\nWHERE p.year = 2025\nQUALIFY 區內排名 <= 2\nORDER BY 區域, 區內排名;" },
+  { name: "PIVOT 年度轉欄", sql: "-- 一行 PIVOT 把年度轉成欄位\nPIVOT (\n  SELECT c.name AS 縣市, p.year, p.people\n  FROM population p JOIN county c USING (code)\n  WHERE p.year >= 2022\n) ON year USING sum(people)\nORDER BY \"2025\" DESC\nLIMIT 10;" },
+  { name: "直接查 CSV 檔", sql: "-- 不用先建表，FROM 後面直接放檔名\nSELECT name AS 縣市, area_km2 AS 面積\nFROM 'county.csv'\nWHERE area_km2 > 2000\nORDER BY area_km2 DESC;" },
+  { name: "五百萬列聚合", sql: "-- 即時產生 500 萬列再分組統計，看看花多久\nSELECT region AS 區域, count(*) AS 筆數, round(avg(v), 3) AS 平均值\nFROM (\n  SELECT ['北部', '中部', '南部', '東部', '離島'][(range % 5) + 1] AS region,\n         random() * 100 AS v\n  FROM range(5000000)\n)\nGROUP BY region\nORDER BY region;" },
+  { name: "SUMMARIZE 統計", sql: "-- 一個指令看完每個欄位的統計摘要\nSUMMARIZE population;" },
+  { name: "年增減 LAG", sql: "-- LAG() 取前一年，算出每年人口增減\nSELECT p.year AS 年度, p.people AS 人口,\n       p.people - lag(p.people) OVER (ORDER BY p.year) AS 年增減\nFROM population p JOIN county c USING (code)\nWHERE c.name = '桃園市'\nORDER BY 年度;" },
+];
+
+const files = [];
+let duckdb, db, conn, busy = false, lastSelect = "";
+
+function setMsg(cls, html) { $("msg").className = `msg ${cls}`; $("msg").innerHTML = html; }
+
+function cell(v) {
+  if (v === null || v === undefined) return ["NULL", "null"];
+  if (typeof v === "bigint") return [v.toLocaleString("zh-TW"), "n"];
+  if (typeof v === "number") {
+    const s = Number.isInteger(v) && Math.abs(v) >= 10000 ? v.toLocaleString("zh-TW") : String(Math.round(v * 1000) / 1000);
+    return [s, "n"];
+  }
+  if (typeof v === "boolean") return [String(v), "n"];
+  if (v instanceof Date) return [v.toISOString().slice(0, 10), ""];
+  if (typeof v === "object") return [esc(JSON.stringify(v, (k, x) => (typeof x === "bigint" ? x.toString() : x))), ""];
+  return [esc(v), ""];
+}
+
+function renderTable(table) {
+  const fields = table.schema.fields;
+  const n = Math.min(table.numRows, 500);
+  if (!fields.length) { $("res").innerHTML = '<div class="empty">指令已執行，沒有回傳資料列。</div>'; return; }
+  const cols = fields.map((_, i) => table.getChildAt(i));
+  const rows = Array.from({ length: n }, (_, r) => cols.map((c) => c.get(r)));
+  const isNum = (v) => typeof v === "number" || typeof v === "bigint";
+  const numeric = fields.map((_, i) => n > 0 && rows.every((row) => row[i] === null || isNum(row[i])));
+  let barCol = -1;
+  if (numeric.some((x) => !x) && n <= 60) for (let i = fields.length - 1; i >= 0; i--) if (numeric[i]) { barCol = i; break; }
+  const max = barCol >= 0 ? Math.max(...rows.map((row) => Math.abs(Number(row[barCol] || 0)))) || 1 : 1;
+  const head = `<tr>${fields.map((f) => `<th>${esc(f.name)}<small>${esc(String(f.type))}</small></th>`).join("")}</tr>`;
+  const body = rows.map((row) => `<tr>${row.map((v, i) => {
+    const [s, cls] = cell(v);
+    if (i === barCol && v !== null) return `<td class="n bar2" style="--w:${(Math.abs(Number(v)) / max).toFixed(3)}"><span>${s}</span></td>`;
+    return `<td class="${cls}">${s}</td>`;
+  }).join("")}</tr>`).join("");
+  $("res").innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+}
+
+async function renderObjects() {
+  const t = await conn.query(`SELECT table_name, any_value(table_type) AS t, string_agg(column_name || ' ' || data_type, '|' ORDER BY ordinal_position) AS cols
+    FROM information_schema.columns JOIN information_schema.tables USING (table_catalog, table_schema, table_name)
+    WHERE table_schema = 'main' GROUP BY table_name ORDER BY table_name`);
+  const items = t.toArray().map((r) => r.toJSON());
+  const counts = {};
+  for (const it of items) {
+    const c = await conn.query(`SELECT count(*)::INTEGER AS n FROM "${it.table_name.replace(/"/g, '""')}"`);
+    counts[it.table_name] = c.getChildAt(0).get(0);
+  }
+  $("objs").innerHTML = items.map((it) => `<div class="obj" data-q="${esc(`SELECT * FROM "${it.table_name.replace(/"/g, '""')}" LIMIT 100;`)}">
+      <header><i>${it.t === "VIEW" ? "VIEW" : "TABLE"}</i><span>${esc(it.table_name)}</span><small>${counts[it.table_name]} 列</small></header>
+      <div class="cols">${it.cols.split("|").map((c) => { const [a, ...b] = c.split(" "); return `<b>${esc(a)}</b> ${esc(b.join(" "))}`; }).join("<br>")}</div></div>`).join("")
+    + files.map((f) => `<div class="obj" data-q="${esc(`SELECT * FROM '${f.name.replace(/'/g, "''")}' LIMIT 100;`)}">
+      <header><i class="f">FILE</i><span>${esc(f.name)}</span><small>${f.size}</small></header></div>`).join("");
+}
+
+async function run() {
+  if (!conn || busy) return;
+  const sql = $("sql").value;
+  busy = true;
+  $("run").disabled = true;
+  setMsg("", "查詢中…");
+  try {
+    const t0 = performance.now();
+    const table = await conn.query(sql);
+    const ms = performance.now() - t0;
+    renderTable(table);
+    setMsg("ok", `<b>${table.numRows.toLocaleString("zh-TW")}</b> 列 · ${ms.toFixed(1)} ms`);
+    const stripped = sql.replace(/--.*$/gm, "").trim().replace(/;\s*$/, "");
+    lastSelect = /^(select|with|pivot|from|summarize|unpivot)\b/i.test(stripped) && !stripped.includes(";") ? stripped : "";
+    $("pq").disabled = !lastSelect;
+    if (/\b(create|drop|insert|update|delete|alter)\b/i.test(sql)) await renderObjects();
+  } catch (err) {
+    setMsg("err", esc(`SQL 錯誤：${err.message.split("\n")[0]}`));
+  } finally {
+    busy = false;
+    $("run").disabled = false;
+  }
+}
+
+function pick(i) {
+  document.querySelectorAll(".chip").forEach((b, j) => b.setAttribute("aria-pressed", j === i));
+  $("sql").value = EXAMPLES[i].sql;
+  run();
+}
+
+async function registerUserFile(f) {
+  if (!db) return;
+  await db.registerFileHandle(f.name, f, duckdb.DuckDBDataProtocol.BROWSER_FILEREADER, true);
+  const size = f.size < 1048576 ? `${(f.size / 1024).toFixed(1)} KB` : `${(f.size / 1048576).toFixed(1)} MB`;
+  files.push({ name: f.name, size });
+  await renderObjects();
+  $("sql").value = `-- 檔案沒有上傳到任何伺服器，DuckDB 直接在瀏覽器讀取\nSELECT * FROM '${f.name.replace(/'/g, "''")}' LIMIT 100;`;
+  document.querySelectorAll(".chip").forEach((b) => b.setAttribute("aria-pressed", "false"));
+  run();
+}
+
+$("chips").innerHTML = EXAMPLES.map((e, i) => `<button class="chip" data-i="${i}">${e.name}</button>`).join("");
+$("chips").addEventListener("click", (e) => { const b = e.target.closest(".chip"); if (b && conn) pick(+b.dataset.i); });
+$("run").addEventListener("click", run);
+$("sql").addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); run(); } });
+$("sql").addEventListener("input", () => document.querySelectorAll(".chip").forEach((b) => b.setAttribute("aria-pressed", "false")));
+$("objs").addEventListener("click", (e) => {
+  const o = e.target.closest(".obj");
+  if (!o || !conn) return;
+  $("sql").value = o.dataset.q;
+  document.querySelectorAll(".chip").forEach((b) => b.setAttribute("aria-pressed", "false"));
+  run();
+});
+$("up").addEventListener("change", (e) => { const f = e.target.files[0]; e.target.value = ""; if (f) registerUserFile(f).catch((err) => setMsg("err", esc(`無法讀取檔案：${err.message}`))); });
+addEventListener("dragover", (e) => { e.preventDefault(); document.body.classList.add("dragging"); });
+addEventListener("dragleave", (e) => { if (!e.relatedTarget) document.body.classList.remove("dragging"); });
+addEventListener("drop", (e) => {
+  e.preventDefault();
+  document.body.classList.remove("dragging");
+  const f = e.dataTransfer.files[0];
+  if (f) registerUserFile(f).catch((err) => setMsg("err", esc(`無法讀取檔案：${err.message}`)));
+});
+$("pq").addEventListener("click", async () => {
+  if (!lastSelect || busy) return;
+  busy = true;
+  try {
+    // COPY ... TO writes into DuckDB's virtual file system, then we copy the bytes out
+    await conn.query(`COPY (${lastSelect}) TO 'result.parquet' (FORMAT parquet)`);
+    const buf = await db.copyFileToBuffer("result.parquet");
+    await db.dropFile("result.parquet");
+    const blob = new Blob([buf], { type: "application/vnd.apache.parquet" });
+    const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: "duckdb-result.parquet" });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    setMsg("ok", `已匯出 <b>${(blob.size / 1024).toFixed(1)} KB</b> 的 Parquet 檔`);
+  } catch (err) {
+    setMsg("err", esc(`匯出失敗：${err.message.split("\n")[0]}`));
+  } finally {
+    busy = false;
+  }
+});
+
+await demoGate({
+  icon: "🦆",
+  title: "DuckDB-Wasm 分析型 SQL",
+  desc: "按下後下載約 34 MB 的 WebAssembly 引擎（之後瀏覽器會快取），就能在網頁裡跑視窗函數、PIVOT，並直接查詢 CSV 與 Parquet 檔。",
+  tags: ["約 34 MB", "WebAssembly", "Web Worker"],
+  button: "載入 DuckDB",
+});
+
+const status = demoStatus("下載 DuckDB 模組…");
+try {
+  duckdb = await import("https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm");
+  const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
+  // Cross-origin workers are not allowed, so wrap the CDN worker script in a same-origin blob
+  const workerUrl = URL.createObjectURL(new Blob([`importScripts("${bundle.mainWorker}");`], { type: "text/javascript" }));
+  const worker = new Worker(workerUrl);
+  db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(duckdb.LogLevel.WARNING), worker);
+  status.text("下載 WebAssembly 引擎…");
+  await db.instantiate(bundle.mainModule, bundle.pthreadWorker, (p) => {
+    if (p.bytesTotal > 0) {
+      status.progress(p.bytesLoaded / p.bytesTotal);
+      status.text(`下載 WebAssembly 引擎… ${(p.bytesLoaded / 1048576).toFixed(1)} / ${(p.bytesTotal / 1048576).toFixed(1)} MB`);
+    }
+  });
+  URL.revokeObjectURL(workerUrl);
+  await db.open({ query: { castBigIntToDouble: true, castDecimalToDouble: true } });
+  status.text("建立示意資料表…");
+  conn = await db.connect();
+  await db.registerFileText("county.csv", countyCsv);
+  await db.registerFileText("population.csv", popCsv);
+  files.push({ name: "county.csv", size: `${(countyCsv.length / 1024).toFixed(1)} KB` }, { name: "population.csv", size: `${(popCsv.length / 1024).toFixed(1)} KB` });
+  await conn.query("CREATE TABLE county AS SELECT * FROM read_csv_auto('county.csv')");
+  await conn.query("CREATE TABLE population AS SELECT * FROM read_csv_auto('population.csv')");
+  const v = await conn.query("SELECT version() AS v");
+  await renderObjects();
+  status.done();
+  $("run").disabled = false;
+  pick(0);
+  console.info("DuckDB", v.getChildAt(0).get(0));
+} catch (err) {
+  status.error(`DuckDB 載入失敗：${err.message}`);
+  setMsg("err", esc(`載入失敗：${err.message}`));
+}
+</script>
+</body>
+</html>

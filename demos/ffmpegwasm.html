@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FFmpeg.wasm 示範：瀏覽器裡的影音轉檔工作台</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"click","needs":["audio"],"size":"約 31 MB","note":"單執行緒 FFmpeg 核心在瀏覽器內執行，檔案不會上傳"}</script>
+<style>
+  [hidden] { display: none !important; }
+  body { display: grid; grid-template-columns: 270px minmax(0, 1fr); gap: 14px; padding: 14px 14px 46px; height: 100%; }
+  aside { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+  .src { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-2); font-size: 12px; }
+  .src b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .src label { cursor: pointer; color: var(--accent); white-space: nowrap; }
+  .src input { display: none; }
+  .presets { display: flex; flex-direction: column; gap: 6px; min-height: 0; overflow: auto; }
+  .presets button { all: unset; cursor: pointer; display: flex; flex-direction: column; gap: 2px; padding: 8px 11px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); }
+  .presets button strong { font-size: 13px; }
+  .presets button span { font-size: 11px; color: var(--muted); }
+  .presets button.on { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+  .presets button[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
+
+  main { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+  .cmd { font: 12px/1.5 var(--mono); padding: 8px 12px; border-radius: 10px; background: #07080a; border: 1px solid var(--line); color: #c9f5d0; white-space: nowrap; overflow-x: auto; }
+  .cmd::before { content: "$ "; color: var(--muted); }
+  .out { flex: 1; min-height: 0; position: relative; border-radius: 12px; border: 1px solid var(--line); background: #07080a; overflow: hidden; display: flex; flex-direction: column; }
+  .out .view { flex: 1; min-height: 0; position: relative; }
+  .out video, .out img, .out canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .out img { image-rendering: auto; }
+  .out audio { width: calc(100% - 20px); margin: 0 10px 10px; height: 36px; }
+  .out .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 13px; text-align: center; padding: 0 20px; }
+  .runbar { display: flex; align-items: center; gap: 10px; }
+  .track { flex: 1; height: 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.1); overflow: hidden; }
+  .track i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+  .info { font: 12px var(--mono); color: var(--muted); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .log { height: 112px; flex: none; margin: 0; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: #07080a; font: 11px/1.45 var(--mono); color: #8d929b; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+  .actions { display: flex; gap: 8px; }
+  .actions .btn { flex: 1; }
+
+  @media (max-width: 640px) {
+    body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); padding: 10px 10px 42px; gap: 8px; }
+    aside { gap: 6px; }
+    .presets { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; overflow: visible; }
+    .presets button { padding: 6px 4px; text-align: center; }
+    .presets button span { display: none; }
+    .presets button strong { font-size: 12px; }
+    .src { padding: 5px 8px; }
+    .log, .cmd { display: none; }
+    main { gap: 6px; }
+  }
+</style>
+</head>
+<body>
+<aside>
+  <div class="src"><b id="srcName">loop.mp3（19 秒音樂）</b><label>換成自己的檔案<input type="file" id="file" accept="audio/*,video/*"></label></div>
+  <div class="presets" id="presets"></div>
+  <div class="actions">
+    <button class="btn primary" id="run" disabled>執行 FFmpeg</button>
+    <button class="btn" id="dl" disabled>下載結果</button>
+  </div>
+</aside>
+<main>
+  <div class="cmd" id="cmd">ffmpeg</div>
+  <div class="out" id="out">
+    <div class="view" id="view"><div class="empty">FFmpeg 核心載入後會自動執行第一個範例</div></div>
+  </div>
+  <div class="runbar">
+    <div class="track"><i id="fill"></i></div>
+    <div class="info" id="info">等待中</div>
+  </div>
+  <pre class="log" id="log"></pre>
+</main>
+<div class="hint">選一個範例再按「執行 FFmpeg」，下方即時顯示 FFmpeg 原生日誌</div>
+
+<script src="_shared/gate.js"></script>
+<script type="module">
+// FFmpeg.wasm: the real FFmpeg CLI compiled to WebAssembly, running in a Web Worker.
+import { FFmpeg } from "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm/index.js";
+import { toBlobURL, fetchFile } from "https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.2/dist/esm/index.js";
+
+const FF = "https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.15/dist/esm";
+const CORE = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm";
+const SIZES = { js: 111804, wasm: 32232419 }; // jsDelivr sends no Content-Length, so use known sizes
+const $ = (id) => document.getElementById(id);
+
+const PRESETS = [
+  {
+    name: "波形影片", sub: "音訊轉 MP4（H.264 + AAC）", out: "waves.mp4", kind: "video", dur: (d) => Math.min(6, d),
+    args: (i) => ["-i", i, "-t", "6", "-filter_complex",
+      "[0:a]showwaves=s=640x240:mode=cline:rate=25:scale=sqrt:split_channels=1:colors=0xf7df1e|0x4cc9f0,format=yuv420p[v]",
+      "-map", "[v]", "-map", "0:a", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+      "-c:a", "aac", "-b:a", "128k", "-shortest", "-movflags", "+faststart", "waves.mp4"],
+  },
+  {
+    name: "頻譜 GIF", sub: "showspectrum 加調色盤最佳化", out: "spectrum.gif", kind: "image", dur: (d) => Math.min(4, d),
+    args: (i) => ["-i", i, "-t", "4", "-filter_complex",
+      "[0:a]showspectrum=s=320x160:slide=scroll:overlap=0.8:scale=cbrt:color=fire,fps=12,split[a][b];[a]palettegen=max_colors=64[p];[b][p]paletteuse",
+      "spectrum.gif"],
+  },
+  {
+    name: "剪輯淡出", sub: "取第 3 到 9 秒，前後各淡 1 秒", out: "trim.mp3", kind: "audio", dur: (d) => Math.min(6, Math.max(0, d - 3)),
+    args: (i) => ["-ss", "3", "-t", "6", "-i", i, "-af", "afade=t=in:d=1,afade=t=out:st=5:d=1", "-c:a", "libmp3lame", "-b:a", "128k", "trim.mp3"],
+  },
+  {
+    name: "1.5 倍速", sub: "atempo 變速但不變調", out: "fast.mp3", kind: "audio", dur: (d) => d / 1.5,
+    args: (i) => ["-i", i, "-vn", "-af", "atempo=1.5", "-c:a", "libmp3lame", "-b:a", "128k", "fast.mp3"],
+  },
+  {
+    name: "倒放", sub: "areverse 整段反轉", out: "reverse.mp3", kind: "audio", dur: (d) => d,
+    args: (i) => ["-i", i, "-vn", "-af", "areverse", "-c:a", "libmp3lame", "-b:a", "128k", "reverse.mp3"],
+  },
+  {
+    name: "山谷回音", sub: "aecho 兩層延遲回授", out: "echo.mp3", kind: "audio", dur: (d) => d,
+    args: (i) => ["-i", i, "-vn", "-af", "aecho=0.8:0.85:160|280:0.45|0.3", "-c:a", "libmp3lame", "-b:a", "128k", "echo.mp3"],
+  },
+];
+
+let current = 0;
+let busy = false;
+let input = "in.mp3";
+let inputDur = 19;
+let lastUrl = null;
+let lastName = "";
+let logLines = [];
+
+PRESETS.forEach((p, i) => {
+  const b = document.createElement("button");
+  b.innerHTML = `<strong>${p.name}</strong><span>${p.sub}</span>`;
+  b.onclick = () => { if (!busy) select(i); };
+  $("presets").append(b);
+});
+
+function select(i) {
+  current = i;
+  [...$("presets").children].forEach((b, j) => b.classList.toggle("on", i === j));
+  $("cmd").textContent = ["ffmpeg", ...PRESETS[i].args(input)].map((a) => (/[\s|;\[\]]/.test(a) ? `"${a}"` : a)).join(" ");
+}
+select(0);
+
+function setBusy(v) {
+  busy = v;
+  $("run").disabled = v;
+  $("file").disabled = v;
+  [...$("presets").children].forEach((b) => b.setAttribute("aria-disabled", String(v)));
+}
+
+function log(line) {
+  logLines.push(line);
+  if (logLines.length > 160) logLines = logLines.slice(-120);
+  $("log").textContent = logLines.join("\n");
+  $("log").scrollTop = $("log").scrollHeight;
+}
+
+const toSec = (h, m, s) => Number(h) * 3600 + Number(m) * 60 + Number(s);
+
+await demoGate({
+  icon: "🎞️",
+  title: "瀏覽器內執行 FFmpeg",
+  desc: "按下後下載單執行緒版 FFmpeg 核心（WebAssembly），所有轉檔都在你的瀏覽器內完成，檔案不會上傳。",
+  tags: ["約 31 MB", "WebAssembly", "Web Worker"],
+  button: "下載 FFmpeg 並開始",
+});
+
+const status = demoStatus("下載 FFmpeg 核心中…");
+const ffmpeg = new FFmpeg();
+let expected = 1;
+ffmpeg.on("log", ({ message }) => {
+  if (message === "Aborted()") return; // normal exit marker of the wasm build
+  log(message);
+  const d = message.match(/Duration: (\d+):(\d+):([\d.]+)/);
+  if (d) inputDur = toSec(d[1], d[2], d[3]);
+  const t = message.match(/time=(\d+):(\d+):([\d.]+)/);
+  if (t && busy) {
+    const p = Math.min(1, toSec(t[1], t[2], t[3]) / expected);
+    $("fill").style.width = `${p * 100}%`;
+  }
+});
+
+// toBlobURL's progress mode compares Content-Length (compressed size) with decoded bytes and
+// fails on compressed CDN responses, so stream the big wasm file ourselves to show progress.
+async function wasmBlobURL(url, onBytes) {
+  const reader = (await fetch(url)).body.getReader();
+  const chunks = [];
+  let received = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    received += value.length;
+    onBytes(received);
+  }
+  return URL.createObjectURL(new Blob(chunks, { type: "application/wasm" }));
+}
+
+try {
+  const total = SIZES.js + SIZES.wasm;
+  const [coreURL, wasmURL] = await Promise.all([
+    toBlobURL(`${CORE}/ffmpeg-core.js`, "text/javascript"),
+    wasmBlobURL(`${CORE}/ffmpeg-core.wasm`, (n) => {
+      status.progress(n / total);
+      status.text(`下載 FFmpeg 核心 ${(n / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MB`);
+    }),
+  ]);
+  // The worker must be same-origin, so wrap the CDN worker module in a blob that imports it.
+  const classWorkerURL = URL.createObjectURL(new Blob([`import "${FF}/worker.js";`], { type: "text/javascript" }));
+  status.text("初始化 WebAssembly…");
+  await ffmpeg.load({ coreURL, wasmURL, classWorkerURL });
+  await ffmpeg.writeFile(input, await fetchFile("_shared/audio/loop.mp3"));
+  status.done();
+} catch (err) {
+  status.error(`FFmpeg 載入失敗：${err.message || err}`);
+  throw err;
+}
+
+async function run() {
+  if (busy) return;
+  const p = PRESETS[current];
+  setBusy(true);
+  expected = Math.max(0.1, p.dur(inputDur));
+  logLines = [];
+  $("fill").style.width = "0%";
+  $("info").textContent = `執行中：${p.name}…`;
+  $("dl").disabled = true;
+  const t0 = performance.now();
+  try {
+    const code = await ffmpeg.exec(p.args(input));
+    if (code !== 0) throw new Error(`FFmpeg 結束碼 ${code}，請看下方日誌`);
+    const data = await ffmpeg.readFile(p.out);
+    await ffmpeg.deleteFile(p.out);
+    const secs = (performance.now() - t0) / 1000;
+    const mime = { video: "video/mp4", image: "image/gif", audio: "audio/mpeg" }[p.kind];
+    const blob = new Blob([data.buffer], { type: mime });
+    if (lastUrl) URL.revokeObjectURL(lastUrl);
+    lastUrl = URL.createObjectURL(blob);
+    lastName = `ffmpeg-${p.out}`;
+    await show(p.kind, blob);
+    $("fill").style.width = "100%";
+    $("info").textContent = `${p.out}・${(blob.size / 1024).toFixed(0)} KB・耗時 ${secs.toFixed(1)} 秒`;
+    $("dl").disabled = false;
+  } catch (err) {
+    $("info").textContent = `失敗：${err.message}`;
+    $("view").replaceChildren(Object.assign(document.createElement("div"), { className: "empty", textContent: "這個範例無法處理目前的素材，請換一個範例或檔案" }));
+    console.warn(err);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function show(kind, blob) {
+  $("out").querySelector("audio")?.remove();
+  if (kind === "video") {
+    const v = Object.assign(document.createElement("video"), { src: lastUrl, controls: true, muted: true, autoplay: true, loop: true, playsInline: true });
+    $("view").replaceChildren(v);
+  } else if (kind === "image") {
+    const img = Object.assign(document.createElement("img"), { src: lastUrl, alt: "FFmpeg 輸出的頻譜 GIF" });
+    $("view").replaceChildren(img);
+  } else {
+    // Draw the output waveform so fades, speed changes and reversal are visible at a glance.
+    const cv = document.createElement("canvas");
+    $("view").replaceChildren(cv);
+    const audio = Object.assign(document.createElement("audio"), { src: lastUrl, controls: true });
+    $("out").append(audio);
+    const buf = await new OfflineAudioContext(1, 44100, 44100).decodeAudioData(await blob.arrayBuffer());
+    drawWave(cv, buf);
+  }
+}
+
+function drawWave(cv, buf) {
+  const r = cv.getBoundingClientRect();
+  const W = (cv.width = Math.max(200, Math.round(r.width * devicePixelRatio)));
+  const H = (cv.height = Math.max(80, Math.round(r.height * devicePixelRatio)));
+  const g = cv.getContext("2d");
+  const ch = buf.getChannelData(0);
+  const step = ch.length / W;
+  const mid = H / 2;
+  const grad = g.createLinearGradient(0, 0, W, 0);
+  grad.addColorStop(0, "#f7df1e");
+  grad.addColorStop(1, "#4cc9f0");
+  g.fillStyle = grad;
+  for (let x = 0; x < W; x++) {
+    let lo = 1, hi = -1;
+    for (let i = Math.floor(x * step), e = Math.floor((x + 1) * step); i < e; i++) {
+      const v = ch[i];
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    g.fillRect(x, mid - hi * mid * 0.9, 1, Math.max(1, (hi - lo) * mid * 0.9));
+  }
+  g.fillStyle = "rgba(255, 255, 255, 0.55)";
+  g.font = `${12 * devicePixelRatio}px Consolas, monospace`;
+  g.fillText(`${buf.duration.toFixed(2)} 秒`, 10 * devicePixelRatio, 20 * devicePixelRatio);
+}
+
+$("file").onchange = async (e) => {
+  const f = e.target.files[0];
+  if (!f || busy) return;
+  setBusy(true);
+  try {
+    const ext = (f.name.match(/\.[a-z0-9]+$/i) || [".bin"])[0].toLowerCase();
+    await ffmpeg.deleteFile(input).catch(() => {});
+    input = `in${ext}`;
+    await ffmpeg.writeFile(input, await fetchFile(f));
+    inputDur = await new Promise((res) => {
+      const m = document.createElement(f.type.startsWith("video") ? "video" : "audio");
+      m.preload = "metadata";
+      m.onloadedmetadata = () => res(Number.isFinite(m.duration) ? m.duration : 10);
+      m.onerror = () => res(10);
+      m.src = URL.createObjectURL(f);
+    });
+    $("srcName").textContent = `${f.name}（${inputDur.toFixed(1)} 秒）`;
+    select(current);
+  } finally {
+    setBusy(false);
+  }
+};
+
+$("run").onclick = run;
+$("dl").onclick = () => {
+  const a = document.createElement("a");
+  a.href = lastUrl;
+  a.download = lastName;
+  a.click();
+};
+
+run();
+</script>
+</body>
+</html>

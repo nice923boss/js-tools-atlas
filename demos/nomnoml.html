@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nomnoml 示範：手繪風 UML</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  #app { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(250px, 36%) 1fr; }
+  #pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #fbfaf7; border-right: 1px solid var(--line); }
+  #pane .head { display: flex; justify-content: space-between; gap: 8px; padding: 10px 14px 4px; font-size: 12px; color: var(--muted); }
+  #pane .head b { color: var(--fg); }
+  #src { flex: 1; min-height: 0; resize: none; border: 0; outline: 0; background: transparent; color: #2b2a26;
+    padding: 6px 14px 48px; font: 12.5px/1.65 var(--mono); white-space: pre; overflow: auto; font-variant-ligatures: none; }
+  #view { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #fdf6e3; }
+  #out { position: absolute; inset: 60px 16px 48px; display: grid; place-items: center; }
+  #out svg { display: block; }
+  #err { position: absolute; left: 16px; right: 16px; bottom: 46px; display: none; z-index: 5;
+    color: #b3261e; background: #fdecea; border: 1px solid #f3b8b3; border-radius: 8px; padding: 8px 12px; font: 12px/1.5 var(--mono); white-space: pre-wrap; }
+  .hint { left: auto; right: 12px; }
+  @media (max-width: 640px) {
+    #app { grid-template-columns: 1fr; grid-template-rows: 36% 1fr; }
+    #pane { border-right: 0; border-bottom: 1px solid var(--line); }
+    #src { padding-bottom: 10px; font-size: 12px; }
+    .controls { top: calc(36% + 8px); }
+    #out { inset: 52px 10px 40px; }
+  }
+</style>
+</head>
+<body class="paper">
+<div id="app">
+  <section id="pane">
+    <div class="head"><b>nomnoml 原始碼</b><span id="stat">可直接修改</span></div>
+    <textarea id="src" spellcheck="false" wrap="off" aria-label="nomnoml 原始碼"></textarea>
+  </section>
+  <section id="view">
+    <div id="out"></div>
+    <div id="err"></div>
+  </section>
+</div>
+<div class="controls">
+  <button class="btn" data-k="cls" aria-pressed="true">類別圖</button>
+  <button class="btn" data-k="state" aria-pressed="false">狀態圖</button>
+</div>
+<div class="hint">方括號是方塊，箭頭是關係・改字即重畫</div>
+
+<script src="https://cdn.jsdelivr.net/npm/graphre@0.1.3/dist/graphre.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/nomnoml@1.7.0/dist/nomnoml.js"></script>
+<script>
+// Shared style block (kept at the end of the source so the diagram text reads first).
+// The CJK font list keeps SVG text from falling back to tofu boxes.
+const STYLE = `
+// 以下是樣式設定
+#font: Noto Sans TC, Microsoft JhengHei, PingFang TC, sans-serif
+#fontSize: 11
+#lineWidth: 1.6
+#stroke: #3b3a35
+#spacing: 44
+#padding: 9
+#edges: rounded`;
+const SAMPLES = {
+  cls: `[<actor>顧客] 點餐 -> [訂單|編號: string;下單時間: Date;總額: number|+加入品項();+結帳()]
+[訂單] +-> 1..* [品項|甜度: 甜度;冰塊: 冰量;加料: 配料*]
+[品項] -> [飲品|名稱;中杯價;大杯價]
+[飲品] <:- [季節限定|上架期間]
+[品項] --> [<reference>甜度|全糖;半糖;微糖;無糖]
+[訂單] -> [<service>付款服務|LINE Pay;街口支付;現金]
+[付款服務] -> [<db>訂單資料庫]
+[<note>示意：一張訂單
+可以有很多杯飲料] -- [訂單]
+` + STYLE + `
+#direction: right
+#fill: #fff3b0;#e6f6fc;#f1ecff
+#.service: fill=#dff3e4 bold
+#.db: visual=database fill=#ffe1cc bold`,
+  state: `[<start>開始] -> [<state>待付款]
+[待付款] 付款成功 -> [<state>製作中]
+[待付款] 逾時 15 分 -> [<bad>已取消]
+[製作中] -> [<choice>取餐方式]
+[取餐方式] 自取 -> [<state>待取餐]
+[取餐方式] 外送 -> [<state>配送中]
+[待取餐] -> [<ok>已完成]
+[配送中] -> [<ok>已完成]
+[已完成] -> [<end>結束]
+[已取消] -> [<end>結束]
+` + STYLE + `
+#direction: down
+#fill: #fff3b0;#fdf6e3
+#.ok: fill=#cfe9d6
+#.bad: fill=#ffd0e1`,
+};
+
+const src = document.getElementById("src");
+const out = document.getElementById("out");
+const err = document.getElementById("err");
+const stat = document.getElementById("stat");
+
+// Scale the SVG into the preview box, never enlarging beyond 1.6x.
+function fit() {
+  const svg = out.querySelector("svg");
+  if (!svg) return;
+  const vb = svg.viewBox.baseVal;
+  const box = out.getBoundingClientRect();
+  const s = Math.min(box.width / vb.width, box.height / vb.height, 1.6);
+  svg.setAttribute("width", Math.floor(vb.width * s));
+  svg.setAttribute("height", Math.floor(vb.height * s));
+}
+
+function draw() {
+  const t0 = performance.now();
+  try {
+    out.innerHTML = nomnoml.renderSvg(src.value, document);
+    fit();
+    err.style.display = "none";
+    stat.textContent = `已重畫，${Math.round(performance.now() - t0)} 毫秒`;
+  } catch (e) {
+    // Keep the previous drawing; show where the parser stopped.
+    err.textContent = `語法錯誤：${e.message}`;
+    err.style.display = "block";
+    stat.textContent = "等待修正語法";
+  }
+}
+
+let timer;
+src.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(draw, 200); });
+function load(k) {
+  document.querySelectorAll("[data-k]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.k === k)));
+  src.value = SAMPLES[k];
+  draw();
+}
+document.querySelectorAll("[data-k]").forEach((b) => b.addEventListener("click", () => load(b.dataset.k)));
+addEventListener("resize", fit);
+load("cls");
+</script>
+</body>
+</html>

@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>html5-qrcode 示範：活動報到掃碼</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"click","needs":["camera"],"note":"沒有鏡頭時可點範例票券或上傳圖片掃描"}</script>
+<style>
+  .app { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr) 330px; }
+  .scan { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; gap: 10px; padding: 14px 14px 50px; min-width: 0; min-height: 0; }
+  .head { display: flex; align-items: center; gap: 10px; }
+  .head h1 { font-size: 16px; margin: 0; }
+  .chip { margin-left: auto; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg-2); color: var(--muted); white-space: nowrap; }
+  .chip.live { color: var(--c4); border-color: rgba(47, 158, 85, .4); }
+  .chip.live::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--c4); margin-right: 6px; animation: pulse 1.2s infinite; }
+  .chip.err { color: var(--c3); border-color: rgba(214, 31, 105, .4); }
+  @keyframes pulse { 50% { opacity: .25; } }
+  .cam { position: relative; border-radius: 14px; overflow: hidden; background: #121417; min-height: 0; container-type: size; }
+  #reader { position: absolute; inset: 0; }
+  #reader video { width: 100% !important; height: 100% !important; object-fit: cover; display: block; }
+  .frame { position: absolute; left: 50%; top: 50%; width: min(62cqw, 78cqh); aspect-ratio: 1; transform: translate(-50%, -50%); pointer-events: none;
+    background:
+      linear-gradient(#fff, #fff) left top / 26px 4px, linear-gradient(#fff, #fff) left top / 4px 26px,
+      linear-gradient(#fff, #fff) right top / 26px 4px, linear-gradient(#fff, #fff) right top / 4px 26px,
+      linear-gradient(#fff, #fff) left bottom / 26px 4px, linear-gradient(#fff, #fff) left bottom / 4px 26px,
+      linear-gradient(#fff, #fff) right bottom / 26px 4px, linear-gradient(#fff, #fff) right bottom / 4px 26px;
+    background-repeat: no-repeat; opacity: .85; }
+  .frame::after { content: ""; position: absolute; left: 6%; right: 6%; height: 2px; top: 10%; background: #4cc9f0; box-shadow: 0 0 12px #4cc9f0; animation: sweep 2.2s ease-in-out infinite alternate; }
+  .cam:not(.on) .frame { display: none; }
+  @keyframes sweep { to { top: 88%; } }
+  .placeholder { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; color: #9aa0a6; font-size: 13px; padding: 20px; gap: 6px; }
+  .placeholder b { font-size: 34px; line-height: 1; }
+  .cam.on .placeholder { display: none; }
+  .flash { position: absolute; inset: 0; pointer-events: none; border: 4px solid transparent; border-radius: 14px; }
+  .flash.ok { animation: ok .7s; }
+  .flash.bad { animation: bad .7s; }
+  @keyframes ok { from { border-color: #2f9e55; background: rgba(47, 158, 85, .25); } }
+  @keyframes bad { from { border-color: #d61f69; background: rgba(214, 31, 105, .2); } }
+  .toast { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); background: rgba(0, 0, 0, .72); color: #fff; padding: 6px 14px; border-radius: 999px; font-size: 13px; white-space: nowrap; max-width: 92%; overflow: hidden; text-overflow: ellipsis; opacity: 0; transition: opacity .2s; }
+  .toast.show { opacity: 1; }
+  .tools { display: flex; gap: 8px; flex-wrap: wrap; }
+  .samples { display: grid; grid-template-columns: auto repeat(3, minmax(0, 1fr)); gap: 8px; align-items: center; }
+  .samples span { font-size: 12px; color: var(--muted); line-height: 1.3; }
+  .ticket { border: 1px solid var(--line); border-radius: 8px; padding: 0; background: #fff; cursor: pointer; overflow: hidden; line-height: 0; position: relative; }
+  .ticket img { width: 100%; display: block; }
+  .ticket:hover { border-color: var(--c2); }
+  .ticket.busy::after { content: "掃描中"; position: absolute; inset: 0; display: grid; place-items: center; background: rgba(255, 255, 255, .8); font-size: 12px; line-height: 1; color: var(--c2); }
+  .side { border-left: 1px solid var(--line); background: var(--bg-2); display: grid; grid-template-rows: auto minmax(0, 1.2fr) auto minmax(0, 1fr); min-height: 0; padding-bottom: 46px; }
+  .sum { padding: 14px 16px 10px; }
+  .sum .n { font-size: 13px; color: var(--muted); display: flex; justify-content: space-between; }
+  .sum .n b { font-size: 22px; color: var(--fg); font-family: var(--mono); }
+  .meter { height: 8px; border-radius: 8px; background: var(--line); overflow: hidden; margin-top: 6px; }
+  .meter i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--c4), var(--c2)); transition: width .4s; }
+  .guests { overflow-y: auto; padding: 0 10px; }
+  .g { display: grid; grid-template-columns: 1fr auto; gap: 0 8px; padding: 7px 8px; border-radius: 8px; transition: background .4s; }
+  .g + .g { border-top: 1px solid var(--line); }
+  .g .nm { font-weight: 600; font-size: 14px; }
+  .g .cd { font: 11px var(--mono); color: var(--muted); }
+  .g .st { grid-row: span 2; align-self: center; font-size: 12px; padding: 2px 9px; border-radius: 999px; background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+  .g.in .st { background: rgba(47, 158, 85, .12); color: var(--c4); border-color: rgba(47, 158, 85, .35); }
+  .g.hit { background: rgba(47, 158, 85, .14); }
+  .logh { display: flex; justify-content: space-between; align-items: center; padding: 8px 16px 4px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+  .logh button { border: 0; background: none; color: var(--c2); cursor: pointer; font: inherit; }
+  .log { overflow-y: auto; padding: 0 16px; font-size: 12px; }
+  .log div { display: grid; grid-template-columns: 54px 1fr; gap: 6px; padding: 4px 0; border-bottom: 1px dashed var(--line); }
+  .log time { font-family: var(--mono); color: var(--muted); }
+  .log .t { word-break: break-all; }
+  .log .f { font: 10px var(--mono); padding: 0 5px; border-radius: 4px; background: var(--bg); border: 1px solid var(--line); margin-right: 4px; }
+  .log .ok { color: var(--c4); } .log .warn { color: var(--c5); } .log .bad { color: var(--c3); }
+  .log .empty, .empty { display: block; color: var(--muted); padding: 6px 0; border: 0; }
+  #fileReader { display: none; }
+  @media (max-width: 640px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: minmax(0, 54%) minmax(0, 46%); }
+    .scan { padding: 10px 10px 8px; gap: 8px; }
+    .head h1 { font-size: 14px; }
+    .samples { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .samples span { display: none; }
+    .tools .btn { padding: 7px 10px; font-size: 12px; }
+    .side { border-left: 0; border-top: 1px solid var(--line); grid-template-rows: auto minmax(0, 1.4fr) auto minmax(0, 1fr); padding-bottom: 0; }
+    .log { padding-bottom: 44px; }
+    .sum { padding: 8px 12px 6px; }
+  }
+</style>
+</head>
+<body class="paper">
+<div class="app">
+  <section class="scan">
+    <div class="head"><h1>活動報到掃碼</h1><span class="chip" id="chip">尚未開啟鏡頭</span></div>
+    <div class="cam" id="cam">
+      <div id="reader"></div>
+      <div class="placeholder" id="ph"><b>📷</b><div id="phText">按「開啟鏡頭」掃描 QR Code 或條碼</div></div>
+      <div class="frame"></div>
+      <div class="flash" id="flash"></div>
+      <div class="toast" id="toast"></div>
+    </div>
+    <div class="tools">
+      <button class="btn primary" id="camBtn">開啟鏡頭</button>
+      <label class="btn" for="file">上傳圖片掃描</label>
+      <input type="file" id="file" accept="image/*" hidden>
+    </div>
+    <div class="samples" id="samples"><span>範例票券<br>點一下就掃</span></div>
+  </section>
+  <aside class="side">
+    <div class="sum">
+      <div class="n"><span>已報到（示意資料）</span><span><b id="count">0</b> / <span id="total">6</span></span></div>
+      <div class="meter"><i id="meter"></i></div>
+    </div>
+    <div class="guests" id="guests"></div>
+    <div class="logh"><span>掃描紀錄</span><button id="reset">清除報到</button></div>
+    <div class="log" id="log"><div class="empty">還沒有掃描結果</div></div>
+  </aside>
+</div>
+<div id="fileReader"></div>
+<div class="hint">鏡頭、範例票券、上傳圖片三種方式都會走同一個解碼器</div>
+
+<script src="_shared/gate.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const GUESTS = [
+  { code: "ATLAS2026-A07", name: "王小明", seat: "A 區 07" },
+  { code: "ATLAS2026-B12", name: "陳雅婷", seat: "B 區 12" },
+  { code: "ATLAS2026-C03", name: "林志豪", seat: "C 區 03" },
+  { code: "ATLAS2026-A15", name: "張家瑜", seat: "A 區 15" },
+  { code: "ATLAS2026-B02", name: "李承恩", seat: "B 區 02" },
+  { code: "ATLAS2026-C21", name: "黃怡君", seat: "C 區 21" },
+];
+const checked = new Map(); // code -> time string
+const camScanner = new Html5Qrcode("reader", { verbose: false });
+const fileScanner = new Html5Qrcode("fileReader", { verbose: false });
+let camOn = false;
+let lastText = "", lastAt = 0;
+
+const hhmm = () => new Date().toLocaleTimeString("zh-TW", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+function renderGuests(hit) {
+  $("guests").innerHTML = GUESTS.map((g) => {
+    const t = checked.get(g.code);
+    return `<div class="g${t ? " in" : ""}${g.code === hit ? " hit" : ""}"><span class="nm">${g.name}　<small class="cd">${g.seat}</small></span>
+      <span class="st">${t ? "✓ " + t.slice(0, 5) + " 報到" : "未報到"}</span><span class="cd">${g.code}</span></div>`;
+  }).join("");
+  $("count").textContent = checked.size;
+  $("total").textContent = GUESTS.length;
+  $("meter").style.width = `${(checked.size / GUESTS.length) * 100}%`;
+  if (hit) setTimeout(() => document.querySelector(".g.hit")?.classList.remove("hit"), 1200);
+}
+
+function log(cls, text, fmt, source) {
+  const box = $("log");
+  box.querySelector(".empty")?.remove();
+  const row = document.createElement("div");
+  row.innerHTML = `<time>${hhmm()}</time><span class="t"><span class="f">${esc(fmt)}</span><span class="${cls}">${esc(text)}</span> <span class="muted">· ${source}</span></span>`;
+  box.prepend(row);
+}
+
+function feedback(ok, msg) {
+  const f = $("flash");
+  f.className = "flash"; void f.offsetWidth; f.className = `flash ${ok ? "ok" : "bad"}`;
+  const t = $("toast");
+  t.textContent = msg; t.classList.add("show");
+  clearTimeout(feedback.timer);
+  feedback.timer = setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+function handle(text, format, source) {
+  const guest = GUESTS.find((g) => g.code === text);
+  if (!guest) {
+    log("bad", `非本活動票券：${text}`, format, source);
+    feedback(false, `不是報到碼（${format}）`);
+    return;
+  }
+  if (checked.has(guest.code)) {
+    log("warn", `${guest.name} 已於 ${checked.get(guest.code).slice(0, 5)} 報到過`, format, source);
+    feedback(false, `${guest.name} 重複報到`);
+    return;
+  }
+  checked.set(guest.code, hhmm());
+  log("ok", `${guest.name} 報到成功（${guest.seat}）`, format, source);
+  feedback(true, `歡迎 ${guest.name}！座位 ${guest.seat}`);
+  renderGuests(guest.code);
+}
+
+function setChip(text, cls = "") { const c = $("chip"); c.textContent = text; c.className = `chip ${cls}`; }
+
+function cameraError(err) {
+  const s = String(err);
+  if (/NotAllowed|Permission/i.test(s)) return "鏡頭權限被拒絕";
+  if (/NotFound|not found|no camera/i.test(s)) return "找不到可用的鏡頭";
+  if (/NotReadable|in use/i.test(s)) return "鏡頭正被其他程式使用";
+  return `無法開啟鏡頭（${s.slice(0, 60)}）`;
+}
+
+async function startCamera() {
+  setChip("鏡頭啟動中…");
+  $("camBtn").disabled = true;
+  try {
+    await camScanner.start(
+      { facingMode: "environment" },
+      { fps: 12 },
+      (text, result) => {
+        const now = Date.now();
+        if (text === lastText && now - lastAt < 3000) return; // ignore the same code held in front of the lens
+        lastText = text; lastAt = now;
+        handle(text, result?.result?.format?.formatName || "QR_CODE", "鏡頭");
+      },
+      () => {}, // per-frame "not found" callback; silent by design
+    );
+    camOn = true;
+    $("cam").classList.add("on");
+    setChip("掃描中", "live");
+    $("camBtn").textContent = "停止鏡頭";
+  } catch (err) {
+    const msg = cameraError(err);
+    setChip("無法使用鏡頭", "err");
+    $("phText").textContent = `${msg}，可改用下方範例票券或上傳圖片`;
+    console.warn("camera start failed:", err);
+  }
+  $("camBtn").disabled = false;
+}
+
+async function stopCamera() {
+  await camScanner.stop();
+  camOn = false;
+  $("cam").classList.remove("on");
+  setChip("鏡頭已停止");
+  $("camBtn").textContent = "開啟鏡頭";
+  $("phText").textContent = "鏡頭已停止，仍可用範例票券或上傳圖片";
+}
+
+async function scanImage(file, source) {
+  try {
+    const r = await fileScanner.scanFileV2(file, false);
+    handle(r.decodedText, r.result?.format?.formatName || "QR_CODE", source);
+  } catch (err) {
+    log("bad", "圖片中找不到 QR Code 或條碼", "無", source);
+    feedback(false, "這張圖片解不出條碼");
+    console.warn("scanFile failed:", err);
+  }
+}
+
+$("camBtn").addEventListener("click", () => (camOn ? stopCamera() : startCamera()));
+$("file").addEventListener("change", async (e) => {
+  const f = e.target.files[0];
+  if (f) await scanImage(f, "上傳");
+  e.target.value = "";
+});
+$("reset").addEventListener("click", () => {
+  checked.clear(); lastText = "";
+  $("log").innerHTML = '<div class="empty">還沒有掃描結果</div>';
+  renderGuests();
+});
+
+for (let i = 1; i <= 3; i++) {
+  const b = document.createElement("button");
+  b.className = "ticket";
+  b.title = `掃描範例票券 ${i}`;
+  b.innerHTML = `<img src="assets/html5-qrcode/ticket-${i}.png" alt="範例票券 ${i}">`;
+  b.addEventListener("click", async () => {
+    b.classList.add("busy");
+    const blob = await (await fetch(b.querySelector("img").src)).blob();
+    await scanImage(new File([blob], `ticket-${i}.png`, { type: "image/png" }), "範例票券");
+    b.classList.remove("busy");
+  });
+  $("samples").append(b);
+}
+renderGuests();
+
+(async () => {
+  await demoGate({ icon: "📷", title: "活動報到掃碼", desc: "按下後會請求鏡頭權限；沒有鏡頭也能點範例票券或上傳圖片掃描", tags: ["需要鏡頭", "可改用圖片", "示意資料"], button: "開啟鏡頭" });
+  startCamera();
+})();
+</script>
+</body>
+</html>

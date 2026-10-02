@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Embla Carousel 示範：視差與縮放輪播</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body { background: radial-gradient(70% 70% at 50% 0%, #22301f, var(--bg) 70%); }
+  .wrap { position: fixed; inset: 0; display: flex; flex-direction: column; justify-content: center; gap: 14px; padding: 60px 0 50px; }
+  header { position: fixed; left: 16px; top: 12px; z-index: 40; }
+  header h1 { margin: 0; font-size: 18px; font-weight: 900; }
+  header p { margin: 0; font: 12px var(--mono); color: var(--muted); }
+  header p b { color: var(--accent); }
+  .embla { --gap: 14px; --size: 68%; }
+  .embla__viewport { overflow: hidden; cursor: grab; }
+  .embla__viewport:active { cursor: grabbing; }
+  .embla__container { display: flex; touch-action: pan-y pinch-zoom; margin-left: calc(var(--gap) * -1); }
+  .embla__slide { flex: 0 0 var(--size); min-width: 0; padding-left: var(--gap); }
+  .frame { position: relative; height: clamp(180px, calc(100vh - 230px), 400px); border-radius: 20px; overflow: hidden; background: #000; will-change: transform; }
+  .layer { position: relative; height: 100%; width: 100%; display: flex; justify-content: center; }
+  .layer img { max-width: none; flex: 0 0 calc(130% + var(--gap) * 2); object-fit: cover; display: block; user-select: none; -webkit-user-drag: none; }
+  .frame figcaption { position: absolute; left: 0; right: 0; bottom: 0; padding: 40px 18px 14px; background: linear-gradient(transparent, rgba(0,0,0,.75)); pointer-events: none; }
+  .frame figcaption b { display: block; font-size: clamp(18px, 3vw, 28px); line-height: 1.2; }
+  .frame figcaption small { font: 700 11px var(--mono); color: var(--accent); letter-spacing: .12em; }
+  .foot { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 0 16px; }
+  .foot .btn.round { width: 40px; height: 40px; padding: 0; border-radius: 50%; font-size: 18px; }
+  .dots { display: flex; gap: 8px; }
+  .dots button { width: 10px; height: 10px; padding: 0; border-radius: 999px; border: 0; background: rgba(255,255,255,.28); cursor: pointer; transition: width .3s, background .3s; }
+  .dots button.on { width: 26px; background: var(--accent); }
+  .track { width: min(60%, 360px); height: 3px; margin: 0 auto; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .track i { display: block; height: 100%; width: 22%; background: var(--c4); border-radius: 3px; }
+  @media (max-width: 560px) {
+    .embla { --size: 76%; --gap: 10px; }
+    .wrap { padding-top: 96px; }
+    header { right: 16px; top: 56px; text-align: center; }
+    .dots { gap: 5px; } .dots button { width: 8px; height: 8px; } .dots button.on { width: 18px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Embla 視差輪播</h1>
+  <p>scrollProgress <b id="sp">0.000</b></p>
+</header>
+<div class="controls">
+  <button class="btn" id="tParallax" aria-pressed="true">視差</button>
+  <button class="btn" id="tScale" aria-pressed="true">縮放</button>
+  <button class="btn" id="tPlay" aria-pressed="true">自動播放</button>
+</div>
+
+<div class="wrap">
+  <div class="embla">
+    <div class="embla__viewport" id="vp"><div class="embla__container" id="list"></div></div>
+  </div>
+  <div class="track" id="track"><i></i></div>
+  <div class="foot">
+    <button class="btn round" id="prev" aria-label="上一張">‹</button>
+    <div class="dots" id="dots"></div>
+    <button class="btn round" id="next" aria-label="下一張">›</button>
+  </div>
+</div>
+<div class="hint">左右拖曳，圖片會比外框移動得慢</div>
+
+<script src="https://cdn.jsdelivr.net/npm/embla-carousel@8.6.0/embla-carousel.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/embla-carousel-autoplay@8.6.0/embla-carousel-autoplay.umd.js"></script>
+<script>
+const PHOTOS = [["FJORD", "挪威峽灣"], ["CANYON", "紅岩峽谷"], ["VALLEY ROAD", "綠谷公路"], ["PUG", "披毯巴哥犬"],
+  ["WATERFALL", "瀑布與彩虹"], ["JELLYFISH", "深海水母"], ["LIONESS", "母獅特寫"], ["WALRUS", "海象群"]];
+document.getElementById("list").innerHTML = PHOTOS.map(([en, name], i) =>
+  `<div class="embla__slide"><figure class="frame" style="margin:0"><div class="layer"><img src="_shared/img/photo-${i + 1}.jpg" alt="${name}" draggable="false"></div>` +
+  `<figcaption><small>${en}</small><b>${name}</b></figcaption></figure></div>`
+).join("");
+
+const api = EmblaCarousel(document.getElementById("vp"), { loop: true, align: "center" },
+  [EmblaCarouselAutoplay({ delay: 3000, stopOnInteraction: false, stopOnMouseEnter: true })]);
+
+const frames = api.slideNodes().map((n) => n.querySelector(".frame"));
+const layers = api.slideNodes().map((n) => n.querySelector(".layer"));
+const opts = { parallax: true, scale: true };
+
+// Tween every slide from its distance to the current scroll progress (adapted from Embla's parallax example)
+function tween(emblaApi, eventName) {
+  const engine = emblaApi.internalEngine();
+  const progress = emblaApi.scrollProgress();
+  const inView = emblaApi.slidesInView();
+  const snaps = emblaApi.scrollSnapList();
+  const n = snaps.length;
+  snaps.forEach((snap, snapIndex) => {
+    engine.slideRegistry[snapIndex].forEach((slideIndex) => {
+      if (eventName === "scroll" && !inView.includes(slideIndex)) return;
+      let diff = snap - progress;
+      if (engine.options.loop) {
+        engine.slideLooper.loopPoints.forEach((lp) => {
+          const target = lp.target();
+          if (slideIndex === lp.index && target !== 0) {
+            if (Math.sign(target) === -1) diff = snap - (1 + progress);
+            if (Math.sign(target) === 1) diff = snap + (1 - progress);
+          }
+        });
+      }
+      const dist = Math.min(Math.abs(diff * n), 1);
+      layers[slideIndex].style.transform = opts.parallax ? `translateX(${diff * -0.2 * n * 100}%)` : "";
+      // shrink toward the active slide so neighbours keep peeking in at the edges
+      frames[slideIndex].style.transformOrigin = diff > 0 ? "left center" : "right center";
+      frames[slideIndex].style.transform = opts.scale ? `scale(${1 - dist * 0.2})` : "";
+      frames[slideIndex].style.opacity = opts.scale ? 1 - dist * 0.45 : 1;
+    });
+  });
+  document.getElementById("sp").textContent = (((progress % 1) + 1) % 1).toFixed(3);
+  document.querySelector("#track i").style.transform = `translateX(${(((progress % 1) + 1) % 1) * 355}%)`;
+}
+api.on("reInit", tween).on("scroll", tween).on("slideFocus", tween);
+tween(api);
+
+// Dots and arrows
+const dots = document.getElementById("dots");
+dots.innerHTML = api.scrollSnapList().map((_, i) => `<button aria-label="第 ${i + 1} 張"></button>`).join("");
+const dotBtns = [...dots.children];
+dotBtns.forEach((b, i) => b.addEventListener("click", () => api.scrollTo(i)));
+const markDot = () => dotBtns.forEach((b, i) => b.classList.toggle("on", i === api.selectedScrollSnap()));
+api.on("select", markDot).on("reInit", markDot);
+markDot();
+document.getElementById("prev").addEventListener("click", () => api.scrollPrev());
+document.getElementById("next").addEventListener("click", () => api.scrollNext());
+
+// Toggles
+const bindToggle = (id, key) => {
+  const b = document.getElementById(id);
+  b.addEventListener("click", () => {
+    opts[key] = !opts[key];
+    b.setAttribute("aria-pressed", opts[key]);
+    tween(api);
+  });
+};
+bindToggle("tParallax", "parallax");
+bindToggle("tScale", "scale");
+const play = document.getElementById("tPlay");
+play.addEventListener("click", () => {
+  const ap = api.plugins().autoplay;
+  if (ap.isPlaying()) ap.stop(); else ap.play();
+});
+api.on("autoplay:play", () => play.setAttribute("aria-pressed", "true"));
+api.on("autoplay:stop", () => play.setAttribute("aria-pressed", "false"));
+</script>
+</body>
+</html>

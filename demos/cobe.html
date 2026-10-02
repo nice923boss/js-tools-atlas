@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>COBE 示範：從台北出發的航線地球儀</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"城市標籤使用 CSS Anchor Positioning，不支援的瀏覽器只顯示光點"}</script>
+<style>
+  body { background: radial-gradient(circle at 50% 55%, #10183a 0%, #070912 70%); }
+  .wrap { position: fixed; inset: 0; display: grid; place-items: center; }
+  .globe { position: relative; touch-action: none; cursor: grab; }
+  .globe.dragging { cursor: grabbing; }
+  .globe canvas { display: block; width: 100%; height: 100%; }
+  .heading { position: fixed; left: 16px; top: 14px; z-index: 40; pointer-events: none; }
+  .heading h1 { margin: 0; font-size: clamp(20px, 4.4vw, 30px); letter-spacing: .06em; }
+  .heading p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+  .city {
+    position: absolute; display: none; padding: 3px 8px; border-radius: 999px; font-size: 12px; white-space: nowrap;
+    background: rgba(14, 16, 19, .78); border: 1px solid rgba(255, 255, 255, .18); color: #fff; pointer-events: none;
+    transform: translateY(-6px); transition: opacity .25s;
+  }
+  .city.home { background: #f25f3a; border-color: #ffb199; font-weight: 700; transform: translateY(6px); }
+  .city small { color: rgba(255, 255, 255, .65); margin-left: 4px; font-family: var(--mono); }
+  @supports (anchor-name: --a) { .city { display: block; } }
+  @media (max-width: 600px) { .heading { top: auto; bottom: 46px; } }
+</style>
+</head>
+<body>
+<div class="wrap"><div class="globe" id="globe"><canvas id="cv"></canvas></div></div>
+<div class="heading"><h1>從台北出發</h1><p>8 條直飛航線，拖曳地球儀轉動</p></div>
+<div class="controls" id="fly">
+  <button class="btn" data-go="tpe">台灣</button>
+  <button class="btn" data-go="nrt">東京</button>
+  <button class="btn" data-go="sfo">舊金山</button>
+  <button class="btn" data-go="lhr">倫敦</button>
+  <button class="btn" data-go="syd">雪梨</button>
+  <button class="btn" id="spin" aria-pressed="true">自轉</button>
+</div>
+<div class="hint">拖曳旋轉・點城市按鈕飛過去</div>
+
+<script type="module">
+import createGlobe from "https://cdn.jsdelivr.net/npm/cobe@2.0.1/dist/index.esm.js";
+
+// City list: [id, label, IATA, lat, lon]. Taipei is the hub every arc starts from.
+const CITIES = [
+  ["tpe", "台北", "TPE", 25.03, 121.56],
+  ["nrt", "東京", "NRT", 35.68, 139.69],
+  ["icn", "首爾", "ICN", 37.57, 126.98],
+  ["hkg", "香港", "HKG", 22.32, 114.17],
+  ["sin", "新加坡", "SIN", 1.35, 103.82],
+  ["sfo", "舊金山", "SFO", 37.77, -122.42],
+  ["lhr", "倫敦", "LHR", 51.51, -0.13],
+  ["syd", "雪梨", "SYD", -33.87, 151.21],
+  ["bkk", "曼谷", "BKK", 13.75, 100.5],
+];
+const byId = Object.fromEntries(CITIES.map((c) => [c[0], c]));
+const home = byId.tpe;
+
+const markers = CITIES.map(([id, , , lat, lon]) => ({
+  id, location: [lat, lon], size: id === "tpe" ? 0.09 : 0.045,
+  ...(id === "tpe" ? { color: [1, 0.42, 0.25] } : {}),
+}));
+const arcs = CITIES.filter((c) => c[0] !== "tpe").map(([id, , , lat, lon]) => ({
+  id: "a-" + id, from: [home[3], home[4]], to: [lat, lon],
+}));
+
+// Same conversion cobe uses internally: put a lat/lon at the front of the globe.
+const toAngles = (lat, lon) => [Math.PI - ((lon * Math.PI) / 180 - Math.PI / 2), (lat * Math.PI) / 180];
+
+const wrapEl = document.getElementById("globe");
+const canvas = document.getElementById("cv");
+let [phi, theta] = toAngles(home[3], home[4]);
+phi -= 0.2;
+theta = 0.32;
+let target = null;
+let spin = true;
+let globe = null;
+let size = 0;
+
+function build() {
+  if (globe) globe.destroy();
+  wrapEl.querySelectorAll(".city").forEach((n) => n.remove());
+  size = Math.round(Math.min(innerWidth, innerHeight) * (innerWidth < 600 ? 0.92 : 0.86));
+  wrapEl.style.width = wrapEl.style.height = size + "px";
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  globe = createGlobe(canvas, {
+    devicePixelRatio: dpr, width: size, height: size, phi, theta,
+    dark: 1, diffuse: 1.25, mapSamples: 16000, mapBrightness: 6, mapBaseBrightness: 0.04,
+    baseColor: [0.25, 0.3, 0.55], markerColor: [0.3, 0.85, 1], glowColor: [0.25, 0.32, 0.75],
+    markers, arcs, arcColor: [1, 0.78, 0.3], arcWidth: 0.9, arcHeight: 0.28, markerElevation: 0.02,
+  });
+  globe.update({ phi, theta });
+  // Labels go after the anchor divs cobe just inserted, so the anchors precede them in tree order.
+  for (const [id, label, code] of CITIES) {
+    const el = document.createElement("div");
+    el.className = "city" + (id === "tpe" ? " home" : "");
+    el.innerHTML = label + "<small>" + code + "</small>";
+    el.style.positionAnchor = "--cobe-" + id;
+    // East Asian cities are close together: hub label below, Tokyo right, Bangkok and Singapore left, others above.
+    if (id === "tpe") { el.style.top = "anchor(bottom)"; el.style.left = "anchor(center)"; el.style.translate = "-50% 0"; }
+    else if (id === "bkk" || id === "sin") { el.style.top = "anchor(center)"; el.style.right = "anchor(left)"; el.style.translate = "-4px calc(-50% + 6px)"; }
+    else if (id === "nrt") { el.style.top = "anchor(center)"; el.style.left = "anchor(right)"; el.style.translate = "4px calc(-50% + 6px)"; }
+    else { el.style.bottom = "anchor(top)"; el.style.left = "anchor(center)"; el.style.translate = "-50% 0"; }
+    el.style.opacity = "var(--cobe-visible-" + id + ", 0)";
+    wrapEl.appendChild(el);
+  }
+}
+
+// Drag to rotate with a little inertia after release.
+let drag = null;
+let vel = 0;
+wrapEl.addEventListener("pointerdown", (e) => {
+  drag = { x: e.clientX, y: e.clientY };
+  target = null;
+  wrapEl.classList.add("dragging");
+  wrapEl.setPointerCapture(e.pointerId);
+});
+wrapEl.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x;
+  const dy = e.clientY - drag.y;
+  drag = { x: e.clientX, y: e.clientY };
+  vel = dx / 220;
+  phi += vel;
+  theta = Math.max(-0.9, Math.min(0.9, theta + dy / 220));
+});
+const endDrag = () => { drag = null; wrapEl.classList.remove("dragging"); };
+wrapEl.addEventListener("pointerup", endDrag);
+wrapEl.addEventListener("pointercancel", endDrag);
+
+const spinBtn = document.getElementById("spin");
+const setSpin = (on) => { spin = on; spinBtn.setAttribute("aria-pressed", String(on)); };
+document.getElementById("fly").addEventListener("click", (e) => {
+  if (e.target === spinBtn) { setSpin(!spin); return; }
+  const b = e.target.closest("[data-go]");
+  if (!b) return;
+  const c = byId[b.dataset.go];
+  const [p, t] = toAngles(c[3], c[4]);
+  target = [p, Math.max(-0.9, Math.min(0.9, t * 0.8))];
+  setSpin(false);
+  document.querySelectorAll("#fly [data-go]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+});
+
+// cobe v2 has no render callback: drive phi/theta from our own animation loop.
+function tick() {
+  if (target) {
+    // Shortest way round, eased.
+    let d = (target[0] - phi) % (Math.PI * 2);
+    if (d > Math.PI) d -= Math.PI * 2;
+    if (d < -Math.PI) d += Math.PI * 2;
+    phi += d * 0.07;
+    theta += (target[1] - theta) * 0.07;
+    if (Math.abs(d) < 0.001 && Math.abs(target[1] - theta) < 0.001) target = null;
+  } else if (!drag) {
+    vel *= 0.94;
+    phi += vel + (spin ? 0.0025 : 0);
+  }
+  globe.update({ phi, theta });
+  requestAnimationFrame(tick);
+}
+
+let resizeTimer = 0;
+addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(build, 150); });
+build();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

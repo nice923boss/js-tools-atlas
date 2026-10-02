@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chart.js 示範：城市氣候儀表板</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  .board {
+    position: fixed; inset: 0; padding: 56px 14px 50px;
+    display: grid; gap: 12px;
+    grid-template-columns: 1.6fr 1fr; grid-template-rows: 1fr 1fr;
+    grid-template-areas: "main radar" "main donut";
+  }
+  .card { position: relative; min-height: 0; padding: 10px 12px 8px; display: flex; flex-direction: column; }
+  .card h2 { margin: 0 0 4px; font-size: 13px; font-weight: 600; color: var(--fg); }
+  .card h2 small { font-weight: 400; color: var(--muted); margin-left: 6px; }
+  .card .box { position: relative; flex: 1; min-height: 0; }
+  .main { grid-area: main; } .radar { grid-area: radar; } .donut { grid-area: donut; }
+  .title { position: fixed; left: 14px; top: 14px; z-index: 40; font-size: 16px; font-weight: 700; }
+  .title span { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 8px; }
+  @media (max-width: 640px) {
+    .board { grid-template-columns: 1fr; grid-template-rows: 1.25fr 1fr; grid-template-areas: "main" "radar"; padding-top: 84px; }
+    .title { top: 54px; }
+    .donut { display: none; }
+  }
+  /* narrow but landscape (e.g. the 600x420 stage on the main site): stacking would squash the radar, so keep two columns */
+  @media (max-width: 640px) and (min-width: 500px) and (min-aspect-ratio: 1/1) {
+    .board { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); grid-template-rows: 1fr; grid-template-areas: "main radar"; padding-top: 56px; }
+    .title { top: 14px; }
+  }
+</style>
+</head>
+<body>
+<div class="title">城市氣候儀表板<span>示意資料</span></div>
+<div class="controls">
+  <button class="btn" data-city="台北" aria-pressed="true">台北</button>
+  <button class="btn" data-city="台中">台中</button>
+  <button class="btn" data-city="高雄">高雄</button>
+  <button class="btn primary" id="shuffle">隨機更新</button>
+</div>
+<div class="board">
+  <div class="panel card main"><h2 id="mainTitle">台北 每月均溫與雨量<small>折線＋長條雙軸</small></h2><div class="box"><canvas id="combo"></canvas></div></div>
+  <div class="panel card radar"><h2>六都生活指標<small>雷達圖</small></h2><div class="box"><canvas id="radar"></canvas></div></div>
+  <div class="panel card donut"><h2>通勤方式占比<small>甜甜圈圖</small></h2><div class="box"><canvas id="donut"></canvas></div></div>
+</div>
+<div class="hint">點城市切換・點圖例隱藏數列・滑過看數值</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"></script>
+<script>
+// Three Chart.js charts (mixed bar/line with dual axes, radar, doughnut) sharing a dark theme.
+const css = getComputedStyle(document.documentElement);
+const C = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6"].map((v) => css.getPropertyValue(v).trim());
+Chart.defaults.color = "#9b998f";
+Chart.defaults.borderColor = "rgba(255,255,255,0.08)";
+Chart.defaults.font.family = css.getPropertyValue("--font");
+Chart.defaults.font.size = 11;
+Chart.defaults.maintainAspectRatio = false;
+Chart.defaults.plugins.legend.labels.boxWidth = 10;
+Chart.defaults.plugins.legend.labels.boxHeight = 10;
+
+const MONTHS = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"];
+const CITY = {
+  台北: { temp: [16.1, 16.5, 18.5, 21.9, 25.2, 27.7, 29.6, 29.2, 27.4, 24.5, 21.5, 17.9], rain: [83, 170, 180, 178, 231, 325, 245, 322, 360, 148, 83, 73] },
+  台中: { temp: [16.6, 17.3, 19.8, 23.3, 26.3, 27.9, 28.8, 28.5, 27.8, 25.6, 22.3, 18.3], rain: [30, 88, 94, 136, 225, 384, 294, 300, 142, 17, 19, 24] },
+  高雄: { temp: [19.3, 20.3, 22.6, 25.4, 27.6, 28.8, 29.4, 28.9, 28.5, 27.0, 24.4, 20.9], rain: [20, 22, 38, 75, 185, 416, 386, 434, 187, 46, 15, 14] },
+};
+
+const ctx = document.getElementById("combo").getContext("2d");
+const grad = ctx.createLinearGradient(0, 0, 0, 400);
+grad.addColorStop(0, "rgba(76,201,240,0.85)");
+grad.addColorStop(1, "rgba(76,201,240,0.15)");
+
+const combo = new Chart(ctx, {
+  data: {
+    labels: MONTHS,
+    datasets: [
+      { type: "line", label: "均溫（°C）", data: CITY.台北.temp, yAxisID: "t", borderColor: C[0], backgroundColor: C[0],
+        tension: 0.4, borderWidth: 3, pointRadius: 3, pointHoverRadius: 6, order: 0 },
+      { type: "bar", label: "雨量（mm）", data: CITY.台北.rain, yAxisID: "r", backgroundColor: grad, borderRadius: 6, order: 1 },
+    ],
+  },
+  options: {
+    interaction: { mode: "index", intersect: false },
+    animation: { duration: 900, easing: "easeOutQuart" },
+    scales: {
+      t: { position: "left", min: 10, max: 32, title: { display: true, text: "°C" }, grid: { drawOnChartArea: true } },
+      r: { position: "right", min: 0, max: 500, title: { display: true, text: "mm" }, grid: { drawOnChartArea: false } },
+      x: { grid: { display: false } },
+    },
+    plugins: { legend: { position: "top", align: "end" } },
+  },
+});
+
+const SIX = ["台北", "新北", "桃園", "台中", "台南", "高雄"];
+const AXES = ["交通", "綠地", "房價友善", "美食", "就業", "文化"];
+const rand = (lo, hi) => Math.round(lo + Math.random() * (hi - lo));
+// Same condition as the two-column CSS rule: the radar card is tall and narrow there, so the legend goes below
+const sideBySide = matchMedia("(max-width: 640px) and (min-width: 500px) and (min-aspect-ratio: 1/1)");
+const radarLegend = () => (sideBySide.matches ? "bottom" : "right");
+const radar = new Chart(document.getElementById("radar"), {
+  type: "radar",
+  data: {
+    labels: AXES,
+    datasets: [
+      { label: "台北", data: [92, 60, 35, 88, 90, 94], borderColor: C[1], backgroundColor: "rgba(76,201,240,0.18)" },
+      { label: "台中", data: [70, 74, 62, 84, 76, 72], borderColor: C[3], backgroundColor: "rgba(123,211,137,0.15)" },
+      { label: "高雄", data: [74, 80, 70, 86, 70, 76], borderColor: C[2], backgroundColor: "rgba(247,37,133,0.15)" },
+    ],
+  },
+  options: {
+    elements: { line: { borderWidth: 2 }, point: { radius: 2, hoverRadius: 5 } },
+    scales: { r: { min: 0, max: 100, ticks: { display: false, stepSize: 25 }, angleLines: { color: "rgba(255,255,255,0.1)" },
+      grid: { color: "rgba(255,255,255,0.1)" }, pointLabels: { color: "#ecebe6", font: { size: 11 } } } },
+    plugins: { legend: { position: radarLegend() } },
+  },
+});
+sideBySide.addEventListener("change", () => { radar.options.plugins.legend.position = radarLegend(); radar.update("none"); });
+
+const donut = new Chart(document.getElementById("donut"), {
+  type: "doughnut",
+  data: {
+    labels: ["捷運", "公車", "機車", "汽車", "自行車", "步行"],
+    datasets: [{ data: [31, 18, 26, 14, 5, 6], backgroundColor: C, borderColor: "#171a1f", borderWidth: 3, hoverOffset: 10 }],
+  },
+  options: { cutout: "62%", plugins: { legend: { position: "right" } } },
+});
+
+const cityBtns = document.querySelectorAll("[data-city]");
+cityBtns.forEach((b) => b.addEventListener("click", () => {
+  const name = b.dataset.city;
+  cityBtns.forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  combo.data.datasets[0].data = CITY[name].temp;
+  combo.data.datasets[1].data = CITY[name].rain;
+  combo.update();
+  document.getElementById("mainTitle").firstChild.textContent = `${name} 每月均溫與雨量`;
+}));
+
+document.getElementById("shuffle").addEventListener("click", () => {
+  radar.data.datasets.forEach((ds) => (ds.data = ds.data.map(() => rand(35, 98))));
+  radar.update();
+  donut.data.datasets[0].data = donut.data.labels.map(() => rand(4, 35));
+  donut.update();
+  combo.data.datasets[1].data = combo.data.datasets[1].data.map((v) => Math.max(5, Math.round(v * (0.6 + Math.random() * 0.8))));
+  combo.update();
+});
+</script>
+</body>
+</html>

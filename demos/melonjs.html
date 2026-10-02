@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>melonJS 示範：螢火蟲夜捕</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  #screen { position: fixed; inset: 0; background: #0b1020; touch-action: none; }
+  #screen canvas { display: block; outline: none; touch-action: none; }
+  .overlay { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; pointer-events: none; transition: opacity .35s; }
+  .overlay.hide { opacity: 0; }
+  .overlay .card { text-align: center; padding: 16px 26px; border-radius: 16px; background: rgba(11, 16, 32, .62); backdrop-filter: blur(3px); border: 1px solid var(--line); max-width: 86vw; }
+  .overlay h1 { margin: 0; font-size: clamp(28px, 7vw, 48px); letter-spacing: 4px; color: #f6f1a8; text-shadow: 0 0 18px rgba(246, 241, 120, .7); }
+  .overlay p { margin: 6px 0 0; }
+  .overlay .blink { color: var(--c4); animation: blink 1.2s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+</style>
+</head>
+<body>
+<div id="screen"></div>
+<div class="overlay" id="overlay">
+  <div class="card">
+    <h1 id="ov-title">螢火蟲夜捕</h1>
+    <p id="ov-sub">30 秒內用網子捕捉螢火蟲，金色的算 3 隻</p>
+    <p class="blink" id="ov-go">按任意鍵或點擊開始</p>
+  </div>
+</div>
+<div class="hint">移動滑鼠瞄準、點擊揮網；鍵盤用方向鍵移動、空白鍵揮網</div>
+
+<script type="module">
+// melonJS click-collect game: Application + custom Renderables, Trail, ParticleEmitter, Tween, Text, pointer and key bindings.
+import * as me from "https://cdn.jsdelivr.net/npm/melonjs@20.7.0/+esm";
+
+const FONT = "Noto Sans TC, Microsoft JhengHei, PingFang TC, sans-serif";
+const ROUND = 30;
+const $ = (id) => document.getElementById(id);
+const rand = (a, b) => a + Math.random() * (b - a);
+
+const app = new me.Application(800, 500, {
+  parent: "screen",
+  scale: "auto",
+  scaleMethod: "flex",
+  // WebGL 2 when available, otherwise the Canvas renderer (skips the WebGPU probe)
+  renderer: me.device.isWebGLSupported({ failIfMajorPerformanceCaveat: false }) ? me.video.WEBGL : me.video.CANVAS,
+  backgroundColor: "#0b1020",
+  failIfMajorPerformanceCaveat: false,
+  consoleHeader: false,
+});
+await app.init();
+app.pauseOnBlur = false;
+app.stopOnBlur = false;
+
+const vw = () => app.viewport.width;
+const vh = () => app.viewport.height;
+
+// soft round glow textures drawn once on plain canvases
+function makeGlow(rgb, size = 64) {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const g = c.getContext("2d");
+  const h = size / 2;
+  const grd = g.createRadialGradient(h, h, 0, h, h, h);
+  grd.addColorStop(0, `rgba(${rgb},1)`);
+  grd.addColorStop(0.3, `rgba(${rgb},.55)`);
+  grd.addColorStop(1, `rgba(${rgb},0)`);
+  g.fillStyle = grd;
+  g.fillRect(0, 0, size, size);
+  return c;
+}
+const glowTex = makeGlow("255,255,255", 32);
+const GLOW = { green: makeGlow("200,245,96"), gold: makeGlow("255,210,63") };
+
+// night meadow: sky gradient, moon, twinkling stars, grass silhouettes
+class Meadow extends me.Renderable {
+  constructor() {
+    super(0, 0, 10, 10);
+    this.anchorPoint.set(0, 0);
+    this.alwaysUpdate = true;
+    this.t = 0;
+    this.stars = Array.from({ length: 70 }, () => ({ x: Math.random(), y: Math.random() * 0.6, r: rand(0.6, 1.8), p: rand(0, 6.3) }));
+    this.blades = Array.from({ length: 90 }, () => ({ x: Math.random(), h: rand(0.06, 0.16), p: rand(0, 6.3) }));
+  }
+  update(dt) {
+    this.t += dt / 1000;
+    this.resize(vw(), vh());
+    return true;
+  }
+  draw(r) {
+    const w = vw(), h = vh();
+    const sky = r.createLinearGradient(0, 0, 0, h);
+    sky.addColorStop(0, "#070a18");
+    sky.addColorStop(0.65, "#141c3a");
+    sky.addColorStop(1, "#1d2a3a");
+    r.setColor(sky);
+    r.fillRect(0, 0, w, h);
+    for (const s of this.stars) {
+      r.setGlobalAlpha(0.35 + 0.35 * Math.sin(this.t * 2 + s.p));
+      r.setColor("#ffffff");
+      r.fillArc(s.x * w, s.y * h, s.r, 0, Math.PI * 2);
+    }
+    const mx = w * 0.82, my = h * 0.16, mr = Math.min(w, h) * 0.06;
+    r.setGlobalAlpha(0.12);
+    r.setColor("#fff6c8");
+    r.fillArc(mx, my, mr * 2.2, 0, Math.PI * 2);
+    r.setGlobalAlpha(1);
+    r.fillArc(mx, my, mr, 0, Math.PI * 2);
+    r.setColor("#0f1630");
+    for (const b of this.blades) {
+      const x = b.x * w, top = h * (1 - b.h), sway = Math.sin(this.t * 1.4 + b.p) * 6;
+      r.beginPath();
+      r.moveTo(x - 5, h);
+      r.lineTo(x + sway, top);
+      r.lineTo(x + 5, h);
+      r.closePath();
+      r.fill();
+    }
+    r.fillRect(0, h - 18, w, 18);
+  }
+}
+
+class Firefly extends me.Renderable {
+  constructor(gold) {
+    super(rand(30, vw() - 30), rand(vh() * 0.15, vh() * 0.82), 40, 40);
+    this.alwaysUpdate = true;
+    this.gold = gold;
+    this.heading = rand(0, Math.PI * 2);
+    this.speed = gold ? 95 : rand(40, 70);
+    this.phase = rand(0, 6.3);
+    this.t = 0;
+    this.color = gold ? "#ffd23f" : "#c8f560";
+  }
+  update(dt) {
+    const s = dt / 1000;
+    this.t += s;
+    this.heading += rand(-3, 3) * s;
+    // drift away from the net so catching takes some aim
+    const dx = this.pos.x - net.pos.x, dy = this.pos.y - net.pos.y, d = Math.hypot(dx, dy);
+    let fx = 0, fy = 0;
+    if (d < 110 && d > 0) { fx = (dx / d) * (110 - d) * 1.6; fy = (dy / d) * (110 - d) * 1.6; }
+    let x = this.pos.x + (Math.cos(this.heading) * this.speed + fx) * s;
+    let y = this.pos.y + (Math.sin(this.heading) * this.speed * 0.7 + fy) * s;
+    if (x < 14 || x > vw() - 14) this.heading = Math.PI - this.heading;
+    if (y < vh() * 0.08 || y > vh() - 40) this.heading = -this.heading;
+    x = Math.max(14, Math.min(vw() - 14, x));
+    y = Math.max(vh() * 0.08, Math.min(vh() - 40, y));
+    this.pos.set(x, y, this.pos.z);
+    return true;
+  }
+  draw(r) {
+    const cx = this.pos.x + this.width / 2, cy = this.pos.y + this.height / 2;
+    const glow = 0.45 + 0.55 * Math.max(0, Math.sin(this.t * 3 + this.phase));
+    const base = this.gold ? 6 : 4, R = base * 5 * (0.8 + 0.3 * glow);
+    r.setBlendMode("additive");
+    r.setGlobalAlpha(0.35 + 0.65 * glow);
+    r.drawImage(this.gold ? GLOW.gold : GLOW.green, 0, 0, 64, 64, cx - R, cy - R, R * 2, R * 2);
+    r.setGlobalAlpha(0.6 + 0.4 * glow);
+    r.setColor("#fffbe0");
+    r.fillArc(cx, cy, base * 0.7, 0, Math.PI * 2);
+    r.setBlendMode("normal");
+  }
+}
+
+class Net extends me.Renderable {
+  constructor() {
+    super(400, 250, 90, 90);
+    this.alwaysUpdate = true;
+    this.target = new me.Vector2d(400, 250);
+    this.radius = 34;
+    this.swing = 0;
+  }
+  update(dt) {
+    const k = Math.min(1, dt / 70);
+    this.pos.set(this.pos.x + (this.target.x - this.pos.x) * k, this.pos.y + (this.target.y - this.pos.y) * k, this.pos.z);
+    this.swing = Math.max(0, this.swing - dt / 260);
+    return true;
+  }
+  draw(r) {
+    const cx = this.pos.x + this.width / 2, cy = this.pos.y + this.height / 2;
+    const rad = this.radius * (1 + this.swing * 0.35);
+    r.setGlobalAlpha(0.16 + this.swing * 0.3);
+    r.setColor("#4cc9f0");
+    r.fillArc(cx, cy, rad, 0, Math.PI * 2);
+    r.setGlobalAlpha(0.35);
+    r.lineWidth = 1;
+    r.setColor("#ecebe6");
+    for (let i = -2; i <= 2; i++) {
+      const o = (i * rad) / 3, c = Math.sqrt(rad * rad - o * o);
+      r.strokeLine(cx + o, cy - c, cx + o, cy + c);
+      r.strokeLine(cx - c, cy + o, cx + c, cy + o);
+    }
+    r.setGlobalAlpha(1);
+    r.lineWidth = 4;
+    r.setColor("#ecebe6");
+    r.strokeArc(cx, cy, rad, 0, Math.PI * 2);
+    r.setColor("#c58a4a");
+    r.lineWidth = 6;
+    r.strokeLine(cx + rad * 0.7, cy + rad * 0.7, cx + rad * 1.9, cy + rad * 1.9);
+  }
+}
+
+const hudStyle = (color, align) => ({ font: FONT, size: 22, fillStyle: color, textAlign: align, textBaseline: "top", text: "" });
+const scoreText = new me.Text(16, 14, hudStyle("#f6f1a8", "left"));
+const timeText = new me.Text(784, 14, hudStyle("#4cc9f0", "right"));
+
+const meadow = new Meadow();
+const net = new Net();
+const trail = new me.Trail({
+  target: net, length: 26, lifetime: 380, minDistance: 6, width: 12,
+  widthCurve: [1, 0.6, 0], gradient: ["#4cc9f0", "#9d8cff", "#9d8cff00"], opacity: 0.45, blendMode: "additive",
+});
+const flies = new Set();
+let mode = "title", score = 0, best = 0, timeLeft = ROUND, aiCooldown = 0, overAt = 0;
+
+app.world.addChild(meadow, 0);
+app.world.addChild(trail, 5);
+app.world.addChild(net, 6);
+app.world.addChild(scoreText, 20);
+app.world.addChild(timeText, 20);
+
+function spawnFly(gold = Math.random() < 0.14) {
+  const f = new Firefly(gold);
+  flies.add(f);
+  app.world.addChild(f, 8);
+}
+
+function burst(x, y, color, n) {
+  const em = new me.ParticleEmitter(x, y, {
+    image: glowTex, tint: color, totalParticles: n, angle: 0, angleVariation: Math.PI,
+    minLife: 350, maxLife: 800, speed: 3.2, speedVariation: 2, gravity: 0.05,
+    minStartScale: 0.5, maxStartScale: 0.9, minEndScale: 0, maxEndScale: 0.1,
+    blendMode: "additive", autoDestroyOnComplete: true,
+  });
+  app.world.addChild(em, 12);
+  em.burstParticles(n);
+}
+
+function popup(x, y, msg, color) {
+  const t = new me.Text(x, y, { font: FONT, size: 24, fillStyle: color, textAlign: "center", textBaseline: "middle", text: msg });
+  app.world.addChild(t, 15);
+  new me.Tween(t.pos).to({ y: y - 50 }, { duration: 750 }).easing(me.Tween.Easing.Cubic.Out).start();
+  new me.Tween(t).to({ alpha: 0 }, { duration: 750, delay: 250 }).onComplete(() => app.world.removeChild(t)).start();
+}
+
+// swing the net at its current spot and catch everything inside the hoop
+function swing() {
+  net.swing = 1;
+  const cx = net.pos.x, cy = net.pos.y;
+  let got = 0;
+  for (const f of [...flies]) {
+    if (Math.hypot(f.pos.x - cx, f.pos.y - cy) > net.radius + 6) continue;
+    flies.delete(f);
+    app.world.removeChild(f);
+    const pts = f.gold ? 3 : 1;
+    got += pts;
+    burst(f.pos.x, f.pos.y, f.color, f.gold ? 40 : 20);
+    if (mode === "play") popup(f.pos.x, f.pos.y - 10, `+${pts}`, f.gold ? "#ffd23f" : "#c8f560");
+    if (f.gold) app.viewport.shake(6, 220);
+    setTimeout(() => spawnFly(), rand(300, 1200));
+  }
+  if (mode === "play") {
+    score += got;
+    if (got >= 4) popup(cx, cy - 46, `連捕 ×${got}`, "#f72585");
+  }
+}
+
+function overlay(title, sub, go) {
+  $("ov-title").textContent = title;
+  $("ov-sub").textContent = sub;
+  $("ov-go").textContent = go;
+  $("overlay").classList.remove("hide");
+}
+
+function start() {
+  mode = "play";
+  score = 0;
+  timeLeft = ROUND;
+  $("overlay").classList.add("hide");
+}
+
+function action() {
+  if (mode === "title") start();
+  else if (mode === "over" && performance.now() - overAt > 500) start();
+  else if (mode === "play") swing();
+}
+
+// game director: timer, HUD, attract-mode autopilot, keyboard movement
+class Director extends me.Renderable {
+  constructor() {
+    super(0, 0, 1, 1);
+    this.alwaysUpdate = true;
+  }
+  update(dt) {
+    const s = dt / 1000;
+    while (flies.size < 22) spawnFly();
+    const kx = (me.input.isKeyPressed("right") ? 1 : 0) - (me.input.isKeyPressed("left") ? 1 : 0);
+    const ky = (me.input.isKeyPressed("down") ? 1 : 0) - (me.input.isKeyPressed("up") ? 1 : 0);
+    if (kx || ky) {
+      net.target.x = Math.max(20, Math.min(vw() - 20, net.target.x + kx * 420 * s));
+      net.target.y = Math.max(20, Math.min(vh() - 20, net.target.y + ky * 420 * s));
+    }
+    if (mode === "title") {
+      // autopilot: chase the nearest firefly and swing when close
+      let near = null, nd = Infinity;
+      for (const f of flies) {
+        const d = Math.hypot(f.pos.x - net.pos.x, f.pos.y - net.pos.y);
+        if (d < nd) { nd = d; near = f; }
+      }
+      if (near) net.target.set(near.pos.x, near.pos.y);
+      aiCooldown -= s;
+      if (near && nd < 26 && aiCooldown <= 0) { swing(); aiCooldown = 0.6; }
+    }
+    if (mode === "play") {
+      timeLeft -= s;
+      if (timeLeft <= 0) {
+        timeLeft = 0;
+        mode = "over";
+        overAt = performance.now();
+        best = Math.max(best, score);
+        overlay("時間到！", `這一輪捕到 ${score} 隻，最高紀錄 ${best} 隻`, "按任意鍵或點擊再玩一次");
+      }
+    }
+    scoreText.setText(mode === "title" ? "展示模式" : `捕獲 ${score}`);
+    timeText.setText(mode === "title" ? "" : `剩餘 ${Math.ceil(timeLeft)} 秒`);
+    timeText.pos.x = vw() - 16;
+    return true;
+  }
+}
+app.world.addChild(new Director(), 1);
+
+me.input.bindKey(me.input.KEY.LEFT, "left");
+me.input.bindKey(me.input.KEY.A, "left");
+me.input.bindKey(me.input.KEY.RIGHT, "right");
+me.input.bindKey(me.input.KEY.D, "right");
+me.input.bindKey(me.input.KEY.UP, "up");
+me.input.bindKey(me.input.KEY.W, "up");
+me.input.bindKey(me.input.KEY.DOWN, "down");
+me.input.bindKey(me.input.KEY.S, "down");
+
+me.input.registerPointerEvent("pointermove", app.viewport, (e) => {
+  if (mode !== "title") net.target.set(e.gameWorldX, e.gameWorldY);
+});
+me.input.registerPointerEvent("pointerdown", app.viewport, (e) => {
+  if (mode === "play") {
+    net.target.set(e.gameWorldX, e.gameWorldY);
+    net.pos.set(e.gameWorldX, e.gameWorldY, net.pos.z);
+    trail.clear();
+  }
+  action();
+});
+window.addEventListener("keydown", (e) => {
+  if (e.code === "Space" || e.code === "Enter") { e.preventDefault(); action(); }
+  else if (mode !== "play") action();
+});
+</script>
+</body>
+</html>

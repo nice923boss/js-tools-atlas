@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ExcelJS 示範：含樣式的格式化報表</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  .app { position: fixed; inset: 0; display: grid; grid-template-rows: auto 1fr; }
+  .tb { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--bg-2); }
+  .tb h1 { margin: 0 auto 0 0; font-size: 15px; display: flex; align-items: baseline; gap: 8px; }
+  .tb h1 small { color: var(--muted); font-weight: 400; font-size: 12px; }
+  .swatches { display: flex; gap: 6px; }
+  .swatch { width: 24px; height: 24px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px var(--line); cursor: pointer; }
+  .swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--fg); }
+  .tog { display: flex; align-items: center; gap: 5px; font-size: 13px; cursor: pointer; }
+  .tog input { accent-color: var(--c4); }
+  .main { display: grid; grid-template-columns: 1fr 250px; min-height: 0; }
+  .sheet { overflow: auto; padding: 14px; background: #e9e8e3; }
+  .sheet-inner { display: inline-block; background: #fff; box-shadow: 0 6px 24px rgba(0,0,0,.12); }
+  table { border-collapse: collapse; table-layout: fixed; font-family: Calibri, "Microsoft JhengHei", var(--font); }
+  td { padding: 2px 6px; overflow: hidden; white-space: nowrap; border: 1px solid #edecea; cursor: pointer; }
+  td.sel { outline: 2px solid #217346; outline-offset: -2px; }
+  .inspect { border-left: 1px solid var(--line); background: var(--bg-2); padding: 12px 14px 50px; overflow-y: auto; font-size: 12px; }
+  .inspect h2 { font-size: 13px; margin: 0 0 6px; }
+  .inspect .addr { font: 700 20px var(--mono); color: #217346; }
+  .inspect pre { margin: 6px 0 0; padding: 8px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; font: 11px/1.5 var(--mono); white-space: pre-wrap; word-break: break-all; }
+  .inspect .meta { color: var(--muted); margin-top: 10px; }
+  @media (max-width: 700px) {
+    .main { grid-template-columns: 1fr; }
+    .inspect { display: none; }
+    .tb h1 small { display: none; }
+    .sheet { padding: 8px; }
+  }
+</style>
+</head>
+<body class="paper">
+<div class="app">
+  <div class="tb">
+    <h1>ExcelJS <small>樣式寫進 xlsx，再由 ExcelJS 讀回繪製</small></h1>
+    <div class="swatches" id="swatches"></div>
+    <label class="tog"><input type="checkbox" id="flag" checked>達成率標色</label>
+    <button class="btn" id="shuffle">換一組資料</button>
+    <button class="btn primary" id="download">下載 xlsx</button>
+  </div>
+  <div class="main">
+    <div class="sheet"><div class="sheet-inner"><table id="table"></table></div></div>
+    <aside class="inspect">
+      <h2>儲存格樣式（從檔案讀回）</h2>
+      <div class="addr" id="addr">B4</div>
+      <pre id="detail"></pre>
+      <div class="meta" id="meta"></div>
+    </aside>
+  </div>
+</div>
+<div class="hint">點任一儲存格，看它在 xlsx 內的樣式設定</div>
+
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const THEMES = [
+  { name: "綠", main: "FF217346", soft: "FFE8F3EC" },
+  { name: "藍", main: "FF1F5F99", soft: "FFE7EFF8" },
+  { name: "橘", main: "FFC0521B", soft: "FFFBEDE4" },
+  { name: "紫", main: "FF5B48B5", soft: "FFEFECFA" },
+];
+const COURSES = ["資料視覺化入門", "Node.js 實戰班", "AI 工具工作坊", "前端動畫設計", "Python 自動化"];
+let theme = THEMES[0], data = null, buffer = null, readBack = null, selected = "B5";
+const rnd = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
+
+function newData() {
+  return COURSES.map((c) => {
+    const m = [rnd(60, 220), rnd(60, 220), rnd(60, 220)].map((x) => x * 1000);
+    return { course: c, m, target: rnd(36, 60) * 10000 };
+  });
+}
+
+// Build a styled workbook with ExcelJS: merged title, fills, borders, number formats, formulas.
+async function buildXlsx() {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "JS Tools Atlas";
+  const ws = wb.addWorksheet("第三季營收", { views: [{ state: "frozen", ySplit: 4 }] });
+  ws.columns = [{ width: 18 }, { width: 11 }, { width: 11 }, { width: 11 }, { width: 12 }, { width: 12 }, { width: 9 }];
+  const thin = { style: "thin", color: { argb: "FFD0CFC8" } };
+  const box = { top: thin, left: thin, bottom: thin, right: thin };
+
+  ws.mergeCells("A1:G1");
+  Object.assign(ws.getCell("A1"), {
+    value: "2026 第三季課程營收報表",
+    font: { size: 16, bold: true, color: { argb: "FFFFFFFF" } },
+    fill: { type: "pattern", pattern: "solid", fgColor: { argb: theme.main } },
+    alignment: { vertical: "middle", horizontal: "center" },
+  });
+  ws.getRow(1).height = 30;
+  ws.mergeCells("A2:G2");
+  Object.assign(ws.getCell("A2"), {
+    value: "單位：新臺幣元（示意資料）",
+    font: { size: 10, italic: true, color: { argb: "FF6D6B64" } },
+    alignment: { horizontal: "right" },
+  });
+  const header = ["課程", "7 月", "8 月", "9 月", "季合計", "目標", "達成率"];
+  ws.getRow(4).values = header;
+  ws.getRow(4).height = 20;
+  ws.getRow(4).eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: theme.main } };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: theme.soft } };
+    cell.alignment = { horizontal: "center", vertical: "middle" };
+    cell.border = { ...box, bottom: { style: "medium", color: { argb: theme.main } } };
+  });
+
+  data.forEach((d, i) => {
+    const r = 5 + i;
+    const sum = d.m.reduce((s, x) => s + x, 0);
+    const rate = sum / d.target;
+    const row = ws.getRow(r);
+    row.values = [d.course, ...d.m, { formula: `SUM(B${r}:D${r})`, result: sum }, d.target, { formula: `E${r}/F${r}`, result: rate }];
+    row.eachCell((cell, c) => {
+      cell.border = box;
+      if (c > 1) cell.numFmt = c === 7 ? "0.0%" : "#,##0";
+      if (i % 2 === 1) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF7F7F4" } };
+    });
+    if ($("flag").checked) {
+      const rc = row.getCell(7);
+      const good = rate >= 1;
+      rc.font = { bold: true, color: { argb: good ? "FF1E7B3A" : rate < 0.85 ? "FFC0262D" : "FF8A6D00" } };
+      rc.fill = { type: "pattern", pattern: "solid", fgColor: { argb: good ? "FFDDF2E3" : rate < 0.85 ? "FFFBE1E1" : "FFFFF4CC" } };
+    }
+  });
+
+  const tr = 5 + data.length;
+  const totals = [0, 1, 2].map((k) => data.reduce((s, d) => s + d.m[k], 0));
+  const tSum = totals.reduce((s, x) => s + x, 0);
+  const tTarget = data.reduce((s, d) => s + d.target, 0);
+  ws.getRow(tr).values = ["總計",
+    ...["B", "C", "D", "E", "F"].map((col, k) => ({ formula: `SUM(${col}5:${col}${tr - 1})`, result: [...totals, tSum, tTarget][k] })),
+    { formula: `E${tr}/F${tr}`, result: tSum / tTarget }];
+  ws.getRow(tr).eachCell((cell, c) => {
+    cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: theme.main } };
+    cell.border = box;
+    if (c > 1) cell.numFmt = c === 7 ? "0.0%" : "#,##0";
+  });
+  ws.getRow(tr).height = 20;
+  return wb.xlsx.writeBuffer();
+}
+
+const argbToCss = (argb) => argb ? `#${argb.slice(-6)}` : "";
+function fmt(value, numFmt) {
+  const v = value && typeof value === "object" && "result" in value ? value.result : value;
+  if (typeof v !== "number") return v ?? "";
+  if (numFmt === "0.0%") return `${(v * 100).toFixed(1)}%`;
+  if (numFmt === "#,##0") return Math.round(v).toLocaleString("en-US");
+  return String(v);
+}
+function borderCss(b) {
+  if (!b) return "";
+  const w = { thin: "1px", medium: "2px", thick: "3px" };
+  return ["top", "right", "bottom", "left"].map((side) => b[side]
+    ? `border-${side}:${w[b[side].style] || "1px"} solid ${argbToCss(b[side].color?.argb) || "#999"};` : "").join("");
+}
+
+// Render the worksheet that ExcelJS parsed back from the xlsx bytes.
+function render() {
+  const ws = readBack.worksheets[0];
+  const merges = (ws.model.merges || []).map((m) => m.split(":"));
+  const table = $("table");
+  table.replaceChildren();
+  const cg = document.createElement("colgroup");
+  for (let c = 1; c <= ws.columnCount; c++) {
+    const col = document.createElement("col");
+    col.style.width = `${Math.round((ws.getColumn(c).width || 9) * 7 + 5)}px`;
+    cg.append(col);
+  }
+  table.append(cg);
+  for (let r = 1; r <= ws.rowCount; r++) {
+    const row = ws.getRow(r);
+    const tr = table.insertRow();
+    tr.style.height = `${Math.round((row.height || 15) * 4 / 3)}px`;
+    for (let c = 1; c <= ws.columnCount; c++) {
+      const cell = row.getCell(c);
+      if (cell.isMerged && cell.master.address !== cell.address) continue;
+      const td = tr.insertCell();
+      const merge = merges.find(([a]) => a === cell.address);
+      if (merge) td.colSpan = ws.getCell(merge[1]).col - cell.col + 1;
+      td.dataset.addr = cell.address;
+      td.textContent = fmt(cell.value, cell.numFmt);
+      const s = cell.style || {};
+      let css = "";
+      if (s.fill?.fgColor?.argb) css += `background:${argbToCss(s.fill.fgColor.argb)};`;
+      if (s.font) css += `${s.font.bold ? "font-weight:700;" : ""}${s.font.italic ? "font-style:italic;" : ""}${s.font.size ? `font-size:${s.font.size * 4 / 3}px;` : "font-size:14px;"}${s.font.color?.argb ? `color:${argbToCss(s.font.color.argb)};` : ""}`;
+      const h = s.alignment?.horizontal || (typeof (cell.value?.result ?? cell.value) === "number" ? "right" : "left");
+      css += `text-align:${h};${borderCss(s.border)}`;
+      td.style.cssText = css;
+      if (cell.address === selected) td.classList.add("sel");
+    }
+  }
+  inspect(selected);
+}
+
+function inspect(addr) {
+  selected = addr;
+  document.querySelectorAll("td.sel").forEach((t) => t.classList.remove("sel"));
+  document.querySelector(`td[data-addr="${addr}"]`)?.classList.add("sel");
+  const cell = readBack.worksheets[0].getCell(addr);
+  const s = cell.style || {};
+  const info = {
+    value: cell.value,
+    numFmt: cell.numFmt,
+    font: s.font,
+    fill: s.fill?.fgColor ? { pattern: s.fill.pattern, fgColor: s.fill.fgColor } : undefined,
+    alignment: s.alignment,
+    border: s.border ? Object.fromEntries(Object.entries(s.border).map(([k, v]) => [k, v?.style])) : undefined,
+  };
+  $("addr").textContent = addr;
+  // Flatten nested style object into "path: value" lines
+  const lines = [];
+  const walk = (obj, path) => {
+    for (const [k, v] of Object.entries(obj)) {
+      if (v === undefined || v === null) continue;
+      const p = path ? `${path}.${k}` : k;
+      if (typeof v === "object" && !(v instanceof Date)) walk(v, p);
+      else lines.push(`${p}: ${JSON.stringify(v)}`);
+    }
+  };
+  walk(info, "");
+  $("detail").textContent = lines.join("\n");
+}
+
+async function update() {
+  const t0 = performance.now();
+  buffer = await buildXlsx();
+  readBack = new ExcelJS.Workbook();
+  await readBack.xlsx.load(buffer);
+  const ms = Math.round(performance.now() - t0);
+  $("meta").textContent = `檔案 ${(buffer.byteLength / 1024).toFixed(1)} KB・寫入並讀回 ${ms} ms・凍結前 4 列`;
+  render();
+}
+
+for (const t of THEMES) {
+  const b = document.createElement("button");
+  b.className = "swatch";
+  b.title = t.name;
+  b.style.background = argbToCss(t.main);
+  b.setAttribute("aria-pressed", t === theme);
+  b.addEventListener("click", () => {
+    theme = t;
+    document.querySelectorAll(".swatch").forEach((x) => x.setAttribute("aria-pressed", x === b));
+    update();
+  });
+  $("swatches").append(b);
+}
+$("flag").addEventListener("change", update);
+$("shuffle").addEventListener("click", () => { data = newData(); update(); });
+$("table").addEventListener("click", (e) => { const td = e.target.closest("td"); if (td) inspect(td.dataset.addr); });
+$("download").addEventListener("click", () => {
+  const url = URL.createObjectURL(new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: "第三季營收報表.xlsx" });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+});
+
+data = newData();
+update();
+</script>
+</body>
+</html>

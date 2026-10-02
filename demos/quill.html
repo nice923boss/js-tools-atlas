@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quill 示範：富文字編輯與即時 Delta 輸出</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  .app {
+    position: fixed; inset: 0; padding: 12px 12px 44px;
+    display: grid; gap: 10px 12px;
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 40%);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  header {
+    grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; min-width: 0;
+  }
+  header h1 { margin: 0; font-size: 15px; font-weight: 700; white-space: nowrap; }
+  header h1 small { color: var(--muted); font-weight: 500; margin-left: 6px; }
+  header .sp { flex: 1; }
+  .chip {
+    font-size: 12px; padding: 3px 10px; border-radius: 999px; white-space: nowrap;
+    min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    border: 1px solid var(--line); color: var(--muted); background: var(--bg-2);
+  }
+  .chip.on { color: var(--accent-ink); background: var(--accent); border-color: transparent; }
+  header .btn { padding: 6px 10px; font-size: 12px; white-space: nowrap; }
+
+  /* Editor card */
+  .card {
+    min-height: 0; min-width: 0; display: flex; flex-direction: column;
+    background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius);
+    overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  }
+  .card .ql-toolbar.ql-snow { border: 0; border-bottom: 1px solid var(--line); padding: 6px 8px; flex: none; }
+  .card .ql-container.ql-snow { border: 0; flex: 1; min-height: 0; font: 14.5px/1.7 var(--font); }
+  .ql-editor { padding: 14px 18px 18px; }
+  .ql-editor h1 { font-size: 1.55em; margin-bottom: .2em; }
+  .ql-editor h2 { font-size: 1.2em; margin-top: .5em; }
+  .ql-editor blockquote { color: #4a4943; }
+  .ql-snow .ql-editor .ql-code-block-container { font-family: var(--mono); font-size: 12.5px; border-radius: 6px; }
+  .ql-editor.ql-blank::before { font-style: normal; color: var(--muted); }
+  .ql-snow a { color: var(--c2); }
+  .ql-snow .ql-tooltip { z-index: 5; font-family: var(--font); }
+
+  /* Chinese labels for Snow pickers and link tooltip (same selectors as quill.snow.css) */
+  .ql-snow .ql-picker.ql-header { width: 76px; }
+  .ql-toolbar.ql-snow .ql-formats { margin-right: 6px; }
+  .ql-snow.ql-toolbar button { width: 26px; }
+  .ql-snow .ql-color-picker, .ql-snow .ql-icon-picker { width: 26px; }
+  .ql-snow .ql-picker.ql-header .ql-picker-label::before,
+  .ql-snow .ql-picker.ql-header .ql-picker-item::before { content: '內文'; }
+  .ql-snow .ql-picker.ql-header .ql-picker-label[data-value="1"]::before,
+  .ql-snow .ql-picker.ql-header .ql-picker-item[data-value="1"]::before { content: '標題 1'; }
+  .ql-snow .ql-picker.ql-header .ql-picker-label[data-value="2"]::before,
+  .ql-snow .ql-picker.ql-header .ql-picker-item[data-value="2"]::before { content: '標題 2'; }
+  .ql-snow .ql-picker.ql-header .ql-picker-label[data-value="3"]::before,
+  .ql-snow .ql-picker.ql-header .ql-picker-item[data-value="3"]::before { content: '標題 3'; }
+  .ql-snow .ql-tooltip::before { content: "前往網址："; }
+  .ql-snow .ql-tooltip a.ql-action::after { content: '編輯'; }
+  .ql-snow .ql-tooltip a.ql-remove::before { content: '移除'; }
+  .ql-snow .ql-tooltip.ql-editing a.ql-action::after { content: '儲存'; }
+  .ql-snow .ql-tooltip[data-mode=link]::before { content: "輸入連結："; }
+
+  /* Output panel */
+  .out {
+    min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: 8px;
+    background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 10px 12px;
+  }
+  .sec { display: flex; flex-direction: column; min-height: 0; flex: none; }
+  .sec-h { display: flex; align-items: baseline; gap: 8px; font-size: 12px; margin-bottom: 4px; }
+  .sec-h b { font-size: 12.5px; }
+  .sec-h .muted { margin-left: auto; }
+  .box { border: 1px solid var(--line); border-radius: 8px; background: #fbfaf7; padding: 5px 8px; min-height: 0; display: flex; }
+  #changes {
+    list-style: none; margin: 0; padding: 0; font-size: 11.5px; line-height: 1.5;
+    height: calc(6 * 1.5em); overflow: hidden; flex: 1; min-width: 0;
+  }
+  #changes li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-radius: 4px; }
+  #changes li.fresh { animation: flash 1s ease-out; }
+  @keyframes flash { from { background: rgba(226, 196, 0, .35); } to { background: transparent; } }
+  #changes .empty { color: var(--muted); font-family: var(--font); }
+  .src {
+    display: inline-block; min-width: 34px; text-align: center; margin-right: 6px;
+    font-size: 10.5px; padding: 0 5px; border-radius: 4px; font-family: var(--font); font-weight: 700;
+  }
+  .src.api { background: #e8e3ff; color: #4b3cc4; }
+  .src.user { background: #dff3e6; color: #1f7a3f; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); flex: none; }
+  .tab {
+    appearance: none; border: 0; background: none; cursor: pointer; color: var(--muted);
+    font: 600 12.5px/1 var(--font); padding: 7px 10px 8px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+  .tab[data-tab="chg"] { display: none; }
+  #doc {
+    flex: 1; min-height: 0; margin: 0; overflow: auto; font-size: 11.5px; line-height: 1.55;
+    white-space: pre-wrap; word-break: break-all; color: #3a3935;
+  }
+  .stats { flex: none; font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 6px; }
+  .stats b { color: var(--fg); font-weight: 600; }
+  /* JSON / HTML token colors */
+  .k-ins { color: #1f8a4c; font-weight: 600; }
+  .k-ret { color: #1f6fb8; font-weight: 600; }
+  .k-del { color: #d61f69; font-weight: 600; }
+  .k-att { color: #6a5ae0; }
+  .k-x { color: #8a5a00; }
+  .s { color: #6b4d00; }
+  .n { color: #c2410c; }
+  .l { color: #6a5ae0; }
+  .tg { color: #1f6fb8; }
+  .at { color: #8a5a00; }
+
+  @media (max-width: 640px) {
+    .app {
+      padding: 8px 8px 8px; gap: 8px;
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1.25fr) minmax(0, 1fr);
+    }
+    header h1 small { display: none; }
+    header h1 { font-size: 14px; }
+    .hint { display: none; }
+    .card .ql-toolbar.ql-snow { padding: 4px 4px; }
+    .ql-toolbar.ql-snow .ql-formats { margin-right: 6px; }
+    .ql-editor { padding: 10px 12px 12px; }
+    .out { padding: 6px 10px 8px; gap: 6px; }
+    .tab[data-tab="chg"] { display: inline-block; }
+    .out:not([data-tab="chg"]) .sec { display: none; }
+    .out[data-tab="chg"] #doc { display: none; }
+    .out[data-tab="chg"] .sec { flex: 1; }
+    .out[data-tab="chg"] .box { flex: 1; }
+    .out[data-tab="chg"] #changes { height: auto; -webkit-mask-image: linear-gradient(#000 75%, transparent); mask-image: linear-gradient(#000 75%, transparent); }
+    .tabs { order: -1; }
+    .sec-h { display: none; }
+  }
+</style>
+</head>
+<body class="paper">
+<div class="app">
+  <header>
+    <h1>Quill 富文字編輯器<small>Delta 即時輸出</small></h1>
+    <span class="sp"></span>
+    <span class="chip" id="mode">準備中</span>
+    <button class="btn" id="replay" type="button">重播示範</button>
+  </header>
+
+  <div class="card">
+    <div id="toolbar">
+      <span class="ql-formats">
+        <select class="ql-header">
+          <option value="1"></option><option value="2"></option><option value="3"></option><option selected></option>
+        </select>
+      </span>
+      <span class="ql-formats">
+        <button class="ql-bold"></button><button class="ql-italic"></button>
+        <button class="ql-underline"></button><button class="ql-strike"></button>
+      </span>
+      <span class="ql-formats">
+        <select class="ql-color"></select><select class="ql-background"></select>
+      </span>
+      <span class="ql-formats">
+        <button class="ql-list" value="ordered"></button><button class="ql-list" value="bullet"></button>
+        <button class="ql-list" value="check"></button>
+      </span>
+      <span class="ql-formats">
+        <button class="ql-blockquote"></button><button class="ql-code-block"></button><button class="ql-link"></button>
+      </span>
+      <span class="ql-formats">
+        <select class="ql-align"></select><button class="ql-clean"></button>
+      </span>
+    </div>
+    <div id="editor"></div>
+  </div>
+
+  <section class="out" id="out" data-tab="delta">
+    <div class="sec">
+      <div class="sec-h"><b>text-change 事件</b><span class="muted" id="chgCount">0 次</span></div>
+      <div class="box"><ol id="changes" class="mono"><li class="empty">等待編輯…</li></ol></div>
+    </div>
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" data-tab="chg" aria-selected="false">變更事件</button>
+      <button class="tab" role="tab" data-tab="delta" aria-selected="true">文件 Delta</button>
+      <button class="tab" role="tab" data-tab="html" aria-selected="false">語意 HTML</button>
+    </div>
+    <pre id="doc" class="mono"></pre>
+    <div class="stats" id="stats"></div>
+  </section>
+</div>
+<div class="hint">選取文字後用工具列套用格式，右側即時顯示 Delta 與 HTML</div>
+
+<script src="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js"></script>
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const outEl = $('#out'), docEl = $('#doc'), statsEl = $('#stats');
+  const changesEl = $('#changes'), chgCountEl = $('#chgCount'), modeEl = $('#mode');
+
+  const quill = new Quill('#editor', {
+    theme: 'snow',
+    placeholder: '在這裡輸入內容…',
+    modules: { toolbar: '#toolbar' },
+  });
+  // Localized placeholder for the link tooltip input
+  quill.theme.tooltip.textbox.setAttribute('data-link', 'https://example.com');
+
+  // Chinese tooltips for toolbar controls
+  const TITLES = {
+    '.ql-header': '段落樣式', 'button.ql-bold': '粗體（Ctrl+B）', 'button.ql-italic': '斜體（Ctrl+I）',
+    'button.ql-underline': '底線（Ctrl+U）', 'button.ql-strike': '刪除線', '.ql-color': '文字顏色',
+    '.ql-background': '螢光標記', 'button.ql-list[value="ordered"]': '編號清單',
+    'button.ql-list[value="bullet"]': '項目清單', 'button.ql-list[value="check"]': '核取清單',
+    'button.ql-blockquote': '引言', 'button.ql-code-block': '程式碼區塊', 'button.ql-link': '連結',
+    '.ql-align': '對齊', 'button.ql-clean': '清除格式',
+  };
+  for (const [sel, t] of Object.entries(TITLES)) {
+    document.querySelectorAll('.ql-toolbar ' + sel).forEach((el) => el.setAttribute('title', t));
+  }
+
+  // Sample document (示意資料)
+  const INITIAL = [
+    { insert: '大稻埕週末市集企劃' }, { insert: '\n', attributes: { header: 1 } },
+    { insert: '時間：' }, { insert: '11/8（六）10:00', attributes: { bold: true } },
+    { insert: '起，地點：' }, { insert: '大稻埕碼頭', attributes: { underline: true, color: '#1f8fb8' } },
+    { insert: '（暫定）', attributes: { italic: true, color: '#8a8880' } }, { insert: '。\n' },
+    { insert: '攤位招募' }, { insert: '\n', attributes: { header: 2 } },
+    { insert: '手作甜點（12攤）' }, { insert: '\n', attributes: { list: 'checked' } },
+    { insert: '文創選物（20攤）' }, { insert: '\n', attributes: { list: 'unchecked' } },
+    { insert: '在地小農（8攤）' }, { insert: '\n', attributes: { list: 'unchecked' } },
+    { insert: '好市集不只是買賣，也讓街區被看見。' }, { insert: '\n', attributes: { blockquote: true } },
+    { insert: 'fee = 1200 * days  // 每攤每日，新台幣' }, { insert: '\n', attributes: { 'code-block': 'plain' } },
+    { insert: '報名表單請見' }, { insert: '市集官網', attributes: { link: 'https://example.com/market' } },
+    { insert: '（示意資料）。\n' },
+  ];
+
+  /* ---------- rendering ---------- */
+  const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const KEY = { insert: 'ins', retain: 'ret', delete: 'del', attributes: 'att' };
+  const TOK = /("(?:\\.|[^"\\])*")(\s*:)?|\b(true|false|null)\b|(-?\d+(?:\.\d+)?)/g;
+  function colorJSON(s) {
+    let out = '', last = 0, m;
+    TOK.lastIndex = 0;
+    while ((m = TOK.exec(s))) {
+      out += esc(s.slice(last, m.index));
+      if (m[1] && m[2]) out += `<span class="k-${KEY[m[1].slice(1, -1)] || 'x'}">${esc(m[1])}</span>${m[2]}`;
+      else if (m[1]) out += `<span class="s">${esc(m[1])}</span>`;
+      else if (m[3]) out += `<span class="l">${m[3]}</span>`;
+      else out += `<span class="n">${m[4]}</span>`;
+      last = TOK.lastIndex;
+    }
+    return out + esc(s.slice(last));
+  }
+  const opsLine = (ops) => colorJSON('[' + ops.map((o) => JSON.stringify(o)).join(',') + ']');
+
+  function colorHTML(html) {
+    const pretty = html
+      .replace(/(<\/(?:p|h[1-6]|blockquote|pre|li|ol|ul)>)/g, '$1\n')
+      .replace(/(<(?:ol|ul)[^>]*>)/g, '$1\n')
+      .replace(/(<li)/g, '  $1');
+    return pretty.split(/(<[^>]+>)/).map((part) => {
+      if (!part.startsWith('<')) return esc(part);
+      return esc(part).replace(/^(&lt;\/?)([\w-]+)(.*?)(\/?&gt;)$/, (_, a, name, attrs, b) =>
+        `<span class="tg">${a}${name}</span>${attrs.replace(/([\w-]+)=(&quot;.*?&quot;)/g, '<span class="at">$1</span>=<span class="s">$2</span>')}<span class="tg">${b}</span>`);
+    }).join('');
+  }
+
+  let tab = matchMedia('(max-width: 640px)').matches ? 'chg' : 'delta';
+  let pending = false;
+  function renderDoc() {
+    pending = false;
+    const ops = quill.getContents().ops;
+    if (tab === 'html') {
+      docEl.innerHTML = colorHTML(quill.getSemanticHTML());
+    } else {
+      docEl.innerHTML = '[\n' + ops.map((o) => '  ' + colorJSON(JSON.stringify(o))).join(',\n') + '\n]';
+    }
+    statsEl.innerHTML = `<b>${ops.length}</b> 個 op・<b>${quill.getLength() - 1}</b> 字元・<b>${quill.getLines().length}</b> 行`;
+  }
+  const schedule = () => { if (!pending) { pending = true; requestAnimationFrame(renderDoc); } };
+
+  function setTab(t) {
+    tab = t;
+    outEl.dataset.tab = t;
+    document.querySelectorAll('.tab').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === t)));
+    renderDoc();
+  }
+  document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
+  matchMedia('(max-width: 640px)').addEventListener('change', (e) => {
+    if (!e.matches && tab === 'chg') setTab('delta');
+  });
+
+  let changeCount = 0;
+  function logChange(delta, source) {
+    changeCount += 1;
+    chgCountEl.textContent = changeCount + ' 次';
+    const li = document.createElement('li');
+    li.className = 'fresh';
+    li.innerHTML = `<span class="src ${source === 'user' ? 'user' : 'api'}">${source}</span>${opsLine(delta.ops)}`;
+    changesEl.querySelector('.empty')?.remove();
+    changesEl.prepend(li);
+    while (changesEl.children.length > 14) changesEl.lastElementChild.remove();
+  }
+
+  quill.on('text-change', (delta, _old, source) => {
+    logChange(delta, source);
+    schedule();
+    if (source === 'user') stopTour();
+  });
+
+  /* ---------- scripted API tour ---------- */
+  let tourId = 0, touring = false;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  function setMode(text, on) { modeEl.textContent = text; modeEl.classList.toggle('on', on); }
+  function stopTour() {
+    if (!touring) return;
+    touring = false; tourId += 1;
+    setMode('手動編輯', false);
+  }
+  const at = (s) => quill.getText().indexOf(s);
+
+  async function runTour() {
+    const my = ++tourId;
+    touring = true;
+    const alive = () => my === tourId;
+    setMode('API 示範中', true);
+    const typeAt = async (index, text) => {
+      for (let i = 0; i < text.length; i++) {
+        if (!alive()) return false;
+        quill.insertText(index + i, text[i], 'api');
+        await sleep(70);
+      }
+      return alive();
+    };
+    const steps = [
+      async () => typeAt(at('。\n攤位') + 1, '報名截止：10/31。'),
+      async () => { quill.formatText(at('10/31'), 5, { bold: true, color: '#d61f69' }, 'api'); return true; },
+      async () => { quill.formatLine(at('文創選物'), 1, 'list', 'checked', 'api'); return true; },
+      async () => {
+        const end = quill.getText().indexOf('\n', at('在地小農'));
+        quill.insertText(end, '\n', 'list', 'unchecked', 'api');
+        await sleep(250);
+        return typeAt(end + 1, '確認攤位用電');
+      },
+      async () => { quill.formatText(at('街區被看見'), 5, 'background', '#fff1a8', 'api'); return true; },
+      async () => { quill.deleteText(at('（暫定）'), 4, 'api'); return true; },
+    ];
+    await sleep(500);
+    for (const step of steps) {
+      if (!alive() || !(await step())) return;
+      await sleep(650);
+    }
+    if (!alive()) return;
+    touring = false;
+    setMode('示範完成', false);
+  }
+
+  function reset() {
+    stopTour();
+    quill.setContents(INITIAL, 'silent');
+    quill.history.clear();
+    changeCount = 0;
+    chgCountEl.textContent = '0 次';
+    changesEl.innerHTML = '<li class="empty">等待編輯…</li>';
+    renderDoc();
+  }
+
+  // Any direct interaction with the editor or toolbar hands control to the user
+  $('.card').addEventListener('pointerdown', stopTour);
+  $('.card').addEventListener('keydown', stopTour);
+  $('#replay').addEventListener('click', () => { reset(); runTour(); });
+
+  reset();
+  setTab(tab);
+  runTour();
+})();
+</script>
+</body>
+</html>

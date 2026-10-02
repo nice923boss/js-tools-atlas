@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vis-network 示範：前端課程知識圖譜</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  #net { position: fixed; inset: 0; }
+  #info {
+    position: fixed; left: 12px; top: 12px; z-index: 40; width: 250px; max-width: calc(100% - 24px);
+    font-size: 13px; padding: 12px 14px;
+  }
+  #info h3 { margin: 0 0 4px; font-size: 15px; }
+  #info p { margin: 0 0 6px; color: var(--muted); }
+  #info .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  #info .chip { font-size: 12px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: 0; }
+  div.vis-tooltip { font-family: var(--font) !important; background: #171a1f !important; color: #ecebe6 !important;
+    border: 1px solid rgba(255,255,255,.15) !important; border-radius: 8px !important; padding: 6px 10px !important; }
+  @media (max-width: 520px) {
+    #info { right: 12px; width: auto; top: auto; bottom: 46px; padding: 8px 10px; }
+    #info .legend { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="net"></div>
+<div id="info" class="panel">
+  <h3 id="title">前端工程師學習地圖</h3>
+  <p id="desc">箭頭代表「先修」。點任一課程，會亮出整條必修路徑。</p>
+  <div class="chips" id="chips"></div>
+  <div class="legend" id="legend"></div>
+</div>
+<div class="controls">
+  <button class="btn" id="physics" aria-pressed="true">力導向</button>
+  <button class="btn" id="tree" aria-pressed="false">階層排列</button>
+</div>
+<div class="hint">拖曳節點會牽動整張網・滾輪縮放・點課程看先修路徑</div>
+
+<script src="https://cdn.jsdelivr.net/npm/vis-network@10.1.2/standalone/umd/vis-network.min.js"></script>
+<script>
+// Course knowledge graph: edges point from prerequisite to the course that needs it.
+const GROUPS = {
+  base: { label: "網頁基礎", color: "#4cc9f0" },
+  lang: { label: "JavaScript", color: "#f7df1e" },
+  fw: { label: "框架", color: "#f72585" },
+  back: { label: "後端", color: "#7bd389" },
+  tool: { label: "工具與工程", color: "#ff8c42" },
+  viz: { label: "視覺與互動", color: "#9d8cff" },
+};
+const COURSES = [
+  ["html", "HTML 語意標籤", "base", 3], ["css", "CSS 選擇器與盒模型", "base", 3], ["layout", "Flexbox 與 Grid", "base", 2],
+  ["rwd", "響應式設計", "base", 2], ["a11y", "無障礙設計", "base", 1], ["http", "HTTP 與瀏覽器", "base", 2],
+  ["js", "JS 基礎語法", "lang", 4], ["dom", "DOM 操作", "lang", 3], ["func", "函式與閉包", "lang", 2],
+  ["async", "Promise 與 async", "lang", 3], ["module", "ES 模組", "lang", 2], ["ts", "TypeScript", "lang", 3],
+  ["fetch", "Fetch API", "lang", 2],
+  ["react", "React", "fw", 3], ["vue", "Vue", "fw", 3], ["next", "Next.js", "fw", 2], ["state", "狀態管理", "fw", 1],
+  ["node", "Node.js", "back", 3], ["express", "Express API", "back", 2], ["db", "資料庫 SQL", "back", 2], ["auth", "登入與 JWT", "back", 1],
+  ["git", "Git 版本控制", "tool", 3], ["npm", "npm 套件管理", "tool", 2], ["vite", "Vite 打包", "tool", 2],
+  ["test", "自動化測試", "tool", 2], ["deploy", "部署上線", "tool", 2],
+  ["canvas", "Canvas 繪圖", "viz", 2], ["svg", "SVG 與 D3", "viz", 2], ["webgl", "WebGL 與 three.js", "viz", 2], ["anim", "動畫與轉場", "viz", 1],
+];
+const PREREQ = [
+  ["html", "css"], ["css", "layout"], ["layout", "rwd"], ["html", "a11y"], ["css", "anim"],
+  ["html", "js"], ["js", "dom"], ["js", "func"], ["func", "async"], ["func", "module"], ["module", "ts"],
+  ["async", "fetch"], ["http", "fetch"],
+  ["dom", "react"], ["module", "react"], ["dom", "vue"], ["module", "vue"], ["react", "next"], ["react", "state"], ["vue", "state"],
+  ["async", "node"], ["module", "node"], ["node", "express"], ["http", "express"], ["express", "db"], ["express", "auth"], ["db", "auth"],
+  ["npm", "vite"], ["module", "vite"], ["node", "npm"], ["git", "deploy"], ["vite", "deploy"], ["next", "deploy"],
+  ["func", "test"], ["npm", "test"], ["dom", "canvas"], ["dom", "svg"], ["canvas", "webgl"], ["svg", "anim"], ["ts", "next"],
+];
+
+const nodes = new vis.DataSet(COURSES.map(([id, label, group, w]) => ({
+  id, label, group, value: w,
+  title: `${label}（${GROUPS[group].label}）`,
+})));
+const edges = new vis.DataSet(PREREQ.map(([from, to], i) => ({ id: i, from, to })));
+
+const groups = {};
+for (const [k, g] of Object.entries(GROUPS)) {
+  groups[k] = {
+    color: { background: g.color, border: g.color, highlight: { background: "#ffffff", border: g.color }, hover: { background: g.color, border: "#ffffff" } },
+  };
+}
+
+const options = {
+  groups,
+  nodes: {
+    shape: "dot",
+    scaling: { min: 10, max: 26, label: { enabled: true, min: 12, max: 17 } },
+    font: { color: "#ecebe6", face: "Noto Sans TC, Microsoft JhengHei, sans-serif", strokeWidth: 3, strokeColor: "#0e1013" },
+    borderWidth: 2,
+    shadow: { enabled: true, color: "rgba(0,0,0,.5)", size: 8 },
+  },
+  edges: {
+    arrows: { to: { enabled: true, scaleFactor: 0.6 } },
+    color: { color: "rgba(236,235,230,.28)", highlight: "#f7df1e", hover: "rgba(236,235,230,.6)" },
+    smooth: { type: "continuous" },
+    width: 1.4,
+  },
+  physics: { solver: "forceAtlas2Based", forceAtlas2Based: { gravitationalConstant: -60, springLength: 90, avoidOverlap: 0.4 }, stabilization: { iterations: 250 } },
+  interaction: { hover: true, tooltipDelay: 120, navigationButtons: false },
+  layout: { improvedLayout: true },
+};
+
+const network = new vis.Network(document.getElementById("net"), { nodes, edges }, options);
+
+document.getElementById("legend").innerHTML = Object.values(GROUPS)
+  .map((g) => `<span><i style="background:${g.color}"></i>${g.label}</span>`).join("");
+
+// Walk prerequisite edges backwards to collect every ancestor of a course.
+function ancestors(id, seen = new Set()) {
+  for (const e of edges.get({ filter: (e) => e.to === id })) {
+    if (!seen.has(e.from)) { seen.add(e.from); ancestors(e.from, seen); }
+  }
+  return seen;
+}
+
+function focusCourse(id) {
+  const anc = ancestors(id);
+  const keep = new Set([id, ...anc]);
+  nodes.update(COURSES.map(([cid]) => ({ id: cid, opacity: keep.has(cid) ? 1 : 0.18 })));
+  edges.update(edges.get().map((e) => {
+    const on = keep.has(e.from) && keep.has(e.to);
+    return { id: e.id, color: on ? { color: "#f7df1e", opacity: 1 } : { color: "rgba(236,235,230,.08)" }, width: on ? 2.6 : 1 };
+  }));
+  const c = nodes.get(id);
+  document.getElementById("title").textContent = c.label;
+  document.getElementById("desc").textContent = anc.size ? `要先學完以下 ${anc.size} 門課：` : "入門課，不需要先修。";
+  document.getElementById("chips").innerHTML = [...anc]
+    .map((a) => nodes.get(a))
+    .map((n) => `<span class="chip" style="border-color:${GROUPS[n.group].color}">${n.label}</span>`).join("");
+}
+
+function resetFocus() {
+  nodes.update(COURSES.map(([cid]) => ({ id: cid, opacity: 1 })));
+  edges.update(edges.get().map((e) => ({ id: e.id, color: null, width: 1.4 })));
+  document.getElementById("title").textContent = "前端工程師學習地圖";
+  document.getElementById("desc").textContent = "箭頭代表「先修」。點任一課程，會亮出整條必修路徑。";
+  document.getElementById("chips").innerHTML = "";
+}
+
+network.on("click", (p) => (p.nodes.length ? focusCourse(p.nodes[0]) : resetFocus()));
+
+function setLayout(tree) {
+  document.getElementById("physics").setAttribute("aria-pressed", String(!tree));
+  document.getElementById("tree").setAttribute("aria-pressed", String(tree));
+  network.setOptions(tree
+    ? { layout: { hierarchical: { enabled: true, direction: "LR", sortMethod: "directed", levelSeparation: 150, nodeSpacing: 60 } }, physics: { enabled: false }, edges: { smooth: { type: "cubicBezier", forceDirection: "horizontal" } } }
+    : { layout: { hierarchical: { enabled: false } }, physics: { enabled: true }, edges: { smooth: { type: "continuous" } } });
+  setTimeout(() => fitView(true), 50);
+}
+document.getElementById("physics").addEventListener("click", () => setLayout(false));
+document.getElementById("tree").addEventListener("click", () => setLayout(true));
+// Fit, then nudge the view right on wide screens so the info panel does not cover nodes.
+function fitView(animate) {
+  network.fit();
+  if (innerWidth < 640) return;
+  network.moveTo({
+    position: network.getViewPosition(),
+    scale: network.getScale() * 0.9,
+    offset: { x: 120, y: 0 },
+    animation: animate ? { duration: 500 } : false,
+  });
+}
+network.once("stabilizationIterationsDone", () => {
+  fitView(false);
+  focusCourse("next");
+});
+addEventListener("resize", () => fitView(false));
+</script>
+</body>
+</html>

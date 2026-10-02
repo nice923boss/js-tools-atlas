@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pannellum 示範：360 度自動導覽</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/pannellum@2.5.7/build/pannellum.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  #pano { position: fixed; inset: 0; }
+  #pano.pnlm-container { background: #0e1013; font-family: var(--font); }
+  .pnlm-controls-container { top: 8px; left: 8px; }
+  .pnlm-compass {
+    top: 12px; right: 12px; bottom: auto; width: 54px; height: 54px; border-radius: 50%;
+    background-color: rgba(255,255,255,.88); box-shadow: 0 4px 16px rgba(0,0,0,.4);
+  }
+  .compass-label { position: fixed; top: 70px; right: 12px; width: 54px; text-align: center; font-size: 11px; color: #fff; text-shadow: 0 1px 3px #000; pointer-events: none; }
+  /* Custom hotspot: numbered dot, label on hover or when active. */
+  .hs { width: 26px !important; height: 26px !important; cursor: pointer; }
+  .hs b {
+    display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%;
+    background: rgba(14,16,19,.75); color: #fff; border: 2px solid #fff; font: 700 12px/1 var(--font);
+    box-sizing: border-box; transition: transform .2s, background .2s;
+  }
+  .hs span {
+    position: absolute; left: 50%; bottom: 34px; transform: translateX(-50%); white-space: nowrap;
+    padding: 4px 9px; border-radius: 999px; background: rgba(0,0,0,.7); color: #fff; font: 600 12px/1.3 var(--font);
+    opacity: 0; transition: opacity .2s; pointer-events: none;
+  }
+  .hs:hover span, .hs.on span { opacity: 1; }
+  .hs.on b { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); transform: scale(1.25); }
+  .card {
+    position: fixed; left: 12px; bottom: 96px; z-index: 50; width: min(330px, calc(100% - 24px));
+    padding: 12px 14px; transition: opacity .35s, transform .35s;
+  }
+  .card.fade { opacity: 0; transform: translateY(8px); }
+  .card small { color: var(--accent); font: 600 11px/1 var(--mono); letter-spacing: .05em; }
+  .card h2 { margin: 4px 0 4px; font-size: 16px; }
+  .card p { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.6; }
+  .card .bar { height: 3px; margin-top: 10px; border-radius: 2px; background: var(--line); overflow: hidden; }
+  .card .bar i { display: block; height: 100%; width: 0; background: var(--accent); }
+  .tour {
+    position: fixed; left: 12px; right: 12px; bottom: 44px; z-index: 50;
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  }
+  .tour .btn { padding: 7px 10px; font-size: 12px; }
+  .tour .stop em { font-style: normal; }
+  @media (max-width: 520px) {
+    .card { bottom: 120px; }
+    .tour .stop em { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="pano"></div>
+<div class="compass-label">指北針</div>
+<div class="panel card" id="card">
+  <small id="step">導覽 1 / 6</small>
+  <h2 id="ttl">載入中</h2>
+  <p id="txt">全景圖載入後會自動開始導覽。</p>
+  <div class="bar"><i id="prog"></i></div>
+</div>
+<div class="tour" id="tour">
+  <button class="btn primary" id="play">暫停導覽</button>
+</div>
+<div class="hint">拖曳即可接手視角・點編號跳到景點</div>
+
+<script src="https://cdn.jsdelivr.net/npm/pannellum@2.5.7/build/pannellum.js"></script>
+<script>
+// Pannellum: lightweight WebGL panorama viewer. Custom hotspots + animated lookAt() drive a guided tour.
+const STOPS = [
+  { name: "潟湖夕陽", text: "太陽正沉入潟湖對岸，天空從橘色漸層到藍紫色，水面拉出一條金色光帶。", pitch: 4, yaw: 36, hfov: 62 },
+  { name: "遠方鐘樓", text: "把視角拉近，對岸天際線上的鐘樓與教堂圓頂清晰可見。", pitch: 3, yaw: 55, hfov: 32 },
+  { name: "水岸石階", text: "幾位遊客坐在石階上等日落，石階一路延伸到水裡，長滿綠色海藻。", pitch: -10, yaw: 97, hfov: 70 },
+  { name: "紅窗別墅", text: "黃牆紅窗的老別墅，是這段水岸步道上最顯眼的建築。", pitch: 9, yaw: 156, hfov: 72 },
+  { name: "運河老房子", text: "轉到背面，粉色與磚紅色的住宅沿著步道排開。", pitch: 6, yaw: -135, hfov: 78 },
+  { name: "鑄鐵繫船柱", text: "低頭看腳邊，老式繫船柱表面的鏽色是海風留下的痕跡。", pitch: -24, yaw: -77, hfov: 70 },
+];
+const DWELL = 5200;
+const card = document.getElementById("card");
+const prog = document.getElementById("prog");
+const playBtn = document.getElementById("play");
+const tour = document.getElementById("tour");
+const dots = [];
+let index = -1, timer = 0, playing = true, progAnim = null;
+
+const viewer = pannellum.viewer("pano", {
+  type: "equirectangular",
+  panorama: "_shared/img/panorama.jpg",
+  autoLoad: true,
+  pitch: 2, yaw: 0, hfov: 100,
+  compass: true, northOffset: 126,
+  showFullscreenCtrl: true,
+  hotSpots: STOPS.map((s, i) => ({
+    pitch: s.pitch, yaw: s.yaw, type: "info", cssClass: "hs",
+    createTooltipFunc: (div) => { div.innerHTML = `<b>${i + 1}</b><span>${s.name}</span>`; dots[i] = div; },
+    clickHandlerFunc: () => go(i, true),
+  })),
+  strings: {
+    loadButtonLabel: "點擊載入<br>全景圖", loadingLabel: "載入中", bylineLabel: "%s",
+    noPanoramaError: "沒有指定全景圖。", fileAccessError: "無法讀取檔案 %s。", malformedURLError: "網址格式有誤。",
+    iOS8WebGLError: "iOS 8 的 WebGL 無法正常運作。", genericWebGLError: "瀏覽器不支援 WebGL。",
+    textureSizeError: "全景圖尺寸超過裝置上限（%s）。", unknownError: "發生未知錯誤。",
+    twoTouchActivate: "請用兩指拖曳", twoTouchXActivate: "請用兩指左右拖曳", twoTouchYActivate: "請用兩指上下拖曳",
+    ctrlZoomActivate: "按住 %s 再滾動來縮放",
+  },
+});
+
+function show(i) {
+  const s = STOPS[i];
+  card.classList.add("fade");
+  setTimeout(() => {
+    document.getElementById("step").textContent = `導覽 ${i + 1} / ${STOPS.length}`;
+    document.getElementById("ttl").textContent = s.name;
+    document.getElementById("txt").textContent = s.text;
+    card.classList.remove("fade");
+  }, 250);
+  dots.forEach((d, k) => d && d.classList.toggle("on", k === i));
+  tour.querySelectorAll(".stop").forEach((b, k) => b.setAttribute("aria-pressed", k === i));
+}
+
+function animateProgress() {
+  if (progAnim) progAnim.cancel();
+  progAnim = prog.animate([{ width: "0%" }, { width: "100%" }], { duration: DWELL, easing: "linear", fill: "forwards" });
+  if (!playing) progAnim.pause();
+}
+
+// Fly to a stop with Pannellum's animated lookAt(pitch, yaw, hfov, durationMs).
+function go(i, manual) {
+  clearTimeout(timer);
+  index = i;
+  viewer.stopAutoRotate();
+  viewer.lookAt(STOPS[i].pitch, STOPS[i].yaw, STOPS[i].hfov, 1800);
+  show(i);
+  if (manual) setPlaying(false);
+  animateProgress();
+  if (playing) timer = setTimeout(() => go((index + 1) % STOPS.length), DWELL);
+}
+
+function setPlaying(on) {
+  playing = on;
+  playBtn.textContent = on ? "暫停導覽" : "播放導覽";
+  clearTimeout(timer);
+  if (on) go((index + 1) % STOPS.length);
+  else if (progAnim) progAnim.pause();
+}
+
+STOPS.forEach((s, i) => {
+  const b = document.createElement("button");
+  b.className = "btn stop";
+  b.innerHTML = `${i + 1}<em> ${s.name}</em>`;
+  b.onclick = () => go(i, true);
+  tour.append(b);
+});
+playBtn.onclick = () => setPlaying(!playing);
+
+viewer.on("load", () => go(0));
+// Any drag hands control back to the reader.
+viewer.on("mousedown", () => playing && setPlaying(false));
+viewer.on("touchstart", () => playing && setPlaying(false));
+viewer.on("error", (msg) => { document.getElementById("ttl").textContent = "載入失敗"; document.getElementById("txt").textContent = msg; });
+</script>
+</body>
+</html>

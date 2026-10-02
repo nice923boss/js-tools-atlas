@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Konva.js 示範：可拖曳縮放的拼貼圖層編輯器</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body {
+    background:
+      radial-gradient(circle at 1px 1px, rgba(255,255,255,0.06) 1px, transparent 1.5px) 0 0 / 18px 18px,
+      linear-gradient(160deg, #1d2230, #12141a 60%);
+  }
+  #board { position: fixed; inset: 0; }
+  .controls .sep { width: 1px; background: var(--line); margin: 0 2px; }
+  .btn[disabled] { opacity: .4; cursor: default; }
+  .layers {
+    position: fixed; right: 12px; bottom: 12px; z-index: 50; width: 168px;
+    padding: 8px; font-size: 12px;
+  }
+  .layers h3 { margin: 0 4px 6px; font-size: 11px; color: var(--muted); font-weight: 500; letter-spacing: .05em; }
+  .layers ol { list-style: none; margin: 0; padding: 0; }
+  .layers li {
+    display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .layers li:hover { background: rgba(255,255,255,0.06); }
+  .layers li.on { background: rgba(247,223,30,0.16); color: var(--accent); }
+  .layers li i { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+  @media (max-width: 560px) { .layers { display: none; } }
+</style>
+</head>
+<body>
+<div id="board"></div>
+<div class="controls">
+  <button class="btn" data-filter="none">原圖</button>
+  <button class="btn" data-filter="gray">黑白</button>
+  <button class="btn" data-filter="sepia">復古</button>
+  <button class="btn" data-filter="pixel">像素</button>
+  <span class="sep"></span>
+  <button class="btn" id="up">上移一層</button>
+  <button class="btn" id="down">下移一層</button>
+</div>
+<div class="panel layers"><h3>圖層（上到下）</h3><ol id="list"></ol></div>
+<div class="hint">拖曳移動・拉角落把手縮放旋轉・選照片套濾鏡</div>
+
+<script src="_shared/gate.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/konva@10.7.0/konva.min.js"></script>
+<script>
+// Moodboard editor: every item is a Konva node on one layer. A Transformer gives resize/rotate handles,
+// z-order buttons call moveUp()/moveDown(), and photo filters use node.cache() + filters().
+const W0 = innerWidth, H0 = innerHeight;
+const stage = new Konva.Stage({ container: "board", width: W0, height: H0 });
+const layer = new Konva.Layer();
+stage.add(layer);
+const tr = new Konva.Transformer({
+  keepRatio: true, padding: 6, rotateAnchorOffset: 26, anchorSize: 10, anchorCornerRadius: 3,
+  anchorFill: "#f7df1e", anchorStroke: "#1a1a14", borderStroke: "#f7df1e", borderDash: [4, 4],
+  enabledAnchors: ["top-left", "top-right", "bottom-left", "bottom-right"],
+});
+layer.add(tr);
+const listEl = document.getElementById("list");
+let selected = null;
+
+const u = Math.max(96, Math.min(W0 / 3.4, H0 / 2.7));
+
+function loadImage(src) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => res(img);
+    img.onerror = () => rej(new Error("圖片載入失敗：" + src));
+    img.src = src;
+  });
+}
+
+function photo(img, caption, fx, fy, rot, swatch) {
+  const pad = u * 0.06, iw = u - pad * 2, ih = iw * (img.height / img.width), capH = u * 0.2;
+  const w = u, h = pad + ih + capH;
+  const g = new Konva.Group({ x: W0 * fx, y: H0 * fy, rotation: rot, draggable: true, offsetX: w / 2, offsetY: h / 2, name: "item" });
+  g.setAttr("label", "照片：" + caption);
+  g.setAttr("swatch", swatch);
+  g.add(new Konva.Rect({ width: w, height: h, fill: "#f7f4ec", cornerRadius: 3, shadowColor: "#000", shadowBlur: 22, shadowOpacity: 0.5, shadowOffset: { x: 4, y: 10 } }));
+  const pic = new Konva.Image({ image: img, x: pad, y: pad, width: iw, height: ih, name: "pic" });
+  g.add(pic);
+  g.add(new Konva.Text({ text: caption, x: 0, y: pad + ih + capH * 0.22, width: w, align: "center", fontSize: capH * 0.42, fill: "#3a3833", fontFamily: "Microsoft JhengHei, PingFang TC, sans-serif" }));
+  g.add(new Konva.Rect({ x: w / 2 - u * 0.17, y: -u * 0.05, width: u * 0.34, height: u * 0.1, fill: swatch, opacity: 0.75, rotation: -4 }));
+  pic.cache();
+  return g;
+}
+
+function note(text, fx, fy, rot) {
+  const w = u * 0.9, h = u * 0.72;
+  const g = new Konva.Group({ x: W0 * fx, y: H0 * fy, rotation: rot, draggable: true, offsetX: w / 2, offsetY: h / 2, name: "item" });
+  g.setAttr("label", "便利貼");
+  g.setAttr("swatch", "#f7df1e");
+  g.add(new Konva.Rect({ width: w, height: h, fill: "#f7df1e", shadowColor: "#000", shadowBlur: 14, shadowOpacity: 0.4, shadowOffset: { x: 2, y: 6 } }));
+  g.add(new Konva.Text({ text, x: u * 0.08, y: u * 0.08, width: w - u * 0.16, fontSize: u * 0.095, lineHeight: 1.5, fill: "#1a1a14", fontFamily: "Microsoft JhengHei, PingFang TC, sans-serif" }));
+  return g;
+}
+
+function badge(text, fx, fy) {
+  const r = u * 0.26;
+  const g = new Konva.Group({ x: W0 * fx, y: H0 * fy, draggable: true, rotation: 12, name: "item" });
+  g.setAttr("label", "圓形貼紙");
+  g.setAttr("swatch", "#4cc9f0");
+  g.add(new Konva.Circle({ radius: r, fill: "#4cc9f0", stroke: "#ecebe6", strokeWidth: 4, shadowColor: "#000", shadowBlur: 10, shadowOpacity: 0.4 }));
+  g.add(new Konva.Text({ text, x: -r, y: -r * 0.22, width: r * 2, align: "center", fontSize: r * 0.44, fontStyle: "bold", fill: "#0e1013", fontFamily: "Microsoft JhengHei, PingFang TC, sans-serif" }));
+  return g;
+}
+
+function star(fx, fy) {
+  const s = new Konva.Star({
+    x: W0 * fx, y: H0 * fy, numPoints: 5, innerRadius: u * 0.11, outerRadius: u * 0.25, rotation: -10,
+    fill: "#f72585", stroke: "#ecebe6", strokeWidth: 4, lineJoin: "round", draggable: true, name: "item",
+    shadowColor: "#f72585", shadowBlur: 20, shadowOpacity: 0.6,
+  });
+  s.setAttr("label", "星星貼紙");
+  s.setAttr("swatch", "#f72585");
+  return s;
+}
+
+function title(fx, fy) {
+  const t = new Konva.Text({
+    x: W0 * fx, y: H0 * fy, text: "旅行靈感板", fontSize: u * 0.26, fontStyle: "bold", fill: "#ecebe6",
+    fontFamily: "Microsoft JhengHei, PingFang TC, sans-serif", draggable: true, name: "item", letterSpacing: 2,
+  });
+  t.setAttr("label", "標題文字");
+  t.setAttr("swatch", "#ecebe6");
+  return t;
+}
+
+function select(node) {
+  selected = node;
+  tr.nodes(node ? [node] : []);
+  tr.moveToTop();
+  const isPhoto = !!(node && node.findOne(".pic"));
+  document.querySelectorAll("[data-filter]").forEach((b) => { b.disabled = !isPhoto; });
+  document.getElementById("up").disabled = !node;
+  document.getElementById("down").disabled = !node;
+  renderList();
+}
+
+function renderList() {
+  listEl.innerHTML = "";
+  const items = layer.find(".item").filter((n) => n.getParent() === layer).sort((a, b) => b.zIndex() - a.zIndex());
+  for (const n of items) {
+    const li = document.createElement("li");
+    const sw = document.createElement("i");
+    sw.style.background = n.getAttr("swatch");
+    li.append(sw, document.createTextNode(n.getAttr("label")));
+    if (n === selected) li.className = "on";
+    li.addEventListener("click", () => select(n));
+    listEl.append(li);
+  }
+}
+
+function topItem(target) {
+  let n = target;
+  while (n && n.getParent() !== layer) n = n.getParent();
+  return n && n !== tr && n.hasName("item") ? n : null;
+}
+
+stage.on("click tap", (e) => {
+  if (e.target === stage) return select(null);
+  const n = topItem(e.target);
+  if (n) select(n);
+});
+stage.on("dragstart", (e) => { const n = topItem(e.target); if (n) select(n); });
+stage.on("mouseover", (e) => { if (topItem(e.target)) stage.container().style.cursor = "move"; });
+stage.on("mouseout", () => { stage.container().style.cursor = "default"; });
+
+const FILTERS = {
+  none: [], gray: [Konva.Filters.Grayscale], sepia: [Konva.Filters.Sepia], pixel: [Konva.Filters.Pixelate],
+};
+document.querySelectorAll("[data-filter]").forEach((b) => {
+  b.addEventListener("click", () => {
+    const pic = selected && selected.findOne(".pic");
+    if (!pic) return;
+    pic.filters(FILTERS[b.dataset.filter]);
+    pic.pixelSize(Math.max(4, Math.round(u / 22)));
+  });
+});
+document.getElementById("up").addEventListener("click", () => { if (selected) { selected.moveUp(); tr.moveToTop(); renderList(); } });
+document.getElementById("down").addEventListener("click", () => { if (selected) { selected.moveDown(); renderList(); } });
+
+addEventListener("resize", () => {
+  const sx = innerWidth / stage.width(), sy = innerHeight / stage.height();
+  layer.find(".item").filter((n) => n.getParent() === layer).forEach((n) => n.position({ x: n.x() * sx, y: n.y() * sy }));
+  stage.size({ width: innerWidth, height: innerHeight });
+});
+
+Promise.all(["_shared/img/photo-1.jpg", "_shared/img/photo-4.jpg", "_shared/img/photo-6.jpg"].map(loadImage))
+  .then(([fjord, pug, jelly]) => {
+    layer.add(title(0.04, W0 < 560 ? 0.17 : 0.05));
+    layer.add(photo(fjord, "挪威峽灣", 0.27, 0.42, -6, "#4cc9f0"));
+    layer.add(photo(jelly, "水族館的水母", 0.74, 0.5, 5, "#9d8cff"));
+    layer.add(note("週末出遊清單\n・看海看峽灣\n・帶狗狗散步\n・水族館", 0.5, 0.7, -3));
+    const pug2 = photo(pug, "巴哥午睡中", 0.5, 0.36, 3, "#ff8c42");
+    layer.add(pug2);
+    layer.add(badge("必去！", 0.86, 0.22));
+    layer.add(star(0.13, 0.78));
+    const pic = pug2.findOne(".pic");
+    pic.filters([Konva.Filters.Sepia]);
+    select(pug2);
+  })
+  .catch((err) => {
+    const s = demoStatus(err.message);
+    s.error(err.message);
+  });
+</script>
+</body>
+</html>

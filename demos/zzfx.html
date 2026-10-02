@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZzFX 示範：音效合成台</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"],"note":"每個音效都由 ZzFX 1.4.0 的 buildSamples() 即時合成，波形與頻譜圖畫的就是它算出的樣本；點按鈕才會發出聲音"}</script>
+<style>
+  body {
+    background:
+      radial-gradient(60% 70% at 15% 10%, rgba(157, 140, 255, 0.16), transparent 70%),
+      radial-gradient(50% 60% at 95% 100%, rgba(76, 201, 240, 0.12), transparent 70%),
+      var(--bg);
+  }
+  .app { position: fixed; inset: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 12px; padding: 14px 16px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 20px; letter-spacing: .04em; }
+  header h1 b { background: linear-gradient(90deg, var(--c2), var(--c6), var(--c3)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  header p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .deck { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 12px; min-height: 0; }
+  .scope { display: grid; grid-template-rows: auto minmax(0, 1fr) auto minmax(0, 1fr) auto; gap: 4px; padding: 10px 12px; min-height: 0; }
+  .scope .lbl { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+  .scope canvas { width: 100%; height: 100%; min-height: 60px; display: block; border-radius: 6px; background: rgba(0, 0, 0, 0.35); }
+  .meta { font-size: 11px; color: var(--muted); display: flex; gap: 12px; flex-wrap: wrap; }
+  .meta b { color: var(--fg); font-weight: 600; }
+  .side { display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 10px; min-height: 0; }
+  .pads { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+  .pad {
+    --pc: var(--c2);
+    border: 1px solid var(--line); border-radius: 9px; cursor: pointer; padding: 8px 4px;
+    background: linear-gradient(160deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
+    color: var(--fg); font: 600 13px var(--font); position: relative; overflow: hidden;
+    transition: transform .08s, box-shadow .25s, background .25s, color .25s;
+  }
+  .pad::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px; background: var(--pc); opacity: .8; }
+  .pad.on { background: var(--pc); color: #111; box-shadow: 0 0 22px -4px var(--pc); }
+  .pad:active { transform: scale(0.96); }
+  .shapes { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .shapes button { border: 0; border-right: 1px solid var(--line); background: transparent; color: var(--muted); font: 12px var(--font); padding: 6px 0; cursor: pointer; }
+  .shapes button:last-child { border-right: 0; }
+  .shapes button[aria-pressed="true"] { background: rgba(157, 140, 255, 0.28); color: var(--fg); }
+  .sliders { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 14px; align-content: start; padding: 8px 12px; overflow: auto; min-height: 0; }
+  .sliders label { display: grid; grid-template-columns: 56px minmax(0, 1fr) 52px; align-items: center; gap: 6px; font-size: 12px; min-height: 26px; }
+  .sliders input { width: 100%; accent-color: var(--c6); }
+  .sliders output { font: 11px var(--mono); color: var(--muted); text-align: right; white-space: nowrap; }
+  .codebar { display: flex; align-items: center; gap: 8px; padding: 7px 8px 7px 12px; }
+  .codebar code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; font: 12px var(--mono); font-variant-ligatures: none; color: var(--c4); scrollbar-width: thin; }
+  .codebar .hint { position: static; flex: none; }
+  .codebar .btn { padding: 6px 10px; font-size: 12px; }
+  @media (max-width: 700px) {
+    body { overflow: auto; }
+    .app { position: static; min-height: 100%; grid-template-rows: none; padding: 12px; gap: 10px; }
+    header h1 { font-size: 18px; }
+    .deck { grid-template-columns: minmax(0, 1fr); }
+    .scope { grid-template-rows: auto 96px auto 96px auto; }
+    .side { grid-template-rows: none; }
+    .sliders { grid-template-columns: minmax(0, 1fr); overflow: visible; }
+    .codebar { flex-wrap: wrap; }
+    .codebar code { flex-basis: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div>
+      <h1><b>ZzFX</b> 音效合成台</h1>
+      <p>20 個參數、不到 1 KB 的合成器，一行程式碼就是一個遊戲音效</p>
+    </div>
+    <div class="actions">
+      <button class="btn primary" id="play">播放</button>
+      <button class="btn" id="random">隨機</button>
+      <button class="btn" id="mutate">突變</button>
+      <button class="btn" id="auto" aria-pressed="true">自動</button>
+    </div>
+  </header>
+  <div class="deck">
+    <section class="scope panel">
+      <div class="lbl"><span>波形（buildSamples 輸出）</span><span id="tLabel">0 秒</span></div>
+      <canvas id="wave"></canvas>
+      <div class="lbl"><span>頻譜圖</span><span>0 到 11 kHz</span></div>
+      <canvas id="spec"></canvas>
+      <div class="meta" id="meta"></div>
+    </section>
+    <section class="side">
+      <div class="pads" id="pads"></div>
+      <div class="shapes" id="shapes"></div>
+      <div class="sliders panel" id="sliders"></div>
+    </section>
+  </div>
+  <div class="codebar panel">
+    <code id="code"></code>
+    <button class="btn" id="copy">複製</button>
+    <span class="hint">點預設或拖曳滑桿即時重新合成</span>
+  </div>
+</div>
+
+<script type="module">
+import { zzfx, ZZFX } from "https://cdn.jsdelivr.net/npm/zzfx@1.4.0/ZzFX.js";
+
+// ZzFX parameter order: volume, randomness, frequency, attack, sustain, release, shape, shapeCurve,
+// slide, deltaSlide, pitchJump, pitchJumpTime, repeatTime, noise, modulation, bitCrush, delay,
+// sustainVolume, decay, tremolo, filter
+const DEF = [1, .05, 220, 0, 0, .1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0];
+const PRESETS = [
+  { name: "金幣", color: "--c1", p: [,,1675,,.06,.24,1,1.82,,,837,.06] },
+  { name: "雷射", color: "--c3", p: [,,1200,.01,.05,.2,2,1,-8,,,,,,,,,.8] },
+  { name: "爆炸", color: "--c5", p: [1.4,,333,.01,0,.9,4,1.9,,,,,,.5,,.6] },
+  { name: "跳躍", color: "--c4", p: [,,220,.01,.08,.15,5,.5,4] },
+  { name: "受傷", color: "--c3", p: [,,537,.02,.02,.22,1,1.59,-6.98,4.97,,,,.4] },
+  { name: "升級", color: "--c6", p: [,,300,.02,.25,.35,1,1,,,150,.05,.07] },
+  { name: "警笛", color: "--c2", p: [,,480,.05,.7,.3,1,1,5,,,,.25,,,,,1,,.3] },
+  { name: "按鈕", color: "--c1", p: [,,880,,.02,.04] },
+];
+const SHAPES = ["正弦", "三角", "鋸齒", "正切", "雜訊", "方波"];
+const SLIDERS = [
+  { i: 2, label: "頻率", min: 40, max: 2400, log: true, fmt: (v) => Math.round(v) + " Hz" },
+  { i: 3, label: "起音", min: 0, max: .3, step: .005, fmt: (v) => v.toFixed(2) + " 秒" },
+  { i: 4, label: "持續", min: 0, max: .8, step: .01, fmt: (v) => v.toFixed(2) + " 秒" },
+  { i: 5, label: "釋放", min: 0, max: 1, step: .01, fmt: (v) => v.toFixed(2) + " 秒" },
+  { i: 8, label: "滑音", min: -20, max: 20, step: .1, fmt: (v) => v.toFixed(1) },
+  { i: 10, label: "音高跳躍", min: -800, max: 800, step: 1, fmt: (v) => Math.round(v) + " Hz" },
+  { i: 13, label: "噪音", min: 0, max: 3, step: .05, fmt: (v) => v.toFixed(2) },
+  { i: 14, label: "調變", min: 0, max: 40, step: .1, fmt: (v) => v.toFixed(1) },
+  { i: 15, label: "位元粉碎", min: 0, max: 1, step: .01, fmt: (v) => v.toFixed(2) },
+  { i: 16, label: "延遲", min: 0, max: .3, step: .01, fmt: (v) => v.toFixed(2) + " 秒" },
+];
+
+const $ = (id) => document.getElementById(id);
+const css = getComputedStyle(document.documentElement);
+let params = DEF.slice();
+let samples = new Float32Array(1);
+let activePreset = -1, playStart = -1, playDur = 0, userUnlocked = false;
+
+// --- UI construction -------------------------------------------------------------------
+PRESETS.forEach((pr, k) => {
+  const b = document.createElement("button");
+  b.className = "pad";
+  b.textContent = pr.name;
+  b.style.setProperty("--pc", css.getPropertyValue(pr.color));
+  b.addEventListener("click", () => { stopAuto(); unlock(); loadPreset(k, true); });
+  $("pads").appendChild(b);
+});
+SHAPES.forEach((name, k) => {
+  const b = document.createElement("button");
+  b.textContent = name;
+  b.addEventListener("click", () => { stopAuto(); unlock(); setParam(6, k); play(); });
+  $("shapes").appendChild(b);
+});
+const sliderEls = SLIDERS.map((s) => {
+  const lab = document.createElement("label");
+  const input = document.createElement("input");
+  input.type = "range";
+  input.min = s.log ? 0 : s.min;
+  input.max = s.log ? 1000 : s.max;
+  input.step = s.log ? 1 : s.step;
+  const out = document.createElement("output");
+  lab.append(Object.assign(document.createElement("span"), { textContent: s.label }), input, out);
+  input.addEventListener("input", () => { stopAuto(); setParam(s.i, fromSlider(s, +input.value)); });
+  input.addEventListener("change", () => { unlock(); play(); });
+  $("sliders").appendChild(lab);
+  return { s, input, out };
+});
+const toSlider = (s, v) => s.log ? Math.round(1000 * Math.log(Math.max(v, s.min) / s.min) / Math.log(s.max / s.min)) : v;
+const fromSlider = (s, v) => s.log ? s.min * Math.pow(s.max / s.min, v / 1000) : v;
+
+function syncUI() {
+  for (const { s, input, out } of sliderEls) {
+    input.value = toSlider(s, params[s.i]);
+    out.textContent = s.fmt(params[s.i]);
+  }
+  [...$("shapes").children].forEach((b, k) => b.setAttribute("aria-pressed", String(k === params[6])));
+  [...$("pads").children].forEach((b, k) => b.classList.toggle("on", k === activePreset));
+  $("code").textContent = "zzfx(...[" + formatParams(params) + "]);";
+}
+
+// Mirrors the compact notation of the ZzFX designer: defaults become empty slots.
+function formatParams(p) {
+  const parts = p.map((v, k) => {
+    if (v === DEF[k]) return "";
+    const r = Math.abs(v) >= 100 ? Math.round(v) : Math.round(v * 100) / 100;
+    return String(r).replace(/^(-?)0\./, "$1.");
+  });
+  while (parts.length && parts[parts.length - 1] === "") parts.pop();
+  return parts.join(",");
+}
+
+// --- synthesis -------------------------------------------------------------------------
+function rebuild() {
+  samples = ZZFX.buildSamples(...params);
+  drawWave();
+  drawSpec();
+  let peak = 0;
+  for (let i = 0; i < samples.length; i++) peak = Math.max(peak, Math.abs(samples[i]));
+  const sec = samples.length / ZZFX.sampleRate;
+  $("tLabel").textContent = sec.toFixed(2) + " 秒";
+  $("meta").innerHTML = "<span>樣本數 <b>" + samples.length.toLocaleString("zh-TW") + "</b></span><span>取樣率 <b>44,100 Hz</b></span><span>峰值 <b>" + peak.toFixed(2) + "</b></span><span>波形 <b>" + SHAPES[params[6]] + "</b></span>";
+  syncUI();
+}
+function setParam(i, v) { params = params.map((x, k) => (k === i ? v : x)); activePreset = -1; rebuild(); }
+function loadPreset(k, sound) {
+  params = DEF.map((d, j) => PRESETS[k].p[j] ?? d);
+  activePreset = k;
+  rebuild();
+  if (sound) play(); else startPlayhead();
+}
+
+function unlock() {
+  userUnlocked = true;
+  if (ZZFX.audioContext.state !== "running") ZZFX.audioContext.resume();
+}
+function play() {
+  if (userUnlocked) {
+    // The parameters (not the cached buffer) go through zzfx() so the library's own randomness applies.
+    zzfx(...params);
+  }
+  startPlayhead();
+}
+function startPlayhead() { playStart = performance.now(); playDur = samples.length / ZZFX.sampleRate * 1000; }
+
+function randomize() {
+  const r = (a, b) => a + Math.random() * (b - a);
+  const chance = (p) => Math.random() < p;
+  params = DEF.slice();
+  params[2] = Math.round(80 * Math.pow(25, Math.random()));
+  params[3] = chance(.5) ? 0 : r(0, .06);
+  params[4] = r(0, .3);
+  params[5] = r(.05, .6);
+  params[6] = Math.floor(Math.random() * 6);
+  params[7] = r(.5, 2.5);
+  params[8] = chance(.5) ? r(-10, 10) : 0;
+  if (chance(.3)) { params[10] = r(-600, 800); params[11] = r(.02, .15); }
+  if (chance(.15)) params[12] = r(.05, .2);
+  if (chance(.25)) params[13] = r(0, 1.5);
+  if (chance(.2)) params[14] = r(0, 20);
+  if (chance(.2)) params[15] = r(0, .6);
+  if (chance(.15)) params[16] = r(.03, .2);
+  params = params.map((v, k) => (k === 2 || k === 6 ? v : Math.round(v * 100) / 100));
+  activePreset = -1;
+  rebuild();
+}
+function mutate() {
+  params = params.map((v, k) => {
+    const s = SLIDERS.find((x) => x.i === k);
+    if (!s || Math.random() < .5) return v;
+    const span = (s.max - s.min) * .08;
+    const nv = Math.min(s.max, Math.max(s.min, v + (Math.random() * 2 - 1) * span));
+    return k === 2 || k === 10 ? Math.round(nv) : Math.round(nv * 100) / 100;
+  });
+  activePreset = -1;
+  rebuild();
+}
+
+// --- drawing ---------------------------------------------------------------------------
+function fitCanvas(c) {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const w = Math.max(1, Math.round(c.clientWidth * dpr)), h = Math.max(1, Math.round(c.clientHeight * dpr));
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  return { ctx: c.getContext("2d"), w, h };
+}
+const waveCanvas = $("wave"), specCanvas = $("spec");
+const waveLayer = document.createElement("canvas"), specLayer = document.createElement("canvas");
+
+function drawWave() {
+  const { w, h } = fitCanvas(waveCanvas);
+  waveLayer.width = w; waveLayer.height = h;
+  const g = waveLayer.getContext("2d");
+  const mid = h / 2, n = samples.length;
+  g.strokeStyle = "rgba(255,255,255,0.07)";
+  g.lineWidth = 1;
+  for (let x = 0; x <= 10; x++) { g.beginPath(); g.moveTo(x * w / 10, 0); g.lineTo(x * w / 10, h); g.stroke(); }
+  g.beginPath(); g.moveTo(0, mid); g.lineTo(w, mid); g.stroke();
+  const grad = g.createLinearGradient(0, 0, w, 0);
+  grad.addColorStop(0, "#4cc9f0"); grad.addColorStop(.55, "#9d8cff"); grad.addColorStop(1, "#f72585");
+  const env = [];
+  g.fillStyle = grad;
+  for (let x = 0; x < w; x++) {
+    const a = Math.floor(x * n / w), b = Math.max(a + 1, Math.floor((x + 1) * n / w));
+    let lo = 0, hi = 0;
+    for (let i = a; i < b && i < n; i++) { const v = samples[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
+    const top = mid - Math.min(1, hi) * mid * .92, bot = mid - Math.max(-1, lo) * mid * .92;
+    g.fillRect(x, top, 1, Math.max(1, bot - top));
+    env.push(Math.max(hi, -lo));
+  }
+  g.strokeStyle = "rgba(255,255,255,0.75)";
+  g.lineWidth = 1.5;
+  g.beginPath();
+  env.forEach((e, x) => { const y = mid - Math.min(1, e) * mid * .92; x ? g.lineTo(x, y) : g.moveTo(x, y); });
+  g.stroke();
+}
+
+// Radix-2 FFT, in place.
+function fft(re, im) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < len / 2; k++) {
+        const ar = re[i + k + len / 2] * cr - im[i + k + len / 2] * ci;
+        const ai = re[i + k + len / 2] * ci + im[i + k + len / 2] * cr;
+        re[i + k + len / 2] = re[i + k] - ar; im[i + k + len / 2] = im[i + k] - ai;
+        re[i + k] += ar; im[i + k] += ai;
+        const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
+      }
+    }
+  }
+}
+// Magma-like ramp from silence to loud.
+const RAMP = [[8, 8, 20], [45, 18, 90], [120, 30, 140], [215, 50, 120], [250, 120, 70], [252, 220, 90], [255, 255, 220]];
+function rampColor(t) {
+  const x = Math.min(.999, Math.max(0, t)) * (RAMP.length - 1), k = Math.floor(x), f = x - k;
+  return RAMP[k].map((c, j) => c + (RAMP[k + 1][j] - c) * f);
+}
+function drawSpec() {
+  const { w, h } = fitCanvas(specCanvas);
+  specLayer.width = w; specLayer.height = h;
+  // Only the lower half of the spectrum (0 to 11 kHz) is shown, where game sounds live.
+  const N = 1024, cols = Math.min(w, 480), bins = N / 4;
+  const img = new ImageData(cols, bins);
+  const re = new Float32Array(N), im = new Float32Array(N);
+  const n = samples.length, hop = Math.max(1, (n - N) / cols);
+  for (let c = 0; c < cols; c++) {
+    const start = Math.floor(c * hop);
+    for (let i = 0; i < N; i++) {
+      const s = start + i < n ? samples[start + i] : 0;
+      re[i] = s * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1)));
+      im[i] = 0;
+    }
+    fft(re, im);
+    for (let b = 0; b < bins; b++) {
+      const mag = Math.hypot(re[b], im[b]) / (N / 4);
+      const db = 20 * Math.log10(mag + 1e-6);
+      const [r, g, bl] = rampColor((db + 80) / 80);
+      const o = ((bins - 1 - b) * cols + c) * 4;
+      img.data[o] = r; img.data[o + 1] = g; img.data[o + 2] = bl; img.data[o + 3] = 255;
+    }
+  }
+  const tmp = document.createElement("canvas");
+  tmp.width = cols; tmp.height = bins;
+  tmp.getContext("2d").putImageData(img, 0, 0);
+  const g = specLayer.getContext("2d");
+  g.imageSmoothingEnabled = true;
+  g.drawImage(tmp, 0, 0, w, h);
+}
+
+function render(now) {
+  for (const [c, layer] of [[waveCanvas, waveLayer], [specCanvas, specLayer]]) {
+    const { ctx, w, h } = fitCanvas(c);
+    if (layer.width !== w || layer.height !== h) { rebuild(); }
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(layer, 0, 0);
+    if (playStart >= 0) {
+      const t = (now - playStart) / playDur;
+      if (t <= 1) {
+        const x = t * w;
+        ctx.fillStyle = "rgba(14,16,19,0.45)";
+        ctx.fillRect(x, 0, w - x, h);
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(x - 1, 0, 2, h);
+      }
+    }
+  }
+  tickAuto(now);
+  requestAnimationFrame(render);
+}
+
+// --- auto demo: cycles through the presets; silent until the viewer clicks something ---------
+let auto = true, nextAuto = 0, autoIdx = 0;
+function stopAuto() { auto = false; $("auto").setAttribute("aria-pressed", "false"); }
+function tickAuto(now) {
+  if (!auto || now < nextAuto) return;
+  loadPreset(autoIdx % PRESETS.length, userUnlocked);
+  autoIdx++;
+  nextAuto = now + Math.max(1400, playDur + 700);
+}
+$("auto").addEventListener("click", () => {
+  unlock();
+  auto = !auto;
+  $("auto").setAttribute("aria-pressed", String(auto));
+  nextAuto = 0;
+});
+$("play").addEventListener("click", () => { unlock(); play(); });
+$("random").addEventListener("click", () => { stopAuto(); unlock(); randomize(); play(); });
+$("mutate").addEventListener("click", () => { stopAuto(); unlock(); mutate(); play(); });
+$("copy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText($("code").textContent);
+    $("copy").textContent = "已複製";
+  } catch (err) {
+    $("copy").textContent = "無法複製";
+  }
+  setTimeout(() => { $("copy").textContent = "複製"; }, 1400);
+});
+addEventListener("resize", rebuild);
+
+loadPreset(0, false);
+requestAnimationFrame(render);
+</script>
+</body>
+</html>

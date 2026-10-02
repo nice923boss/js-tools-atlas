@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Butterchurn 示範：MilkDrop 音樂視覺化</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"]}</script>
+<style>
+  #viz { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  .center {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 40;
+    display: grid; place-items: center; gap: 10px; text-align: center; pointer-events: none;
+  }
+  .center button {
+    pointer-events: auto; width: 84px; height: 84px; border-radius: 50%; border: 0; cursor: pointer;
+    background: var(--accent); color: var(--accent-ink); font-size: 30px; font-weight: 700;
+    box-shadow: 0 0 0 10px rgba(247, 223, 30, 0.14), 0 12px 40px rgba(0, 0, 0, 0.55);
+  }
+  .center { width: max-content; max-width: calc(100vw - 32px); }
+  .center div {
+    font-size: 13px; padding: 6px 14px; border-radius: 14px; background: rgba(0, 0, 0, 0.5);
+  }
+  .center small { display: block; font-size: 11px; color: var(--muted); }
+  .center.hide { display: none; }
+  .preset {
+    position: fixed; right: 12px; bottom: 12px; z-index: 50; max-width: min(420px, 52%);
+    display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; backdrop-filter: blur(6px);
+  }
+  .preset span { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .preset select {
+    min-width: 0; width: 100%; background: transparent; border: 0; color: var(--fg); font-size: 12px;
+    text-overflow: ellipsis; cursor: pointer; outline: none;
+  }
+  .preset select option { background: #171a1f; }
+  .hint { max-width: 44%; }
+  @media (max-width: 560px) {
+    .controls .btn { padding: 7px 9px; font-size: 12px; }
+    .preset span { display: none; }
+    .center button { width: 64px; height: 64px; font-size: 22px; }
+  }
+</style>
+</head>
+<body>
+<canvas id="viz"></canvas>
+<div class="controls">
+  <button class="btn primary" id="pause" hidden>❚❚ 暫停</button>
+  <button class="btn" id="prev">‹ 上一個</button>
+  <button class="btn" id="next">下一個 ›</button>
+  <button class="btn" id="rand">隨機</button>
+  <button class="btn" id="cycle" aria-pressed="false">自動輪播</button>
+</div>
+<div class="center" id="center">
+  <button id="play" aria-label="播放">▶</button>
+  <div>播放音樂，畫面會跟著節奏律動<small>目前為靜音預覽</small></div>
+</div>
+<div class="preset"><span>預設</span><select id="sel" aria-label="選擇視覺預設"></select></div>
+<div class="hint">切換預設時會平滑漸變</div>
+<audio id="audio" src="_shared/audio/loop.mp3" loop preload="auto"></audio>
+
+<script src="https://cdn.jsdelivr.net/npm/butterchurn@2.6.7/lib/butterchurn.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/butterchurn-presets@2.4.7/lib/butterchurnPresets.min.js"></script>
+<script>
+// Butterchurn renders MilkDrop presets with WebGL2, driven by an AudioContext analyser.
+const BC = window.butterchurn.default || window.butterchurn;
+const BP = window.butterchurnPresets.default || window.butterchurnPresets;
+const presets = BP.getPresets();
+const names = Object.keys(presets).sort((a, b) => a.localeCompare(b));
+const FIRST = "Flexi, martin + geiss - dedicated to the sherwin maxawow";
+
+const canvas = document.getElementById("viz");
+const audio = document.getElementById("audio");
+const actx = new AudioContext();
+const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+function size() { return [Math.round(innerWidth * dpr), Math.round(innerHeight * dpr)]; }
+let [w, h] = size();
+canvas.width = w; canvas.height = h;
+const viz = BC.createVisualizer(actx, canvas, { width: w, height: h, pixelRatio: 1, textureRatio: 1 });
+
+const sel = document.getElementById("sel");
+names.forEach((n) => sel.append(new Option(n, n)));
+let idx = Math.max(0, names.indexOf(FIRST));
+
+function load(i, blend) {
+  idx = (i + names.length) % names.length;
+  viz.loadPreset(presets[names[idx]], blend);
+  sel.value = names[idx];
+}
+load(idx, 0);
+
+sel.addEventListener("change", () => load(names.indexOf(sel.value), 2.0));
+document.getElementById("prev").addEventListener("click", () => load(idx - 1, 2.0));
+document.getElementById("next").addEventListener("click", () => load(idx + 1, 2.0));
+document.getElementById("rand").addEventListener("click", () => load(Math.floor(Math.random() * names.length), 2.5));
+
+let cycleTimer = null;
+document.getElementById("cycle").addEventListener("click", (e) => {
+  const on = !cycleTimer;
+  e.currentTarget.setAttribute("aria-pressed", on);
+  if (on) cycleTimer = setInterval(() => load(Math.floor(Math.random() * names.length), 3.0), 15000);
+  else { clearInterval(cycleTimer); cycleTimer = null; }
+});
+
+// Audio is wired on the first click (browsers need a user gesture to start sound).
+let source = null;
+const center = document.getElementById("center");
+const pauseBtn = document.getElementById("pause");
+document.getElementById("play").addEventListener("click", async () => {
+  await actx.resume();
+  if (!source) {
+    source = actx.createMediaElementSource(audio);
+    source.connect(actx.destination);
+    viz.connectAudio(source);
+  }
+  await audio.play();
+});
+pauseBtn.addEventListener("click", () => audio.pause());
+audio.addEventListener("play", () => { center.classList.add("hide"); pauseBtn.hidden = false; });
+audio.addEventListener("pause", () => { center.classList.remove("hide"); pauseBtn.hidden = true; });
+
+window.addEventListener("resize", () => {
+  [w, h] = size();
+  canvas.width = w; canvas.height = h;
+  viz.setRendererSize(w, h);
+});
+
+// While paused, feed a synthetic 100 BPM signal so the preset keeps moving (silent preview).
+const N = 1024, fake = new Uint8Array(N);
+function fakeLevels(t) {
+  const beat = (t * 100 / 60) % 1, kick = Math.exp(-beat * 7), hat = Math.exp(-((beat * 2) % 1) * 18);
+  for (let i = 0; i < N; i++) {
+    const s = i / 44100 + t;
+    const v = 0.55 * kick * Math.sin(2 * Math.PI * 58 * s)
+      + 0.18 * Math.sin(2 * Math.PI * 220 * s) * (0.6 + 0.4 * Math.sin(t * 0.7))
+      + 0.12 * hat * (Math.random() * 2 - 1);
+    fake[i] = Math.max(0, Math.min(255, 128 + v * 127));
+  }
+  return { timeByteArray: fake, timeByteArrayL: fake, timeByteArrayR: fake };
+}
+
+(function frame(ms) {
+  if (audio.paused) viz.render({ audioLevels: fakeLevels((ms || 0) / 1000) });
+  else viz.render();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

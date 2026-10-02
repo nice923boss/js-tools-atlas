@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frappe Charts 示範：台北每日降雨日曆</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"每日雨量與氣溫依氣候平均隨機生成，示意資料"}</script>
+<style>
+  .title { position: fixed; left: 14px; top: 12px; z-index: 40; }
+  .title h1 { margin: 0; font-size: 16px; }
+  .title p { margin: 0; font-size: 12px; color: var(--muted); }
+  .board { position: fixed; left: 12px; right: 12px; top: 64px; bottom: 48px; display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 10px; }
+  .card { background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 8px 12px; min-height: 0; }
+  .card h2 { margin: 0; font-size: 13px; font-weight: 600; color: var(--fg); }
+  .card h2 small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+  #heat { margin-top: 6px; }
+  #heat svg { display: block; width: 100%; height: auto; }
+  #heat rect.day { transition: opacity .2s; cursor: pointer; }
+  #heat.focus rect.day { opacity: 0.18; }
+  #heat.focus rect.day.on { opacity: 1; }
+  .bars-card { display: flex; flex-direction: column; }
+  #bars { flex: 1; min-height: 0; }
+  .tip { position: fixed; z-index: 90; pointer-events: none; padding: 6px 10px; border-radius: 8px; font-size: 12px;
+    background: rgba(23, 26, 31, 0.96); border: 1px solid var(--line); color: var(--fg); transform: translate(-50%, -100%); white-space: nowrap; }
+  .tip[hidden] { display: none; }
+  .tip b { color: var(--accent); }
+  /* Dark theme for Frappe's built-in light styles */
+  .chart-container { font-family: var(--font) !important; }
+  .chart-container .axis, .chart-container .chart-label { fill: #9b998f; }
+  .chart-container .axis line, .chart-container .chart-label line { stroke: rgba(255, 255, 255, 0.08); }
+  .chart-container .dataset-units circle { stroke: #171a1f; }
+  .chart-container .subdomain-name, .chart-container .domain-name { fill: #9b998f; }
+  .chart-container text { font-family: var(--font); }
+  .chart-container .dataset-units text { fill: #ecebe6; }
+  .graph-svg-tip { background: rgba(23, 26, 31, 0.96); border: 1px solid rgba(255, 255, 255, 0.12); color: #9b998f; }
+  .graph-svg-tip .svg-pointer { border-top-color: rgba(23, 26, 31, 0.96); }
+  #heat .graph-svg-tip { display: none !important; }
+  /* demo.css styles .bar as a 4px progress bar; restore Frappe's rect height attribute */
+  #bars rect.bar { height: revert-layer; }
+  #heat .chart-container { width: 100% !important; }
+  @media (max-width: 640px) {
+    .title { top: 52px; } .board { top: 98px; }
+    #heat { overflow-x: auto; }
+    #heat svg { width: 600px; }
+  }
+</style>
+</head>
+<body>
+<div class="title"><h1 id="name">台北 2024 每日降雨日曆</h1><p>示意資料・GitHub 貢獻圖風格的年度熱度日曆</p></div>
+<div class="controls">
+  <button class="btn" data-m="rain" aria-pressed="true">降雨量</button>
+  <button class="btn" data-m="temp">最高溫</button>
+</div>
+<div class="board">
+  <div class="card"><h2 id="heat-title">每日雨量<small>顏色越深代表越多</small></h2><div id="heat"></div></div>
+  <div class="card bars-card"><h2 id="bars-title">每月合計<small>點長條聚焦該月，方向鍵可切換</small></h2><div id="bars"></div></div>
+</div>
+<div class="tip" id="tip" hidden></div>
+<div class="hint">滑過格子看當日數值・點格子或長條聚焦月份</div>
+
+<script src="https://cdn.jsdelivr.net/npm/frappe-charts@1.6.2/dist/frappe-charts.min.umd.js"></script>
+<script>
+// Frappe Charts: a GitHub-style heatmap calendar linked to a monthly bar / line chart.
+let seed = 2024;
+const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+const pad = (v) => String(v).padStart(2, "0");
+const key = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const MONTHS = Array.from({ length: 12 }, (_, i) => `${i + 1}月`);
+
+// Illustrative Taipei weather: wet-day odds, plum rain front, a few typhoon days.
+const WET = [0.45, 0.5, 0.45, 0.45, 0.5, 0.55, 0.35, 0.45, 0.45, 0.35, 0.4, 0.42];
+const PER_DAY = [6, 8, 9, 10, 13, 17, 14, 17, 18, 11, 7, 6];
+const TMAX = [19.2, 19.8, 22.0, 25.6, 29.0, 31.8, 34.0, 33.6, 31.4, 27.8, 24.6, 20.9];
+const STORMS = { "2024-07-24": 190, "2024-07-25": 270, "2024-10-02": 160, "2024-10-03": 240, "2024-10-31": 150 };
+const days = [];
+for (let d = new Date(2024, 0, 1); d.getFullYear() === 2024; d.setDate(d.getDate() + 1)) {
+  const m = d.getMonth(), k = key(d);
+  const plum = (m === 4 && d.getDate() >= 18) || (m === 5 && d.getDate() <= 12);
+  let rain = rnd() < WET[m] + (plum ? 0.25 : 0) ? Math.round(PER_DAY[m] * (0.3 + rnd() ** 2 * 3.2)) : 0;
+  if (STORMS[k]) rain = STORMS[k];
+  const tmax = +(TMAX[m] + (rnd() - 0.5) * 4 - (rain > 20 ? 2 : 0)).toFixed(1);
+  days.push({ date: new Date(d), k, m, rain, tmax });
+}
+const byKey = new Map(days.map((d) => [d.k, d]));
+
+const METRICS = {
+  rain: {
+    title: "每日雨量", h1: "台北 2024 每日降雨日曆", unit: "mm", legend: ["少", "多"],
+    colors: ["#1c2129", "#17425d", "#1f6f9c", "#3aa6dc", "#9ee0ff"],
+    intensity: (d) => d.rain, show: (d) => (d.rain ? `${d.rain} mm` : "無雨"),
+    bars: { type: "bar", name: "月雨量", color: "#4cc9f0", values: () => MONTHS.map((_, i) => days.filter((d) => d.m === i).reduce((s, d) => s + d.rain, 0)), fmt: (v) => `${v} mm` },
+  },
+  temp: {
+    title: "每日最高溫", h1: "台北 2024 每日高溫日曆", unit: "°C", legend: ["低", "高"],
+    colors: ["#1c2129", "#4a3018", "#91501c", "#df7a26", "#ffc76e"],
+    intensity: (d) => Math.max(0.1, d.tmax - 17), show: (d) => `${d.tmax} °C`,
+    bars: { type: "line", name: "月均最高溫", color: "#ff8c42", values: () => MONTHS.map((_, i) => { const xs = days.filter((d) => d.m === i); return +(xs.reduce((s, d) => s + d.tmax, 0) / xs.length).toFixed(1); }), fmt: (v) => `${v} °C` },
+  },
+};
+
+const heatEl = document.getElementById("heat"), barsEl = document.getElementById("bars"), tip = document.getElementById("tip");
+const MONTH_ABBR = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+let metric = "rain", heat, bars, focusMonth = -1;
+
+// Frappe's heatmap ships English labels and a fixed-size SVG: translate labels and make it scale with the card.
+function localize() {
+  const svg = heatEl.querySelector("svg");
+  if (!svg) return;
+  if (svg.hasAttribute("width")) {
+    const b = svg.getBBox(); // crop Frappe's empty top margin
+    svg.setAttribute("viewBox", `${b.x - 4} ${b.y - 4} ${b.width + 8} ${b.height + 8}`);
+    svg.removeAttribute("width");
+    svg.removeAttribute("height");
+  }
+  const L = METRICS[metric].legend;
+  const map = { Mon: "一", Wed: "三", Fri: "五", Less: L[0], More: L[1] };
+  MONTH_ABBR.forEach((a, i) => (map[a] = `${i + 1}月`));
+  heatEl.querySelectorAll("text").forEach((t) => { if (map[t.textContent]) t.textContent = map[t.textContent]; });
+  applyFocus();
+}
+new MutationObserver(localize).observe(heatEl, { childList: true, subtree: true });
+
+function applyFocus() {
+  heatEl.classList.toggle("focus", focusMonth >= 0);
+  heatEl.querySelectorAll("rect.day").forEach((r) => {
+    const d = r.getAttribute("data-date");
+    r.classList.toggle("on", !!d && +d.split("-")[1] - 1 === focusMonth);
+  });
+}
+
+function render() {
+  const M = METRICS[metric];
+  if (heat) heat.destroy();
+  if (bars) bars.destroy();
+  heatEl.replaceChildren();
+  barsEl.replaceChildren();
+  focusMonth = -1;
+  const dataPoints = {};
+  days.forEach((d) => (dataPoints[Math.floor(d.date.getTime() / 1000)] = M.intensity(d)));
+  heat = new frappe.Chart(heatEl, {
+    type: "heatmap", height: 150, discreteDomains: 1, radius: 2, colors: M.colors,
+    data: { dataPoints, start: new Date(2024, 0, 1), end: new Date(2024, 11, 31) },
+  });
+  const B = M.bars;
+  bars = new frappe.Chart(barsEl, {
+    type: B.type, height: Math.max(140, barsEl.clientHeight - 4), colors: [B.color],
+    data: { labels: MONTHS, datasets: [{ name: B.name, values: B.values() }] },
+    isNavigable: true, valuesOverPoints: innerWidth >= 640 ? 1 : 0,
+    barOptions: { spaceRatio: 0.35 }, lineOptions: { regionFill: 1, dotSize: 5, spline: 1 },
+    axisOptions: { xAxisMode: "tick", yAxisMode: "span", xIsSeries: true },
+    tooltipOptions: { formatTooltipY: B.fmt },
+  });
+  // Frappe 1.6.2 bug: a ResizeObserver redraw before the first data update mixes the n-1 point
+  // placeholder data with the real labels and breaks the navigation overlay. Pause it until the intro animation ends.
+  const chart = bars;
+  chart.resizeObserver.disconnect();
+  setTimeout(() => { if (bars === chart) chart.resizeObserver.observe(barsEl); }, 1300);
+  document.getElementById("name").textContent = M.h1;
+  document.getElementById("heat-title").firstChild.textContent = M.title;
+  document.getElementById("bars-title").firstChild.textContent = B.name;
+}
+
+// Custom Chinese tooltip for the calendar cells.
+heatEl.addEventListener("mousemove", (e) => {
+  const r = e.target.closest && e.target.closest("rect.day");
+  const d = r && byKey.get(r.getAttribute("data-date"));
+  if (!d) { tip.hidden = true; return; }
+  const box = r.getBoundingClientRect();
+  tip.innerHTML = `${d.m + 1} 月 ${d.date.getDate()} 日（週${"日一二三四五六"[d.date.getDay()]}）<b>${METRICS[metric].show(d)}</b>`;
+  tip.style.left = `${Math.min(innerWidth - 90, Math.max(90, box.left + box.width / 2))}px`;
+  tip.style.top = `${box.top - 6}px`;
+  tip.hidden = false;
+});
+barsEl.addEventListener("data-select", () => { focusMonth = bars.state.currentIndex; applyFocus(); });
+heatEl.addEventListener("mouseleave", () => (tip.hidden = true));
+heatEl.addEventListener("click", (e) => {
+  const r = e.target.closest && e.target.closest("rect.day");
+  if (r) bars.setCurrentDataPoint(+r.getAttribute("data-date").split("-")[1] - 1);
+});
+
+render();
+document.querySelectorAll("[data-m]").forEach((b) => b.addEventListener("click", () => {
+  metric = b.dataset.m;
+  document.querySelectorAll("[data-m]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  render();
+}));
+</script>
+</body>
+</html>

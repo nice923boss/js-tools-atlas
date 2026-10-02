@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Planck.js 示範：Box2D 彈珠台</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body { background: radial-gradient(circle at 50% 30%, #1a1f3d 0%, #07080f 75%); }
+  #cv { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; touch-action: none; }
+  .score { position: fixed; left: 12px; top: 12px; z-index: 40; display: grid; gap: 2px; padding: 8px 12px; pointer-events: none; }
+  .score b { font-family: var(--mono); font-size: 22px; color: var(--c2); }
+  .score span { font-size: 12px; color: var(--muted); }
+  .flips { position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 40; display: flex; justify-content: space-between; pointer-events: none; }
+  .flips .btn { pointer-events: auto; min-width: 84px; padding: 10px 14px; user-select: none; -webkit-user-select: none; }
+  @media (max-width: 600px) {
+    .score { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; }
+    .score b { font-size: 18px; }
+    .score .keys { display: none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div class="score panel"><span>分數</span><b id="score">0</b><span id="ballNo">第 1 球</span><span class="keys">鍵盤 ← → 或按左右半邊</span></div>
+<div class="controls">
+  <button class="btn" id="newBall">新球</button>
+  <button class="btn" id="auto" aria-pressed="true">自動接球</button>
+</div>
+<div class="flips">
+  <button class="btn" id="flipL">◀ 左擋板</button>
+  <button class="btn" id="flipR">右擋板 ▶</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/planck@1.5.0/dist/planck.min.js"></script>
+<script>
+// Planck.js is a JavaScript port of Box2D: chain walls, revolute-joint flippers with motors,
+// restitution bumpers and sensor lanes. Units are meters, y points up.
+const { World, Vec2, Circle, Box, Polygon, Chain, RevoluteJoint } = planck;
+const world = new World({ gravity: Vec2(0, -11) });
+const ground = world.createBody();
+
+// Table outline: lower guides, straight sides and a semicircular top.
+const outline = [Vec2(2.9, 1.9), Vec2(0, 3.6), Vec2(0, 11)];
+for (let i = 1; i < 24; i++) {
+  const a = Math.PI - (i / 24) * Math.PI;
+  outline.push(Vec2(5 + 5 * Math.cos(a), 11 + 5 * Math.sin(a)));
+}
+outline.push(Vec2(10, 11), Vec2(10, 3.6), Vec2(7.1, 1.9));
+ground.createFixture(new Chain(outline, false), { friction: 0.1, userData: "wall" });
+
+const BUMPERS = [Vec2(3.1, 9.4), Vec2(6.9, 9.4), Vec2(5, 11.3)];
+BUMPERS.forEach((p, i) => ground.createFixture(new Circle(p, 0.62), { restitution: 0.9, userData: "bumper" + i }));
+
+const SLINGS = [
+  [Vec2(0.8, 3.95), Vec2(0.8, 5.8), Vec2(2.3, 3.35)],
+  [Vec2(9.2, 3.95), Vec2(7.7, 3.35), Vec2(9.2, 5.8)],
+];
+SLINGS.forEach((v, i) => ground.createFixture(new Polygon(v), { restitution: 1.15, userData: "sling" + i }));
+
+// Lane dividers and rollover sensors near the top.
+const POSTS = [2.6, 4.2, 5.8, 7.4];
+POSTS.forEach((x) => ground.createFixture(new Box(0.07, 0.45, Vec2(x, 13.6), 0), { userData: "post" }));
+const LANES = [{ x: 3.4, ch: "台" }, { x: 5, ch: "灣" }, { x: 6.6, ch: "讚" }];
+LANES.forEach((l, i) => {
+  l.lit = false;
+  ground.createFixture(new Circle(Vec2(l.x, 13.6), 0.28), { isSensor: true, userData: "lane" + i });
+});
+
+// Flippers: tapered polygons hinged to the ground with motorised, limited revolute joints.
+function makeFlipper(pivot, dir) {
+  const body = world.createDynamicBody({ position: pivot, bullet: true });
+  const L = 1.6 * dir;
+  body.createFixture(new Polygon([Vec2(0, 0.17), Vec2(0, -0.17), Vec2(L, -0.06), Vec2(L, 0.06)]), { density: 2, friction: 0.6, userData: "flipper" });
+  body.createFixture(new Circle(Vec2(0, 0), 0.17), { density: 2, userData: "flipper" });
+  const joint = world.createJoint(new RevoluteJoint({
+    enableMotor: true, maxMotorTorque: 260, motorSpeed: 0,
+    enableLimit: true, lowerAngle: -0.45, upperAngle: 0.45,
+  }, ground, body, pivot));
+  return { body, joint, dir, len: 1.6, pivot, pressed: false, autoUntil: 0 };
+}
+const flippers = [makeFlipper(Vec2(3.0, 1.8), 1), makeFlipper(Vec2(7.0, 1.8), -1)];
+function updateMotors(now) {
+  for (const f of flippers) {
+    const up = f.pressed || f.autoUntil > now;
+    // Left flipper raises with positive (CCW) rotation, right flipper with negative.
+    f.joint.setMotorSpeed((up ? 22 : -14) * f.dir);
+  }
+}
+
+let ball = null;
+let ballNo = 0;
+let score = 0;
+const flashes = {};
+const trail = [];
+function newBall() {
+  if (ball) world.destroyBody(ball);
+  ballNo += 1;
+  document.getElementById("ballNo").textContent = "第 " + ballNo + " 球";
+  ball = world.createDynamicBody({ position: Vec2(4 + Math.random() * 2, 14.9), bullet: true });
+  ball.createFixture(new Circle(0.24), { density: 1.2, friction: 0.15, restitution: 0.3, userData: "ball" });
+  ball.setLinearVelocity(Vec2((Math.random() - 0.5) * 6, -1));
+  trail.length = 0;
+}
+const addScore = (n) => { score += n; document.getElementById("score").textContent = score.toLocaleString("zh-TW"); };
+
+// Contacts are collected during the step and handled afterwards (bodies are locked mid-step).
+const kicks = [];
+world.on("begin-contact", (c) => {
+  const a = c.getFixtureA().getUserData();
+  const b = c.getFixtureB().getUserData();
+  const other = a === "ball" ? b : b === "ball" ? a : null;
+  if (other) kicks.push(other);
+});
+function handleContacts(now) {
+  for (const tag of kicks.splice(0)) {
+    if (!ball) break;
+    if (tag.startsWith("bumper")) {
+      const p = BUMPERS[Number(tag.slice(6))];
+      const d = Vec2.sub(ball.getPosition(), p);
+      d.normalize();
+      ball.setLinearVelocity(Vec2.mul(d, 11));
+      flashes[tag] = now;
+      addScore(100);
+    } else if (tag.startsWith("sling")) {
+      flashes[tag] = now;
+      addScore(10);
+    } else if (tag.startsWith("lane")) {
+      const lane = LANES[Number(tag.slice(4))];
+      if (!lane.lit) { lane.lit = true; addScore(250); }
+      if (LANES.every((l) => l.lit)) {
+        addScore(2000);
+        flashes.bonus = now;
+        setTimeout(() => LANES.forEach((l) => (l.lit = false)), 900);
+      }
+    }
+  }
+}
+
+// Auto play: flip whenever the ball is close above a flipper and moving down.
+let auto = true;
+function autoPlay(now) {
+  if (!auto || !ball) return;
+  const p = ball.getPosition();
+  const v = ball.getLinearVelocity();
+  for (const f of flippers) {
+    const dx = (p.x - f.pivot.x) * f.dir;
+    if (dx > 0.35 && dx < 1.75 && p.y < 2.75 && p.y > 0.6 && v.y < 1 && f.autoUntil < now - 0.25) f.autoUntil = now + 0.22;
+  }
+}
+
+// Input: hold buttons, arrow keys, or press the left/right half of the canvas.
+const setAuto = (on) => { auto = on; document.getElementById("auto").setAttribute("aria-pressed", String(on)); };
+function press(i, on) {
+  if (on) setAuto(false);
+  flippers[i].pressed = on;
+}
+[["flipL", 0], ["flipR", 1]].forEach(([id, i]) => {
+  const el = document.getElementById(id);
+  el.addEventListener("pointerdown", (e) => { e.preventDefault(); press(i, true); });
+  for (const t of ["pointerup", "pointerleave", "pointercancel"]) el.addEventListener(t, () => press(i, false));
+});
+const canvas = document.getElementById("cv");
+const held = new Map();
+canvas.addEventListener("pointerdown", (e) => { const i = e.clientX < innerWidth / 2 ? 0 : 1; held.set(e.pointerId, i); press(i, true); });
+const release = (e) => { if (held.has(e.pointerId)) { press(held.get(e.pointerId), false); held.delete(e.pointerId); } };
+canvas.addEventListener("pointerup", release);
+canvas.addEventListener("pointercancel", release);
+const KEYS = { ArrowLeft: 0, KeyZ: 0, ArrowRight: 1, Slash: 1, KeyM: 1 };
+addEventListener("keydown", (e) => { if (e.code in KEYS) press(KEYS[e.code], true); if (e.code === "Space") newBall(); });
+addEventListener("keyup", (e) => { if (e.code in KEYS) press(KEYS[e.code], false); });
+document.getElementById("newBall").addEventListener("click", newBall);
+document.getElementById("auto").addEventListener("click", () => setAuto(!auto));
+
+// Rendering: world (m) to screen (px) with y flipped.
+const ctx = canvas.getContext("2d");
+let s = 1, ox = 0, oy = 0;
+function resize() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  canvas.width = innerWidth * dpr;
+  canvas.height = innerHeight * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const top = 58;
+  const bottom = 64;
+  s = Math.min((innerHeight - top - bottom) / 16.4, (innerWidth - 24) / 10.4);
+  ox = (innerWidth - 10 * s) / 2;
+  oy = top + (innerHeight - top - bottom - 16.4 * s) / 2 + 16.1 * s;
+}
+const X = (x) => ox + x * s;
+const Y = (y) => oy - y * s;
+function poly(pts) {
+  ctx.beginPath();
+  pts.forEach((p, i) => (i ? ctx.lineTo(X(p.x), Y(p.y)) : ctx.moveTo(X(p.x), Y(p.y))));
+}
+const glow = (t, now) => Math.max(0, 1 - (now - (flashes[t] || -9)) / 0.25);
+
+function draw(now) {
+  ctx.clearRect(0, 0, innerWidth, innerHeight);
+  // Playfield.
+  poly(outline);
+  ctx.lineTo(X(5.6), Y(-0.3));
+  ctx.lineTo(X(4.4), Y(-0.3));
+  ctx.closePath();
+  const bg = ctx.createLinearGradient(0, Y(16), 0, Y(0));
+  bg.addColorStop(0, "#1b2552");
+  bg.addColorStop(1, "#0c1027");
+  ctx.fillStyle = bg;
+  ctx.fill();
+  ctx.save();
+  ctx.font = "800 " + Math.round(s * 0.95) + "px " + getComputedStyle(document.body).fontFamily;
+  ctx.textAlign = "center";
+  ctx.fillStyle = "rgba(157,140,255," + (0.13 + glow("bonus", now) * 0.6) + ")";
+  ctx.fillText("台灣彈珠台", X(5), Y(6.6));
+  ctx.restore();
+  // Walls.
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.shadowColor = "#4cc9f0";
+  ctx.shadowBlur = 12;
+  ctx.strokeStyle = "#4cc9f0";
+  ctx.lineWidth = Math.max(2, s * 0.09);
+  poly(outline);
+  ctx.stroke();
+  // Posts and lane lights.
+  ctx.fillStyle = "#4cc9f0";
+  POSTS.forEach((x) => ctx.fillRect(X(x - 0.07), Y(14.05), 0.14 * s, 0.9 * s));
+  ctx.shadowBlur = 0;
+  ctx.font = "700 " + Math.round(s * 0.36) + "px " + getComputedStyle(document.body).fontFamily;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  LANES.forEach((l) => {
+    ctx.beginPath();
+    ctx.arc(X(l.x), Y(13.6), s * 0.3, 0, Math.PI * 2);
+    ctx.fillStyle = l.lit ? "#ffb703" : "rgba(255,255,255,.08)";
+    ctx.fill();
+    ctx.fillStyle = l.lit ? "#0e1013" : "rgba(255,255,255,.55)";
+    ctx.fillText(l.ch, X(l.x), Y(13.6) + 1);
+  });
+  // Slingshots.
+  SLINGS.forEach((v, i) => {
+    const g = glow("sling" + i, now);
+    poly(v);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(247,37,133," + (0.35 + g * 0.6) + ")";
+    ctx.shadowColor = "#f72585";
+    ctx.shadowBlur = 10 + g * 20;
+    ctx.fill();
+  });
+  // Bumpers.
+  BUMPERS.forEach((p, i) => {
+    const g = glow("bumper" + i, now);
+    const r = s * (0.62 + g * 0.08);
+    ctx.shadowColor = "#ffb703";
+    ctx.shadowBlur = 14 + g * 30;
+    ctx.beginPath();
+    ctx.arc(X(p.x), Y(p.y), r, 0, Math.PI * 2);
+    ctx.fillStyle = g > 0 ? "#fff3c4" : "#ffb703";
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.arc(X(p.x), Y(p.y), r * 0.55, 0, Math.PI * 2);
+    ctx.fillStyle = "#0e1013";
+    ctx.fill();
+    ctx.fillStyle = "#ffb703";
+    ctx.font = "700 " + Math.round(s * 0.26) + "px " + getComputedStyle(document.body).fontFamily;
+    ctx.fillText("100", X(p.x), Y(p.y) + 1);
+  });
+  // Flippers.
+  ctx.shadowColor = "#7bd389";
+  ctx.shadowBlur = 12;
+  ctx.fillStyle = "#7bd389";
+  for (const f of flippers) {
+    const b = f.body;
+    for (let fx = b.getFixtureList(); fx; fx = fx.getNext()) {
+      const shape = fx.getShape();
+      if (shape.getType() === "polygon") {
+        poly(shape.m_vertices.map((v) => b.getWorldPoint(v)));
+        ctx.closePath();
+      } else {
+        const c = b.getWorldPoint(shape.getCenter());
+        ctx.beginPath();
+        ctx.arc(X(c.x), Y(c.y), shape.getRadius() * s, 0, Math.PI * 2);
+      }
+      ctx.fill();
+    }
+  }
+  ctx.shadowBlur = 0;
+  // Ball with a short trail.
+  if (ball) {
+    const p = ball.getPosition();
+    trail.push({ x: p.x, y: p.y });
+    if (trail.length > 14) trail.shift();
+    trail.forEach((t, i) => {
+      ctx.beginPath();
+      ctx.arc(X(t.x), Y(t.y), s * 0.24 * (i / trail.length), 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(200,220,255," + (i / trail.length) * 0.25 + ")";
+      ctx.fill();
+    });
+    const g = ctx.createRadialGradient(X(p.x) - s * 0.08, Y(p.y) - s * 0.08, s * 0.03, X(p.x), Y(p.y), s * 0.24);
+    g.addColorStop(0, "#ffffff");
+    g.addColorStop(1, "#8d99ae");
+    ctx.beginPath();
+    ctx.arc(X(p.x), Y(p.y), s * 0.24, 0, Math.PI * 2);
+    ctx.fillStyle = g;
+    ctx.fill();
+  }
+}
+
+// Fixed-step simulation: several small steps per frame keep the fast ball from tunnelling.
+let last = performance.now();
+let acc = 0;
+let drainAt = 0;
+function frame(t) {
+  const now = t / 1000;
+  acc += Math.min(0.05, (t - last) / 1000);
+  last = t;
+  while (acc >= 1 / 120) {
+    autoPlay(now);
+    updateMotors(now);
+    world.step(1 / 120, 8, 3);
+    handleContacts(now);
+    acc -= 1 / 120;
+  }
+  if (ball && ball.getPosition().y < -0.6) {
+    world.destroyBody(ball);
+    ball = null;
+    drainAt = now;
+  }
+  if (!ball && now - drainAt > 0.9) newBall();
+  draw(now);
+  requestAnimationFrame(frame);
+}
+addEventListener("resize", resize);
+resize();
+newBall();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

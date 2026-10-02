@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fabric.js 示範：可選取變形的海報編輯器</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body { background: radial-gradient(70% 90% at 50% 40%, #20232c, #0e1013); }
+  .canvas-container { position: fixed !important; inset: 0; }
+  .modal {
+    position: fixed; inset: 0; z-index: 200; display: grid; place-items: center;
+    background: rgba(8, 9, 12, 0.72); backdrop-filter: blur(4px); padding: 16px;
+  }
+  .modal[hidden] { display: none; }
+  .modal .panel { display: flex; gap: 16px; align-items: center; max-width: 520px; width: 100%; }
+  .modal img { height: min(300px, 50vh); border-radius: 6px; box-shadow: 0 10px 30px rgba(0,0,0,.5); background: #fff; }
+  .modal h3 { margin: 0 0 6px; font-size: 16px; }
+  .modal p { margin: 0 0 12px; font-size: 13px; color: var(--muted); }
+  .modal .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  @media (max-width: 520px) { .modal .panel { flex-direction: column; text-align: center; } .modal .row { justify-content: center; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="controls">
+  <button class="btn" id="addText">加文字</button>
+  <button class="btn" id="addShape">加形狀</button>
+  <button class="btn" id="theme">換配色</button>
+  <button class="btn primary" id="export">匯出 SVG</button>
+</div>
+<div class="modal" id="modal" hidden>
+  <div class="panel">
+    <img id="preview" alt="匯出的 SVG 海報預覽">
+    <div>
+      <h3>SVG 匯出完成</h3>
+      <p id="svgInfo"></p>
+      <div class="row">
+        <a class="btn primary" id="download" download="poster.svg">下載 SVG</a>
+        <button class="btn" id="close">繼續編輯</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="hint">點選物件拖曳、縮放、旋轉・雙擊文字可編輯・Delete 刪除</div>
+
+<script src="https://cdn.jsdelivr.net/npm/fabric@7.4.0/dist/index.min.js"></script>
+<script>
+// Poster editor: the poster is designed in a 300x400 scene and fitted to the window with a viewport
+// transform. Every element is a selectable Fabric object; toSVG() exports only the poster area.
+const PW = 300, PH = 400;
+const THEMES = [
+  { sky: ["#1b1446", "#5b2a86", "#d76d77", "#ffaf7b"], sun: ["#fff3b0", "#f7df1e", "#ff8c42"], hill: ["#2a1745", "#120b26"], ink: "#fff7d6" },
+  { sky: ["#03256c", "#2541b2", "#1768ac", "#06bee1"], sun: ["#ffffff", "#c8f7ff", "#4cc9f0"], hill: ["#052a4a", "#021627"], ink: "#e8fbff" },
+  { sky: ["#0b3d2e", "#1f6f50", "#7bd389", "#e9f5a1"], sun: ["#fffbe0", "#f7df1e", "#ff8c42"], hill: ["#0d2b20", "#061810"], ink: "#fbffe8" },
+];
+let themeIdx = 0;
+
+const ui = { cornerStyle: "circle", cornerColor: "#f7df1e", cornerStrokeColor: "#1a1a14", borderColor: "#f7df1e", transparentCorners: false, cornerSize: 11, borderScaleFactor: 1.5, padding: 4 };
+Object.assign(fabric.InteractiveFabricObject.ownDefaults, ui);
+
+const canvas = new fabric.Canvas("c", { width: innerWidth, height: innerHeight, preserveObjectStacking: true, selectionColor: "rgba(247,223,30,0.12)", selectionBorderColor: "#f7df1e" });
+
+function grad(colors, x1, y1, x2, y2) {
+  return new fabric.Gradient({
+    type: "linear", gradientUnits: "percentage", coords: { x1, y1, x2, y2 },
+    colorStops: colors.map((color, i) => ({ offset: i / (colors.length - 1), color })),
+  });
+}
+function radial(colors) {
+  return new fabric.Gradient({
+    type: "radial", gradientUnits: "percentage", coords: { x1: 0.5, y1: 0.5, r1: 0, x2: 0.5, y2: 0.5, r2: 0.5 },
+    colorStops: colors.map((color, i) => ({ offset: i / (colors.length - 1), color })),
+  });
+}
+function starPoints(n, r1, r2) {
+  const pts = [];
+  for (let i = 0; i < n * 2; i++) {
+    const r = i % 2 ? r2 : r1, a = (i / (n * 2)) * Math.PI * 2 - Math.PI / 2;
+    pts.push({ x: Math.cos(a) * r, y: Math.sin(a) * r });
+  }
+  return pts;
+}
+
+const FONT = "Microsoft JhengHei, PingFang TC, Noto Sans TC, sans-serif";
+const bg = new fabric.Rect({ left: PW / 2, top: PH / 2, width: PW, height: PH, selectable: false, evented: false, shadow: new fabric.Shadow({ color: "rgba(0,0,0,0.55)", blur: 40, offsetY: 14 }) });
+const sun = new fabric.Circle({ left: 150, top: 205, radius: 74 });
+const hillBack = new fabric.Path("M0 300 Q 60 250 120 285 T 230 270 T 300 262 L 300 400 L 0 400 Z", { opacity: 0.85 });
+const hillFront = new fabric.Path("M0 330 Q 70 300 150 330 T 300 318 L 300 400 L 0 400 Z", {});
+const title = new fabric.IText("夏日爵士夜", { left: 150, top: 70, fontSize: 46, fontWeight: "bold", fontFamily: FONT, charSpacing: 120 });
+const subtitle = new fabric.IText("河 岸 草 地 音 樂 會", { left: 150, top: 118, fontSize: 14, fontFamily: FONT, charSpacing: 200 });
+const info = new fabric.Textbox("8 月 15 日（六）晚上 7 點\n大稻埕碼頭・自備野餐墊", { left: 150, top: 368, width: 260, fontSize: 13, lineHeight: 1.5, textAlign: "center", fontFamily: FONT });
+const badgeCircle = new fabric.Circle({ radius: 30, fill: "#f72585", stroke: "#ffffff", strokeWidth: 2 });
+const badgeText = new fabric.Text("免費\n入場", { fontSize: 14, fontWeight: "bold", lineHeight: 1.1, textAlign: "center", fill: "#ffffff", fontFamily: FONT });
+const badge = new fabric.Group([badgeCircle, badgeText], { left: 252, top: 180, angle: 14 });
+const sparkles = [[48, 168, 9], [262, 108, 6], [80, 232, 5], [228, 240, 7]].map(([x, y, r]) =>
+  new fabric.Polygon(starPoints(4, r, r * 0.3), { left: x, top: y, fill: "#ffffff", opacity: 0.9 }));
+
+canvas.add(bg, sun, ...sparkles, hillBack, hillFront, title, subtitle, info, badge);
+
+function applyTheme() {
+  const t = THEMES[themeIdx];
+  bg.set("fill", grad(t.sky, 0, 0, 0, 1));
+  sun.set("fill", radial(t.sun));
+  sun.set("shadow", new fabric.Shadow({ color: t.sun[2], blur: 50 }));
+  hillBack.set("fill", t.hill[0]);
+  hillFront.set("fill", t.hill[1]);
+  title.set({ fill: t.ink, shadow: new fabric.Shadow({ color: "rgba(0,0,0,0.35)", blur: 8, offsetY: 3 }) });
+  subtitle.set("fill", t.ink);
+  info.set("fill", t.ink);
+  canvas.requestRenderAll();
+}
+
+function fit() {
+  canvas.setDimensions({ width: innerWidth, height: innerHeight });
+  const top = 56, margin = 16, bottom = 52;
+  const k = Math.min((innerWidth - margin * 2) / PW, (innerHeight - top - bottom) / PH);
+  const tx = (innerWidth - PW * k) / 2, ty = top + (innerHeight - top - bottom - PH * k) / 2;
+  canvas.setViewportTransform([k, 0, 0, k, tx, ty]);
+}
+
+const SHAPES = [
+  () => new fabric.Circle({ radius: 26, fill: "#4cc9f0" }),
+  () => new fabric.Triangle({ width: 56, height: 48, fill: "#7bd389" }),
+  () => new fabric.Polygon(starPoints(5, 30, 13), { fill: "#f7df1e" }),
+  () => new fabric.Rect({ width: 60, height: 40, rx: 8, ry: 8, fill: "#9d8cff" }),
+];
+let shapeIdx = 0;
+function addObj(obj) {
+  obj.set({ left: 150 + (Math.random() - 0.5) * 80, top: 220 + (Math.random() - 0.5) * 80 });
+  canvas.add(obj);
+  canvas.setActiveObject(obj);
+  canvas.requestRenderAll();
+}
+document.getElementById("addText").onclick = () =>
+  addObj(new fabric.IText("雙擊編輯", { fontSize: 24, fontWeight: "bold", fill: "#ffffff", fontFamily: FONT }));
+document.getElementById("addShape").onclick = () => addObj(SHAPES[shapeIdx++ % SHAPES.length]());
+document.getElementById("theme").onclick = () => { themeIdx = (themeIdx + 1) % THEMES.length; applyTheme(); };
+
+const modal = document.getElementById("modal");
+let lastUrl = null;
+document.getElementById("export").onclick = () => {
+  canvas.discardActiveObject();
+  canvas.requestRenderAll();
+  const svg = canvas.toSVG({ viewBox: { x: 0, y: 0, width: PW, height: PH }, width: PW, height: PH });
+  if (lastUrl) URL.revokeObjectURL(lastUrl);
+  lastUrl = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+  document.getElementById("preview").src = lastUrl;
+  document.getElementById("download").href = lastUrl;
+  document.getElementById("svgInfo").textContent =
+    `canvas.toSVG() 產生 ${(svg.length / 1024).toFixed(1)} KB 向量檔，共 ${canvas.getObjects().length} 個物件，文字與漸層都保留為可編輯的 SVG 元素。`;
+  modal.hidden = false;
+};
+document.getElementById("close").onclick = () => { modal.hidden = true; };
+
+addEventListener("keydown", (e) => {
+  if (e.key !== "Delete" && e.key !== "Backspace") return;
+  const active = canvas.getActiveObject();
+  if (!active || active.isEditing) return;
+  canvas.getActiveObjects().forEach((o) => canvas.remove(o));
+  canvas.discardActiveObject();
+  canvas.requestRenderAll();
+});
+addEventListener("resize", fit);
+
+applyTheme();
+fit();
+canvas.setActiveObject(title);
+canvas.requestRenderAll();
+</script>
+</body>
+</html>

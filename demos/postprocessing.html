@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>postprocessing 示範：霓虹長廊後製前後對比</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  .btn { padding: 7px 10px; font-size: 12px; }
+  #split { position: fixed; top: 0; bottom: 0; width: 2px; background: var(--accent); z-index: 30; cursor: ew-resize; box-shadow: 0 0 12px rgba(247,223,30,.6); }
+  #split::after { content: "⇆"; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; font-weight: 700; }
+  #split::before { content: ""; position: absolute; inset: 0 -14px; }
+  .tag { position: fixed; top: 12px; z-index: 31; font-size: 12px; padding: 4px 9px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); pointer-events: none; white-space: nowrap; }
+  #tagRaw { transform: translateX(calc(-100% - 10px)); }
+  #tagFx { transform: translateX(10px); color: var(--accent); }
+  .controls { top: 48px; max-width: 360px; }
+  @media (max-width: 560px) { .controls { top: auto; bottom: 48px; right: 8px; left: 8px; justify-content: center; max-width: none; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="split"></div>
+<div class="tag" id="tagRaw">原始畫面</div>
+<div class="tag" id="tagFx">後製效果</div>
+<div class="controls" id="fx"></div>
+<div class="hint">拖曳中間黃線比較前後・按鈕開關各種特效</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import {
+  EffectComposer, RenderPass, EffectPass, BloomEffect, DepthOfFieldEffect, ChromaticAberrationEffect,
+  NoiseEffect, VignetteEffect, GlitchEffect, PixelationEffect, ToneMappingEffect, ToneMappingMode, BlendFunction,
+} from "https://cdn.jsdelivr.net/npm/postprocessing@6.39.5/build/index.js";
+
+const canvas = document.getElementById("c");
+// postprocessing wants antialias off on the renderer and tone mapping done as an effect
+const renderer = new THREE.WebGLRenderer({ canvas, powerPreference: "high-performance", antialias: false, stencil: false });
+renderer.setPixelRatio(1);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x05060a);
+scene.fog = new THREE.Fog(0x05060a, 14, 40);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.5;
+
+const camera = new THREE.PerspectiveCamera(50, 1, 0.3, 80);
+camera.position.set(0, 2.2, 9);
+
+// ---- Neon corridor scene ----
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 80),
+  new THREE.MeshStandardMaterial({ color: 0x0b0d12, metalness: 0.9, roughness: 0.35 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.position.z = -20;
+scene.add(floor);
+
+const NEON = [0xf72585, 0x4cc9f0, 0xf7df1e, 0x9d8cff];
+for (let i = 0; i < 9; i++) {
+  const color = NEON[i % NEON.length];
+  const arch = new THREE.Mesh(
+    new THREE.TorusGeometry(4.2, 0.07, 12, 120, Math.PI),
+    new THREE.MeshStandardMaterial({ color: 0x000000, emissive: color, emissiveIntensity: 3.2 })
+  );
+  arch.position.set(0, 0, -i * 4.2);
+  scene.add(arch);
+}
+
+// Hero object: chrome torus knot with glowing inner ring
+const hero = new THREE.Group();
+hero.position.set(0, 2.1, 1);
+const knot = new THREE.Mesh(
+  new THREE.TorusKnotGeometry(0.85, 0.28, 220, 32),
+  new THREE.MeshStandardMaterial({ color: 0xdddddd, metalness: 1, roughness: 0.18 })
+);
+hero.add(knot);
+const halo = new THREE.Mesh(
+  new THREE.TorusGeometry(1.6, 0.03, 8, 160),
+  new THREE.MeshStandardMaterial({ color: 0, emissive: 0xf7df1e, emissiveIntensity: 4 })
+);
+hero.add(halo);
+scene.add(hero);
+const keyLight = new THREE.PointLight(0xf72585, 30, 12);
+keyLight.position.set(-3, 3, 3);
+scene.add(keyLight);
+const fillLight = new THREE.PointLight(0x4cc9f0, 30, 12);
+fillLight.position.set(3, 1, 2);
+scene.add(fillLight);
+
+// Floating emissive sparks at different depths (good bokeh material)
+const sparkGeo = new THREE.SphereGeometry(0.06, 8, 8);
+const sparks = [];
+for (let i = 0; i < 70; i++) {
+  const m = new THREE.Mesh(sparkGeo, new THREE.MeshStandardMaterial({ color: 0, emissive: NEON[i % 4], emissiveIntensity: 5 }));
+  m.position.set((Math.random() - 0.5) * 9, Math.random() * 4 + 0.3, 4 - Math.random() * 34);
+  m.userData.phase = Math.random() * 6.28;
+  sparks.push(m);
+  scene.add(m);
+}
+
+// ---- postprocessing effects ----
+const composer = new EffectComposer(renderer, { frameBufferType: THREE.HalfFloatType });
+composer.addPass(new RenderPass(scene, camera));
+
+const effects = {
+  dof: { label: "景深", on: true, fx: new DepthOfFieldEffect(camera, { focusDistance: 8, focusRange: 3.5, bokehScale: 3.2 }) },
+  bloom: { label: "泛光", on: true, fx: new BloomEffect({ mipmapBlur: true, luminanceThreshold: 0.6, luminanceSmoothing: 0.25, intensity: 1.25, radius: 0.75 }) },
+  ca: { label: "色差", on: true, fx: new ChromaticAberrationEffect({ offset: new THREE.Vector2(0.0018, 0.0012), radialModulation: true, modulationOffset: 0.2 }) },
+  glitch: { label: "故障", on: false, fx: new GlitchEffect({ delay: new THREE.Vector2(0.6, 1.8), duration: new THREE.Vector2(0.1, 0.4), strength: new THREE.Vector2(0.1, 0.3) }) },
+  pixel: { label: "像素化", on: false, fx: new PixelationEffect(6) },
+  noise: { label: "底片雜訊", on: true, late: true, fx: new NoiseEffect({ blendFunction: BlendFunction.SOFT_LIGHT, premultiply: false }) },
+  vignette: { label: "暗角", on: true, late: true, fx: new VignetteEffect({ offset: 0.3, darkness: 0.75 }) },
+};
+effects.noise.fx.blendMode.opacity.value = 0.12;
+const toneMap = new ToneMappingEffect({ mode: ToneMappingMode.AGX });
+
+let fxPass;
+function rebuild() {
+  if (fxPass) composer.removePass(fxPass);
+  const on = Object.values(effects).filter((e) => e.on);
+  const early = on.filter((e) => !e.late).map((e) => e.fx);
+  const late = on.filter((e) => e.late).map((e) => e.fx);
+  // EffectPass merges all effects into one shader in order; grain and vignette run after tone mapping
+  // so they blend on LDR values (soft light on HDR input produces speckles)
+  fxPass = new EffectPass(camera, ...early, toneMap, ...late);
+  composer.addPass(fxPass);
+}
+rebuild();
+
+const fxBox = document.getElementById("fx");
+for (const [key, e] of Object.entries(effects)) {
+  const b = document.createElement("button");
+  b.className = "btn";
+  b.textContent = e.label;
+  b.setAttribute("aria-pressed", String(e.on));
+  b.addEventListener("click", () => {
+    e.on = !e.on;
+    b.setAttribute("aria-pressed", String(e.on));
+    rebuild();
+  });
+  fxBox.append(b);
+}
+
+// ---- Before/after split ----
+const splitEl = document.getElementById("split");
+const tagRaw = document.getElementById("tagRaw");
+const tagFx = document.getElementById("tagFx");
+let split = 0.32;
+function placeSplit() {
+  const x = Math.round(split * innerWidth);
+  splitEl.style.left = x - 1 + "px";
+  tagRaw.style.left = x + "px";
+  tagFx.style.left = x + "px";
+  tagRaw.style.opacity = split < 0.12 ? 0 : 1;
+  tagFx.style.opacity = split > 0.88 ? 0 : 1;
+}
+let dragging = false;
+splitEl.addEventListener("pointerdown", (e) => { dragging = true; splitEl.setPointerCapture(e.pointerId); });
+splitEl.addEventListener("pointermove", (e) => { if (dragging) { split = Math.min(1, Math.max(0, e.clientX / innerWidth)); placeSplit(); } });
+splitEl.addEventListener("pointerup", () => { dragging = false; });
+
+const mouse = new THREE.Vector2();
+addEventListener("pointermove", (e) => { mouse.set(e.clientX / innerWidth - 0.5, e.clientY / innerHeight - 0.5); });
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  composer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.fov = w < h ? 68 : 50;
+  camera.updateProjectionMatrix();
+  placeSplit();
+}
+addEventListener("resize", resize);
+resize();
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta(), t = clock.elapsedTime;
+  knot.rotation.x += dt * 0.4;
+  knot.rotation.y += dt * 0.6;
+  halo.rotation.x = Math.sin(t * 0.7) * 0.6;
+  halo.rotation.y = t * 0.5;
+  for (const s of sparks) s.position.y += Math.sin(t * 1.5 + s.userData.phase) * 0.004;
+  camera.position.x += (mouse.x * 3 - camera.position.x) * 0.04;
+  camera.position.y += (2.2 - mouse.y * 1.5 - camera.position.y) * 0.04;
+  camera.lookAt(0, 1.8, -4);
+
+  composer.render(dt);
+  // Overlay the untouched render on the left side of the divider
+  const sx = Math.round(split * innerWidth);
+  if (sx > 0) {
+    renderer.setRenderTarget(null);
+    renderer.setViewport(0, 0, innerWidth, innerHeight);
+    renderer.setScissor(0, 0, sx, innerHeight);
+    renderer.setScissorTest(true);
+    renderer.render(scene, camera);
+    renderer.setScissorTest(false);
+  }
+});
+</script>
+</body>
+</html>

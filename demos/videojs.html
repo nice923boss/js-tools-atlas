@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Video.js 示範：課程影片播放器</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/video.js@8.24.1/dist/video-js.min.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"],"note":"影片為 Big Buck Bunny 公開 HLS 測試串流，章節為示意"}</script>
+<style>
+  body {
+    display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 14px;
+    padding: 14px 14px 48px; height: 100%;
+    background: radial-gradient(80% 60% at 20% 0%, rgba(247, 223, 30, 0.08), transparent 70%), var(--bg);
+  }
+  main { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+  header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  header .course { font-size: 12px; color: var(--accent); border: 1px solid rgba(247, 223, 30, 0.4); padding: 2px 8px; border-radius: 999px; }
+  header h1 { margin: 0; font-size: 17px; font-weight: 700; }
+  .frame { position: relative; width: 100%; aspect-ratio: 16 / 9; max-height: calc(100vh - 150px); border-radius: 12px; overflow: hidden; box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45); }
+  .meta { display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .meta span { padding: 3px 9px; border-radius: 999px; background: var(--bg-2); border: 1px solid var(--line); }
+  .meta b { color: var(--fg); font-weight: 600; }
+  aside { display: flex; flex-direction: column; min-height: 0; }
+  aside h2 { margin: 0 0 8px; font-size: 13px; color: var(--muted); font-weight: 600; display: flex; justify-content: space-between; }
+  ol { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+  ol button {
+    all: unset; box-sizing: border-box; cursor: pointer; display: grid; grid-template-columns: 46px 1fr; gap: 8px; align-items: center;
+    width: 100%; padding: 8px 10px; border-radius: 9px; background: var(--bg-2); border: 1px solid var(--line); font-size: 13px;
+    transition: border-color .15s, background .15s;
+  }
+  ol button:hover { border-color: rgba(247, 223, 30, 0.5); }
+  ol button.on { border-color: var(--accent); background: rgba(247, 223, 30, 0.10); }
+  ol .t { font: 12px var(--mono); color: var(--muted); }
+  ol button.on .t { color: var(--accent); }
+  ol .bar { grid-column: 1 / -1; height: 3px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  ol .bar i { display: block; height: 100%; width: 0; background: var(--accent); }
+
+  /* Custom Video.js skin */
+  .vjs-atlas.video-js { width: 100%; height: 100%; font-family: var(--font); background: #000; }
+  .vjs-atlas .vjs-big-play-button {
+    width: 76px; height: 76px; line-height: 76px; border-radius: 50%; border: 0;
+    left: 50%; top: 50%; transform: translate(-50%, -50%); margin: 0;
+    background: rgba(247, 223, 30, 0.92); color: #1a1a14; font-size: 3.4em;
+    box-shadow: 0 0 0 10px rgba(247, 223, 30, 0.18);
+  }
+  .vjs-atlas:hover .vjs-big-play-button, .vjs-atlas .vjs-big-play-button:focus { background: #fff27a; }
+  .vjs-atlas .vjs-big-play-button .vjs-icon-placeholder:before { line-height: 76px; }
+  .vjs-atlas .vjs-control-bar { display: flex; height: 44px; background: linear-gradient(transparent, rgba(0, 0, 0, 0.85)); }
+  .vjs-atlas .vjs-play-progress, .vjs-atlas .vjs-volume-level { background: var(--accent); }
+  .vjs-atlas .vjs-play-progress:before { color: var(--accent); }
+  .vjs-atlas .vjs-load-progress div { background: rgba(255, 255, 255, 0.35); }
+  .vjs-atlas .vjs-progress-holder { height: 5px; border-radius: 5px; }
+  .vjs-atlas .vjs-slider { background: rgba(255, 255, 255, 0.18); }
+  .vjs-atlas .vjs-menu-button-popup .vjs-menu .vjs-menu-content { background: rgba(20, 22, 26, 0.95); border-radius: 8px; }
+  .vjs-atlas .vjs-menu li.vjs-selected { background: var(--accent); color: #1a1a14; }
+  .vjs-atlas .chapter-mark { position: absolute; top: 0; width: 3px; height: 100%; background: #0e1013; z-index: 2; pointer-events: none; }
+  .toast {
+    position: absolute; left: 14px; top: 14px; z-index: 5; padding: 6px 12px; border-radius: 8px;
+    background: rgba(14, 16, 19, 0.8); border: 1px solid var(--line); font-size: 12px; transition: opacity .4s;
+  }
+
+  @media (max-width: 640px) {
+    /* stacked layout scrolls under the fixed hint; the on-screen controls are self-explanatory */
+    .hint { display: none; }
+    body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); padding: 10px 10px 44px; gap: 10px; }
+    header h1 { font-size: 15px; }
+    .meta span:nth-child(3) { display: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="course">網頁動畫實戰課</span>
+    <h1>第 3 講：用短片學分鏡節奏</h1>
+  </header>
+  <div class="frame">
+    <video id="player" class="video-js vjs-atlas" playsinline poster="assets/videojs/poster.jpg"></video>
+    <div class="toast" id="toast">已從上次觀看位置 01:20 繼續</div>
+  </div>
+  <div class="meta">
+    <span>畫質 <b id="q">偵測中</b></span>
+    <span>進度 <b id="pct">0%</b></span>
+    <span>快捷鍵：空白鍵播放、方向鍵快轉</span>
+  </div>
+</main>
+<aside>
+  <h2><span>課程章節</span><span>示意</span></h2>
+  <ol id="chapters"></ol>
+</aside>
+<div class="hint">點章節跳轉・右下齒輪可調速度</div>
+
+<script src="https://cdn.jsdelivr.net/npm/video.js@8.24.1/dist/video.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/video.js@8.24.1/dist/lang/zh-TW.js"></script>
+<script>
+// Video.js course player: custom skin, zh-TW UI, HLS via built-in VHS, chapter list + progress markers.
+const SRC = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8";
+const RESUME_AT = 80;
+const CHAPTERS = [
+  [0, "片頭與森林早晨"],
+  [72, "大兔子登場"],
+  [150, "三個搗蛋鬼"],
+  [255, "蝴蝶事件"],
+  [345, "反擊計畫"],
+  [450, "陷阱大作戰"],
+  [555, "片尾字幕"],
+];
+
+const player = videojs("player", {
+  language: "zh-TW",
+  controls: true,
+  preload: "auto",
+  fill: true,
+  playbackRates: [0.75, 1, 1.25, 1.5, 2],
+  userActions: { hotkeys: true },
+  controlBar: { skipButtons: { forward: 10, backward: 10 }, pictureInPictureToggle: false },
+  sources: [{ src: SRC, type: "application/x-mpegURL" }],
+});
+
+const fmt = (s) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+const list = document.getElementById("chapters");
+const items = CHAPTERS.map(([t, name], i) => {
+  const li = document.createElement("li");
+  const b = document.createElement("button");
+  b.innerHTML = `<span class="t">${fmt(t)}</span><span>${i + 1}. ${name}</span><span class="bar"><i></i></span>`;
+  b.addEventListener("click", () => { player.currentTime(t + 0.1); player.play(); });
+  li.append(b);
+  list.append(li);
+  return b;
+});
+
+// Once the HLS playlist reports its duration: resume where the learner left off
+// (the poster is a frame from 01:20) and draw chapter markers on the progress bar.
+player.one("durationchange", () => {
+  // VHS ignores seeks until its media playlist is ready, so retry briefly.
+  let tries = 0;
+  const resume = setInterval(() => {
+    if (player.hasStarted() || player.currentTime() >= RESUME_AT - 1 || ++tries > 40) return clearInterval(resume);
+    player.currentTime(RESUME_AT);
+    updateChapters();
+  }, 250);
+  setTimeout(() => { document.getElementById("toast").style.opacity = 0; }, 5000);
+  const holder = player.el().querySelector(".vjs-progress-holder");
+  const dur = player.duration();
+  CHAPTERS.slice(1).forEach(([t]) => {
+    const m = document.createElement("div");
+    m.className = "chapter-mark";
+    m.style.left = `${(t / dur) * 100}%`;
+    holder.append(m);
+  });
+  updateChapters();
+});
+
+player.on("timeupdate", updateChapters);
+function updateChapters() {
+  const t = player.currentTime();
+  const dur = player.duration() || 634;
+  document.getElementById("pct").textContent = `${Math.round((t / dur) * 100)}%`;
+  CHAPTERS.forEach(([start], i) => {
+    const end = i + 1 < CHAPTERS.length ? CHAPTERS[i + 1][0] : dur;
+    const on = t >= start && t < end;
+    items[i].classList.toggle("on", on);
+    const p = Math.max(0, Math.min(1, (t - start) / (end - start)));
+    items[i].querySelector(".bar i").style.width = `${p * 100}%`;
+    if (on && player.hasStarted() && !player.paused()) items[i].scrollIntoView({ block: "nearest" });
+  });
+}
+
+// Quality levels API (bundled in Video.js 8) reports which HLS rendition is playing.
+const levels = player.qualityLevels();
+levels.on("change", () => {
+  const lv = levels[levels.selectedIndex];
+  if (lv) document.getElementById("q").textContent = `${lv.height}p 自動`;
+});
+player.on("error", () => { document.getElementById("q").textContent = "無法載入串流"; });
+</script>
+</body>
+</html>

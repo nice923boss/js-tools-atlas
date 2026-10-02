@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sql.js 示範：瀏覽器裡的 SQLite</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","size":"約 700 KB","note":"SQLite 編譯成 WebAssembly，資料庫完全在記憶體裡"}</script>
+<style>
+  .app { position: fixed; inset: 0; display: grid; grid-template-columns: 220px minmax(0, 1fr); }
+  .side { background: var(--bg-2); border-right: 1px solid var(--line); padding: 14px 14px 52px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+  .side h1 { font-size: 16px; margin: 0; }
+  .side h1 small { display: block; font-size: 11px; font-weight: 400; color: var(--muted); }
+  .lab { font-size: 11px; color: var(--muted); letter-spacing: .04em; margin-top: 4px; }
+  .tbls { display: flex; flex-direction: column; gap: 6px; }
+  .tbl { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--bg); cursor: pointer; }
+  .tbl:hover { border-color: var(--c2); }
+  .tbl header { display: flex; align-items: center; gap: 6px; font: 600 12px var(--mono); }
+  .tbl header i { font-style: normal; font-size: 10px; padding: 0 5px; border-radius: 4px; background: rgba(31, 143, 184, .14); color: var(--c2); }
+  .tbl header i.v { background: rgba(106, 90, 224, .14); color: var(--c6); }
+  .tbl header small { margin-left: auto; font-weight: 400; color: var(--muted); }
+  .cols { margin-top: 3px; font: 11px/1.55 var(--mono); color: var(--muted); }
+  .cols b { color: var(--fg); font-weight: 500; }
+  .note { font-size: 11px; color: var(--muted); line-height: 1.5; }
+  .main { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr); gap: 8px; padding: 12px 14px 12px; min-width: 0; min-height: 0; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { border: 1px solid var(--line); background: var(--bg-2); color: var(--fg); border-radius: 999px; padding: 3px 11px; font: 12px var(--font); cursor: pointer; }
+  .chip:hover { border-color: var(--c2); }
+  .chip[aria-pressed="true"] { background: var(--c2); border-color: var(--c2); color: #fff; }
+  .chip.w { border-style: dashed; }
+  .ed { position: relative; }
+  textarea { width: 100%; height: 118px; resize: none; display: block; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: #1c1d21; color: #e6e4dc; font: 13px/1.55 var(--mono); outline: none; tab-size: 2; }
+  textarea:focus { border-color: var(--c2); }
+  .ed kbd { position: absolute; right: 10px; bottom: 8px; font: 10px var(--mono); color: #7f848e; }
+  .tool { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .msg { font: 12px var(--mono); color: var(--muted); margin-left: auto; text-align: right; }
+  .msg.ok b { color: var(--c4); }
+  .msg.err { color: var(--c3); white-space: normal; }
+  .res { overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-2); min-height: 0; }
+  table { border-collapse: collapse; font-size: 13px; min-width: 100%; }
+  th, td { padding: 5px 12px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+  th { position: sticky; top: 0; background: var(--bg); font-weight: 600; font-size: 12px; z-index: 1; }
+  td.n { text-align: right; font-family: var(--mono); font-size: 12px; }
+  td.bar2 { position: relative; }
+  td.bar2 span { position: relative; }
+  td.bar2::before { content: ""; position: absolute; right: 6px; top: 5px; bottom: 5px; width: calc(var(--w) * (100% - 12px)); background: linear-gradient(90deg, rgba(31, 143, 184, .08), rgba(31, 143, 184, .28)); border-radius: 4px; }
+  td.null { color: var(--muted); font-style: italic; }
+  tr:hover td { background: rgba(31, 143, 184, .05); }
+  .empty { padding: 18px; color: var(--muted); font-size: 13px; }
+  @media (max-width: 640px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+    .side { border-right: 0; border-bottom: 1px solid var(--line); padding: 8px 12px; flex-direction: row; align-items: center; overflow-x: auto; overflow-y: hidden; gap: 8px; }
+    .side h1 { font-size: 14px; white-space: nowrap; }
+    .side h1 small, .side .lab, .side .note, .cols { display: none; }
+    .tbls { flex-direction: row; }
+    .tbl { padding: 3px 8px; white-space: nowrap; }
+    .main { padding: 8px 10px 44px; gap: 6px; }
+    .chips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 2px; }
+    .chip { white-space: nowrap; }
+    textarea { height: 92px; font-size: 12px; }
+    .msg { width: 100%; text-align: left; margin-left: 0; }
+    th, td { padding: 4px 8px; }
+  }
+</style>
+</head>
+<body class="paper">
+<div class="app">
+  <aside class="side">
+    <h1>sql.js<small>SQLite 跑在瀏覽器記憶體裡</small></h1>
+    <div class="lab">資料表與檢視表（點一下查看）</div>
+    <div class="tbls" id="tbls"></div>
+    <div class="note">縣市人口為示意資料（約略數字，非官方統計）。可匯出成 .sqlite 檔，也能匯入自己的 SQLite 資料庫。</div>
+  </aside>
+  <main class="main">
+    <div class="chips" id="chips"></div>
+    <div class="ed">
+      <textarea id="sql" spellcheck="false" aria-label="SQL 指令"></textarea>
+      <kbd>Ctrl + Enter 執行</kbd>
+    </div>
+    <div class="tool">
+      <button class="btn primary" id="run">▶ 執行</button>
+      <button class="btn" id="exp">匯出 .sqlite</button>
+      <label class="btn" for="imp">匯入 .sqlite</label>
+      <input type="file" id="imp" accept=".sqlite,.db,.sqlite3" hidden>
+      <span class="msg" id="msg">載入 SQLite 中…</span>
+    </div>
+    <div class="res" id="res"><div class="empty">等待 WebAssembly 載入…</div></div>
+  </main>
+</div>
+<div class="hint">改 SQL 後按執行，或點上方範例</div>
+
+<script src="https://cdn.jsdelivr.net/npm/sql.js@1.14.2/dist/sql-wasm.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+// ---- Sample data: Taiwan counties (illustrative numbers, not official statistics) ----
+// [code, name, region, area_km2, population_2025, annual_growth]
+const COUNTIES = [
+  ["NWT", "新北市", "北部", 2052.6, 4040000, -0.002], ["TXG", "臺中市", "中部", 2214.9, 2850000, 0.004],
+  ["KHH", "高雄市", "南部", 2951.9, 2730000, -0.003], ["TPE", "臺北市", "北部", 271.8, 2480000, -0.010],
+  ["TAO", "桃園市", "北部", 1221.0, 2330000, 0.010], ["TNN", "臺南市", "南部", 2191.7, 1850000, -0.003],
+  ["CHA", "彰化縣", "中部", 1074.4, 1240000, -0.006], ["PIF", "屏東縣", "南部", 2775.6, 800000, -0.009],
+  ["YUN", "雲林縣", "中部", 1290.8, 660000, -0.009], ["HSQ", "新竹縣", "北部", 1427.5, 590000, 0.013],
+  ["MIA", "苗栗縣", "中部", 1820.3, 535000, -0.006], ["CYQ", "嘉義縣", "南部", 1903.6, 480000, -0.011],
+  ["NAN", "南投縣", "中部", 4106.4, 480000, -0.009], ["ILA", "宜蘭縣", "北部", 2143.6, 450000, -0.004],
+  ["HSZ", "新竹市", "北部", 104.2, 455000, 0.008], ["KEE", "基隆市", "北部", 132.8, 362000, -0.008],
+  ["HUA", "花蓮縣", "東部", 4628.6, 318000, -0.008], ["CYI", "嘉義市", "南部", 60.0, 262000, -0.006],
+  ["TTT", "臺東縣", "東部", 3515.3, 212000, -0.008], ["KIN", "金門縣", "離島", 151.7, 145000, 0.004],
+  ["PEN", "澎湖縣", "離島", 126.9, 108000, 0.002], ["LIE", "連江縣", "離島", 28.8, 14000, 0.005],
+];
+
+const EXAMPLES = [
+  { name: "人口前五名", sql: "-- 2025 年人口前五名（示意資料）\nSELECT c.name AS 縣市, c.region AS 區域, p.people AS 人口\nFROM population p JOIN county c USING (code)\nWHERE p.year = 2025\nORDER BY p.people DESC\nLIMIT 5;" },
+  { name: "各區域合計", sql: "-- GROUP BY 彙總各區域\nSELECT c.region AS 區域, COUNT(*) AS 縣市數, SUM(p.people) AS 人口\nFROM population p JOIN county c USING (code)\nWHERE p.year = 2025\nGROUP BY c.region\nORDER BY 人口 DESC;" },
+  { name: "人口密度", sql: "-- 每平方公里人數\nSELECT c.name AS 縣市, ROUND(p.people / c.area_km2, 1) AS 每平方公里\nFROM population p JOIN county c USING (code)\nWHERE p.year = 2025\nORDER BY 2 DESC\nLIMIT 10;" },
+  { name: "五年成長率", sql: "-- 自我 JOIN 比較 2020 與 2025\nSELECT c.name AS 縣市, a.people AS 民國109年, b.people AS 民國114年,\n       ROUND((b.people - a.people) * 100.0 / a.people, 2) AS 成長率\nFROM population a\nJOIN population b ON b.code = a.code AND b.year = 2025\nJOIN county c ON c.code = a.code\nWHERE a.year = 2020\nORDER BY 成長率 DESC;" },
+  { name: "寫入資料", w: true, sql: "-- INSERT 會真的寫進記憶體中的資料庫\nINSERT OR REPLACE INTO county VALUES ('DEMO', '示意新市', '北部', 88.8);\nINSERT OR REPLACE INTO population VALUES ('DEMO', 2025, 123456);\nSELECT * FROM county WHERE code = 'DEMO';" },
+  { name: "建立檢視表", w: true, sql: "-- CREATE VIEW 後，左側清單會多一個檢視表\nCREATE VIEW IF NOT EXISTS 北部人口 AS\nSELECT c.name, p.year, p.people\nFROM population p JOIN county c USING (code)\nWHERE c.region = '北部';\n\nSELECT year AS 年度, SUM(people) AS 北部總人口\nFROM 北部人口 GROUP BY year ORDER BY year;" },
+];
+
+let SQL, db;
+
+function seed() {
+  db.run("CREATE TABLE county (code TEXT PRIMARY KEY, name TEXT NOT NULL, region TEXT, area_km2 REAL);");
+  db.run("CREATE TABLE population (code TEXT REFERENCES county(code), year INTEGER, people INTEGER, PRIMARY KEY (code, year));");
+  const c = db.prepare("INSERT INTO county VALUES (?, ?, ?, ?)");
+  const p = db.prepare("INSERT INTO population VALUES (?, ?, ?)");
+  db.run("BEGIN");
+  for (const [code, name, region, area, pop, g] of COUNTIES) {
+    c.run([code, name, region, area]);
+    for (let y = 2019; y <= 2025; y++) p.run([code, y, Math.round(pop / Math.pow(1 + g, 2025 - y))]);
+  }
+  db.run("COMMIT");
+  c.free(); p.free();
+}
+
+function renderSchema() {
+  const objs = db.exec("SELECT name, type FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY type, name")[0];
+  if (!objs) { $("tbls").innerHTML = '<div class="note">資料庫是空的</div>'; return; }
+  $("tbls").innerHTML = objs.values.map(([name, type]) => {
+    const q = name.replace(/"/g, '""');
+    const cols = db.exec(`PRAGMA table_info("${q}")`)[0]?.values || [];
+    const n = db.exec(`SELECT COUNT(*) FROM "${q}"`)[0].values[0][0];
+    return `<div class="tbl" data-name="${esc(name)}"><header><i class="${type === "view" ? "v" : ""}">${type === "view" ? "VIEW" : "TABLE"}</i>${esc(name)}<small>${n} 列</small></header>
+      <div class="cols">${cols.map((col) => `<b>${esc(col[1])}</b> ${esc(col[2] || "")}`).join("<br>")}</div></div>`;
+  }).join("");
+}
+
+function fmt(v) {
+  if (v === null) return ["NULL", "null"];
+  if (typeof v === "number") {
+    const s = Number.isInteger(v) && Math.abs(v) >= 10000 ? v.toLocaleString("zh-TW") : String(v);
+    return [s, "n"];
+  }
+  if (v instanceof Uint8Array) return [`BLOB ${v.length} bytes`, "null"];
+  return [esc(v), ""];
+}
+
+function renderResult(r) {
+  if (!r) { $("res").innerHTML = '<div class="empty">指令已執行，沒有回傳資料列。</div>'; return; }
+  const { columns, values } = r;
+  // Draw inline bars for the last all-numeric column when there is also a label column
+  const numeric = columns.map((_, i) => values.length > 0 && values.every((row) => typeof row[i] === "number" || row[i] === null));
+  let barCol = -1;
+  if (numeric.some((x) => !x) && values.length <= 60) for (let i = columns.length - 1; i >= 0; i--) if (numeric[i]) { barCol = i; break; }
+  const max = barCol >= 0 ? Math.max(...values.map((row) => Math.abs(row[barCol] || 0))) || 1 : 1;
+  const head = `<tr>${columns.map((c) => `<th>${esc(c)}</th>`).join("")}</tr>`;
+  const body = values.slice(0, 500).map((row) => `<tr>${row.map((v, i) => {
+    const [s, cls] = fmt(v);
+    if (i === barCol && v !== null) return `<td class="n bar2" style="--w:${(Math.abs(v) / max).toFixed(3)}"><span>${s}</span></td>`;
+    return `<td class="${cls}">${s}</td>`;
+  }).join("")}</tr>`).join("");
+  $("res").innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+}
+
+function run() {
+  const sql = $("sql").value;
+  const msg = $("msg");
+  try {
+    const t0 = performance.now();
+    const results = db.exec(sql);
+    const ms = performance.now() - t0;
+    const changed = db.getRowsModified();
+    const last = results[results.length - 1];
+    renderResult(last);
+    msg.className = "msg ok";
+    msg.innerHTML = last
+      ? `<b>${last.values.length}</b> 列 · ${ms.toFixed(1)} ms`
+      : `完成，最後一個敘述影響 <b>${changed}</b> 列 · ${ms.toFixed(1)} ms`;
+    if (/\b(create|drop|insert|update|delete|alter|replace)\b/i.test(sql)) renderSchema();
+  } catch (err) {
+    msg.className = "msg err";
+    msg.textContent = `SQL 錯誤：${err.message}`;
+  }
+}
+
+function pick(i) {
+  document.querySelectorAll(".chip").forEach((b, j) => b.setAttribute("aria-pressed", j === i));
+  $("sql").value = EXAMPLES[i].sql;
+  run();
+}
+
+$("chips").innerHTML = EXAMPLES.map((e, i) => `<button class="chip${e.w ? " w" : ""}" data-i="${i}">${e.name}</button>`).join("");
+$("chips").addEventListener("click", (e) => { const b = e.target.closest(".chip"); if (b && db) pick(+b.dataset.i); });
+$("run").addEventListener("click", () => db && run());
+$("sql").addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); if (db) run(); }
+});
+$("sql").addEventListener("input", () => document.querySelectorAll(".chip").forEach((b) => b.setAttribute("aria-pressed", "false")));
+$("tbls").addEventListener("click", (e) => {
+  const t = e.target.closest(".tbl");
+  if (!t) return;
+  $("sql").value = `SELECT * FROM "${t.dataset.name.replace(/"/g, '""')}" LIMIT 50;`;
+  document.querySelectorAll(".chip").forEach((b) => b.setAttribute("aria-pressed", "false"));
+  run();
+});
+$("exp").addEventListener("click", () => {
+  if (!db) return;
+  // db.export() returns the whole database file as a Uint8Array
+  const blob = new Blob([db.export()], { type: "application/vnd.sqlite3" });
+  const a = Object.assign(document.createElement("a"), { href: URL.createObjectURL(blob), download: "taiwan-population-demo.sqlite" });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  $("msg").className = "msg ok";
+  $("msg").innerHTML = `已匯出 <b>${(blob.size / 1024).toFixed(1)} KB</b> 的 SQLite 檔`;
+});
+$("imp").addEventListener("change", async (e) => {
+  const f = e.target.files[0];
+  e.target.value = "";
+  if (!f) return;
+  try {
+    const next = new SQL.Database(new Uint8Array(await f.arrayBuffer()));
+    next.exec("SELECT name FROM sqlite_master LIMIT 1");
+    db.close();
+    db = next;
+    renderSchema();
+    const first = db.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1")[0];
+    $("sql").value = first ? `SELECT * FROM "${first.values[0][0].replace(/"/g, '""')}" LIMIT 50;` : "SELECT name, type FROM sqlite_master;";
+    run();
+    $("msg").className = "msg ok";
+    $("msg").innerHTML = `已開啟 <b>${esc(f.name)}</b>`;
+  } catch (err) {
+    $("msg").className = "msg err";
+    $("msg").textContent = `無法開啟這個檔案：${err.message}`;
+  }
+});
+
+initSqlJs({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/sql.js@1.14.2/dist/${file}` })
+  .then((lib) => {
+    SQL = lib;
+    db = new SQL.Database();
+    seed();
+    renderSchema();
+    pick(0);
+  })
+  .catch((err) => {
+    $("msg").className = "msg err";
+    $("msg").textContent = `SQLite 載入失敗：${err.message}`;
+    $("res").innerHTML = '<div class="empty">WebAssembly 檔案下載失敗，請檢查網路後重新整理。</div>';
+  });
+</script>
+</body>
+</html>

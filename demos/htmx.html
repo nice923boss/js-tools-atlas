@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>htmx 示範：用 HTML 屬性做分頁、載入更多與分頁籤</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"伺服器回應以 demos/assets/htmx/ 的靜態 HTML 片段模擬"}</script>
+<style>
+  body { background: radial-gradient(70% 60% at 100% 0%, rgba(52,101,164,.22), transparent 60%), var(--bg); --hx: #5d8fd6; }
+  .app { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr) 270px; grid-template-rows: auto auto minmax(0, 1fr); gap: 10px 14px; padding: 12px 12px 46px; }
+  .head { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .head h1 { margin: 0; font-size: 18px; }
+  .head .sim { font-size: 12px; color: var(--c5); border: 1px dashed rgba(255,140,66,.55); border-radius: 6px; padding: 1px 8px; }
+  .tabs { display: flex; gap: 4px; padding: 3px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line); }
+  .tabs button { flex: 1; border: 0; background: none; color: var(--muted); padding: 8px 6px; border-radius: 9px; font: 600 13px var(--font); cursor: pointer; white-space: nowrap; }
+  .tabs button[aria-selected="true"] { background: var(--hx); color: #fff; }
+  .tabs .sub { font-weight: 400; opacity: .8; }
+  #panel { grid-row: 3; min-height: 0; overflow-y: auto; scrollbar-width: thin; border-radius: 14px; background: var(--bg-2); border: 1px solid var(--line); padding: 10px 12px; }
+  .log { grid-column: 2; grid-row: 2 / 4; min-height: 0; display: flex; flex-direction: column; border-radius: 14px; background: #0a0d12; border: 1px solid var(--line); padding: 10px; }
+  .log h2 { margin: 0 0 6px; font-size: 13px; display: flex; justify-content: space-between; }
+  .log h2 span { color: var(--muted); font-weight: 400; font-size: 11px; }
+  .log ol { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; scrollbar-width: thin; }
+  .log li { font: 11px/1.5 var(--mono); color: #b9c7d6; padding: 6px 8px; border-radius: 8px; background: rgba(93,143,214,.08); border-left: 3px solid var(--hx); animation: pop .35s; }
+  .log li b { color: var(--c4); }
+  .log li .url { color: #fff; word-break: break-all; }
+  .log li .sw { color: var(--muted); }
+  .log .attr { margin-top: 8px; font: 11px/1.6 var(--mono); color: var(--muted); border-top: 1px solid var(--line); padding-top: 8px; word-break: break-all; }
+  .log .attr code { color: var(--c2); }
+  @keyframes pop { from { opacity: 0; transform: translateY(-6px); } }
+  /* htmx adds .htmx-added to new content until it settles, which drives the fade-in */
+  #panel > *, .feed > * { transition: opacity .35s, transform .35s; }
+  #panel > .htmx-added, .feed > .htmx-added { opacity: 0; transform: translateY(8px); }
+  .events { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .ev { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,.035); }
+  .ev .date { flex: none; width: 50px; text-align: center; font: 800 20px/1.1 var(--mono); color: var(--hx); }
+  .ev .date small { display: block; font: 600 10px var(--font); color: var(--muted); }
+  .ev .info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .ev .info b { font-size: 14px; }
+  .ev .info span { font-size: 12px; color: var(--muted); }
+  .ev .city { flex: none; font-size: 11px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--fg); }
+  .pager { display: flex; align-items: center; gap: 4px; margin-top: 10px; flex-wrap: wrap; }
+  .pager button { min-width: 32px; height: 30px; padding: 0 9px; border-radius: 8px; border: 1px solid var(--line); background: none; color: var(--fg); cursor: pointer; font: 12px var(--font); }
+  .pager button.on { background: var(--hx); border-color: transparent; color: #fff; font-weight: 700; }
+  .pager button:disabled { opacity: .35; cursor: default; }
+  .pager .pinfo { margin-left: auto; font-size: 11px; color: var(--muted); }
+  .feed { display: flex; flex-direction: column; gap: 8px; }
+  .post { display: flex; gap: 10px; padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,.035); }
+  .post .ava { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: rgba(93,143,214,.18); font-size: 18px; }
+  .post b { font-size: 13px; }
+  .post small { margin-left: 8px; font-size: 11px; color: var(--muted); }
+  .post p { margin: 2px 0 0; font-size: 13px; }
+  .more { height: 36px; border-radius: 10px; border: 1px dashed var(--hx); background: none; color: var(--hx); font: 600 13px var(--font); cursor: pointer; }
+  .more:hover { background: rgba(93,143,214,.12); }
+  .end { margin: 4px 0; text-align: center; font-size: 12px; color: var(--muted); }
+  .subtabs { display: flex; gap: 0; border-bottom: 1px solid var(--line); }
+  .subtabs button { border: 0; background: none; color: var(--muted); padding: 8px 16px; font: 600 13px var(--font); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .subtabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--hx); }
+  .intro { margin: 10px 0 8px; font-size: 13px; color: #c9d3de; }
+  .spots { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .spots li { display: flex; flex-direction: column; gap: 2px; padding: 12px; border-radius: 12px; background: rgba(255,255,255,.035); }
+  .spots .emo { font-size: 26px; }
+  .spots b { font-size: 14px; }
+  .spots li span:last-child { font-size: 12px; color: var(--muted); }
+  @media (max-width: 640px) {
+    .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto minmax(0, 1fr); padding: 8px 8px 46px; gap: 8px; }
+    .head h1 { font-size: 16px; }
+    .tabs .sub { display: none; }
+    .log { grid-column: 1; grid-row: 3; padding: 6px 8px; }
+    .log h2, .log .attr, .log li:not(:first-child) { display: none; }
+    .log li { animation: none; }
+    #panel { grid-row: 4; }
+    .ev .city { display: none; }
+    .pager .pinfo { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="head">
+    <h1>🗺️ 城市散步週報</h1>
+    <span class="sim">示範用靜態 HTML 片段模擬伺服器回應・活動為示意資料</span>
+  </div>
+  <nav class="tabs" role="tablist" id="tabs">
+    <button role="tab" aria-selected="true" hx-get="assets/htmx/events-1.html" hx-target="#panel">📅 活動<span class="sub">・分頁</span></button>
+    <button role="tab" aria-selected="false" hx-get="assets/htmx/feed-1.html" hx-target="#panel">💬 動態<span class="sub">・載入更多</span></button>
+    <button role="tab" aria-selected="false" hx-get="assets/htmx/city-tpe.html" hx-target="#panel">🏙️ 景點<span class="sub">・分頁籤</span></button>
+  </nav>
+  <div id="panel" hx-get="assets/htmx/events-1.html" hx-trigger="load" hx-swap="innerHTML settle:250ms"></div>
+  <aside class="log">
+    <h2>請求紀錄 <span>沒有寫任何 fetch</span></h2>
+    <ol id="log"></ol>
+    <div class="attr" id="attr"></div>
+  </aside>
+</div>
+<div class="hint">點分頁籤、頁碼、載入更多・右側即時顯示 htmx 發出的請求</div>
+
+<script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.11/dist/htmx.min.js"></script>
+<script>
+// htmx: every button above only has hx-get / hx-target / hx-swap attributes; this script just visualises htmx's events.
+htmx.config.defaultSettleDelay = 250;
+const started = new WeakMap();
+const $ = (id) => document.getElementById(id);
+
+document.body.addEventListener("htmx:beforeRequest", (e) => {
+  started.set(e.detail.xhr, performance.now());
+  const tab = e.detail.elt.closest("#tabs button");
+  if (tab) document.querySelectorAll("#tabs button").forEach((b) => b.setAttribute("aria-selected", b === tab));
+  const el = e.detail.elt;
+  const attrs = ["hx-get", "hx-target", "hx-swap", "hx-trigger"].filter((a) => el.hasAttribute(a)).map((a) => `<code>${a}</code>="${el.getAttribute(a)}"`);
+  $("attr").innerHTML = `剛觸發的元素屬性：<br>${attrs.join("<br>")}`;
+});
+
+document.body.addEventListener("htmx:afterSwap", (e) => {
+  const { xhr, requestConfig, target } = e.detail;
+  const ms = Math.max(1, Math.round(performance.now() - (started.get(xhr) || performance.now())));
+  const path = requestConfig.path.split("/").pop();
+  const swap = requestConfig.elt.getAttribute("hx-swap") || "innerHTML";
+  const where = target.id ? `#${target.id}` : target.isConnected ? target.tagName.toLowerCase() : "this";
+  const li = document.createElement("li");
+  li.innerHTML = `GET <span class="url">${path}</span><br><b>${xhr.status}</b> ・ ${ms} ms ・ ${(xhr.responseText.length / 1024).toFixed(1)} KB<br><span class="sw">${swap.split(" ")[0]} → ${where}</span>`;
+  $("log").prepend(li);
+  while ($("log").children.length > 12) $("log").lastChild.remove();
+});
+
+document.body.addEventListener("htmx:responseError", (e) => console.warn("htmx request failed", e.detail.xhr.status, e.detail.requestConfig.path));
+</script>
+</body>
+</html>

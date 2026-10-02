@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>p5.sound 示範：XY 觸控合成器</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"]}</script>
+<style>
+  main canvas { display: block; touch-action: none; cursor: crosshair; }
+  @media (max-width: 560px) {
+    .controls .btn { padding: 7px 9px; font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+<div class="controls">
+  <button class="btn primary" id="auto">▶ 自動演奏</button>
+  <button class="btn" id="wave">波形：鋸齒波</button>
+  <button class="btn" id="echo" aria-pressed="true">回音</button>
+</div>
+<div class="hint">按住畫面拖曳演奏：左右換音高，上下調音色亮度</div>
+
+<script src="https://cdn.jsdelivr.net/npm/p5@2.3.4/lib/p5.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/p5.sound@0.4.1/dist/p5.sound.min.js"></script>
+<script>
+// p5.sound XY synth: Oscillator -> Envelope -> LowPass -> (Delay, Reverb), analysed by p5.FFT.
+const NOTES = ["A2", "C3", "D3", "E3", "G3", "A3", "C4", "D4", "E4", "G4", "A4", "C5", "D5", "E5", "G5"];
+const MIDI = { C: 0, D: 2, E: 4, G: 7, A: 9 };
+const hz = (n) => 440 * Math.pow(2, (MIDI[n[0]] + 12 * (+n[1] + 1) - 69) / 12);
+const WAVES = [["sawtooth", "鋸齒波"], ["square", "方波"], ["triangle", "三角波"], ["sine", "正弦波"]];
+// Auto-play phrase: [column, height 0..1 (1 = top / bright)]
+const PHRASE = [[5, 0.4], [7, 0.5], [8, 0.6], [10, 0.75], [9, 0.65], [8, 0.5], [6, 0.45], [7, 0.55],
+  [3, 0.3], [5, 0.45], [8, 0.7], [11, 0.9], [12, 0.85], [10, 0.7], [9, 0.5], [5, 0.35]];
+
+let au = null;          // audio graph, created on first gesture
+let waveIdx = 0;
+let echoOn = true;
+let held = false;
+let autoOn = false, autoStep = 0, nextAt = 0, releaseAt = 0;
+let cur = { col: 7, y: 0.5, x: 0, py: 0 };
+let ripples = [];
+
+function initAudio() {
+  if (au) return au;
+  userStartAudio();
+  const osc = new p5.Oscillator(hz("E4"), WAVES[waveIdx][0]);
+  const env = new p5.Envelope(0.01, 0.2, 0.55, 0.35);
+  const lp = new p5.LowPass(1200);
+  lp.res(6);
+  const echo = new p5.Delay(0.27, 0.42);
+  const verb = new p5.Reverb(2.5);
+  // route: osc -> env -> lowpass -> speakers, plus parallel delay and reverb sends
+  osc.disconnect(); osc.connect(env);
+  env.disconnect(); env.connect(lp);
+  lp.connect(echo); lp.connect(verb);
+  echo.output.gain.value = echoOn ? 0.4 : 0;
+  verb.output.gain.value = 0.35;
+  const fft = new p5.FFT(512);
+  fft.setInput(lp); fft.setInput(echo); fft.setInput(verb);
+  osc.start();
+  au = { osc, env, lp, echo, verb, fft };
+  return au;
+}
+
+function cutoffFor(y) { return 180 * Math.pow(2, 6.2 * y); }   // y: 0 bottom .. 1 top
+
+function setVoice(col, y) {
+  cur.col = col; cur.y = y;
+  if (!au) return;
+  au.osc.freq(hz(NOTES[col]), 0.04);
+  au.lp.freq(cutoffFor(y));
+}
+
+function noteOn(col, y) {
+  initAudio();
+  setVoice(col, y);
+  au.env.triggerAttack();
+  ripples.push({ x: colX(col), y: (1 - y) * height, t: millis(), c: colColor(col) });
+}
+function noteOff() { if (au) au.env.triggerRelease(); }
+
+const colW = () => width / NOTES.length;
+const colX = (c) => (c + 0.5) * colW();
+function colColor(c) { return color(`hsl(${200 + c * 9}, 85%, 62%)`); }
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  pixelDensity(Math.min(2, displayDensity()));
+  textFont("sans-serif");
+  const cv = document.querySelector("main canvas") || document.querySelector("canvas");
+  const pick = (e) => {
+    const r = cv.getBoundingClientRect();
+    const col = constrain(Math.floor(((e.clientX - r.left) / r.width) * NOTES.length), 0, NOTES.length - 1);
+    const y = constrain(1 - (e.clientY - r.top) / r.height, 0, 1);
+    return [col, y];
+  };
+  cv.addEventListener("pointerdown", (e) => {
+    cv.setPointerCapture(e.pointerId);
+    held = true;
+    stopAuto();
+    const [c, y] = pick(e);
+    noteOn(c, y);
+  });
+  cv.addEventListener("pointermove", (e) => {
+    if (!held) return;
+    const [c, y] = pick(e);
+    if (c !== cur.col) ripples.push({ x: colX(c), y: (1 - y) * height, t: millis(), c: colColor(c) });
+    setVoice(c, y);
+  });
+  const up = () => { if (held) { held = false; noteOff(); } };
+  cv.addEventListener("pointerup", up);
+  cv.addEventListener("pointercancel", up);
+  cur.x = colX(cur.col); cur.py = (1 - cur.y) * height;
+}
+
+function windowResized() { resizeCanvas(windowWidth, windowHeight); }
+
+function stopAuto() {
+  if (!autoOn) return;
+  autoOn = false;
+  noteOff();
+  document.getElementById("auto").textContent = "▶ 自動演奏";
+}
+
+function runAuto() {
+  if (!autoOn) return;
+  const now = millis();
+  if (releaseAt && now >= releaseAt) { noteOff(); releaseAt = 0; }
+  if (now >= nextAt) {
+    const [c, y] = PHRASE[autoStep % PHRASE.length];
+    noteOn(c, y);
+    autoStep++;
+    releaseAt = now + 190;
+    nextAt = now + 300;
+  }
+}
+
+function draw() {
+  runAuto();
+  const W = width, H = height, cw = colW();
+  background(14, 16, 19);
+  noStroke();
+
+  // Pitch columns with a vertical brightness ramp (top = open filter)
+  for (let c = 0; c < NOTES.length; c++) {
+    const active = (held || autoOn) && c === cur.col;
+    const grad = drawingContext.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, `hsla(${200 + c * 9}, 85%, 62%, ${c % 2 ? 0.17 : 0.13})`);
+    grad.addColorStop(1, `hsla(${200 + c * 9}, 85%, 62%, 0.02)`);
+    drawingContext.save();   // keep p5's cached fill state intact
+    drawingContext.fillStyle = grad;
+    drawingContext.fillRect(c * cw, 0, cw - 1, H);
+    drawingContext.restore();
+    if (active) {
+      const col = colColor(c);
+      col.setAlpha(46);
+      fill(col);
+      rect(c * cw, 0, cw, H);
+    }
+    fill(active ? 240 : 120);
+    textSize(Math.min(12, cw * 0.42));
+    textAlign(CENTER, BOTTOM);
+    text(NOTES[c], c * cw + cw / 2, H - 44);
+  }
+
+  // Spectrum + waveform (live audio) or an idle preview wave
+  const live = au && (held || autoOn || ripples.length);
+  if (au) {
+    const spec = au.fft.analyze();
+    const n = spec.length;
+    for (let i = 1; i < n; i++) {
+      const x0 = (Math.log(i) / Math.log(n)) * W;
+      const x1 = (Math.log(i + 1) / Math.log(n)) * W;
+      const db = 20 * Math.log10(spec[i] + 1e-9);
+      const v = constrain(map(db, -95, -15, 0, 1), 0, 1);
+      if (v <= 0.01) continue;
+      fill(`hsla(${190 + (i / n) * 140}, 90%, 60%, 0.55)`);
+      rect(x0, H - 60 - v * H * 0.45, Math.max(1, x1 - x0 - 1), v * H * 0.45);
+    }
+  }
+  noFill();
+  strokeWeight(3);
+  const wave = au ? au.fft.waveform() : null;
+  const mid = H * 0.42;
+  for (const glow of [[247, 223, 30, 40, 9], [247, 223, 30, 230, 2.5]]) {
+    stroke(glow[0], glow[1], glow[2], glow[3]);
+    strokeWeight(glow[4]);
+    beginShape();
+    for (let x = 0; x <= W; x += 4) {
+      let v;
+      if (wave && live) v = wave[Math.floor((x / W) * (wave.length - 1))] * 0.9;
+      else v = 0.12 * Math.sin(x * 0.018 + millis() * 0.002) * Math.sin(x * 0.004 + millis() * 0.0007);
+      vertex(x, mid + v * H * 0.28);
+    }
+    endShape();
+  }
+
+  // Ripples on note changes
+  noFill();
+  ripples = ripples.filter((r) => millis() - r.t < 900);
+  for (const r of ripples) {
+    const k = (millis() - r.t) / 900;
+    const c = color(r.c);
+    c.setAlpha(255 * (1 - k));
+    stroke(c);
+    strokeWeight(2);
+    circle(r.x, r.y, 20 + k * 140);
+  }
+
+  // Cursor eases toward the active voice
+  cur.x = lerp(cur.x, colX(cur.col), 0.25);
+  cur.py = lerp(cur.py, (1 - cur.y) * H, 0.25);
+  if (held || autoOn) {
+    noStroke();
+    const c = colColor(cur.col);
+    c.setAlpha(70);
+    fill(c);
+    circle(cur.x, cur.py, 46);
+    fill(255);
+    circle(cur.x, cur.py, 12);
+  }
+
+  // Readout
+  noStroke();
+  fill(236, 235, 230);
+  textAlign(LEFT, TOP);
+  textSize(15);
+  text(`${NOTES[cur.col]}  ${hz(NOTES[cur.col]).toFixed(1)} Hz`, 16, 18);
+  fill(155, 153, 143);
+  textSize(12);
+  text(`濾波截止 ${Math.round(cutoffFor(cur.y))} Hz・${WAVES[waveIdx][1]}`, 16, 40);
+  push();
+  translate(W - 14, H * 0.5);
+  rotate(-HALF_PI);
+  textAlign(CENTER, CENTER);
+  fill(155, 153, 143, 160);
+  text("越上面音色越亮 →", 0, 0);
+  pop();
+  if (!au) {
+    textAlign(CENTER, CENTER);
+    textSize(Math.min(18, W / 22));
+    fill(236, 235, 230, 150 + 60 * Math.sin(millis() / 500));
+    text("按住畫面任一處開始演奏", W / 2, H * 0.66);
+  }
+}
+
+document.getElementById("auto").addEventListener("click", (e) => {
+  if (autoOn) { stopAuto(); return; }
+  initAudio();
+  autoOn = true;
+  autoStep = 0;
+  nextAt = 0;
+  e.currentTarget.textContent = "■ 停止";
+});
+document.getElementById("wave").addEventListener("click", (e) => {
+  waveIdx = (waveIdx + 1) % WAVES.length;
+  e.currentTarget.textContent = `波形：${WAVES[waveIdx][1]}`;
+  if (au) au.osc.setType(WAVES[waveIdx][0]);
+});
+document.getElementById("echo").addEventListener("click", (e) => {
+  echoOn = !echoOn;
+  e.currentTarget.setAttribute("aria-pressed", echoOn);
+  if (au) au.echo.output.gain.value = echoOn ? 0.4 : 0;
+});
+</script>
+</body>
+</html>

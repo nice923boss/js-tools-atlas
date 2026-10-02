@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MediaPipe 示範：手勢、姿勢、臉部網格即時偵測</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"click","needs":["camera"],"size":"約 20 MB 起","note":"沒有鏡頭時可點範例照片或上傳照片"}</script>
+<style>
+  .app { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr) 290px; }
+  .main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 10px; padding: 12px 12px 48px; min-width: 0; min-height: 0; }
+  .top { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .chip { margin-left: auto; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg-2); color: var(--muted); white-space: nowrap; }
+  .chip.live { color: var(--c4); border-color: rgba(123, 211, 137, .4); }
+  .chip.live::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--c4); margin-right: 6px; animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  .stage { position: relative; min-height: 0; border-radius: 14px; overflow: hidden; display: grid; place-items: center;
+    background: radial-gradient(70% 90% at 50% 0%, rgba(76, 201, 240, .10), transparent 70%), #0a0c0f; border: 1px solid var(--line); }
+  .frame { position: relative; }
+  .frame > video, .frame > img, .frame > canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .frame > video, .frame > img { object-fit: fill; border-radius: 6px; }
+  .frame.mirror > video, .frame.mirror > canvas { transform: scaleX(-1); }
+  .frame[data-src="video"] > img, .frame[data-src="photo"] > video { display: none; }
+  .tagl { position: absolute; inset: 0; pointer-events: none; }
+  .tagl span { position: absolute; transform: translate(0, calc(-100% - 6px)); white-space: nowrap; font-size: 13px; font-weight: 700; line-height: 1;
+    padding: 5px 9px; border-radius: 999px; background: rgba(10, 12, 15, .82); border: 1px solid var(--accent); color: var(--fg); }
+  .empty { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); max-width: 92%; color: var(--fg); font-size: 12px; pointer-events: none;
+    padding: 4px 12px; border-radius: 999px; background: rgba(10, 12, 15, .85); border: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .empty:empty { display: none; }
+  .src { display: flex; gap: 8px; align-items: center; min-width: 0; }
+  .src .btn { flex: none; white-space: nowrap; }
+  .thumbs { display: flex; gap: 6px; min-width: 0; overflow-x: auto; }
+  .thumb { flex: none; width: 52px; height: 40px; padding: 0; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: #000; cursor: pointer; }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .side { border-left: 1px solid var(--line); background: var(--bg-2); padding: 14px 14px 48px; overflow-y: auto; min-height: 0; }
+  .side h2 { margin: 0 0 2px; font-size: 13px; color: var(--muted); font-weight: 600; }
+  .hero { display: flex; align-items: center; gap: 12px; margin: 6px 0 12px; }
+  .hero .big { font-size: 46px; line-height: 1; width: 56px; text-align: center; }
+  .hero .ttl { font-size: 20px; font-weight: 800; }
+  .hero .sub { font-size: 12px; color: var(--muted); }
+  .row { display: grid; grid-template-columns: 82px minmax(0, 1fr) 42px; gap: 8px; align-items: center; font-size: 12px; margin: 5px 0; }
+  .row .m { height: 7px; border-radius: 7px; background: var(--line); overflow: hidden; }
+  .row .m i { display: block; height: 100%; border-radius: 7px; background: linear-gradient(90deg, var(--c2), var(--c6)); transition: width .15s; }
+  .row b { font: 600 12px var(--mono); text-align: right; }
+  .meta { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font: 11px/1.7 var(--mono); color: var(--muted); }
+  .meta b { color: var(--c1); font-weight: 600; }
+  @media (max-width: 640px) {
+    /* single column: the side panel scrolls under the fixed hint, and its own text already explains the controls */
+    .hint { display: none; }
+    .app { grid-template-columns: 1fr; grid-template-rows: minmax(0, 60%) minmax(0, 40%); }
+    .main { padding: 8px 8px 6px; gap: 6px; }
+    .top .btn { padding: 6px 9px; font-size: 12px; }
+    .chip { display: none; }
+    .src .btn { padding: 7px 9px; font-size: 12px; }
+    .thumb { width: 44px; height: 34px; }
+    .side { border-left: 0; border-top: 1px solid var(--line); padding: 8px 12px 12px; }
+    .hero { margin: 2px 0 6px; }
+    .hero .big { font-size: 34px; width: 42px; }
+    .hero .ttl { font-size: 17px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <section class="main">
+    <div class="top" id="tabs">
+      <button class="btn" data-task="gesture" aria-pressed="true">✋ 手勢辨識</button>
+      <button class="btn" data-task="pose" aria-pressed="false">🧍 姿勢骨架</button>
+      <button class="btn" data-task="face" aria-pressed="false">🙂 臉部網格</button>
+      <span class="chip" id="chip">尚未啟動</span>
+    </div>
+    <div class="stage" id="stage">
+      <div class="frame" id="frame" data-src="photo">
+        <video id="video" playsinline muted></video>
+        <img id="photo" alt="偵測用照片" crossorigin="anonymous">
+        <canvas id="overlay"></canvas>
+        <div class="tagl" id="tags"></div>
+      </div>
+      <div class="empty" id="empty"></div>
+    </div>
+    <div class="src">
+      <button class="btn primary" id="camBtn">開啟鏡頭</button>
+      <label class="btn" for="file">上傳</label>
+      <input type="file" id="file" accept="image/*" hidden>
+      <div class="thumbs" id="thumbs"></div>
+    </div>
+  </section>
+  <aside class="side" id="side">
+    <h2>偵測結果</h2>
+    <div class="hero"><span class="big">🖐️</span><div><div class="ttl">等待啟動</div><div class="sub">按下開始後載入模型</div></div></div>
+  </aside>
+</div>
+<div class="hint">切換任務，用鏡頭或點範例照片即時偵測</div>
+
+<script src="_shared/gate.js"></script>
+<script type="module">
+const VER = "1.0.1";
+const MODELS = "https://storage.googleapis.com/mediapipe-models/";
+const GOOGLE_IMG = "https://storage.googleapis.com/mediapipe-assets/";
+const HF_IMG = "https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/fbe92bd97d48f3ec17779d8d8f2964e1c6bc7634/";
+const TASKS = {
+  gesture: {
+    model: MODELS + "gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task", mb: 8.4,
+    samples: [GOOGLE_IMG + "thumb_up.jpg", GOOGLE_IMG + "victory.jpg", GOOGLE_IMG + "pointing_up.jpg"],
+  },
+  pose: {
+    model: MODELS + "pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task", mb: 5.8,
+    samples: [GOOGLE_IMG + "pose.jpg", HF_IMG + "young-man-standing-and-leaning-on-car.jpg"],
+  },
+  face: {
+    model: MODELS + "face_landmarker/face_landmarker/float16/1/face_landmarker.task", mb: 3.8,
+    samples: [HF_IMG + "portrait-of-woman_small.jpg", HF_IMG + "selfie_segmentation.png", HF_IMG + "woman-with-afro.jpg"],
+  },
+};
+const GESTURES = {
+  Thumb_Up: ["👍", "讚"], Thumb_Down: ["👎", "倒讚"], Victory: ["✌️", "勝利手勢"], Pointing_Up: ["☝️", "食指朝上"],
+  Open_Palm: ["🖐️", "張開手掌"], Closed_Fist: ["✊", "握拳"], ILoveYou: ["🤟", "我愛你"], None: ["🤚", "未定義手勢"],
+};
+const $ = (id) => document.getElementById(id);
+const video = $("video"), photo = $("photo"), canvas = $("overlay"), ctx = canvas.getContext("2d");
+const frame = $("frame"), stage = $("stage");
+
+let mp = null, vision = null, draw = null;
+const runners = {};        // task name -> { runner, mode }
+let task = "gesture";
+let source = "photo";      // "photo" | "video"
+let stream = null, lastVideoTime = -1, busy = false;
+let currentSample = null;
+
+const setChip = (t, cls = "") => { const c = $("chip"); c.textContent = t; c.className = `chip ${cls}`; };
+
+// Fit the media inside the stage (object-fit: contain) so the canvas overlay lines up 1:1.
+function fit() {
+  const w = source === "video" ? video.videoWidth : photo.naturalWidth;
+  const h = source === "video" ? video.videoHeight : photo.naturalHeight;
+  if (!w || !h) return;
+  const sw = stage.clientWidth - 16, sh = stage.clientHeight - 16;
+  const k = Math.min(sw / w, sh / h);
+  frame.style.width = `${Math.floor(w * k)}px`;
+  frame.style.height = `${Math.floor(h * k)}px`;
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+}
+new ResizeObserver(fit).observe(stage);
+
+async function fetchWithProgress(url, onProgress) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const total = Number(res.headers.get("content-length")) || 0;
+  const reader = res.body.getReader();
+  const chunks = [];
+  let got = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    got += value.length;
+    if (total) onProgress(got / total);
+  }
+  const buf = new Uint8Array(got);
+  let off = 0;
+  for (const c of chunks) { buf.set(c, off); off += c.length; }
+  return buf;
+}
+
+async function createRunner(name, buffer, delegate) {
+  const base = { baseOptions: { modelAssetBuffer: buffer, delegate }, runningMode: "IMAGE" };
+  if (name === "gesture") return mp.GestureRecognizer.createFromOptions(vision, { ...base, numHands: 2 });
+  if (name === "pose") return mp.PoseLandmarker.createFromOptions(vision, { ...base, numPoses: 2 });
+  return mp.FaceLandmarker.createFromOptions(vision, { ...base, numFaces: 2, outputFaceBlendshapes: true });
+}
+
+async function ensureRunner(name) {
+  if (runners[name]) return runners[name];
+  const s = demoStatus(`下載${{ gesture: "手勢", pose: "姿勢", face: "臉部" }[name]}模型（約 ${TASKS[name].mb} MB）…`);
+  try {
+    if (!mp) {
+      s.text("下載 MediaPipe 執行環境（約 12 MB）…");
+      mp = await import(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${VER}/vision_bundle.mjs`);
+      vision = await mp.FilesetResolver.forVisionTasks(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${VER}/wasm`);
+      draw = new mp.DrawingUtils(ctx);
+      s.text(`下載${{ gesture: "手勢", pose: "姿勢", face: "臉部" }[name]}模型（約 ${TASKS[name].mb} MB）…`);
+    }
+    const buf = await fetchWithProgress(TASKS[name].model, (p) => s.progress(p));
+    s.text("初始化推論引擎…");
+    let runner, delegate = "GPU";
+    try { runner = await createRunner(name, buf, "GPU"); }
+    catch (err) { console.warn("GPU delegate unavailable, using CPU:", err); delegate = "CPU"; runner = await createRunner(name, buf, "CPU"); }
+    runners[name] = { runner, mode: "IMAGE", delegate };
+    s.done();
+    return runners[name];
+  } catch (err) {
+    s.error(`模型載入失敗：${err.message || err}`);
+    throw err;
+  }
+}
+
+async function setMode(r, mode) {
+  if (r.mode !== mode) { await r.runner.setOptions({ runningMode: mode }); r.mode = mode; r.warm = false; }
+}
+
+function infer(r, input, ts) {
+  if (task === "gesture") return r.mode === "VIDEO" ? r.runner.recognizeForVideo(input, ts) : r.runner.recognize(input);
+  return r.mode === "VIDEO" ? r.runner.detectForVideo(input, ts) : r.runner.detect(input);
+}
+
+/* ---------- rendering ---------- */
+const lw = () => Math.max(2, canvas.width / 220);
+const pct = (v) => `${Math.round(v * 100)}%`;
+const mirrorX = (x) => (source === "video" ? 1 - x : x);
+
+function setTags(list) {
+  $("tags").innerHTML = list.map((t) =>
+    `<span style="left:${(t.x * 100).toFixed(1)}%;top:${(t.y * 100).toFixed(1)}%;border-color:${t.color || "var(--accent)"}">${t.text}</span>`).join("");
+}
+function bars(items) {
+  return items.map(([label, v, txt]) =>
+    `<div class="row"><span>${label}</span><span class="m"><i style="width:${Math.round(Math.max(0, Math.min(1, v)) * 100)}%"></i></span><b>${txt ?? pct(v)}</b></div>`).join("");
+}
+function panel(emoji, title, sub, body, meta) {
+  $("side").innerHTML = `<h2>${{ gesture: "手勢辨識", pose: "姿勢骨架", face: "臉部網格" }[task]}</h2>
+    <div class="hero"><span class="big">${emoji}</span><div><div class="ttl">${title}</div><div class="sub">${sub}</div></div></div>
+    ${body}<div class="meta">${meta}</div>`;
+}
+function boxOf(lms) {
+  let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
+  for (const p of lms) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
+  return { x0, y0, x1, y1 };
+}
+function tagAt(lms, text, color) {
+  const b = boxOf(lms);
+  const x = source === "video" ? 1 - b.x1 : b.x0;
+  return { x: Math.max(0, Math.min(0.75, x)), y: Math.max(0.08, b.y0), text, color };
+}
+
+function renderGesture(res, ms, meta) {
+  const hands = res.landmarks || [];
+  const tags = [];
+  hands.forEach((lms, i) => {
+    draw.drawConnectors(lms, mp.GestureRecognizer.HAND_CONNECTIONS, { color: "#4cc9f0", lineWidth: lw() * 1.4 });
+    draw.drawLandmarks(lms, { color: "#0a0c0f", fillColor: "#f7df1e", lineWidth: lw() * 0.5, radius: lw() * 1.6 });
+    const g = res.gestures?.[i]?.[0];
+    const [emo, name] = GESTURES[g?.categoryName] || GESTURES.None;
+    tags.push(tagAt(lms, `${emo} ${name} ${g ? pct(g.score) : ""}`));
+  });
+  setTags(tags);
+  if (!hands.length) {
+    panel("🤚", "沒有偵測到手", "把手舉到鏡頭前，或點下方範例照片", "", meta);
+    return;
+  }
+  const g = res.gestures[0][0];
+  const [emo, name] = GESTURES[g.categoryName] || GESTURES.None;
+  const all = Object.keys(GESTURES).filter((k) => k !== "None");
+  const scores = Object.fromEntries((res.gestures[0] || []).map((c) => [c.categoryName, c.score]));
+  const body = bars(all.map((k) => [`${GESTURES[k][0]} ${GESTURES[k][1]}`, scores[k] || 0]));
+  panel(emo, name, `信心 ${pct(g.score)}，共 ${hands.length} 隻手`, body, `${meta}<br>每隻手 <b>21</b> 個 3D 關鍵點`);
+}
+
+function angle(a, b, c) {
+  const w = canvas.width, h = canvas.height;
+  const v1 = [(a.x - b.x) * w, (a.y - b.y) * h], v2 = [(c.x - b.x) * w, (c.y - b.y) * h];
+  const cos = (v1[0] * v2[0] + v1[1] * v2[1]) / (Math.hypot(...v1) * Math.hypot(...v2) || 1);
+  return Math.round(Math.acos(Math.max(-1, Math.min(1, cos))) * 180 / Math.PI);
+}
+function renderPose(res, ms, meta) {
+  const poses = res.landmarks || [];
+  const tags = [];
+  poses.forEach((lms) => {
+    draw.drawConnectors(lms, mp.PoseLandmarker.POSE_CONNECTIONS, { color: "rgba(236, 235, 230, .9)", lineWidth: lw() * 1.3 });
+    // odd indices are the subject's left side, even indices the right side
+    draw.drawLandmarks(lms.filter((_, i) => i > 10 && i % 2 === 1), { color: "#0a0c0f", fillColor: "#f72585", radius: lw() * 1.7, lineWidth: 1 });
+    draw.drawLandmarks(lms.filter((_, i) => i > 10 && i % 2 === 0), { color: "#0a0c0f", fillColor: "#4cc9f0", radius: lw() * 1.7, lineWidth: 1 });
+    draw.drawLandmarks(lms.slice(0, 11), { color: "#0a0c0f", fillColor: "#f7df1e", radius: lw(), lineWidth: 1 });
+  });
+  if (!poses.length) {
+    setTags([]);
+    panel("🧍", "沒有偵測到人", "退後讓全身入鏡，或點下方範例照片", "", meta);
+    return;
+  }
+  const p = poses[0];
+  const seen = (...ids) => ids.every((i) => (p[i].visibility ?? 1) > 0.5);
+  const J = [
+    ["左肘", [11, 13, 15]], ["右肘", [12, 14, 16]], ["左肩", [23, 11, 13]], ["右肩", [24, 12, 14]],
+    ["左膝", [23, 25, 27]], ["右膝", [24, 26, 28]],
+  ].map(([label, ids]) => [label, seen(...ids) ? angle(p[ids[0]], p[ids[1]], p[ids[2]]) : null]);
+  const A = Object.fromEntries(J);
+  const acts = [];
+  if (seen(0, 15, 16) && p[15].y < p[0].y && p[16].y < p[0].y) acts.push("雙手高舉");
+  else if (seen(0, 15, 16) && (p[15].y < p[0].y || p[16].y < p[0].y)) acts.push("舉起一隻手");
+  else if (A["左肩"] > 65 && A["右肩"] > 65 && A["左肘"] > 150 && A["右肘"] > 150) acts.push("雙臂平舉");
+  const kneeL = A["左膝"], kneeR = A["右膝"];
+  if (kneeL != null && kneeR != null) {
+    if (kneeL < 120 && kneeR < 120) acts.push("深蹲");
+    else if (Math.min(kneeL, kneeR) < 135 && Math.max(kneeL, kneeR) > 155) acts.push("弓步");
+  }
+  const label = acts.length ? acts.join("＋") : "站姿";
+  tags.push(tagAt(p, `🧍 ${label}`, "#f72585"));
+  setTags(tags);
+  const body = bars(J.map(([l, v]) => [l, v == null ? 0 : v / 180, v == null ? "看不到" : `${v}°`]));
+  panel(acts.includes("弓步") && acts.includes("雙臂平舉") ? "🧘" : "🧍", label, `關節角度由 33 個關鍵點計算，共 ${poses.length} 人`, body,
+    `${meta}<br><span style="color:#f72585">●</span> 左側　<span style="color:#4cc9f0">●</span> 右側`);
+}
+
+const BLEND = [
+  ["😊 微笑", ["mouthSmileLeft", "mouthSmileRight"]], ["😮 張嘴", ["jawOpen"]], ["😉 眨眼", ["eyeBlinkLeft", "eyeBlinkRight"]],
+  ["🤨 挑眉", ["browInnerUp"]], ["😠 皺眉", ["browDownLeft", "browDownRight"]], ["😗 嘟嘴", ["mouthPucker"]],
+  ["😳 睜大眼", ["eyeWideLeft", "eyeWideRight"]], ["🐡 鼓頰", ["cheekPuff"]],
+];
+function renderFace(res, ms, meta) {
+  const faces = res.faceLandmarks || [];
+  const F = mp.FaceLandmarker;
+  const tags = [];
+  faces.forEach((lms, i) => {
+    draw.drawConnectors(lms, F.FACE_LANDMARKS_TESSELATION, { color: "rgba(76, 201, 240, .38)", lineWidth: lw() * 0.45 });
+    draw.drawConnectors(lms, F.FACE_LANDMARKS_FACE_OVAL, { color: "#ecebe6", lineWidth: lw() });
+    for (const c of [F.FACE_LANDMARKS_LEFT_EYE, F.FACE_LANDMARKS_RIGHT_EYE]) draw.drawConnectors(lms, c, { color: "#f72585", lineWidth: lw() });
+    for (const c of [F.FACE_LANDMARKS_LEFT_EYEBROW, F.FACE_LANDMARKS_RIGHT_EYEBROW]) draw.drawConnectors(lms, c, { color: "#f7df1e", lineWidth: lw() });
+    for (const c of [F.FACE_LANDMARKS_LEFT_IRIS, F.FACE_LANDMARKS_RIGHT_IRIS]) draw.drawConnectors(lms, c, { color: "#7bd389", lineWidth: lw() });
+    draw.drawConnectors(lms, F.FACE_LANDMARKS_LIPS, { color: "#ff8c42", lineWidth: lw() });
+    tags.push(tagAt(lms, `🙂 臉 ${i + 1}`, "#4cc9f0"));
+  });
+  setTags(tags);
+  if (!faces.length) {
+    panel("🙂", "沒有偵測到臉", "正對鏡頭，或點下方範例照片", "", meta);
+    return;
+  }
+  const cats = Object.fromEntries((res.faceBlendshapes?.[0]?.categories || []).map((c) => [c.categoryName, c.score]));
+  const vals = BLEND.map(([label, keys]) => [label, keys.reduce((s, k) => s + (cats[k] || 0), 0) / keys.length]);
+  const top = vals.reduce((a, b) => (b[1] > a[1] ? b : a));
+  const [emo, word] = top[1] > 0.3 ? top[0].split(" ") : ["😐", "表情平靜"];
+  panel(emo, word, `52 種表情係數中最明顯的一項，共 ${faces.length} 張臉`, bars(vals), `${meta}<br>每張臉 <b>478</b> 個 3D 網格點`);
+}
+
+function render(res, ms) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const r = runners[task];
+  const meta = `推論 <b>${ms.toFixed(1)} ms</b>，${r.delegate === "GPU" ? "GPU（WebGL）" : "CPU（WASM）"}`;
+  if (task === "gesture") renderGesture(res, ms, meta);
+  else if (task === "pose") renderPose(res, ms, meta);
+  else renderFace(res, ms, meta);
+}
+
+/* ---------- sources ---------- */
+async function runPhoto() {
+  if (source !== "photo" || !photo.complete || !photo.naturalWidth) return;
+  const r = await ensureRunner(task);
+  await setMode(r, "IMAGE");
+  fit();
+  // The first call after (re)building the graph compiles shaders; warm up so the timing shown is steady-state.
+  if (!r.warm) { infer(r, photo); r.warm = true; }
+  const t0 = performance.now();
+  const res = infer(r, photo);
+  render(res, performance.now() - t0);
+}
+
+function loadPhoto(url) {
+  return new Promise((resolve, reject) => {
+    photo.onload = resolve;
+    photo.onerror = () => reject(new Error("照片載入失敗"));
+    photo.src = url;
+  });
+}
+
+async function usePhoto(url) {
+  await stopCamera();
+  source = "photo";
+  frame.dataset.src = "photo";
+  frame.classList.remove("mirror");
+  currentSample = url;
+  markThumbs();
+  setChip("範例照片");
+  $("empty").textContent = "";
+  try {
+    await loadPhoto(url);
+    await runPhoto();
+  } catch (err) {
+    $("empty").textContent = `無法處理照片：${err.message || err}`;
+    console.warn(err);
+  }
+}
+
+function markThumbs() {
+  for (const b of $("thumbs").children) b.setAttribute("aria-pressed", String(b.dataset.url === currentSample));
+}
+function buildThumbs() {
+  $("thumbs").innerHTML = "";
+  for (const url of TASKS[task].samples) {
+    const b = document.createElement("button");
+    b.className = "thumb";
+    b.dataset.url = url;
+    b.title = "改用這張範例照片";
+    b.innerHTML = `<img src="${url}" alt="範例照片" crossorigin="anonymous" loading="lazy">`;
+    b.addEventListener("click", () => usePhoto(url));
+    $("thumbs").append(b);
+  }
+  markThumbs();
+}
+
+async function startCamera() {
+  $("camBtn").disabled = true;
+  setChip("鏡頭啟動中…");
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 960 }, height: { ideal: 720 } }, audio: false });
+    video.srcObject = stream;
+    await video.play();
+    source = "video";
+    currentSample = null;
+    markThumbs();
+    frame.dataset.src = "video";
+    frame.classList.add("mirror");
+    $("empty").textContent = "";
+    fit();
+    const r = await ensureRunner(task);
+    await setMode(r, "VIDEO");
+    setChip("鏡頭即時偵測", "live");
+    $("camBtn").textContent = "停止鏡頭";
+    $("camBtn").classList.remove("primary");
+    requestAnimationFrame(loop);
+  } catch (err) {
+    console.warn("camera unavailable:", err);
+    const msg = /NotAllowed|Permission/i.test(String(err)) ? "鏡頭權限被拒絕" : "找不到可用的鏡頭";
+    await stopCamera();
+    $("empty").textContent = `${msg}，已改用範例照片`;
+    await usePhoto(TASKS[task].samples[0]);
+    $("empty").textContent = `${msg}，已改用範例照片`;
+  }
+  $("camBtn").disabled = false;
+}
+
+async function stopCamera() {
+  if (!stream) return;
+  stream.getTracks().forEach((t) => t.stop());
+  stream = null;
+  video.srcObject = null;
+  $("camBtn").textContent = "開啟鏡頭";
+  $("camBtn").classList.add("primary");
+}
+
+function loop() {
+  if (source !== "video" || !stream) return;
+  const r = runners[task];
+  if (r && r.mode === "VIDEO" && !busy && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+    lastVideoTime = video.currentTime;
+    if (canvas.width !== video.videoWidth) fit();
+    const t0 = performance.now();
+    render(infer(r, video, t0), performance.now() - t0);
+  }
+  requestAnimationFrame(loop);
+}
+
+async function switchTask(name) {
+  if (busy || name === task) return;
+  busy = true;
+  task = name;
+  for (const b of $("tabs").querySelectorAll("[data-task]")) b.setAttribute("aria-pressed", String(b.dataset.task === name));
+  buildThumbs();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  setTags([]);
+  try {
+    const r = await ensureRunner(name);
+    if (source === "video") { await setMode(r, "VIDEO"); busy = false; }
+    else { busy = false; await usePhoto(TASKS[name].samples[0]); }
+  } catch (err) {
+    console.warn(err);
+  } finally {
+    busy = false;
+  }
+}
+
+$("tabs").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-task]");
+  if (b) switchTask(b.dataset.task);
+});
+$("camBtn").addEventListener("click", () => (stream ? usePhoto(TASKS[task].samples[0]) : startCamera()));
+$("file").addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  if (f) usePhoto(URL.createObjectURL(f));
+  e.target.value = "";
+});
+buildThumbs();
+
+await demoGate({
+  icon: "🖐️", title: "MediaPipe 手勢、姿勢、臉部偵測",
+  desc: "按下後下載 Google 官方模型並請求鏡頭權限；沒有鏡頭也能用範例照片",
+  tags: ["需要鏡頭", "約 20 MB 起", "可改用照片"], button: "開始偵測",
+});
+try {
+  await ensureRunner("gesture");
+  await startCamera();
+} catch (err) {
+  console.warn(err);
+}
+</script>
+</body>
+</html>

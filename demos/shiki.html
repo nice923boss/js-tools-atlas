@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shiki 示範：VS Code 主題即時切換</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"按需載入：首次只抓 Shiki 核心、TypeScript 語法與一個主題"}</script>
+<style>
+  .app {
+    position: fixed; inset: 0; padding: 12px 12px 46px; display: grid; gap: 10px;
+    grid-template-columns: 206px minmax(0, 1fr);
+  }
+  .side { min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+  .label { font-size: 11.5px; letter-spacing: .08em; color: var(--muted); margin-top: 2px; }
+  .themes { display: flex; flex-direction: column; gap: 3px; min-height: 0; overflow-y: auto; scrollbar-width: none; }
+  .themes::-webkit-scrollbar { display: none; }
+  .th {
+    display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 8px; border: 1px solid transparent;
+    background: none; color: var(--fg); font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+  }
+  .th:hover { background: rgba(255,255,255,.05); }
+  .th[aria-pressed="true"] { border-color: var(--accent); background: rgba(247, 223, 30, .08); }
+  .th .sw { flex: none; display: flex; width: 40px; height: 16px; border-radius: 4px; overflow: hidden; border: 1px solid rgba(255,255,255,.15); background: repeating-linear-gradient(45deg, #2a2f37 0 4px, #1d2127 4px 8px); }
+  .th .sw i { flex: 1; }
+  .th .nm { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .th .slot { flex: none; font: 700 10.5px var(--font); font-style: normal; padding: 1px 6px; border-radius: 999px; background: var(--accent); color: #0e1013; }
+  .th .slot:empty { display: none; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; flex: none; }
+  .seg button { flex: 1; padding: 6px 4px; border: 0; background: none; color: var(--muted); font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #0e1013; font-weight: 700; }
+  .opts { display: flex; flex-direction: column; gap: 8px; }
+
+  .main { min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .backdrop { position: relative; flex: 1 1 0; min-height: 0; display: grid; place-items: center; padding: 22px; background: #1a1d23; transition: background .6s; }
+  .msg { color: var(--muted); font-size: 13px; text-align: center; }
+  .shot {
+    position: relative; width: min(100%, 660px); max-height: 100%; display: grid; border-radius: 12px; overflow: hidden;
+    box-shadow: 0 18px 50px rgba(0,0,0,.45), 0 0 0 1px rgba(255,255,255,.08); user-select: none; touch-action: none;
+  }
+  .copy { grid-area: 1 / 1; display: flex; flex-direction: column; min-height: 0; max-height: 100%; }
+  .chrome { flex: none; display: flex; align-items: center; gap: 10px; padding: 9px 12px; font: 12px var(--mono); }
+  .chrome .dots { display: flex; gap: 6px; }
+  .chrome .dots i { width: 10px; height: 10px; border-radius: 50%; background: #ff5f57; }
+  .chrome .dots i:nth-child(2) { background: #febc2e; }
+  .chrome .dots i:nth-child(3) { background: #28c840; }
+  .chrome .fname { opacity: .8; }
+  .chrome .tname { margin-left: auto; opacity: .55; font-family: var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .shiki { margin: 0; padding: 4px 16px 16px 0; font: 12.5px/1.55 var(--mono); font-variant-ligatures: none; overflow: auto; min-height: 0; scrollbar-width: none; tab-size: 4; }
+  .shiki::-webkit-scrollbar { display: none; }
+  .shiki code { counter-reset: ln; display: block; width: max-content; min-width: 100%; }
+  .shiki .line::before { counter-increment: ln; content: counter(ln); display: inline-block; width: 2.2em; margin-right: 1.2em; text-align: right; opacity: .35; }
+  .shiki span[data-scope]:hover { outline: 1px dashed currentColor; outline-offset: 1px; border-radius: 2px; }
+  /* Dual themes: the same HTML, re-coloured from the --shiki-dark* variables Shiki writes inline. */
+  .copy.dark { clip-path: inset(0 0 0 var(--split, 50%)); }
+  .copy.dark .shiki, .copy.dark .shiki span {
+    color: var(--shiki-dark) !important;
+    background-color: var(--shiki-dark-bg) !important;
+    font-style: var(--shiki-dark-font-style) !important;
+    font-weight: var(--shiki-dark-font-weight) !important;
+    text-decoration: var(--shiki-dark-text-decoration) !important;
+  }
+  .divider { position: absolute; top: 0; bottom: 0; left: var(--split, 50%); width: 2px; margin-left: -1px; background: #fff; box-shadow: 0 0 10px rgba(0,0,0,.4); cursor: ew-resize; }
+  .divider::after { content: "淺｜深"; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 4px 8px; border-radius: 999px; background: #fff; color: #0e1013; font: 700 11px var(--font); white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,.35); }
+
+  .sbar { flex: none; display: flex; align-items: center; gap: 12px; padding: 7px 12px; border-top: 1px solid var(--line); background: var(--bg-2); font-size: 12px; color: var(--muted); min-width: 0; }
+  .sbar .info { flex: none; max-width: 48%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sbar .scope { flex: 1; min-width: 0; text-align: right; font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sbar .scope b { color: var(--fg); font-weight: 400; }
+  .sbar .scope i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; margin: 0 4px 0 8px; border: 1px solid rgba(255,255,255,.3); }
+
+  @media (max-width: 640px) {
+    .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); padding: 10px 10px 44px; gap: 8px; }
+    .side { gap: 6px; }
+    .label { display: none; }
+    .themes { flex-direction: row; overflow-x: auto; gap: 4px; }
+    .th { flex: none; padding: 4px 8px; font-size: 12px; border-color: var(--line); }
+    .th .sw { width: 24px; height: 12px; }
+    .opts { flex-direction: row; }
+    .opts .seg { flex: 1; }
+    .seg button { padding: 5px 4px; font-size: 12px; }
+    .backdrop { padding: 12px 10px; }
+    .shiki { font-size: 11px; padding-right: 10px; }
+    .shiki .line::before { width: 1.6em; margin-right: .8em; }
+    .chrome .tname { display: none; }
+    .sbar .info { display: none; }
+    .sbar .scope { text-align: left; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="label">VS Code 主題</div>
+    <div class="themes" id="themes"></div>
+    <div class="opts">
+      <div>
+        <div class="label">語言</div>
+        <div class="seg" id="langs"></div>
+      </div>
+      <div>
+        <div class="label">模式</div>
+        <div class="seg" id="modes">
+          <button data-dual="0">單一主題</button><button data-dual="1">雙主題</button>
+        </div>
+      </div>
+    </div>
+  </aside>
+  <section class="main">
+    <div class="backdrop" id="backdrop"><div class="msg" id="msg">正在載入 Shiki 核心、TypeScript 語法與主題…</div></div>
+    <div class="sbar">
+      <span class="info" id="info"></span>
+      <span class="scope" id="scope">滑鼠移到程式碼上，查看 TextMate scope</span>
+    </div>
+  </section>
+</div>
+<div class="hint">點主題即時換色，雙主題可拖曳分隔線比較</div>
+
+<script type="module">
+// Fine-grained Shiki bundle: core + JavaScript regex engine (no WASM), grammars and themes loaded on demand.
+import { createHighlighterCore } from "https://esm.sh/shiki@4.5.0/core";
+import { createJavaScriptRegexEngine } from "https://esm.sh/shiki@4.5.0/engine/javascript";
+
+const CDN = "https://esm.sh/@shikijs";
+const themeModule = (id) => () => import(`${CDN}/themes@4.5.0/${id}`);
+const langModule = (id) => () => import(`${CDN}/langs@4.5.0/${id}`);
+
+const THEMES = [
+  ["github-dark", "GitHub Dark", "dark"],
+  ["one-dark-pro", "One Dark Pro", "dark"],
+  ["dracula", "Dracula", "dark"],
+  ["tokyo-night", "Tokyo Night", "dark"],
+  ["catppuccin-mocha", "Catppuccin Mocha", "dark"],
+  ["synthwave-84", "SynthWave '84", "dark"],
+  ["nord", "Nord", "dark"],
+  ["github-light", "GitHub Light", "light"],
+  ["vitesse-light", "Vitesse Light", "light"],
+  ["rose-pine-dawn", "Rosé Pine Dawn", "light"],
+].map(([id, name, type]) => ({ id, name, type }));
+const byId = Object.fromEntries(THEMES.map((t) => [t.id, t]));
+
+const LANGS = {
+  typescript: { label: "TS", file: "signup.ts", code: `// 報名資料彙整（示意資料）
+type City = "台北" | "台中" | "高雄";
+
+interface Signup {
+  name: string;
+  city: City;
+  paid: boolean;
+}
+
+export function summarize(rows: Signup[]): Map<City, number> {
+  const counts = new Map<City, number>();
+  for (const { city, paid } of rows) {
+    if (!paid) continue;
+    counts.set(city, (counts.get(city) ?? 0) + 1);
+  }
+  return counts;
+}
+
+const total = [...summarize(data).values()].reduce((a, b) => a + b, 0);
+console.log(\`已付款：\${total} 人\`);` },
+  python: { label: "Python", file: "revenue.py", code: `# 每月營收統計（示意資料）
+from dataclasses import dataclass
+from datetime import date
+
+@dataclass
+class Order:
+    course: str
+    amount: int
+    paid_on: date
+
+def monthly_revenue(orders: list[Order]) -> dict[str, int]:
+    """依月份加總已付款金額"""
+    result: dict[str, int] = {}
+    for o in orders:
+        key = o.paid_on.strftime("%Y-%m")
+        result[key] = result.get(key, 0) + o.amount
+    return dict(sorted(result.items()))
+
+print(monthly_revenue([Order("JS 入門", 3600, date(2026, 9, 1))]))` },
+  rust: { label: "Rust", file: "main.rs", code: `// 找出最熱門的三門課（示意資料）
+#[derive(Debug)]
+struct Course<'a> { title: &'a str, seats: u32 }
+
+fn top3<'a>(list: &'a [Course<'a>]) -> Vec<&'a Course<'a>> {
+    let mut v: Vec<_> = list.iter().collect();
+    v.sort_by(|a, b| b.seats.cmp(&a.seats));
+    v.into_iter().take(3).collect()
+}
+
+fn main() {
+    let list = [
+        Course { title: "JS 入門", seats: 42 },
+        Course { title: "Rust 實戰", seats: 28 },
+    ];
+    for c in top3(&list) {
+        println!("{}：{} 席", c.title, c.seats);
+    }
+}` },
+};
+
+const state = { theme: "github-dark", light: "github-light", dark: "github-dark", lang: "typescript", dual: false, split: 50 };
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// Tag every token with its TextMate scope stack (from includeExplanation) for the hover inspector.
+const scopeTagger = {
+  name: "scope-tagger",
+  span(node, line, col, lineEl, token) {
+    const ex = token.explanation && token.explanation[0];
+    if (ex && ex.scopes.length) node.properties["data-scope"] = ex.scopes.map((s) => s.scopeName).join(" ");
+  },
+};
+
+let hl;
+const pending = new Map();
+function ensure(kind, id) {
+  const loaded = kind === "theme" ? hl.getLoadedThemes() : hl.getLoadedLanguages();
+  if (loaded.includes(id)) return Promise.resolve();
+  const key = kind + ":" + id;
+  if (!pending.has(key)) {
+    pending.set(key, kind === "theme" ? hl.loadTheme(themeModule(id)) : hl.loadLanguage(langModule(id)));
+  }
+  return pending.get(key);
+}
+
+// Pick a representative colour for a scope from the resolved VS Code theme rules.
+function ruleColor(theme, target) {
+  let best = null, bestLen = -1;
+  for (const r of theme.settings || []) {
+    if (!r.settings || !r.settings.foreground || !r.scope) continue;
+    const scopes = Array.isArray(r.scope) ? r.scope : String(r.scope).split(",");
+    for (let s of scopes) {
+      s = s.trim();
+      if (s && (target === s || target.startsWith(s + ".")) && s.length > bestLen) { best = r.settings.foreground; bestLen = s.length; }
+    }
+  }
+  return best || theme.fg;
+}
+function palette(id) {
+  const t = hl.getTheme(id);
+  return { bg: t.bg, fg: t.fg, kw: ruleColor(t, "keyword.control"), fn: ruleColor(t, "entity.name.function"), str: ruleColor(t, "string.quoted"), rules: (t.settings || []).length };
+}
+
+function paintSwatch(id) {
+  const btn = document.querySelector(`.th[data-id="${id}"] .sw`);
+  if (!btn || !hl.getLoadedThemes().includes(id)) return;
+  const p = palette(id);
+  btn.innerHTML = [p.bg, p.kw, p.fn, p.str].map((c) => `<i style="background:${c}"></i>`).join("");
+}
+
+// Theme colours may be #rgb, #rrggbb or #rrggbbaa; turn them into rgba() with a given alpha.
+function alpha(hex, a) {
+  const m = /^#([0-9a-f]{3,8})$/i.exec(hex || "");
+  if (!m) return hex || "transparent";
+  let h = m[1];
+  if (h.length <= 4) h = [...h].map((c) => c + c).join("");
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
+function chrome(p, name) {
+  return `<div class="chrome" style="background:${p.bg};color:${p.fg}"><span class="dots"><i></i><i></i><i></i></span><span class="fname">${LANGS[state.lang].file}</span><span class="tname">${esc(name)}</span></div>`;
+}
+
+let seq = 0;
+async function render() {
+  const my = ++seq;
+  const ids = state.dual ? [state.light, state.dark] : [state.theme];
+  syncControls();
+  try {
+    await Promise.all([...ids.map((id) => ensure("theme", id)), ensure("lang", state.lang)]);
+  } catch (err) {
+    $("msg") && ($("msg").textContent = "載入主題或語法失敗，請檢查網路連線");
+    console.warn(err);
+    return;
+  }
+  if (my !== seq) return;
+  ids.forEach(paintSwatch);
+
+  const { code } = LANGS[state.lang];
+  const base = { lang: state.lang, includeExplanation: "scopeName", transformers: [scopeTagger] };
+  const t0 = performance.now();
+  const html = state.dual
+    ? hl.codeToHtml(code, { ...base, themes: { light: state.light, dark: state.dark } })
+    : hl.codeToHtml(code, { ...base, theme: state.theme });
+  const ms = performance.now() - t0;
+
+  const shot = document.createElement("div");
+  shot.className = "shot";
+  shot.style.setProperty("--split", state.split + "%");
+  let bgTheme;
+  if (state.dual) {
+    const L = palette(state.light), D = palette(state.dark);
+    shot.innerHTML = `<div class="copy">${chrome(L, byId[state.light].name)}${html}</div>`
+      + `<div class="copy dark">${chrome(D, byId[state.dark].name)}${html}</div><div class="divider"></div>`;
+    bgTheme = D;
+    $("info").textContent = `同一份 HTML，以 --shiki-dark 變數切換・${ms.toFixed(1)} ms`;
+  } else {
+    const P = palette(state.theme);
+    shot.innerHTML = `<div class="copy">${chrome(P, byId[state.theme].name)}${html}</div>`;
+    bgTheme = P;
+    $("info").textContent = `${byId[state.theme].name}・${P.rules} 條主題規則・${ms.toFixed(1)} ms`;
+  }
+  $("backdrop").style.background = `radial-gradient(120% 90% at 0% 0%, ${alpha(bgTheme.kw, .8)}, transparent 60%), radial-gradient(110% 90% at 100% 100%, ${alpha(bgTheme.str, .75)}, transparent 60%), linear-gradient(135deg, ${alpha(bgTheme.fn, 1)}, ${alpha(bgTheme.bg, 1)})`;
+  $("backdrop").replaceChildren(shot);
+
+  // Keep both copies scrolled together in dual mode.
+  const pres = shot.querySelectorAll("pre");
+  pres.forEach((p) => p.addEventListener("scroll", () => {
+    pres.forEach((q) => { if (q !== p) { q.scrollTop = p.scrollTop; q.scrollLeft = p.scrollLeft; } });
+  }));
+}
+
+function syncControls() {
+  for (const b of document.querySelectorAll(".th")) {
+    const id = b.dataset.id;
+    const on = state.dual ? id === state.light || id === state.dark : id === state.theme;
+    b.setAttribute("aria-pressed", String(on));
+    b.querySelector(".slot").textContent = state.dual && on ? (byId[id].type === "light" ? "淺" : "深") : "";
+  }
+  for (const b of $("langs").children) b.setAttribute("aria-pressed", String(b.dataset.lang === state.lang));
+  for (const b of $("modes").children) b.setAttribute("aria-pressed", String(+b.dataset.dual === +state.dual));
+}
+
+function pickTheme(id) {
+  if (state.dual) {
+    if (byId[id].type === "light") state.light = id; else state.dark = id;
+  } else {
+    state.theme = id;
+    if (byId[id].type === "light") state.light = id; else state.dark = id;
+  }
+  render();
+}
+
+// Controls
+for (const t of THEMES) {
+  const b = document.createElement("button");
+  b.className = "th";
+  b.dataset.id = t.id;
+  b.title = t.type === "light" ? "淺色主題" : "深色主題";
+  b.innerHTML = `<span class="sw"></span><span class="nm">${esc(t.name)}</span><em class="slot"></em>`;
+  b.addEventListener("click", () => { stopTour(); pickTheme(t.id); });
+  $("themes").append(b);
+}
+for (const [id, l] of Object.entries(LANGS)) {
+  const b = document.createElement("button");
+  b.dataset.lang = id;
+  b.textContent = l.label;
+  b.addEventListener("click", () => { stopTour(); state.lang = id; render(); });
+  $("langs").append(b);
+}
+for (const b of $("modes").children) {
+  b.addEventListener("click", () => { stopTour(); state.dual = b.dataset.dual === "1"; render(); });
+}
+
+// Hover inspector: show the scope stack and resolved colour of the token under the pointer.
+const toHex = (rgb) => "#" + (rgb.match(/\d+/g) || []).slice(0, 3).map((n) => (+n).toString(16).padStart(2, "0")).join("").toUpperCase();
+$("backdrop").addEventListener("mouseover", (e) => {
+  const span = e.target.closest("span[data-scope]");
+  if (!span) return;
+  const scopes = span.dataset.scope.split(" ");
+  const color = toHex(getComputedStyle(span).color);
+  $("scope").innerHTML = `${esc(scopes.slice(-2, -1).join(""))}${scopes.length > 1 ? " › " : ""}<b>${esc(scopes[scopes.length - 1])}</b><i style="background:${color}"></i>${color}`;
+});
+
+// Drag the divider in dual mode.
+let dragging = false;
+function setSplit(e) {
+  const shot = $("backdrop").querySelector(".shot");
+  if (!shot) return;
+  const r = shot.getBoundingClientRect();
+  state.split = Math.max(0, Math.min(100, ((e.clientX - r.left) / r.width) * 100));
+  shot.style.setProperty("--split", state.split + "%");
+}
+$("backdrop").addEventListener("pointerdown", (e) => {
+  if (!state.dual || !e.target.closest(".shot")) return;
+  dragging = true;
+  setSplit(e);
+});
+window.addEventListener("pointermove", (e) => { if (dragging) setSplit(e); });
+window.addEventListener("pointerup", () => { dragging = false; });
+
+// Auto tour: walk through every theme, then show the dual-theme wipe, then switch language.
+let touring = true, tourTimer = 0, sweepRaf = 0;
+const order = ["typescript", "python", "rust"];
+let step = 0;
+function tour() {
+  if (!touring) return;
+  step++;
+  const n = THEMES.length;
+  const phase = step % (n + 2);
+  if (phase < n) {
+    state.dual = false;
+    pickTheme(THEMES[phase].id);
+    tourTimer = setTimeout(tour, 2400);
+  } else if (phase === n) {
+    state.dual = true;
+    state.light = "github-light";
+    state.dark = "one-dark-pro";
+    render();
+    sweep(performance.now());
+    tourTimer = setTimeout(tour, 7000);
+  } else {
+    cancelAnimationFrame(sweepRaf);
+    state.split = 50;
+    state.lang = order[(order.indexOf(state.lang) + 1) % order.length];
+    state.dual = false;
+    pickTheme(THEMES[0].id);
+    step = 0;
+    tourTimer = setTimeout(tour, 2400);
+  }
+}
+function sweep(t0) {
+  const tick = (t) => {
+    if (!touring || !state.dual) return;
+    state.split = 50 + 38 * Math.sin((t - t0) / 900);
+    const shot = $("backdrop").querySelector(".shot");
+    if (shot) shot.style.setProperty("--split", state.split + "%");
+    sweepRaf = requestAnimationFrame(tick);
+  };
+  sweepRaf = requestAnimationFrame(tick);
+}
+function stopTour() {
+  if (!touring) return;
+  touring = false;
+  clearTimeout(tourTimer);
+  cancelAnimationFrame(sweepRaf);
+}
+window.addEventListener("pointerdown", stopTour, true);
+window.addEventListener("keydown", stopTour, true);
+
+try {
+  hl = await createHighlighterCore({
+    themes: [themeModule("github-dark")],
+    langs: [langModule("typescript")],
+    engine: createJavaScriptRegexEngine(),
+  });
+  await render();
+  paintSwatch("github-dark");
+  tourTimer = setTimeout(tour, 2400);
+  // Warm the remaining themes in the background so swatches fill in and switching is instant.
+  for (const t of THEMES) {
+    await ensure("theme", t.id).catch(() => {});
+    paintSwatch(t.id);
+  }
+} catch (err) {
+  $("msg").textContent = "Shiki 載入失敗，請檢查網路連線";
+  console.warn(err);
+}
+</script>
+</body>
+</html>

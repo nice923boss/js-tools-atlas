@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tween.js 示範：粒子補間變形</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  #cv { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  h1 { position: fixed; left: 16px; top: 14px; margin: 0; font-size: 16px; z-index: 5; }
+  h1 small { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
+  .ease { position: fixed; right: 12px; bottom: 12px; z-index: 50; padding: 10px 12px; width: 196px; }
+  .ease select {
+    width: 100%; background: var(--bg-2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font-size: 12px;
+  }
+  .ease canvas { display: block; width: 100%; height: 84px; margin-top: 8px; }
+  .code { position: fixed; left: 12px; top: 46px; z-index: 50; font-size: 12px; padding: 6px 10px; color: var(--muted); }
+  .code b { color: var(--accent); font-weight: 600; }
+  @media (max-width: 620px) {
+    h1, .code { display: none; }
+    .ease { width: 150px; padding: 8px; }
+    .ease canvas { height: 56px; }
+    .hint { bottom: 12px; max-width: calc(100% - 186px); }
+  }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<h1>粒子補間變形<small>每顆粒子都是一個 Tween</small></h1>
+<div class="panel code mono">new Tween(p, group).to({ x, y }, <b>1400</b>).easing(<b id="ename">Elastic.Out</b>)</div>
+<div class="controls">
+  <button class="btn" data-f="text" aria-pressed="true">JS</button>
+  <button class="btn" data-f="heart" aria-pressed="false">愛心</button>
+  <button class="btn" data-f="galaxy" aria-pressed="false">星系</button>
+  <button class="btn" data-f="grid" aria-pressed="false">網格</button>
+  <button class="btn primary" id="replay">重播</button>
+</div>
+<div class="panel ease">
+  <select id="easing" aria-label="緩動函式"></select>
+  <canvas id="curve"></canvas>
+</div>
+<div class="hint">移動滑鼠撥開粒子，換形狀或換緩動函式</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@tweenjs/tween.js@25.0.0/dist/tween.umd.js"></script>
+<script>
+// Every particle owns its own Tween inside one Group; the Group is stepped once per frame.
+const { Tween, Group, Easing } = TWEEN;
+const group = new Group();
+const EASINGS = ["Elastic.Out", "Back.InOut", "Bounce.Out", "Exponential.InOut", "Cubic.InOut", "Quintic.Out", "Circular.InOut", "Sinusoidal.InOut"];
+const ORDER = ["text", "heart", "galaxy", "grid"];
+const DURATION = 1400;
+const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
+const curve = document.getElementById("curve"), cctx = curve.getContext("2d");
+const sel = document.getElementById("easing");
+let W = 0, H = 0, particles = [], shape = "text", easeName = EASINGS[0], morphStart = 0, autoTimer = null, userEase = false;
+const pointer = { x: -1e4, y: -1e4 };
+
+for (const e of EASINGS) sel.add(new Option(e, e));
+const easeFn = (name) => name.split(".").reduce((o, k) => o[k], Easing);
+
+// Fill any inside-test shape with roughly n evenly spaced points.
+function fillShape(inside, x0, y0, w, h, n) {
+  let step = Math.sqrt((w * h) / n), pts = [];
+  for (let k = 0; k < 30; k++) {
+    pts = [];
+    for (let y = y0; y < y0 + h; y += step) for (let x = x0; x < x0 + w; x += step) if (inside(x, y)) pts.push([x, y]);
+    if (pts.length >= n) break;
+    step *= 0.9;
+  }
+  for (let i = pts.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pts[i], pts[j]] = [pts[j], pts[i]]; }
+  return Array.from({ length: n }, (_, i) => pts[i % pts.length]);
+}
+
+function targets(kind, n) {
+  const cx = W / 2, cy = H / 2 + 10, s = Math.min(W, H);
+  if (kind === "text") {
+    const off = document.createElement("canvas");
+    off.width = W; off.height = H;
+    const o = off.getContext("2d");
+    o.font = `900 ${Math.round(s * 0.52)}px "Arial Black", Arial, sans-serif`;
+    o.textAlign = "center"; o.textBaseline = "middle";
+    o.fillText("JS", cx, cy);
+    const data = o.getImageData(0, 0, W, H).data;
+    return fillShape((x, y) => data[((y | 0) * W + (x | 0)) * 4 + 3] > 128, 0, 0, W, H, n).map(([x, y]) => [x, y, 46 + (x / W) * 20]);
+  }
+  if (kind === "heart") {
+    const r = s * 0.026;
+    return fillShape((x, y) => {
+      const u = (x - cx) / (r * 16), v = -(y - cy + r * 2) / (r * 16);
+      return (u * u + v * v - 0.25) ** 3 - u * u * v * v * v * 0.125 <= 0;
+    }, cx - r * 18, cy - r * 18, r * 36, r * 36, n).map(([x, y]) => [x, y, 330 + ((y - cy) / s) * 60]);
+  }
+  if (kind === "galaxy") {
+    return Array.from({ length: n }, (_, i) => {
+      const t = Math.sqrt(Math.random()), arm = i % 3, R = s * 0.42 * t;
+      const a = arm * (Math.PI * 2 / 3) + t * 3.4 + (Math.random() - 0.5) * 0.5;
+      return [cx + Math.cos(a) * R, cy + Math.sin(a) * R * 0.78, 190 + t * 110];
+    });
+  }
+  const cols = Math.round(Math.sqrt(n * (W / H))), rows = Math.ceil(n / cols);
+  const gap = Math.min((W * 0.8) / cols, (H * 0.66) / rows);
+  return Array.from({ length: n }, (_, i) => {
+    const c = i % cols, r = Math.floor(i / cols);
+    return [cx + (c - (cols - 1) / 2) * gap, cy + (r - (rows - 1) / 2) * gap, (c / cols) * 300];
+  });
+}
+
+function morph(kind) {
+  shape = kind;
+  document.querySelectorAll("[data-f]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.f === kind));
+  const pts = targets(kind, particles.length);
+  const fn = easeFn(easeName);
+  const now = performance.now();
+  morphStart = now;
+  group.removeAll();
+  particles.forEach((p, i) => {
+    const [x, y, h] = pts[i];
+    // Sweep from left to right: the delay grows with the target x.
+    new Tween(p, group).to({ x, y, h }, DURATION).easing(fn).delay((x / W) * 500).start(now);
+  });
+}
+
+function resize() {
+  const dpr = devicePixelRatio || 1;
+  W = innerWidth; H = innerHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const n = Math.max(220, Math.min(520, Math.round((W * H) / 1300)));
+  while (particles.length < n) particles.push({ x: W / 2, y: H / 2, h: 50, r: 1.6 + Math.random() * 1.6, ox: 0, oy: 0 });
+  particles.length = n;
+  const cw = curve.clientWidth, ch = curve.clientHeight;
+  curve.width = cw * dpr; curve.height = ch * dpr;
+  cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function drawCurve(now) {
+  const w = curve.clientWidth, h = curve.clientHeight, fn = easeFn(easeName);
+  const X = (k) => 4 + k * (w - 8), Y = (v) => h - 8 - ((v + 0.25) / 1.5) * (h - 16);
+  cctx.clearRect(0, 0, w, h);
+  cctx.strokeStyle = "rgba(255,255,255,.14)"; cctx.setLineDash([3, 3]);
+  for (const v of [0, 1]) { cctx.beginPath(); cctx.moveTo(0, Y(v)); cctx.lineTo(w, Y(v)); cctx.stroke(); }
+  cctx.setLineDash([]); cctx.strokeStyle = "#4cc9f0"; cctx.lineWidth = 2; cctx.beginPath();
+  for (let i = 0; i <= 80; i++) { const k = i / 80; i ? cctx.lineTo(X(k), Y(fn(k))) : cctx.moveTo(X(k), Y(fn(k))); }
+  cctx.stroke();
+  const k = Math.min(1, Math.max(0, (now - morphStart) / DURATION));
+  cctx.fillStyle = "#f7df1e"; cctx.beginPath(); cctx.arc(X(k), Y(fn(k)), 4, 0, Math.PI * 2); cctx.fill();
+}
+
+function frame(now) {
+  group.update(now);
+  ctx.fillStyle = "rgba(14,16,19,0.3)";
+  ctx.fillRect(0, 0, W, H);
+  for (const p of particles) {
+    // Pointer pushes particles away; the push decays so tweens stay in charge.
+    const dx = p.x + p.ox - pointer.x, dy = p.y + p.oy - pointer.y, d2 = dx * dx + dy * dy;
+    if (d2 < 6400) { const f = (6400 - d2) / 6400 * 6; const d = Math.sqrt(d2) || 1; p.ox += (dx / d) * f; p.oy += (dy / d) * f; }
+    p.ox *= 0.9; p.oy *= 0.9;
+    ctx.fillStyle = `hsl(${p.h} 90% 62%)`;
+    ctx.beginPath(); ctx.arc(p.x + p.ox, p.y + p.oy, p.r, 0, Math.PI * 2); ctx.fill();
+  }
+  drawCurve(now);
+  requestAnimationFrame(frame);
+}
+
+// Auto tour: next shape every 3.4 s, and a new easing each time unless the user picked one.
+function next() {
+  if (!userEase) { easeName = EASINGS[(EASINGS.indexOf(easeName) + 1) % EASINGS.length]; syncEase(); }
+  morph(ORDER[(ORDER.indexOf(shape) + 1) % ORDER.length]);
+}
+function restartAuto() { clearInterval(autoTimer); autoTimer = setInterval(next, 3400); }
+function syncEase() { sel.value = easeName; document.getElementById("ename").textContent = easeName; }
+
+document.querySelectorAll("[data-f]").forEach((b) => b.addEventListener("click", () => { morph(b.dataset.f); restartAuto(); }));
+sel.addEventListener("change", () => { easeName = sel.value; userEase = true; syncEase(); morph(shape); restartAuto(); });
+document.getElementById("replay").addEventListener("click", () => {
+  particles.forEach((p) => { p.x = W / 2 + (Math.random() - 0.5) * 40; p.y = H / 2 + (Math.random() - 0.5) * 40; });
+  morph(shape); restartAuto();
+});
+addEventListener("pointermove", (e) => { pointer.x = e.clientX; pointer.y = e.clientY; });
+addEventListener("pointerleave", () => { pointer.x = pointer.y = -1e4; });
+let rt;
+addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { resize(); morph(shape); }, 150); });
+
+resize();
+// Start from a scattered cloud so the very first frame already shows particles.
+particles.forEach((p) => { p.x = Math.random() * W; p.y = Math.random() * H; p.h = 200 + Math.random() * 100; });
+syncEase();
+morph("text");
+restartAuto();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

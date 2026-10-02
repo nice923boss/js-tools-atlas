@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chroma.js 示範：色階實驗室</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body { background: #f3f1ec; }
+  .app { position: fixed; inset: 12px 12px 50px; display: flex; flex-direction: column; gap: 8px; }
+  header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px; }
+  h1 { margin: 0; font-size: 17px; letter-spacing: .5px; }
+  h1 small { font-size: 12px; font-weight: 400; color: var(--muted); margin-left: 6px; }
+  .tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .tools input[type="color"] {
+    width: 30px; height: 30px; padding: 0; border: 2px solid #fff; border-radius: 8px;
+    box-shadow: 0 0 0 1px var(--line); background: none; cursor: pointer;
+  }
+  .tools input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+  .tools input[type="color"]::-webkit-color-swatch { border: none; border-radius: 6px; }
+  .tools .arrow { color: var(--muted); font-size: 12px; }
+  .tools .btn { padding: 7px 10px; }
+  .steps { font: 600 13px var(--mono); min-width: 22px; text-align: center; }
+  .rows { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+  .row { flex: 1; min-height: 0; display: grid; grid-template-columns: 112px 1fr; gap: 10px; align-items: stretch; }
+  .label { display: flex; flex-direction: column; justify-content: center; line-height: 1.3; }
+  .label b { font-size: 14px; }
+  .label span { font-size: 11px; color: var(--muted); }
+  .label i { font-style: normal; font-size: 11px; font-family: var(--mono); color: #2f9e55; }
+  .label i.bad { color: #d61f69; }
+  .strip { position: relative; display: flex; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.12); min-height: 30px; }
+  .sw {
+    flex: 1; border: 0; padding: 0 0 5px; margin: 0; cursor: pointer; display: flex; align-items: flex-end; justify-content: center;
+    font: 600 10px var(--mono); letter-spacing: .3px; transition: filter .15s;
+  }
+  .sw:hover { filter: brightness(1.1) saturate(1.1); }
+  .sw.sel { box-shadow: inset 0 0 0 3px rgba(255,255,255,0.95), inset 0 0 0 4px rgba(0,0,0,0.35); }
+  .strip.tight .sw span { display: none; }
+  .curve { position: absolute; inset: 0; pointer-events: none; }
+  .detail { display: flex; align-items: center; gap: 12px; padding: 8px 12px; min-height: 52px; }
+  .detail .chip { width: 36px; height: 36px; border-radius: 8px; flex: none; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.1); }
+  .detail .meta { display: flex; flex-direction: column; line-height: 1.35; min-width: 0; }
+  .detail .meta b { font: 700 14px var(--mono); }
+  .detail .meta span { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cr { display: flex; gap: 6px; margin-left: auto; }
+  .cr div { border-radius: 8px; padding: 4px 8px; font-size: 12px; font-weight: 700; text-align: center; line-height: 1.25; }
+  .cr div small { display: block; font-size: 10px; font-weight: 500; opacity: .8; }
+  @media (max-width: 560px) {
+    .row { grid-template-columns: 1fr; grid-template-rows: auto 1fr; gap: 2px; }
+    .label { flex-direction: row; align-items: baseline; gap: 6px; }
+    .detail { gap: 8px; padding: 6px 8px; }
+    .detail .meta span.lch { display: none; }
+    .cr div { padding: 3px 6px; }
+  }
+</style>
+</head>
+<body class="paper">
+<div class="app">
+  <header>
+    <h1>色階實驗室<small>同一組關鍵色，五種插值方式</small></h1>
+    <div class="tools">
+      <input type="color" id="ca" aria-label="起點色">
+      <span class="arrow">›</span>
+      <input type="color" id="cm" aria-label="中間色">
+      <span class="arrow">›</span>
+      <input type="color" id="cb" aria-label="終點色">
+      <button class="btn" id="minus" aria-label="減少階數">－</button>
+      <span class="steps" id="n">9</span>
+      <button class="btn" id="plus" aria-label="增加階數">＋</button>
+      <button class="btn primary" id="preset">配色</button>
+    </div>
+  </header>
+  <div class="rows" id="rows"></div>
+  <div class="panel detail" id="detail"></div>
+</div>
+<div class="hint">點色塊看 WCAG 對比・白線是每階亮度</div>
+
+<script type="module">
+import chroma from "https://cdn.jsdelivr.net/npm/chroma-js@3.2.0/+esm";
+
+const PRESETS = [
+  ["日落", "#ffe066", "#ff5d73", "#2d1b69"],
+  ["海島", "#fafa6e", "#00a88f", "#2a4858"],
+  ["霓虹", "#f72585", "#7209b7", "#4cc9f0"],
+  ["森林", "#e9f5db", "#52b788", "#081c15"],
+  ["藍鵲", "#fde74c", "#e4572e", "#1d4e89"],
+];
+const MODES = [
+  { key: "rgb", name: "RGB", note: "直線混色，中段易灰" },
+  { key: "hsl", name: "HSL", note: "繞色相環，亮度起伏" },
+  { key: "lab", name: "Lab", note: "感知均勻" },
+  { key: "lch", name: "LCH", note: "保留彩度" },
+  { key: "bezier", name: "Bezier", note: "曲線插值＋亮度校正" },
+];
+const inputs = ["ca", "cm", "cb"].map((id) => document.getElementById(id));
+let presetIdx = 0, steps = 9, selected = { row: 4, i: 4 };
+
+function scaleColors(mode, keys, n) {
+  if (mode === "bezier") return chroma.bezier(keys).scale().correctLightness().colors(n);
+  return chroma.scale(keys).mode(mode).colors(n);
+}
+
+// Evenness: how constant the perceptual step (deltaE) is between neighbours
+function evenness(colors) {
+  const d = [];
+  for (let i = 1; i < colors.length; i++) d.push(chroma.deltaE(colors[i - 1], colors[i]));
+  const mean = d.reduce((a, b) => a + b, 0) / d.length;
+  const sd = Math.sqrt(d.reduce((a, b) => a + (b - mean) ** 2, 0) / d.length);
+  return Math.max(0, Math.round((1 - sd / mean) * 100));
+}
+
+function render() {
+  const keys = inputs.map((x) => x.value);
+  const rows = document.getElementById("rows");
+  rows.textContent = "";
+  const pending = [];
+  MODES.forEach((m, r) => {
+    const colors = scaleColors(m.key, keys, steps);
+    const row = document.createElement("div");
+    row.className = "row";
+    const ev = evenness(colors);
+    row.innerHTML = `<div class="label"><b>${m.name}</b><span>${m.note}</span><i class="${ev < 80 ? "bad" : ""}">步距均勻度 ${ev}%</i></div>`;
+    const strip = document.createElement("div");
+    strip.className = "strip";
+    colors.forEach((hex, i) => {
+      const b = document.createElement("button");
+      b.className = "sw" + (selected.row === r && selected.i === i ? " sel" : "");
+      b.style.background = hex;
+      b.style.color = chroma.contrast(hex, "#fff") >= 3 ? "#fff" : "#1c1c1a";
+      b.title = hex;
+      b.innerHTML = `<span>${hex.slice(1)}</span>`;
+      b.addEventListener("click", () => { selected = { row: r, i }; render(); copy(hex); });
+      strip.appendChild(b);
+    });
+    row.appendChild(strip);
+    rows.appendChild(row);
+    pending.push([strip, colors]);
+  });
+  // Measure only after every row exists, otherwise early strips get the full flex height
+  pending.forEach(([strip, colors]) => drawCurve(strip, colors));
+  showDetail(scaleColors(MODES[selected.row].key, keys, steps)[Math.min(selected.i, steps - 1)], MODES[selected.row].name);
+}
+
+// Lightness (Lab L*) of each step drawn on top of the strip
+function drawCurve(strip, colors) {
+  const w = strip.clientWidth, h = strip.clientHeight;
+  strip.classList.toggle("tight", w / colors.length < 54);
+  const pts = colors.map((c, i) => [((i + 0.5) / colors.length) * w, 6 + (1 - chroma(c).get("lab.l") / 100) * (h - 12)]);
+  const poly = pts.map((p) => p.map((v) => v.toFixed(1)).join(",")).join(" ");
+  const dots = pts.map(([x, y]) => `<circle cx="${x}" cy="${y}" r="2.6" fill="#fff" stroke="rgba(0,0,0,.45)" stroke-width="1"/>`).join("");
+  strip.insertAdjacentHTML("beforeend",
+    `<svg class="curve" width="${w}" height="${h}"><polyline points="${poly}" fill="none" stroke="rgba(0,0,0,.35)" stroke-width="3.2" stroke-linejoin="round"/><polyline points="${poly}" fill="none" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/>${dots}</svg>`);
+}
+
+function grade(ratio) {
+  if (ratio >= 7) return "AAA";
+  if (ratio >= 4.5) return "AA";
+  if (ratio >= 3) return "AA 大字";
+  return "不合格";
+}
+
+function showDetail(hex, modeName) {
+  const c = chroma(hex);
+  const [l, ch, hue] = c.lch();
+  const rgb = c.rgb().join(", ");
+  const cw = chroma.contrast(hex, "#ffffff"), cbk = chroma.contrast(hex, "#000000");
+  document.getElementById("detail").innerHTML = `
+    <div class="chip" style="background:${hex}"></div>
+    <div class="meta"><b>${hex.toUpperCase()}</b><span>${modeName}・rgb(${rgb})</span><span class="lch">lch(${l.toFixed(0)} ${ch.toFixed(0)} ${(hue || 0).toFixed(0)})</span></div>
+    <div class="cr">
+      <div style="background:${hex};color:#fff">白字 ${cw.toFixed(1)}<small>${grade(cw)}</small></div>
+      <div style="background:${hex};color:#000">黑字 ${cbk.toFixed(1)}<small>${grade(cbk)}</small></div>
+    </div>`;
+}
+
+function copy(hex) {
+  if (!navigator.clipboard) return;
+  navigator.clipboard.writeText(hex).catch(() => { /* clipboard may be blocked inside iframes; the detail bar still shows the value */ });
+}
+
+function applyPreset(i) {
+  const p = PRESETS[i];
+  inputs.forEach((x, k) => { x.value = p[k + 1]; });
+  document.getElementById("preset").textContent = "配色：" + p[0];
+  render();
+}
+
+inputs.forEach((x) => x.addEventListener("input", render));
+document.getElementById("minus").addEventListener("click", () => { steps = Math.max(3, steps - 1); document.getElementById("n").textContent = steps; render(); });
+document.getElementById("plus").addEventListener("click", () => { steps = Math.min(15, steps + 1); document.getElementById("n").textContent = steps; render(); });
+document.getElementById("preset").addEventListener("click", () => { presetIdx = (presetIdx + 1) % PRESETS.length; applyPreset(presetIdx); });
+let rt;
+addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(render, 100); });
+applyPreset(0);
+</script>
+</body>
+</html>

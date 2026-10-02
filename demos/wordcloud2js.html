@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wordcloud2.js 示範：JavaScript 生態關鍵字雲</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"詞彙權重為主觀設定的示意資料"}</script>
+<style>
+  body { background: radial-gradient(70% 70% at 50% 45%, #1a1c26 0%, var(--bg) 75%); }
+  .title { position: fixed; left: 14px; top: 12px; z-index: 40; }
+  .title h1 { margin: 0; font-size: 16px; }
+  .title p { margin: 0; font-size: 12px; color: var(--muted); }
+  .stage { position: fixed; left: 8px; right: 8px; top: 60px; bottom: 84px; display: block; }
+  #cloud { display: block; width: 100%; height: 100%; }
+  .box { position: absolute; pointer-events: none; border: 1.5px solid var(--accent); border-radius: 6px; box-shadow: 0 0 0 4px rgba(247, 223, 30, 0.12); transition: all .08s; }
+  .box[hidden], .tip[hidden] { display: none; }
+  .tip { position: absolute; transform: translate(-50%, -100%); margin-top: -8px; pointer-events: none; white-space: nowrap;
+    padding: 5px 10px; border-radius: 8px; background: rgba(23, 26, 31, 0.96); border: 1px solid var(--line); font-size: 12px; }
+  .tip b { color: var(--accent); }
+  .legend { position: fixed; left: 12px; right: 12px; bottom: 46px; display: flex; flex-wrap: wrap; gap: 6px 12px; justify-content: center; font-size: 12px; color: var(--muted); }
+  .legend button { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; padding: 1px 6px; border-radius: 6px; }
+  .legend button[aria-pressed="true"] { color: var(--fg); background: rgba(255, 255, 255, 0.06); }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  .count { position: fixed; right: 14px; top: 52px; font-size: 11px; color: var(--muted); z-index: 40; }
+  @media (max-width: 640px) {
+    .title { top: 52px; } .stage { top: 96px; bottom: 98px; } .count { top: auto; bottom: 18px; right: 12px; }
+    .legend { bottom: 46px; gap: 4px 6px; }
+  }
+</style>
+</head>
+<body>
+<div class="title"><h1>JavaScript 生態關鍵字雲</h1><p>示意資料・字越大代表越常被提起</p></div>
+<div class="controls">
+  <button class="btn" id="shape">形狀：圓形</button>
+  <button class="btn" id="rotate" aria-pressed="true">直排混排</button>
+  <button class="btn primary" id="again">重新排列</button>
+</div>
+<div class="count" id="count"></div>
+<div class="stage" id="stage"><canvas id="cloud"></canvas><div class="box" id="box" hidden></div><div class="tip" id="tip" hidden></div></div>
+<div class="legend" id="legend"></div>
+<div class="hint">滑過詞彙看權重・點分類只顯示該類</div>
+
+<script src="https://cdn.jsdelivr.net/npm/wordcloud@1.2.3/src/wordcloud2.js"></script>
+<script>
+// wordcloud2.js: spiral placement of weighted words on canvas, with shapes, rotation and hover hit-testing.
+const CATS = {
+  語言核心: { color: "#f7df1e", words: [["非同步", 100], ["閉包", 86], ["事件迴圈", 82], ["原型鏈", 70], ["箭頭函式", 64], ["解構賦值", 52], ["展開運算子", 44], ["生成器", 38], ["迭代器", 36], ["正規表示式", 40], ["型別推斷", 42], ["裝飾器", 32], ["不可變", 38], ["純函式", 42], ["副作用", 38]] },
+  框架架構: { color: "#4cc9f0", words: [["前端框架", 90], ["響應式", 80], ["元件化", 78], ["狀態管理", 70], ["伺服器渲染", 60], ["靜態生成", 48], ["鉤子", 52], ["路由", 50], ["微前端", 40], ["網頁元件", 48], ["單頁應用", 56], ["函式式", 50]] },
+  工具鏈: { color: "#f72585", words: [["打包工具", 68], ["模組化", 76], ["套件管理", 58], ["熱更新", 50], ["轉譯器", 42], ["程式碼檢查", 38], ["格式化", 34], ["型別檢查", 72], ["單元測試", 56], ["端對端測試", 44], ["原始碼對應", 30]] },
+  效能體驗: { color: "#7bd389", words: [["效能優化", 62], ["懶載入", 44], ["程式碼分割", 52], ["樹搖優化", 44], ["快取", 46], ["防抖節流", 44], ["記憶體洩漏", 34], ["垃圾回收", 36], ["即時編譯", 38], ["工作執行緒", 32], ["無障礙", 40], ["國際化", 36]] },
+  視覺互動: { color: "#ff8c42", words: [["資料視覺化", 66], ["動畫", 50], ["三維繪圖", 44], ["著色器", 36], ["物理引擎", 34], ["粒子特效", 38], ["地圖", 40], ["圖表", 54]] },
+  平台社群: { color: "#9d8cff", words: [["開源", 74], ["瀏覽器", 64], ["全端", 48], ["無伺服器", 42], ["邊緣運算", 34], ["社群", 54], ["串流", 36], ["漸進式網頁", 46]] },
+};
+const SHAPES = { 圓形: "circle", 心形: "cardioid", 菱形: "diamond", 星形: "star", 五邊形: "pentagon" };
+const FONT = '"Microsoft JhengHei", "PingFang TC", "Noto Sans CJK TC", "Noto Sans TC", sans-serif';
+const catOf = {}, weightOf = {};
+Object.entries(CATS).forEach(([c, v]) => v.words.forEach(([w, s]) => { catOf[w] = c; weightOf[w] = s; }));
+
+let shape = "圓形", rotate = true, only = null, run = { placed: 0, total: 0 };
+const stage = document.getElementById("stage"), canvas = document.getElementById("cloud");
+const box = document.getElementById("box"), tip = document.getElementById("tip");
+const dpr = Math.min(2, devicePixelRatio || 1);
+
+function draw() {
+  const W = stage.clientWidth, H = stage.clientHeight;
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  box.hidden = tip.hidden = true;
+  const list = Object.entries(CATS).filter(([c]) => !only || c === only).flatMap(([, v]) => v.words.map(([w, s]) => [w, s])); // copies: shrinkToFit rewrites weights in place
+  const maxFont = Math.min(W / 7.5, H / 4.2) * (only ? 1.25 : 1), minFont = W < 640 ? 10 : 12;
+  run = { placed: 0, total: list.length };
+  WordCloud(canvas, {
+    list,
+    fontFamily: FONT, fontWeight: "bold",
+    gridSize: Math.round((W < 640 ? 4 : 6) * dpr),
+    // shrinkToFit retries a word at 3/4 weight until its size is 0, so the minFont floor needs a cut-off or it recurses forever.
+    weightFactor: (s) => { const px = Math.pow(s / 100, 1.35) * maxFont; return px < minFont * 0.6 ? 0 : Math.max(minFont, px) * dpr; },
+    color: (word) => CATS[catOf[word]].color,
+    backgroundColor: "rgba(0,0,0,0)",
+    shape: SHAPES[shape], ellipticity: W > H ? Math.max(0.5, H / W) : 1,
+    rotateRatio: rotate ? 0.3 : 0, rotationSteps: 2, minRotation: 0, maxRotation: Math.PI / 2,
+    shuffle: true, drawOutOfBound: false, shrinkToFit: true, wait: 12,
+    hover: (item, dim) => {
+      if (!item) { box.hidden = tip.hidden = true; return; }
+      Object.assign(box.style, { left: `${dim.x / dpr - 3}px`, top: `${dim.y / dpr - 3}px`, width: `${dim.w / dpr + 6}px`, height: `${dim.h / dpr + 6}px` });
+      tip.innerHTML = `${item[0]}・權重 <b>${weightOf[item[0]]}</b>・${catOf[item[0]]}`;
+      Object.assign(tip.style, { left: `${Math.min(stage.clientWidth - 90, Math.max(90, (dim.x + dim.w / 2) / dpr))}px`, top: `${dim.y / dpr}px` });
+      box.hidden = tip.hidden = false;
+    },
+  });
+}
+canvas.addEventListener("mouseleave", () => (box.hidden = tip.hidden = true));
+canvas.addEventListener("wordclouddrawn", (e) => { if (e.detail.drawn) run.placed++; });
+canvas.addEventListener("wordcloudstop", () => {
+  document.getElementById("count").textContent = `已放入 ${run.placed}／${run.total} 個詞`;
+});
+
+// Category legend doubles as a filter.
+const legend = document.getElementById("legend");
+legend.innerHTML = Object.entries(CATS).map(([c, v]) => `<button data-cat="${c}" aria-pressed="false"><i style="background:${v.color}"></i>${c}</button>`).join("");
+legend.addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  only = only === b.dataset.cat ? null : b.dataset.cat;
+  legend.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.cat === only)));
+  draw();
+});
+
+if (!WordCloud.isSupported) {
+  document.getElementById("count").textContent = "此瀏覽器不支援 Canvas 文字繪製";
+} else {
+  draw();
+}
+const shapeBtn = document.getElementById("shape");
+shapeBtn.addEventListener("click", () => {
+  const names = Object.keys(SHAPES);
+  shape = names[(names.indexOf(shape) + 1) % names.length];
+  shapeBtn.textContent = `形狀：${shape}`;
+  draw();
+});
+const rotBtn = document.getElementById("rotate");
+rotBtn.addEventListener("click", () => { rotate = !rotate; rotBtn.setAttribute("aria-pressed", String(rotate)); draw(); });
+document.getElementById("again").addEventListener("click", draw);
+let timer;
+addEventListener("resize", () => { clearTimeout(timer); timer = setTimeout(draw, 200); });
+</script>
+</body>
+</html>

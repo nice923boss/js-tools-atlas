@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JoltPhysics.js 示範：鐵球拆城堡</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"七百多塊磚的堆疊、碰撞與擺錘約束全部由 Jolt Physics（C++ 編譯成 WebAssembly）計算，3D 繪圖使用 three.js 0.186.1"}</script>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"}}</script>
+<style>
+  body { background: radial-gradient(circle at 50% 30%, #1d2233 0%, #0b0e14 75%); }
+  #stage { position: fixed; inset: 0; touch-action: none; }
+  #stage canvas { display: block; }
+  .heading { position: fixed; left: 16px; top: 14px; z-index: 40; pointer-events: none; }
+  .heading h1 { margin: 0; font-size: clamp(18px, 4vw, 26px); letter-spacing: .06em; }
+  .heading p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+  .stats { position: fixed; right: 12px; bottom: 12px; z-index: 40; padding: 5px 10px; border-radius: 999px; font-size: 12px; pointer-events: none; }
+  @media (max-width: 600px) { .heading { top: 58px; } .heading p { max-width: 150px; } .stats { bottom: 46px; } }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div class="heading"><h1>鐵球拆城堡</h1><p>《地平線 西域禁地》採用的 Jolt 物理引擎，七百多塊磚同時碰撞堆疊</p></div>
+<div class="controls">
+  <button class="btn primary" id="swing">放下擺錘</button>
+  <button class="btn" id="shoot">連發重球</button>
+  <button class="btn" id="reset">重置</button>
+  <button class="btn" id="auto" aria-pressed="true">自動</button>
+</div>
+<div class="panel stats mono" id="stats">載入中</div>
+<div class="hint">點畫面朝該處發射重球・拖曳旋轉視角</div>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
+import initJolt from "https://cdn.jsdelivr.net/npm/jolt-physics@1.1.0/dist/jolt-physics.wasm-compat.js";
+
+const Jolt = await initJolt();
+
+const BRICK = { hx: 0.33, hy: 0.17, hz: 0.16 };
+const RING_N = 14;
+// Radius where the inner corners of neighbouring bricks just clear each other.
+const RING_R = BRICK.hx / Math.tan(Math.PI / RING_N) + BRICK.hz + 0.03;
+const TOWERS = [
+  { x: -4.7, layers: 15, colors: [0x4cc9f0, 0x2b6cb0] },
+  { x: 0, layers: 22, colors: [0xf7df1e, 0xff8c42] },
+  { x: 4.7, layers: 15, colors: [0xf72585, 0x9d8cff] },
+];
+const PIVOT = new THREE.Vector3(0, 13, 0);
+const ROPE = 9;
+const SWING_START = 60 * Math.PI / 180;
+// Launch speed along the arc: same energy as releasing from rest at 76 degrees, but reaches the towers sooner.
+const SWING_V0 = Math.sqrt(2 * 9.81 * ROPE * (Math.cos(SWING_START) - Math.cos(76 * Math.PI / 180)));
+const WRECK_R = 0.9;
+const MAX_SHOTS = 24;
+const L_STATIC = 0, L_MOVING = 1;
+
+// --- three.js scene ---------------------------------------------------------------------
+const stage = document.getElementById("stage");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+stage.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d1018);
+scene.fog = new THREE.Fog(0x0d1018, 28, 60);
+const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 200);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI * 0.48;
+controls.minDistance = 8;
+controls.maxDistance = 45;
+controls.enablePan = false;
+
+scene.add(new THREE.HemisphereLight(0xe4ecff, 0x1b1f2b, 1.4));
+const sun = new THREE.DirectionalLight(0xfff4e0, 2.6);
+sun.position.set(9, 18, 12);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -14, right: 14, top: 16, bottom: -10, near: 1, far: 60 });
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(160, 160), new THREE.MeshStandardMaterial({ color: 0x1a2030, roughness: 0.95 }));
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+const grid = new THREE.GridHelper(40, 40, 0x323c54, 0x242c3e);
+grid.position.y = 0.003;
+scene.add(grid);
+
+// --- Jolt world -------------------------------------------------------------------------
+const settings = new Jolt.JoltSettings();
+const pairFilter = new Jolt.ObjectLayerPairFilterTable(2);
+pairFilter.EnableCollision(L_STATIC, L_MOVING);
+pairFilter.EnableCollision(L_MOVING, L_MOVING);
+const bpInterface = new Jolt.BroadPhaseLayerInterfaceTable(2, 2);
+bpInterface.MapObjectToBroadPhaseLayer(L_STATIC, new Jolt.BroadPhaseLayer(0));
+bpInterface.MapObjectToBroadPhaseLayer(L_MOVING, new Jolt.BroadPhaseLayer(1));
+settings.mObjectLayerPairFilter = pairFilter;
+settings.mBroadPhaseLayerInterface = bpInterface;
+settings.mObjectVsBroadPhaseLayerFilter = new Jolt.ObjectVsBroadPhaseLayerFilterTable(bpInterface, 2, pairFilter, 2);
+const jolt = new Jolt.JoltInterface(settings);
+Jolt.destroy(settings);
+const physics = jolt.GetPhysicsSystem();
+const bi = physics.GetBodyInterface();
+
+const tmpV = new Jolt.Vec3(0, 0, 0), zeroV = new Jolt.Vec3(0, 0, 0);
+function createBody(shape, pos, quat, motion, layer, tune) {
+  const p = new Jolt.RVec3(pos.x, pos.y, pos.z);
+  const q = new Jolt.Quat(quat.x, quat.y, quat.z, quat.w);
+  const bcs = new Jolt.BodyCreationSettings(shape, p, q, motion, layer);
+  if (tune) tune(bcs);
+  const body = bi.CreateBody(bcs);
+  Jolt.destroy(bcs); Jolt.destroy(p); Jolt.destroy(q);
+  return body;
+}
+const IDENT = new THREE.Quaternion();
+function addStatic(hx, hy, hz, pos, color) {
+  const body = createBody(new Jolt.BoxShape(new Jolt.Vec3(hx, hy, hz), 0.05, null), pos, IDENT, Jolt.EMotionType_Static, L_STATIC);
+  bi.AddBody(body.GetID(), Jolt.EActivation_DontActivate);
+  if (color === null) return body;
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2), new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.3 }));
+  mesh.position.copy(pos);
+  mesh.castShadow = mesh.receiveShadow = true;
+  scene.add(mesh);
+  return body;
+}
+
+addStatic(40, 0.5, 40, new THREE.Vector3(0, -0.5, 0), null);
+// Crane: mast behind the middle tower and a jib reaching over it. The pendulum hangs from the jib tip.
+addStatic(0.35, 7.2, 0.35, new THREE.Vector3(0, 7.2, -6), 0xff8c42);
+const jib = addStatic(0.28, 0.28, 3.4, new THREE.Vector3(0, PIVOT.y + 0.5, -2.9), 0xff8c42);
+addStatic(0.6, 0.45, 0.6, new THREE.Vector3(0, PIVOT.y + 1.2, -6), 0x3b465e);
+
+// --- bricks -----------------------------------------------------------------------------
+const brickShape = new Jolt.BoxShape(new Jolt.Vec3(BRICK.hx, BRICK.hy, BRICK.hz), 0.04, null);
+brickShape.AddRef(); // shared by every brick, keep it alive across resets
+const layout = [];
+for (const t of TOWERS) {
+  for (let l = 0; l < t.layers; l++) {
+    const top = l === t.layers - 1;
+    for (let i = 0; i < RING_N; i++) {
+      if (top && i % 2) continue; // crenellated top layer
+      const a = (i + (l % 2) * 0.5) * (Math.PI * 2 / RING_N);
+      const pos = new THREE.Vector3(t.x + Math.cos(a) * RING_R, BRICK.hy + l * (BRICK.hy * 2 + 0.002), Math.sin(a) * RING_R);
+      const quat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2 - a);
+      const color = new THREE.Color(t.colors[l % 2]).offsetHSL(0, 0, (Math.random() - 0.5) * 0.08);
+      layout.push({ pos, quat, color });
+    }
+  }
+}
+const brickMesh = new THREE.InstancedMesh(new RoundedBoxGeometry(BRICK.hx * 2, BRICK.hy * 2, BRICK.hz * 2, 2, 0.035), new THREE.MeshStandardMaterial({ roughness: 0.6 }), layout.length);
+brickMesh.castShadow = brickMesh.receiveShadow = true;
+layout.forEach((b, i) => brickMesh.setColorAt(i, b.color));
+scene.add(brickMesh);
+let bricks = [];
+
+const m4 = new THREE.Matrix4(), v3 = new THREE.Vector3(), q4 = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1);
+function buildBricks() {
+  for (const b of bricks) { bi.RemoveBody(b.GetID()); bi.DestroyBody(b.GetID()); }
+  bricks = layout.map((b, i) => {
+    const body = createBody(brickShape, b.pos, b.quat, Jolt.EMotionType_Dynamic, L_MOVING, (s) => { s.mFriction = 0.7; });
+    // Towers start asleep, so they stand perfectly still until something hits them.
+    bi.AddBody(body.GetID(), Jolt.EActivation_DontActivate);
+    brickMesh.setMatrixAt(i, m4.compose(b.pos, b.quat, ONE));
+    return body;
+  });
+  brickMesh.instanceMatrix.needsUpdate = true;
+}
+
+// --- wrecking ball on a point constraint --------------------------------------------------
+const wreckStart = new THREE.Vector3(-Math.sin(SWING_START) * ROPE, PIVOT.y - Math.cos(SWING_START) * ROPE, 0);
+const wreckShape = new Jolt.SphereShape(WRECK_R, null);
+const wreck = createBody(wreckShape, wreckStart, IDENT, Jolt.EMotionType_Dynamic, L_MOVING, (s) => {
+  s.mOverrideMassProperties = Jolt.EOverrideMassProperties_CalculateInertia;
+  s.mMassPropertiesOverride.mMass = 14000;
+  s.mMotionQuality = Jolt.EMotionQuality_LinearCast;
+  s.mAngularDamping = 0.4;
+});
+bi.AddBody(wreck.GetID(), Jolt.EActivation_Activate);
+{
+  const cs = new Jolt.PointConstraintSettings();
+  const p = new Jolt.RVec3(PIVOT.x, PIVOT.y, PIVOT.z);
+  cs.mPoint1 = p;
+  cs.mPoint2 = p;
+  physics.AddConstraint(cs.Create(jib, wreck));
+  Jolt.destroy(cs); Jolt.destroy(p);
+}
+const wreckMesh = new THREE.Mesh(new THREE.SphereGeometry(WRECK_R, 40, 24), new THREE.MeshStandardMaterial({ color: 0x2b2f38, metalness: 0.85, roughness: 0.3 }));
+wreckMesh.castShadow = true;
+const band = new THREE.Mesh(new THREE.TorusGeometry(WRECK_R * 1.005, 0.05, 8, 48), new THREE.MeshStandardMaterial({ color: 0xf7df1e, roughness: 0.4 }));
+wreckMesh.add(band);
+scene.add(wreckMesh);
+const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1, 8), new THREE.MeshStandardMaterial({ color: 0x9aa4b8, metalness: 0.7, roughness: 0.35 }));
+cable.castShadow = true;
+scene.add(cable);
+
+function armWreck() {
+  const p = new Jolt.RVec3(wreckStart.x, wreckStart.y, wreckStart.z);
+  const q = new Jolt.Quat(0, 0, 0, 1);
+  bi.SetPositionAndRotation(wreck.GetID(), p, q, Jolt.EActivation_Activate);
+  tmpV.Set(Math.cos(SWING_START) * SWING_V0, -Math.sin(SWING_START) * SWING_V0, 0);
+  bi.SetLinearAndAngularVelocity(wreck.GetID(), tmpV, zeroV);
+  Jolt.destroy(p); Jolt.destroy(q);
+}
+
+// --- heavy shots ------------------------------------------------------------------------
+const shotShape = new Jolt.SphereShape(0.42, null);
+shotShape.AddRef();
+const shotGeo = new THREE.SphereGeometry(0.42, 28, 18);
+const shots = [];
+function removeShot(i) {
+  const s = shots[i];
+  bi.RemoveBody(s.body.GetID()); bi.DestroyBody(s.body.GetID());
+  scene.remove(s.mesh); s.mesh.material.dispose();
+  shots.splice(i, 1);
+}
+let shotNo = 0;
+function fireAt(target) {
+  if (shots.length >= MAX_SHOTS) removeShot(0);
+  const from = camera.position.clone().add(new THREE.Vector3(0, -1, 0)).lerp(target, 0.15);
+  const dir = target.clone().sub(from);
+  const t = Math.max(0.25, dir.length() / 34);
+  const body = createBody(shotShape, from, IDENT, Jolt.EMotionType_Dynamic, L_MOVING, (s) => {
+    s.mOverrideMassProperties = Jolt.EOverrideMassProperties_CalculateInertia;
+    s.mMassPropertiesOverride.mMass = 900;
+    s.mMotionQuality = Jolt.EMotionQuality_LinearCast;
+  });
+  bi.AddBody(body.GetID(), Jolt.EActivation_Activate);
+  tmpV.Set(dir.x / t, dir.y / t + 4.9 * t, dir.z / t);
+  bi.SetLinearVelocity(body.GetID(), tmpV);
+  const color = [0x4cc9f0, 0xf72585, 0x7bd389, 0x9d8cff][shotNo++ % 4];
+  const mesh = new THREE.Mesh(shotGeo, new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.35, roughness: 0.25, metalness: 0.2 }));
+  mesh.castShadow = true;
+  mesh.position.copy(from);
+  scene.add(mesh);
+  shots.push({ body, mesh });
+}
+// Pick a brick that is still high up, so automatic shots hit what is left standing.
+function standingTarget() {
+  const tall = [];
+  for (const b of bricks) { const p = b.GetPosition(); if (p.GetY() > 2) tall.push([p.GetX(), p.GetY(), p.GetZ()]); }
+  const pick = tall.length ? tall[(Math.random() * tall.length) | 0] : [(Math.random() - 0.5) * 8, 1, 0];
+  return new THREE.Vector3(pick[0], pick[1], pick[2]);
+}
+
+// --- input & UI -------------------------------------------------------------------------
+let auto = true, simTime = 0, cycleStart = 0, burst = 0, nextBurst = 0;
+const autoBtn = document.getElementById("auto");
+const setAuto = (on) => { auto = on; autoBtn.setAttribute("aria-pressed", String(on)); controls.autoRotate = on; };
+autoBtn.addEventListener("click", () => setAuto(!auto));
+document.getElementById("swing").addEventListener("click", armWreck);
+document.getElementById("shoot").addEventListener("click", () => { burst = 6; nextBurst = simTime; });
+document.getElementById("reset").addEventListener("click", resetAll);
+
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+let down = null;
+renderer.domElement.addEventListener("pointerdown", (e) => { down = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener("pointerup", (e) => {
+  if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return;
+  ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const hit = ray.intersectObjects([brickMesh, wreckMesh, ground])[0];
+  fireAt(hit ? hit.point : ray.ray.at(25, new THREE.Vector3()));
+  setAuto(false);
+});
+
+function resetAll() {
+  while (shots.length) removeShot(shots.length - 1);
+  buildBricks();
+  armWreck();
+  cycleStart = simTime;
+  burst = 0;
+}
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  const dist = 25 / Math.min(1, camera.aspect * 1.1);
+  const dir = camera.position.clone().sub(controls.target);
+  if (dir.lengthSq() < 0.01) dir.set(0.3, 0.22, 1);
+  camera.position.copy(controls.target).addScaledVector(dir.normalize(), dist);
+  controls.update();
+}
+
+// --- loop -------------------------------------------------------------------------------
+const statsEl = document.getElementById("stats");
+let last = performance.now(), frameNo = 0, stepMs = 0;
+function frame(now) {
+  const dt = Math.min(1 / 30, (now - last) / 1000);
+  last = now;
+  const t0 = performance.now();
+  jolt.Step(dt, dt > 1 / 55 ? 2 : 1);
+  stepMs = stepMs * 0.9 + (performance.now() - t0) * 0.1;
+  simTime += dt;
+
+  // Auto show: the pendulum swings through all three towers, heavy shots finish the job, then rebuild.
+  if (auto) {
+    const ct = simTime - cycleStart;
+    if (ct > 9 && ct < 9.1 && burst === 0) { burst = 6; nextBurst = simTime; }
+    if (ct > 16) resetAll();
+  }
+  if (burst > 0 && simTime >= nextBurst) { fireAt(standingTarget()); burst--; nextBurst = simTime + 0.35; }
+
+  let dirty = false;
+  for (let i = 0; i < bricks.length; i++) {
+    const b = bricks[i];
+    if (!b.IsActive()) continue;
+    const p = b.GetPosition(), r = b.GetRotation();
+    v3.set(p.GetX(), p.GetY(), p.GetZ());
+    q4.set(r.GetX(), r.GetY(), r.GetZ(), r.GetW());
+    brickMesh.setMatrixAt(i, m4.compose(v3, q4, ONE));
+    dirty = true;
+  }
+  if (dirty) brickMesh.instanceMatrix.needsUpdate = true;
+
+  const wp = wreck.GetPosition(), wr = wreck.GetRotation();
+  wreckMesh.position.set(wp.GetX(), wp.GetY(), wp.GetZ());
+  wreckMesh.quaternion.set(wr.GetX(), wr.GetY(), wr.GetZ(), wr.GetW());
+  v3.copy(wreckMesh.position).sub(PIVOT);
+  cable.position.copy(PIVOT).addScaledVector(v3, 0.5);
+  cable.scale.y = v3.length();
+  cable.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), v3.normalize());
+
+  for (let i = shots.length - 1; i >= 0; i--) {
+    const s = shots[i], p = s.body.GetPosition(), r = s.body.GetRotation();
+    s.mesh.position.set(p.GetX(), p.GetY(), p.GetZ());
+    s.mesh.quaternion.set(r.GetX(), r.GetY(), r.GetZ(), r.GetW());
+    if (p.GetY() < -10) removeShot(i);
+  }
+
+  if (frameNo++ % 10 === 0) {
+    const active = physics.GetNumActiveBodies(Jolt.EBodyType_RigidBody);
+    statsEl.textContent = "剛體 " + (bricks.length + shots.length + 1) + " 個・運動中 " + active + "・物理 " + stepMs.toFixed(1) + " ms";
+  }
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+
+controls.target.set(0, 6.2, 0);
+camera.position.set(7.2, 11.5, 24);
+controls.autoRotateSpeed = 0.5;
+addEventListener("resize", resize);
+resize();
+setAuto(true);
+resetAll();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

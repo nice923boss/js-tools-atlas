@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lil-gui 示範：星系產生器調參面板</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  /* Theme lil-gui with the site palette through its CSS variables */
+  .lil-gui {
+    --background-color: rgba(18, 20, 24, 0.86);
+    --widget-color: #2a2e36;
+    --hover-color: #353a44;
+    --focus-color: #3d434f;
+    --number-color: #f7df1e;
+    --string-color: #7bd389;
+    --title-background-color: #1d2027;
+    --font-family: "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif;
+    --font-size: 12px;
+    --widget-height: 22px;
+    --name-width: 40%;
+  }
+  body .lil-gui.lil-root { position: fixed; top: 12px; right: 12px; max-height: calc(100% - 60px); border-radius: 10px; overflow: auto; z-index: 40; border: 1px solid rgba(255,255,255,.12); backdrop-filter: blur(8px); }
+  body .lil-gui.lil-root > .lil-title { font-weight: 700; color: #f7df1e; }
+  #json { position: fixed; left: 12px; top: 12px; max-width: min(320px, 55vw); font: 11px/1.5 var(--mono); white-space: pre; display: none; z-index: 41; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<pre id="json" class="panel"></pre>
+<div class="hint">拖曳旋轉星系・用右側面板即時調整參數</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import GUI from "https://cdn.jsdelivr.net/npm/lil-gui@0.21.0/dist/lil-gui.esm.min.js";
+
+const canvas = document.getElementById("c");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, 1, 0.1, 100);
+camera.position.set(3.2, 3.4, 5.2);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+
+// Soft round sprite so points look like glowing stars
+function starSprite() {
+  const c = document.createElement("canvas");
+  c.width = c.height = 64;
+  const g = c.getContext("2d");
+  const grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grd.addColorStop(0, "rgba(255,255,255,1)");
+  grd.addColorStop(0.25, "rgba(255,255,255,.65)");
+  grd.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+const sprite = starSprite();
+
+const params = {
+  preset: "spiral",
+  count: 60000,
+  size: 0.05,
+  radius: 5,
+  branches: 4,
+  spin: 1.2,
+  randomness: 0.3,
+  randomnessPower: 3,
+  insideColor: "#ff8c42",
+  outsideColor: "#4cc9f0",
+  background: "#07080b",
+  rotate: true,
+  speed: 0.12,
+  random() { randomize(); },
+  showJson() { toggleJson(); },
+  reset() { gui.reset(); },
+};
+
+const PRESETS = {
+  spiral: { branches: 4, spin: 1.2, randomness: 0.3, randomnessPower: 3, insideColor: "#ff8c42", outsideColor: "#4cc9f0" },
+  barred: { branches: 2, spin: 2.6, randomness: 0.22, randomnessPower: 2.4, insideColor: "#f7df1e", outsideColor: "#9d8cff" },
+  wild: { branches: 9, spin: -3.2, randomness: 0.55, randomnessPower: 1.6, insideColor: "#f72585", outsideColor: "#7bd389" },
+};
+
+let points;
+function generate() {
+  if (points) { points.geometry.dispose(); points.material.dispose(); scene.remove(points); }
+  const { count, radius, branches, spin, randomness, randomnessPower } = params;
+  const pos = new Float32Array(count * 3);
+  const col = new Float32Array(count * 3);
+  const inside = new THREE.Color(params.insideColor);
+  const outside = new THREE.Color(params.outsideColor);
+  const jitter = () => Math.pow(Math.random(), randomnessPower) * (Math.random() < 0.5 ? 1 : -1) * randomness;
+  for (let i = 0; i < count; i++) {
+    const r = Math.random() * radius;
+    const branch = ((i % branches) / branches) * Math.PI * 2;
+    const angle = branch + r * spin;
+    pos[i * 3] = Math.cos(angle) * r + jitter() * r;
+    pos[i * 3 + 1] = jitter() * r * 0.6;
+    pos[i * 3 + 2] = Math.sin(angle) * r + jitter() * r;
+    const c = inside.clone().lerp(outside, r / radius);
+    col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  const mat = new THREE.PointsMaterial({
+    size: params.size, sizeAttenuation: true, vertexColors: true, map: sprite,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  });
+  points = new THREE.Points(geo, mat);
+  scene.add(points);
+}
+
+// ---- lil-gui panel: folders, sliders, color pickers, dropdown, checkbox, buttons ----
+const gui = new GUI({ title: "星系參數", width: innerWidth < 520 ? 210 : 250 });
+gui.add(params, "preset", { "螺旋星系": "spiral", "棒旋星系": "barred", "狂野星雲": "wild" })
+  .name("預設樣式")
+  .onChange((k) => { Object.assign(params, PRESETS[k]); gui.controllersRecursive().forEach((c) => c.updateDisplay()); generate(); });
+
+const shape = gui.addFolder("結構");
+shape.add(params, "count", 1000, 200000, 1000).name("星點數量").onFinishChange(generate);
+shape.add(params, "radius", 1, 10, 0.1).name("半徑").onFinishChange(generate);
+shape.add(params, "branches", 2, 12, 1).name("旋臂數").onFinishChange(generate);
+shape.add(params, "spin", -5, 5, 0.01).name("扭轉").onFinishChange(generate);
+shape.add(params, "randomness", 0, 1, 0.01).name("離散").onFinishChange(generate);
+shape.add(params, "randomnessPower", 1, 8, 0.1).name("集中度").onFinishChange(generate);
+shape.add(params, "size", 0.005, 0.1, 0.001).name("星點大小").onChange((v) => { points.material.size = v; });
+
+const look = gui.addFolder("色彩");
+look.addColor(params, "insideColor").name("核心色").onChange(generate);
+look.addColor(params, "outsideColor").name("外圍色").onChange(generate);
+look.addColor(params, "background").name("背景").onChange((v) => scene.background.set(v));
+
+const anim = gui.addFolder("動畫");
+anim.add(params, "rotate").name("自動旋轉");
+anim.add(params, "speed", -1, 1, 0.01).name("轉速");
+if (innerWidth < 520) { anim.close(); look.close(); }
+
+gui.add(params, "random").name("🎲 隨機生成");
+gui.add(params, "showJson").name("📋 顯示設定 JSON");
+gui.add(params, "reset").name("↺ 重設全部");
+
+// gui.save() returns a serializable snapshot of every controller
+const jsonEl = document.getElementById("json");
+function toggleJson() {
+  const show = jsonEl.style.display !== "block";
+  jsonEl.style.display = show ? "block" : "none";
+  if (show) renderJson();
+}
+function renderJson() {
+  const { controllers, folders } = gui.save();
+  const flat = { ...controllers };
+  for (const f of Object.values(folders)) Object.assign(flat, f.controllers);
+  delete flat.random; delete flat.showJson; delete flat.reset;
+  jsonEl.textContent = "gui.save() =\n" + JSON.stringify(flat, null, 1);
+}
+gui.onFinishChange(() => { if (jsonEl.style.display === "block") renderJson(); });
+
+function randomize() {
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  const hex = () => "#" + new THREE.Color().setHSL(Math.random(), 0.85, 0.6).getHexString();
+  Object.assign(params, {
+    branches: Math.round(rnd(2, 9)), spin: +rnd(-4, 4).toFixed(2), randomness: +rnd(0.1, 0.6).toFixed(2),
+    randomnessPower: +rnd(1.4, 4).toFixed(1), insideColor: hex(), outsideColor: hex(),
+  });
+  gui.controllersRecursive().forEach((c) => c.updateDisplay());
+  generate();
+  if (jsonEl.style.display === "block") renderJson();
+}
+
+scene.background = new THREE.Color(params.background);
+generate();
+
+function resize() {
+  renderer.setSize(innerWidth, innerHeight, false);
+  camera.aspect = innerWidth / innerHeight;
+  const narrow = innerWidth < innerHeight;
+  camera.position.setLength(narrow ? 10 : 6.2);
+  // Keep the galaxy clear of the panel: shift left on wide screens, down on narrow ones
+  if (narrow) camera.setViewOffset(innerWidth, innerHeight, 0, -innerHeight * 0.2, innerWidth, innerHeight);
+  else camera.setViewOffset(innerWidth, innerHeight, 135, 0, innerWidth, innerHeight);
+  camera.updateProjectionMatrix();
+}
+addEventListener("resize", resize);
+resize();
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  if (params.rotate && points) points.rotation.y += dt * params.speed;
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

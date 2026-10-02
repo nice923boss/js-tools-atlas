@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mo.js 示範：點擊爆裂特效</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body { cursor: crosshair; background: radial-gradient(55% 55% at 50% 50%, rgba(247, 37, 133, .10), transparent 70%), var(--bg); }
+  #fx { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 40; }
+  .center { position: fixed; inset: 0; display: grid; place-items: center; text-align: center; }
+  .like {
+    width: 132px; height: 132px; border-radius: 50%; border: 1px solid var(--line); cursor: pointer;
+    background: var(--bg-2); display: grid; place-items: center; margin: 0 auto 14px;
+    box-shadow: 0 0 0 10px rgba(255,255,255,.02), 0 14px 40px rgba(0,0,0,.45); transition: border-color .2s;
+  }
+  .like:hover { border-color: var(--c3); }
+  .like svg { width: 64px; height: 64px; overflow: visible; }
+  .like path { fill: none; stroke: var(--muted); stroke-width: 2; transition: fill .2s, stroke .2s; }
+  .like.on path { fill: var(--c3); stroke: var(--c3); }
+  .count { font-size: 15px; }
+  .count b { color: var(--c3); font-size: 22px; margin: 0 4px; font-family: var(--mono); }
+  .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+</style>
+</head>
+<body>
+<div class="center">
+  <div>
+    <button class="like" id="like" aria-label="按讚">
+      <svg viewBox="0 0 32 32" id="heart"><path d="M16 28 C 6 20, 2 15, 2 10 A 7 7 0 0 1 16 7 A 7 7 0 0 1 30 10 C 30 15, 26 20, 16 28 Z"/></svg>
+    </button>
+    <div class="count">已按讚<b id="n">0</b>次</div>
+    <div class="sub">Burst、Shape、Html 三種模組組合</div>
+  </div>
+</div>
+<div id="fx"></div>
+<div class="controls"><button class="btn" id="auto" aria-pressed="true">自動煙火：開</button></div>
+<div class="hint">點愛心按讚，或點畫面任何地方放煙火</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mojs/core@1.7.1/dist/mo.umd.js"></script>
+<script>
+// A small pool of mo.js effects, re-tuned to each click position and replayed.
+const COLORS = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#9d8cff"];
+// All effects live in a clipped fixed layer so edge bursts never cause scrollbars.
+const FX = { parent: "#fx", left: 0, top: 0 };
+const pick = () => COLORS[Math.floor(Math.random() * COLORS.length)];
+
+function makeFx() {
+  return {
+    ring: new mojs.Shape({
+      ...FX, shape: "circle", fill: "none", stroke: "#fff",
+      radius: { 0: 64 }, strokeWidth: { 16: 0 }, duration: 650, easing: "quart.out",
+    }),
+    dots: new mojs.Burst({
+      ...FX, radius: { 8: 110 }, count: 14, angle: { 0: 40 },
+      children: {
+        shape: ["circle", "polygon", "rect"], points: 3, fill: COLORS,
+        radius: "rand(4, 9)", scale: { 1: 0 }, degreeShift: "rand(-60, 60)",
+        duration: "rand(800, 1200)", easing: "cubic.out",
+      },
+    }),
+    sparks: new mojs.Burst({
+      ...FX, radius: { 20: 150 }, count: 8, angle: 22.5,
+      children: {
+        shape: "line", stroke: COLORS, strokeWidth: { 4: 0 }, radius: { 14: 4 },
+        strokeLinecap: "round", duration: 900, easing: "quad.out",
+      },
+    }),
+  };
+}
+const pool = Array.from({ length: 5 }, makeFx);
+let pi = 0;
+
+function boom(x, y, color = pick()) {
+  const fx = pool[pi++ % pool.length];
+  fx.ring.tune({ x, y, stroke: color }).replay();
+  fx.dots.tune({ x, y }).replay();
+  fx.sparks.tune({ x, y }).replay();
+}
+
+// Like button: heart pops with an elastic Html tween plus a pink burst.
+const heartPop = new mojs.Html({ el: "#heart", scale: { 0.2: 1 }, easing: "elastic.out", duration: 1100 });
+const likeBurst = new mojs.Burst({
+  ...FX, radius: { 50: 120 }, count: 10,
+  children: { shape: "circle", fill: ["#f72585", "#ff8c42", "#f7df1e"], radius: { 9: 0 }, duration: 900, easing: "quad.out" },
+});
+const likeRing = new mojs.Shape({
+  ...FX, shape: "circle", fill: "none", stroke: "#f72585",
+  radius: { 30: 90 }, strokeWidth: { 20: 0 }, duration: 600, easing: "cubic.out",
+});
+const likeBtn = document.getElementById("like");
+let count = 0;
+likeBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const r = likeBtn.getBoundingClientRect();
+  const x = r.left + r.width / 2, y = r.top + r.height / 2;
+  likeBtn.classList.add("on");
+  document.getElementById("n").textContent = ++count;
+  heartPop.replay();
+  likeRing.tune({ x, y }).replay();
+  likeBurst.tune({ x, y }).replay();
+  if (e.isTrusted) pauseAuto();
+});
+
+document.addEventListener("click", (e) => {
+  if (e.target.closest("button")) return;
+  boom(e.clientX, e.clientY);
+  pauseAuto();
+});
+
+// Autoplay fireworks so the canvas is never empty.
+let autoOn = true, resumeAt = 0;
+function pauseAuto() { resumeAt = performance.now() + 3000; }
+setInterval(() => {
+  if (!autoOn || performance.now() < resumeAt) return;
+  const w = innerWidth, h = innerHeight;
+  let x, y;
+  do { x = 40 + Math.random() * (w - 80); y = 40 + Math.random() * (h - 80); }
+  while (Math.hypot(x - w / 2, y - h / 2) < 120);
+  boom(x, y);
+}, 430);
+const autoBtn = document.getElementById("auto");
+autoBtn.addEventListener("click", () => {
+  autoOn = !autoOn;
+  autoBtn.setAttribute("aria-pressed", autoOn);
+  autoBtn.textContent = `自動煙火：${autoOn ? "開" : "關"}`;
+});
+setTimeout(() => likeBtn.click(), 600);
+</script>
+</body>
+</html>

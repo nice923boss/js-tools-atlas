@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GSAP 示範：時間軸編排動畫</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body {
+    background:
+      radial-gradient(40% 50% at 18% 20%, rgba(76, 201, 240, .14), transparent 70%),
+      radial-gradient(40% 50% at 85% 75%, rgba(247, 37, 133, .12), transparent 70%),
+      linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px) 0 0 / 32px 32px,
+      linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px) 0 0 / 32px 32px,
+      var(--bg);
+  }
+  .hint { bottom: auto; top: 12px; }
+  .scene { position: fixed; inset: 40px 12px 112px; display: grid; place-items: center; }
+  .center { text-align: center; }
+  .orbit { position: absolute; width: min(70vmin, 520px); aspect-ratio: 1; border: 1px dashed var(--line); border-radius: 50%; }
+  .orbit i { position: absolute; width: 10px; height: 10px; border-radius: 50%; left: calc(50% - 5px); top: -5px; }
+  .mark {
+    width: 72px; height: 72px; margin: 0 auto 14px; border-radius: 18px;
+    background: var(--accent); color: var(--accent-ink);
+    font: 800 30px/72px var(--mono); box-shadow: 0 10px 40px rgba(247, 223, 30, .35);
+  }
+  .title { margin: 0; font-size: clamp(32px, 8vw, 66px); font-weight: 900; letter-spacing: .05em; line-height: 1.15; perspective: 600px; }
+  .sub { margin: 6px 0 22px; color: var(--muted); font-size: clamp(13px, 2.2vw, 16px); }
+  .cards { display: grid; grid-template-columns: repeat(4, 118px); gap: 12px; justify-content: center; }
+  .card { padding: 12px 8px 10px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line); }
+  .card .ico { width: 26px; height: 26px; margin: 0 auto 6px; }
+  .card span { font-size: 13px; }
+  .ico.circle { border-radius: 50%; background: var(--c2); }
+  .ico.square { border-radius: 6px; background: var(--c3); transform: rotate(12deg); }
+  .ico.tri { width: 0; height: 0; border-left: 14px solid transparent; border-right: 14px solid transparent; border-bottom: 26px solid var(--c4); }
+  .ico.ring { border-radius: 50%; border: 6px solid var(--c5); }
+  @media (max-width: 560px) { .cards { grid-template-columns: repeat(2, 120px); } }
+
+  .tlpanel { position: fixed; left: 12px; right: 12px; bottom: 12px; padding: 10px 14px 12px; }
+  .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .row .time { margin-left: auto; color: var(--muted); font-size: 12px; }
+  .track { position: relative; margin-top: 22px; }
+  .marks { position: absolute; left: 0; right: 0; top: -18px; height: 16px; }
+  .marks button {
+    position: absolute; transform: translateX(-50%); border: 0; background: none; cursor: pointer;
+    color: var(--c2); font: 600 11px/16px var(--font); padding: 0 2px; white-space: nowrap;
+  }
+  .marks button::after { content: ""; position: absolute; left: 50%; top: 16px; width: 1px; height: 8px; background: var(--c2); }
+  #scrub { width: 100%; margin: 0; }
+</style>
+</head>
+<body>
+<div class="hint">拖曳時間軸，或點標籤跳到該段落</div>
+
+<div class="scene">
+  <div class="orbit"><i style="background:var(--c2)"></i></div>
+  <div class="orbit" style="width:min(52vmin,380px)"><i style="background:var(--c3)"></i></div>
+  <div class="center">
+    <div class="mark">JS</div>
+    <h1 class="title">JS 工具圖鑑</h1>
+    <p class="sub">328 個工具，一次看懂</p>
+    <div class="cards">
+      <div class="card"><div class="ico circle"></div><span>動畫</span></div>
+      <div class="card"><div class="ico square"></div><span>圖表</span></div>
+      <div class="card"><div class="ico tri"></div><span>3D</span></div>
+      <div class="card"><div class="ico ring"></div><span>音訊</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="tlpanel panel">
+  <div class="row">
+    <button class="btn primary" id="play">暫停</button>
+    <button class="btn" id="restart">重播</button>
+    <button class="btn" id="speed">速度 1×</button>
+    <span class="time mono" id="time">0.00 s</span>
+  </div>
+  <div class="track">
+    <div class="marks" id="marks"></div>
+    <input type="range" id="scrub" min="0" max="1000" value="0" aria-label="時間軸進度">
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/gsap.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/SplitText.min.js"></script>
+<script>
+// One master timeline choreographs every element; labels mark the acts.
+gsap.registerPlugin(SplitText);
+
+// Decorative orbit dots spin forever, independent of the main timeline.
+gsap.utils.toArray(".orbit").forEach((el, i) => {
+  gsap.to(el, { rotation: i ? -360 : 360, duration: 14 + i * 6, repeat: -1, ease: "none" });
+});
+
+const split = SplitText.create(".title", { type: "chars" });
+const scrub = document.getElementById("scrub");
+const timeEl = document.getElementById("time");
+let scrubbing = false;
+
+const tl = gsap.timeline({
+  repeat: -1,
+  yoyo: true,
+  repeatDelay: 1.2,
+  defaults: { ease: "power3.out" },
+  onUpdate() {
+    if (!scrubbing) scrub.value = Math.round(tl.progress() * 1000);
+    timeEl.textContent = `${tl.time().toFixed(2)} s / ${tl.duration().toFixed(2)} s`;
+  },
+});
+
+tl.addLabel("標誌")
+  .from(".mark", { scale: 0, rotation: -200, duration: 0.9, ease: "back.out(1.8)" })
+  .addLabel("標題", "-=0.3")
+  .from(split.chars, { yPercent: 110, rotationX: -90, opacity: 0, duration: 0.7, stagger: 0.06 }, "標題")
+  .from(".sub", { y: 16, opacity: 0, duration: 0.5 }, "-=0.35")
+  .addLabel("卡片")
+  .from(".card", { y: 50, scale: 0.7, opacity: 0, duration: 0.6, stagger: 0.1, ease: "back.out(1.5)" }, "卡片")
+  .addLabel("收尾", "+=0.1")
+  .to(".mark", { rotation: 360, duration: 0.8, ease: "power2.inOut" }, "收尾")
+  .to(".card", { y: -10, duration: 0.25, stagger: 0.07, yoyo: true, repeat: 1, ease: "sine.inOut" }, "收尾")
+  .to(split.chars, { color: "#f7df1e", duration: 0.2, stagger: 0.04, yoyo: true, repeat: 1 }, "收尾+=0.1");
+
+// Label markers on the scrubber
+const marks = document.getElementById("marks");
+for (const [name, time] of Object.entries(tl.labels)) {
+  const b = document.createElement("button");
+  b.textContent = name;
+  b.style.left = `${(time / tl.duration()) * 100}%`;
+  b.addEventListener("click", () => { tl.play(name); setPlaying(true); });
+  marks.append(b);
+}
+
+const playBtn = document.getElementById("play");
+function setPlaying(on) {
+  playBtn.textContent = on ? "暫停" : "播放";
+  if (on) tl.play(); else tl.pause();
+}
+playBtn.addEventListener("click", () => setPlaying(tl.paused()));
+document.getElementById("restart").addEventListener("click", () => { tl.restart(); setPlaying(true); });
+
+const speeds = [1, 2, 0.5];
+let si = 0;
+document.getElementById("speed").addEventListener("click", (e) => {
+  si = (si + 1) % speeds.length;
+  tl.timeScale(speeds[si]);
+  e.currentTarget.textContent = `速度 ${speeds[si]}×`;
+});
+
+scrub.addEventListener("input", () => {
+  scrubbing = true;
+  setPlaying(false);
+  tl.progress(scrub.value / 1000);
+  scrubbing = false;
+});
+</script>
+</body>
+</html>

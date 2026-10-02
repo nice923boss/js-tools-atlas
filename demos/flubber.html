@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flubber 示範：任意形狀平滑變形</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body {
+    background:
+      radial-gradient(rgba(255,255,255,.07) 1px, transparent 1.4px) 0 0 / 22px 22px,
+      radial-gradient(circle at 50% 42%, #1b2f6b 0%, #0d1b3e 55%, #070f26 100%);
+  }
+  #stage { position: fixed; left: 0; right: 0; top: 54px; bottom: 150px; width: 100%; height: calc(100% - 204px); display: block; }
+  .title { position: fixed; left: 14px; top: 14px; z-index: 50; color: #fff; line-height: 1.35; }
+  .title b { display: block; font-size: 17px; letter-spacing: 1px; }
+  .title span { font-size: 12px; color: var(--muted); }
+  .scrub {
+    position: fixed; left: 50%; transform: translateX(-50%); bottom: 104px; width: min(440px, calc(100% - 32px));
+    display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; z-index: 50;
+  }
+  .scrub input { flex: 1; accent-color: #f7df1e; }
+  .scrub output { font: 600 12px var(--mono); min-width: 36px; text-align: right; color: #fff; }
+  .shapes {
+    position: fixed; left: 50%; transform: translateX(-50%); bottom: 50px; z-index: 50;
+    display: flex; gap: 6px; padding: 5px; border-radius: 14px;
+    background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.12);
+  }
+  .shapes button {
+    width: 38px; height: 38px; padding: 5px; border-radius: 10px; cursor: pointer;
+    border: 1px solid transparent; background: transparent; transition: background .15s, transform .15s;
+  }
+  .shapes button:hover { background: rgba(255,255,255,.08); transform: translateY(-2px); }
+  .shapes button[aria-pressed="true"] { background: rgba(255,255,255,.14); border-color: rgba(255,255,255,.45); }
+  .shapes svg { width: 100%; height: 100%; display: block; }
+  @media (max-width: 560px) {
+    .shapes { gap: 2px; padding: 4px; }
+    .shapes button { width: 36px; height: 36px; padding: 4px; }
+  }
+</style>
+</head>
+<body>
+<div class="title"><b>形狀變形</b><span id="pair">圓形</span></div>
+<div class="controls">
+  <button class="btn" id="auto" aria-pressed="true">自動播放</button>
+  <button class="btn primary" id="split">分裂</button>
+</div>
+<svg id="stage" viewBox="-40 -30 280 260" preserveAspectRatio="xMidYMid meet">
+  <defs>
+    <linearGradient id="grad" x1="0" y1="0" x2="1" y2="1">
+      <stop id="s0" offset="0" stop-color="#4cc9f0"/>
+      <stop id="s1" offset="1" stop-color="#4361ee"/>
+    </linearGradient>
+    <filter id="blur" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="14"/></filter>
+  </defs>
+  <path id="glow" fill="url(#grad)" opacity="0.55" filter="url(#blur)"/>
+  <path id="ghostA" fill="none" stroke="#fff" stroke-width="1.4" stroke-dasharray="5 5" vector-effect="non-scaling-stroke" opacity="0"/>
+  <path id="ghostB" fill="none" stroke="#fff" stroke-width="1.4" stroke-dasharray="2 5" vector-effect="non-scaling-stroke" opacity="0"/>
+  <path id="shape" fill="url(#grad)" stroke="rgba(255,255,255,.55)" stroke-width="1.2" vector-effect="non-scaling-stroke"/>
+</svg>
+<div class="scrub"><span>進度</span><input type="range" id="prog" min="0" max="1000" value="0" aria-label="變形進度"><output id="pct">0%</output></div>
+<div class="shapes" id="shapes"></div>
+<div class="hint">拖曳進度條逐格看變形・虛線是起點與終點</div>
+
+<script src="https://cdn.jsdelivr.net/npm/flubber@0.4.2/build/flubber.min.js"></script>
+<script>
+const K = 0.5523; // cubic bezier circle constant
+function circlePath(cx, cy, r) {
+  const k = r * K;
+  return `M${cx},${cy - r}C${cx + k},${cy - r} ${cx + r},${cy - k} ${cx + r},${cy}` +
+    `C${cx + r},${cy + k} ${cx + k},${cy + r} ${cx},${cy + r}` +
+    `C${cx - k},${cy + r} ${cx - r},${cy + k} ${cx - r},${cy}` +
+    `C${cx - r},${cy - k} ${cx - k},${cy - r} ${cx},${cy - r}Z`;
+}
+function starPath(cx, cy, ro, ri, n) {
+  let d = "";
+  for (let i = 0; i < n * 2; i++) {
+    const a = -Math.PI / 2 + (i * Math.PI) / n, r = i % 2 ? ri : ro;
+    d += (i ? "L" : "M") + (cx + Math.cos(a) * r).toFixed(1) + "," + (cy + Math.sin(a) * r).toFixed(1);
+  }
+  return d + "Z";
+}
+
+// All shapes live in a 200 x 200 box
+const SHAPES = [
+  { name: "圓形", c: ["#4cc9f0", "#4361ee"], d: circlePath(100, 100, 82) },
+  { name: "星星", c: ["#ffd166", "#f77f00"], d: starPath(100, 106, 92, 40, 5) },
+  { name: "愛心", c: ["#ff8fa3", "#c9184a"], d: "M100,176C40,134 10,98 20,62C30,26 76,18 100,54C124,18 170,26 180,62C190,98 160,134 100,176Z" },
+  { name: "閃電", c: ["#fde047", "#84cc16"], d: "M122,8L44,112L94,112L76,192L158,82L108,82L134,8Z" },
+  { name: "水滴", c: ["#7dd3fc", "#2563eb"], d: "M100,12C100,12 36,90 36,128C36,164 65,190 100,190C135,190 164,164 164,128C164,90 100,12 100,12Z" },
+  { name: "貓咪", c: ["#d8b4fe", "#7c3aed"], d: "M38,72L44,14L86,46C95,43 105,43 114,46L156,14L162,72C174,90 178,106 174,126C166,164 136,186 100,186C64,186 34,164 26,126C22,106 26,90 38,72Z" },
+  { name: "對話框", c: ["#6ee7b7", "#059669"], d: "M40,28L160,28C177,28 188,39 188,56L188,122C188,139 177,150 160,150L98,150L58,186L66,150L40,150C23,150 12,139 12,122L12,56C12,39 23,28 40,28Z" },
+];
+const PIECES = [circlePath(100, 52, 36), circlePath(50, 138, 36), circlePath(150, 138, 36)];
+const PIECES_D = PIECES.join(" ");
+const OPT = { maxSegmentLength: 2 };
+
+const $ = (id) => document.getElementById(id);
+const shapeEl = $("shape"), glowEl = $("glow"), ghostA = $("ghostA"), ghostB = $("ghostB");
+const prog = $("prog"), pct = $("pct"), autoBtn = $("auto"), splitBtn = $("split");
+
+// Colour helpers for the gradient blend
+const h2r = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+const mix = (a, b, t) => "#" + h2r(a).map((v, i) => Math.round(v + (h2r(b)[i] - v) * t).toString(16).padStart(2, "0")).join("");
+const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+const state = {
+  interp: () => SHAPES[0].d, p: 1, cFrom: SHAPES[0].c, cTo: SHAPES[0].c,
+  cur: 0, split: false, auto: true, tween: null, timer: 0, scrubbing: false,
+};
+
+function draw() {
+  const e = ease(state.p);
+  const d = state.interp(e);
+  shapeEl.setAttribute("d", d);
+  glowEl.setAttribute("d", d);
+  $("s0").setAttribute("stop-color", mix(state.cFrom[0], state.cTo[0], e));
+  $("s1").setAttribute("stop-color", mix(state.cFrom[1], state.cTo[1], e));
+  if (!state.scrubbing) prog.value = Math.round(state.p * 1000);
+  pct.textContent = Math.round(state.p * 100) + "%";
+  // Ghost outlines fade in while the shape is between its two end states
+  const mid = Math.sin(Math.PI * state.p);
+  ghostA.setAttribute("opacity", (0.15 + mid * 0.5).toFixed(2));
+  ghostB.setAttribute("opacity", (0.15 + mid * 0.5).toFixed(2));
+}
+
+function morph({ interp, fromD, toD, cFrom, cTo, label, dur = 1000, done }) {
+  clearTimeout(state.timer);
+  Object.assign(state, { interp, cFrom, cTo, p: 0 });
+  ghostA.setAttribute("d", fromD);
+  ghostB.setAttribute("d", toD);
+  $("pair").textContent = label;
+  state.tween = { start: performance.now(), dur, done };
+}
+
+function goTo(i) {
+  const from = state.cur;
+  const fromShape = SHAPES[from], to = SHAPES[i];
+  const wasSplit = state.split;
+  const interp = wasSplit
+    ? flubber.combine(PIECES, to.d, { ...OPT, single: true })
+    : flubber.interpolate(fromShape.d, to.d, OPT);
+  state.cur = i;
+  state.split = false;
+  splitBtn.textContent = "分裂";
+  markButton(i);
+  morph({
+    interp, fromD: wasSplit ? PIECES_D : fromShape.d, toD: to.d,
+    cFrom: fromShape.c, cTo: to.c,
+    label: (wasSplit ? "三個圓" : fromShape.name) + " → " + to.name,
+    done: scheduleNext,
+  });
+}
+
+function scheduleNext() {
+  clearTimeout(state.timer);
+  if (state.auto && !state.split) state.timer = setTimeout(() => goTo((state.cur + 1) % SHAPES.length), 1300);
+}
+
+splitBtn.addEventListener("click", () => {
+  if (state.split) { goTo(state.cur); return; }
+  const s = SHAPES[state.cur];
+  state.split = true;
+  splitBtn.textContent = "合併";
+  morph({
+    interp: flubber.separate(s.d, PIECES, { ...OPT, single: true }),
+    fromD: s.d, toD: PIECES_D, cFrom: s.c, cTo: s.c,
+    label: s.name + " → 三個圓", dur: 1100,
+  });
+});
+
+autoBtn.addEventListener("click", () => {
+  state.auto = !state.auto;
+  autoBtn.setAttribute("aria-pressed", state.auto);
+  if (state.auto && !state.tween) scheduleNext();
+  else clearTimeout(state.timer);
+});
+
+// Scrubbing pauses everything and drives the last morph by hand
+prog.addEventListener("input", () => {
+  state.scrubbing = true;
+  state.tween = null;
+  clearTimeout(state.timer);
+  if (state.auto) { state.auto = false; autoBtn.setAttribute("aria-pressed", "false"); }
+  state.p = prog.value / 1000;
+  draw();
+});
+prog.addEventListener("change", () => { state.scrubbing = false; });
+
+const bar = $("shapes");
+const buttons = SHAPES.map((s, i) => {
+  const b = document.createElement("button");
+  b.title = s.name;
+  b.setAttribute("aria-label", s.name);
+  b.innerHTML = `<svg viewBox="0 0 200 200"><path d="${s.d}" fill="${s.c[0]}"/></svg>`;
+  b.addEventListener("click", () => { if (i !== state.cur || state.split) goTo(i); });
+  bar.appendChild(b);
+  return b;
+});
+function markButton(i) { buttons.forEach((b, k) => b.setAttribute("aria-pressed", k === i)); }
+
+function frame(now) {
+  const t = state.tween;
+  if (t) {
+    state.p = Math.min(1, (now - t.start) / t.dur);
+    draw();
+    if (state.p >= 1) { state.tween = null; t.done && t.done(); }
+  }
+  requestAnimationFrame(frame);
+}
+
+markButton(0);
+draw();
+requestAnimationFrame(frame);
+// Start moving right away so the first frame already shows a morph in progress
+goTo(1);
+</script>
+</body>
+</html>

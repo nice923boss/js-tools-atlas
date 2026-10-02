@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>marked 示範：Markdown 即時預覽編輯器</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"輸出的 HTML 先經 DOMPurify 過濾再放進預覽區"}</script>
+<style>
+  .app { position: fixed; inset: 0; display: grid; grid-template-rows: auto 1fr auto; }
+  .bar { height: auto; margin: 0; overflow: visible; border-radius: 0; background: var(--bg-2); border-bottom: 1px solid var(--line);
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px 14px; }
+  .bar b { font-size: 15px; margin-right: 8px; }
+  .bar .btn { padding: 5px 10px; font-size: 12px; }
+  .bar .sp { flex: 1; }
+  .panes { display: grid; grid-template-columns: 1fr 1fr; min-height: 0; }
+  .pane { position: relative; min-height: 0; display: flex; flex-direction: column; }
+  .pane + .pane { border-left: 1px solid var(--line); }
+  .tag { position: absolute; top: 8px; right: 12px; font: 700 11px var(--mono); letter-spacing: .1em; color: var(--muted); pointer-events: none; }
+  textarea { flex: 1; width: 100%; resize: none; border: 0; outline: none; padding: 18px 20px; background: #fbfaf7; color: var(--fg);
+    font: 14px/1.75 "JetBrains Mono", ui-monospace, Consolas, var(--font); tab-size: 2; }
+  .out { flex: 1; overflow: auto; padding: 8px 24px 28px; background: var(--bg-2); }
+  .out.src { white-space: pre-wrap; word-break: break-all; font: 12.5px/1.7 "JetBrains Mono", ui-monospace, Consolas, var(--font); color: #384; padding-top: 18px; }
+  /* rendered markdown */
+  .md { font-size: 15px; line-height: 1.85; }
+  .md h1 { font-size: 26px; margin: 18px 0 8px; padding-bottom: 6px; border-bottom: 2px solid var(--accent); }
+  .md h2 { font-size: 19px; margin: 22px 0 6px; }
+  .md p { margin: 8px 0; }
+  .md ul, .md ol { padding-left: 1.5em; margin: 6px 0; }
+  .md li:has(> input) { list-style: none; margin-left: -1.3em; }
+  .md li > input { margin-right: 6px; accent-color: var(--c4); }
+  .md code { font: 13px "JetBrains Mono", ui-monospace, Consolas, var(--font); background: rgba(0,0,0,.06); padding: 1px 5px; border-radius: 4px; }
+  .md pre { background: #1e1f24; color: #e8e6df; padding: 12px 14px; border-radius: 8px; overflow: auto; }
+  .md pre code { background: none; padding: 0; color: inherit; }
+  .md blockquote { margin: 12px 0; padding: 4px 14px; border-left: 4px solid var(--c2); background: rgba(31,143,184,.07); color: #3d4b52; }
+  .md table { border-collapse: collapse; margin: 10px 0; font-size: 14px; }
+  .md th, .md td { border: 1px solid rgba(0,0,0,.15); padding: 5px 12px; }
+  .md th { background: rgba(0,0,0,.05); }
+  .md a { color: var(--c2); }
+  .md del { color: var(--muted); }
+  .md hr { border: 0; border-top: 1px dashed rgba(0,0,0,.25); margin: 18px 0; }
+  .stats { display: flex; flex-wrap: wrap; gap: 4px 18px; padding: 6px 14px; border-top: 1px solid var(--line); background: var(--bg-2); font: 12px "JetBrains Mono", ui-monospace, Consolas, var(--font); color: var(--muted); }
+  .stats b { color: var(--fg); }
+  @media (max-width: 700px) {
+    .panes { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+    .pane + .pane { border-left: 0; border-top: 1px solid var(--line); }
+    textarea { padding: 12px 14px; font-size: 13px; }
+    .out { padding: 4px 14px 20px; }
+    .bar b { display: none; }
+  }
+</style>
+</head>
+<body class="paper">
+<div class="app">
+  <div class="bar" id="bar">
+    <b>Markdown 編輯器</b>
+    <button class="btn" data-ins="bold">粗體</button>
+    <button class="btn" data-ins="table">表格</button>
+    <button class="btn" data-ins="task">待辦</button>
+    <button class="btn" data-ins="code">程式碼</button>
+    <button class="btn" data-ins="quote">引言</button>
+    <span class="sp"></span>
+    <button class="btn" id="view" aria-pressed="false">看 HTML</button>
+    <button class="btn primary" id="reset">重設範例</button>
+  </div>
+  <div class="panes">
+    <div class="pane"><span class="tag">MARKDOWN</span><textarea id="src" spellcheck="false" aria-label="Markdown 原始文字"></textarea></div>
+    <div class="pane"><span class="tag" id="outTag">預覽</span><div class="out md" id="out"></div></div>
+  </div>
+  <div class="stats" id="stats"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked@18.0.14/lib/marked.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.4.16/dist/purify.min.js"></script>
+<script>
+const SAMPLE = `# Markdown 即時預覽
+
+左邊打字，右邊立刻由 **marked** 轉成 HTML。
+它支援 GitHub 風格（GFM）的 ~~刪除線~~、表格與待辦清單。
+
+## 本週待辦
+
+- [x] 挑好示範用的函式庫
+- [x] 寫出第一版範例
+- [ ] 補上手機版排版
+
+## 工作坊議程
+
+| 時段 | 主題 | 人數 |
+| :-- | :-- | --: |
+| 09:30 | 開場與暖身 | 24 |
+| 10:00 | 實作：表格與清單 | 24 |
+| 13:30 | 成果分享 | 18 |
+
+## 程式碼
+
+\`\`\`js
+const html = marked.parse("# 你好，世界");
+preview.innerHTML = DOMPurify.sanitize(html);
+\`\`\`
+
+> 好的文件，是寫給半年後的自己看的。
+
+1. 有序清單第一項
+2. 第二項，含 \`行內程式碼\`
+3. 第三項，附上 [marked 官方文件](https://marked.js.org)
+
+---
+
+試著在左邊加一行 **粗體** 或按上方的按鈕插入片段。
+`;
+
+const SNIPPETS = {
+  bold: "**重點文字**",
+  table: "\n| 欄位 | 說明 |\n| -- | -- |\n| 名稱 | 填入內容 |\n",
+  task: "\n- [ ] 新的待辦事項\n",
+  code: "\n```js\nconsole.log(\"哈囉\");\n```\n",
+  quote: "\n> 一段引言\n",
+};
+
+const src = document.getElementById("src");
+const out = document.getElementById("out");
+const stats = document.getElementById("stats");
+const viewBtn = document.getElementById("view");
+let showSource = false;
+
+function render() {
+  const text = src.value;
+  const t0 = performance.now();
+  const tokens = marked.lexer(text);
+  const html = marked.parse(text);
+  const ms = performance.now() - t0;
+  const safe = DOMPurify.sanitize(html);
+  if (showSource) out.textContent = safe; else out.innerHTML = safe;
+  const blocks = tokens.filter((t) => t.type !== "space").length;
+  stats.innerHTML = `<span>字元 <b>${text.length}</b></span><span>區塊 token <b>${blocks}</b></span><span>HTML <b>${html.length}</b> 字元</span><span>轉換 <b>${ms.toFixed(2)}</b> ms</span>`;
+}
+
+src.addEventListener("input", render);
+
+document.getElementById("bar").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-ins]");
+  if (!b) return;
+  // insert the snippet at the caret and keep typing from its end
+  src.focus();
+  src.setRangeText(SNIPPETS[b.dataset.ins], src.selectionStart, src.selectionEnd, "end");
+  render();
+});
+
+viewBtn.addEventListener("click", () => {
+  showSource = !showSource;
+  viewBtn.setAttribute("aria-pressed", showSource);
+  out.classList.toggle("src", showSource);
+  out.classList.toggle("md", !showSource);
+  document.getElementById("outTag").textContent = showSource ? "HTML" : "預覽";
+  render();
+});
+
+document.getElementById("reset").addEventListener("click", () => { src.value = SAMPLE; render(); });
+
+src.value = SAMPLE;
+render();
+</script>
+</body>
+</html>

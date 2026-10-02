@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jsPDF 示範：結業證書產生器</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"jsPDF 內建字型不含中文，示範把中文先畫成圖片再放進 PDF"}</script>
+<style>
+  .app { position: fixed; inset: 0; display: grid; grid-template-columns: 270px 1fr; }
+  .form { padding: 18px 18px 56px; border-right: 1px solid var(--line); background: var(--bg-2); overflow-y: auto; }
+  .form h1 { font-size: 17px; margin: 0 0 2px; }
+  .form h1 b { color: var(--c1); }
+  .form p.sub { margin: 0 0 14px; font-size: 12px; color: var(--muted); }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  .field { width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); outline: none; }
+  .field:focus { border-color: var(--c2); }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .swatches { display: flex; gap: 8px; }
+  .swatch { width: 28px; height: 28px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px var(--line); cursor: pointer; }
+  .swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--fg); }
+  .actions { display: flex; gap: 8px; margin-top: 16px; }
+  .actions .btn { flex: 1; }
+  .preview { position: relative; display: grid; place-items: center; padding: 20px; min-width: 0; min-height: 0;
+    background: repeating-linear-gradient(45deg, #ecebe6 0 10px, #e6e4de 10px 20px); }
+  .preview canvas { max-width: 100%; max-height: 100%; box-shadow: 0 12px 36px rgba(0,0,0,.22); background: #fff; }
+  .meta { position: absolute; right: 12px; top: 12px; font: 12px var(--mono); color: var(--muted);
+    background: var(--panel); border: 1px solid var(--line); padding: 4px 10px; border-radius: 999px; }
+  @media (max-width: 640px) {
+    /* stacked layout scrolls under the fixed hint; the form labels already explain the controls */
+    .hint { display: none; }
+    .app { grid-template-columns: 1fr; grid-template-rows: 46% 54%; }
+    .preview { grid-row: 1; padding: 12px; }
+    .form { grid-row: 2; border-right: 0; border-top: 1px solid var(--line); padding: 12px 14px 56px; }
+    .form h1, .form p.sub { display: none; }
+    .meta { top: 8px; right: 8px; }
+  }
+</style>
+</head>
+<body class="paper">
+<div class="app">
+  <div class="form">
+    <h1><b>jsPDF</b> 結業證書</h1>
+    <p class="sub">填寫後即時產生 A4 PDF，右側為實際檔案預覽</p>
+    <label for="name">學員姓名</label>
+    <input class="field" id="name" value="林怡君" maxlength="12">
+    <label for="course">課程名稱</label>
+    <select class="field" id="course">
+      <option>JavaScript 資料視覺化入門</option>
+      <option>Node.js 後端實戰班</option>
+      <option>生成式 AI 工具應用工作坊</option>
+      <option>前端動畫與互動設計</option>
+    </select>
+    <div class="row">
+      <div><label for="hours">時數</label><input class="field" id="hours" type="number" value="18" min="1" max="999"></div>
+      <div><label for="date">日期</label><input class="field" id="date" type="date" value="2026-10-03"></div>
+    </div>
+    <label>配色</label>
+    <div class="swatches" id="swatches"></div>
+    <div class="actions">
+      <button class="btn primary" id="download">下載 PDF</button>
+      <button class="btn" id="openTab">新分頁開啟</button>
+    </div>
+  </div>
+  <div class="preview">
+    <canvas id="view"></canvas>
+    <div class="meta" id="meta">產生中…</div>
+  </div>
+</div>
+<div class="hint">改姓名、課程或配色，PDF 會立即重新產生</div>
+
+<script src="https://cdn.jsdelivr.net/npm/jspdf@4.2.1/dist/jspdf.umd.min.js"></script>
+<script type="module">
+// Preview renderer only: the PDF bytes come from jsPDF, PDF.js just draws them.
+import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.3.289/build/pdf.min.mjs";
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdn.jsdelivr.net/npm/pdfjs-dist@6.3.289/build/pdf.worker.min.mjs";
+const worker = new pdfjsLib.PDFWorker(); // shared across re-renders
+
+const { jsPDF } = window.jspdf;
+const $ = (id) => document.getElementById(id);
+const THEMES = [
+  { name: "金", main: [176, 132, 24], soft: [250, 244, 225] },
+  { name: "藍", main: [25, 99, 150], soft: [233, 243, 249] },
+  { name: "綠", main: [36, 122, 74], soft: [233, 246, 236] },
+  { name: "紫", main: [96, 72, 186], soft: [240, 237, 252] },
+];
+let theme = THEMES[0];
+let lastDoc = null;
+const SERIF = '"Noto Serif TC", "Source Han Serif TC", "PMingLiU", "MingLiU", serif';
+const SANS = '"Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif';
+
+for (const t of THEMES) {
+  const b = document.createElement("button");
+  b.className = "swatch";
+  b.style.background = `rgb(${t.main})`;
+  b.title = t.name;
+  b.setAttribute("aria-pressed", t === theme);
+  b.addEventListener("click", () => {
+    theme = t;
+    document.querySelectorAll(".swatch").forEach((s) => s.setAttribute("aria-pressed", s === b));
+    build();
+  });
+  $("swatches").append(b);
+}
+
+// Chinese glyphs are not in jsPDF's standard fonts, so render them to a PNG and embed it.
+function textImage(text, { pt, weight = 700, color = "#222", font = SERIF }) {
+  const px = pt * 4;
+  const c = document.createElement("canvas");
+  let ctx = c.getContext("2d");
+  ctx.font = `${weight} ${px}px ${font}`;
+  c.width = Math.ceil(ctx.measureText(text).width) + 10;
+  c.height = Math.ceil(px * 1.35);
+  ctx = c.getContext("2d");
+  ctx.font = `${weight} ${px}px ${font}`;
+  ctx.fillStyle = color;
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, 5, c.height / 2);
+  const hMm = pt * 0.3528 * 1.35;
+  return { url: c.toDataURL("image/png"), w: hMm * (c.width / c.height), h: hMm };
+}
+
+function placeCentered(doc, img, cy) {
+  doc.addImage(img.url, "PNG", (297 - img.w) / 2, cy - img.h / 2, img.w, img.h, undefined, "FAST");
+}
+
+function makePdf() {
+  const W = 297, H = 210;
+  const [r, g, b] = theme.main;
+  const ink = `rgb(${theme.main})`;
+  const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+  doc.setProperties({ title: "Certificate of Completion", creator: "jsPDF demo" });
+
+  // Background and frames
+  doc.setFillColor(...theme.soft);
+  doc.rect(0, 0, W, H, "F");
+  doc.setDrawColor(r, g, b);
+  doc.setLineWidth(2.2);
+  doc.rect(9, 9, W - 18, H - 18);
+  doc.setLineWidth(0.4);
+  doc.rect(13, 13, W - 26, H - 26);
+  doc.setLineDashPattern([1.2, 1.2], 0);
+  doc.roundedRect(17, 17, W - 34, H - 34, 4, 4);
+  doc.setLineDashPattern([], 0);
+
+  // Corner ornaments
+  doc.setFillColor(r, g, b);
+  for (const [x, y, sx, sy] of [[13, 13, 1, 1], [W - 13, 13, -1, 1], [13, H - 13, 1, -1], [W - 13, H - 13, -1, -1]]) {
+    doc.triangle(x, y, x + 16 * sx, y, x, y + 16 * sy, "F");
+  }
+
+  // Faint watermark
+  doc.saveGraphicsState();
+  doc.setGState(new doc.GState({ opacity: 0.06 }));
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(120);
+  doc.setTextColor(r, g, b);
+  doc.text("JS", W / 2, H / 2 + 40, { align: "center" });
+  doc.restoreGraphicsState();
+
+  // Headings
+  doc.setFont("times", "bold");
+  doc.setFontSize(13);
+  doc.setTextColor(r, g, b);
+  doc.text("CERTIFICATE  OF  COMPLETION", W / 2, 36, { align: "center", charSpace: 1.2 });
+  placeCentered(doc, textImage("結 業 證 書", { pt: 34, color: ink }), 52);
+  doc.setLineWidth(0.5);
+  doc.line(W / 2 - 40, 63, W / 2 + 40, 63);
+
+  placeCentered(doc, textImage("茲證明", { pt: 13, weight: 400, color: "#555", font: SANS }), 74);
+  const name = $("name").value.trim() || "學員姓名";
+  placeCentered(doc, textImage(name, { pt: 40, color: "#1c1c1a" }), 92);
+  doc.setDrawColor(190, 190, 190);
+  doc.line(W / 2 - 55, 104, W / 2 + 55, 104);
+
+  const hours = Math.max(1, parseInt($("hours").value, 10) || 1);
+  placeCentered(doc, textImage(`已完成「${$("course").value}」課程，共 ${hours} 小時，成績合格，特此證明。`,
+    { pt: 14, weight: 400, color: "#333", font: SANS }), 116);
+
+  // Seal
+  const sx = W - 62, sy = H - 52;
+  doc.setDrawColor(r, g, b);
+  doc.setLineWidth(1.2);
+  doc.circle(sx, sy, 17);
+  doc.setLineWidth(0.4);
+  doc.circle(sx, sy, 14);
+  doc.setFillColor(r, g, b);
+  doc.circle(sx, sy, 9, "F");
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  doc.setTextColor(255, 255, 255);
+  doc.text("JS", sx, sy + 1.2, { align: "center" });
+  doc.setFontSize(6);
+  doc.setTextColor(r, g, b);
+  doc.text("ATLAS ACADEMY", sx, sy - 10.2, { align: "center", charSpace: 0.4 });
+  doc.text("VERIFIED", sx, sy + 12.6, { align: "center", charSpace: 0.6 });
+
+  // Footer: date, serial, signature
+  const date = $("date").value || "2026-10-03";
+  const serial = `JSA-${date.replace(/-/g, "")}-${String(hours).padStart(3, "0")}`;
+  doc.setDrawColor(120, 120, 120);
+  doc.setLineWidth(0.3);
+  doc.line(40, H - 42, 105, H - 42);
+  doc.line(120, H - 42, 185, H - 42);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.setTextColor(40, 40, 40);
+  doc.text(date, 72.5, H - 45, { align: "center" });
+  doc.text(serial, 152.5, H - 45, { align: "center" });
+  doc.setFontSize(8);
+  doc.setTextColor(120, 120, 120);
+  doc.text("DATE", 72.5, H - 37, { align: "center", charSpace: 1 });
+  doc.text("CERTIFICATE NO.", 152.5, H - 37, { align: "center", charSpace: 1 });
+  doc.setFont("times", "italic");
+  doc.setFontSize(9);
+  doc.text("Generated in the browser with jsPDF", W / 2, H - 24, { align: "center" });
+  return doc;
+}
+
+let renderTask = null;
+async function build() {
+  const t0 = performance.now();
+  const doc = makePdf();
+  const bytes = doc.output("arraybuffer");
+  const ms = Math.round(performance.now() - t0);
+  lastDoc = doc;
+  $("meta").textContent = `${(bytes.byteLength / 1024).toFixed(1)} KB・A4 橫式・${ms} ms`;
+  const task = pdfjsLib.getDocument({ data: new Uint8Array(bytes), worker });
+  const pdf = await task.promise;
+  const page = await pdf.getPage(1);
+  const box = document.querySelector(".preview");
+  const base = page.getViewport({ scale: 1 });
+  const fit = Math.min((box.clientWidth - 40) / base.width, (box.clientHeight - 40) / base.height);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const vp = page.getViewport({ scale: Math.max(0.2, fit) * dpr });
+  const view = $("view");
+  if (renderTask) renderTask.cancel();
+  const off = document.createElement("canvas");
+  off.width = vp.width;
+  off.height = vp.height;
+  renderTask = page.render({ canvas: off, viewport: vp });
+  try { await renderTask.promise; } catch (e) { task.destroy(); if (e?.name === "RenderingCancelledException") return; throw e; }
+  view.width = off.width;
+  view.height = off.height;
+  view.getContext("2d").drawImage(off, 0, 0);
+  view.style.width = `${vp.width / dpr}px`;
+  view.style.height = `${vp.height / dpr}px`;
+  task.destroy();
+}
+
+let timer;
+const rebuild = () => { clearTimeout(timer); timer = setTimeout(build, 200); };
+["name", "course", "hours", "date"].forEach((id) => $(id).addEventListener("input", rebuild));
+window.addEventListener("resize", rebuild);
+$("download").addEventListener("click", () => lastDoc?.save("certificate.pdf"));
+$("openTab").addEventListener("click", () => lastDoc && window.open(lastDoc.output("bloburl"), "_blank"));
+document.fonts.ready.then(build);
+</script>
+</body>
+</html>

@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monaco Editor 示範：瀏覽器裡的 TypeScript 型別檢查</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  .app { position: fixed; inset: 0; padding: 10px 10px 44px; display: flex; flex-direction: column; gap: 8px; }
+  .top { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .top .sp { flex: 1; }
+  .top .btn { padding: 7px 11px; font-size: 12.5px; }
+  .views { flex: 1 1 0; min-height: 0; position: relative; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: #1e1e1e; }
+  .views > div { position: absolute; inset: 0; }
+  .views > div[hidden] { display: none; }
+  .dock { flex: none; height: 118px; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg-2); overflow: hidden; }
+  .dock-tabs { flex: none; display: flex; gap: 2px; padding: 4px 6px 0; border-bottom: 1px solid var(--line); }
+  .dock-tabs button { appearance: none; border: 0; background: none; color: var(--muted); font: 600 12px var(--font); padding: 5px 10px 6px; cursor: pointer; border-bottom: 2px solid transparent; }
+  .dock-tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+  .dock-tabs .count { display: inline-block; min-width: 18px; margin-left: 4px; padding: 1px 5px; border-radius: 999px; background: var(--c3); color: #fff; font: 700 10.5px/1.3 var(--mono); }
+  .dock-tabs .count.ok { background: var(--c4); color: #0e1013; }
+  .dock-body { flex: 1 1 0; min-height: 0; overflow: auto; }
+  .dock-body[hidden] { display: none; }
+  #problems { list-style: none; margin: 0; padding: 4px 0; }
+  #problems li { display: grid; grid-template-columns: 18px auto 1fr; gap: 2px 8px; align-items: baseline; padding: 4px 10px; cursor: pointer; font-size: 12.5px; }
+  #problems li:hover { background: rgba(255,255,255,.05); }
+  #problems li i { font-style: normal; color: var(--c3); font-weight: 700; }
+  #problems li.warn i { color: var(--c2); }
+  #problems li b { font-weight: 700; }
+  #problems li span { color: var(--muted); }
+  #problems li small { grid-column: 2 / 4; color: var(--muted); font: 11px var(--mono); opacity: .75; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  #problems li.note { cursor: default; color: var(--muted); display: block; }
+  #problems li.good { cursor: default; display: block; color: var(--c4); font-weight: 600; }
+  #output { margin: 0; padding: 6px 10px; font: 12px/1.6 var(--mono); white-space: pre-wrap; color: var(--fg); }
+  #output .dim { color: var(--muted); }
+  #output .err { color: var(--c3); }
+  .flash { position: fixed; left: 50%; bottom: 176px; transform: translateX(-50%); z-index: 70; padding: 7px 14px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: 12.5px; font-weight: 700; opacity: 0; transition: opacity .3s; pointer-events: none; white-space: nowrap; max-width: calc(100% - 24px); overflow: hidden; text-overflow: ellipsis; }
+  .flash.on { opacity: 1; }
+  @media (max-width: 560px) {
+    /* the hint would cover the problems dock, and hover / Ctrl+Space do not apply on touch screens */
+    .hint { display: none; }
+    .dock { height: 104px; }
+    .flash { bottom: 162px; }
+    .top .btn { padding: 6px 9px; font-size: 12px; }
+    #problems li small { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="top">
+    <button class="btn" id="tabEdit" aria-pressed="true">TypeScript 編輯</button>
+    <button class="btn" id="tabDiff" aria-pressed="false">差異比對</button>
+    <span class="sp"></span>
+    <button class="btn" id="fix">修正錯誤</button>
+    <button class="btn primary" id="run">執行 ▶</button>
+  </div>
+  <div class="views">
+    <div id="ed"></div>
+    <div id="diff" hidden></div>
+  </div>
+  <div class="dock">
+    <div class="dock-tabs">
+      <button id="dtProb" aria-selected="true">問題<span class="count" id="count">…</span></button>
+      <button id="dtOut" aria-selected="false">輸出</button>
+    </div>
+    <div class="dock-body" id="probBody"><ul id="problems"><li class="note">TypeScript 語言服務載入中…</li></ul></div>
+    <div class="dock-body" id="outBody" hidden><pre id="output"><span class="dim">按「執行」會把 TypeScript 編譯成 JavaScript 後在頁面裡執行。</span></pre></div>
+  </div>
+</div>
+<div class="status" id="loading">正在載入 Monaco 編輯器…</div>
+<div class="flash" id="flash"></div>
+<div class="hint">紅色波浪線是即時型別錯誤・游標停上去看說明・Ctrl+空白鍵自動完成</div>
+
+<!-- zh-tw UI strings: a plain script that sets globalThis._VSCODE_NLS_MESSAGES; loading it through the AMD nls plugin hangs in 0.57.0. -->
+<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.57.0/min/vs/nls/lang/zh-tw.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.57.0/min/vs/loader.js"></script>
+<script>
+// Monaco Editor (the editor inside VS Code). The AMD build wires its own web workers.
+const BASE = "https://cdn.jsdelivr.net/npm/monaco-editor@0.57.0/min/vs";
+require.config({ paths: { vs: BASE } });
+
+const BUGGY = `// 旅遊行程規劃：瀏覽器裡跑完整的 TypeScript 型別檢查
+export interface Spot {
+  name: string;
+  day: number;
+  hours: number;
+  tags?: string[];
+}
+
+const trip: Spot[] = [
+  { name: "峽灣步道", day: 1, hours: 3, tags: ["健行"] },
+  { name: "瀑布彩虹", day: "1", hours: 2 },
+  { name: "紅岩峽谷", day: 3, hours: 4 },
+];
+
+function totalHours(spots: Spot[]): number {
+  return spots.reduce((sum, s) => sum + s.hours, 0);
+}
+
+function plan(spots: Spot[]): string[] {
+  const byDay = new Map<number, Spot[]>();
+  for (const s of spots) {
+    byDay.set(s.day, [...(byDay.get(s.day) ?? []), s]);
+  }
+  return [...byDay].map(([day, list]) => \`第 \${day} 天：\${list.map((s) => s.name).join("、")}\`);
+}
+
+console.log(plan(trip).join("\\n"));
+console.log(\`總時數 \${totalHours(trip)} 小時，第一站 \${trip[0].nmae}\`);
+`;
+
+const IMPROVED = BUGGY
+  .replace('day: "1"', "day: 1")
+  .replace("trip[0].nmae", "trip[0].name")
+  .replace('{ name: "紅岩峽谷", day: 3, hours: 4 }', '{ name: "紅岩峽谷", day: 3, hours: 4, tags: ["攝影", "健行"] }')
+  .replace("function plan(", `function busiest(spots: Spot[]): number {
+  const count = new Map<number, number>();
+  spots.forEach((s) => count.set(s.day, (count.get(s.day) ?? 0) + s.hours));
+  return [...count].sort((a, b) => b[1] - a[1])[0][0];
+}
+
+function plan(`)
+  .replace("console.log(`總時數", "console.log(`最忙的是第 ${busiest(trip)} 天`);\nconsole.log(`總時數");
+
+// Chinese one-line summaries for the TypeScript error codes this sample can produce.
+const CODE_ZH = { 2322: "型別不符", 2551: "屬性名稱拼錯", 2339: "屬性不存在", 2304: "找不到名稱", 2345: "參數型別不符", 2554: "參數數量不符", 2552: "名稱拼錯", 7006: "缺少型別標註", 1005: "語法錯誤", 1109: "語法錯誤", 1128: "語法錯誤" };
+
+const $ = (id) => document.getElementById(id);
+let flashTimer = 0;
+function flash(text) {
+  const f = $("flash");
+  f.textContent = text; f.classList.add("on");
+  clearTimeout(flashTimer); flashTimer = setTimeout(() => f.classList.remove("on"), 2600);
+}
+function dock(which) {
+  $("dtProb").setAttribute("aria-selected", which === "prob");
+  $("dtOut").setAttribute("aria-selected", which === "out");
+  $("probBody").hidden = which !== "prob";
+  $("outBody").hidden = which !== "out";
+}
+$("dtProb").onclick = () => dock("prob");
+$("dtOut").onclick = () => dock("out");
+
+require(["vs/editor/editor.main"], () => {
+  $("loading").hidden = true;
+  const ts = monaco.languages.typescript;
+  // CommonJS output so the emitted file can run inside new Function(); strict mode for richer diagnostics.
+  ts.typescriptDefaults.setCompilerOptions({ ...ts.typescriptDefaults.getCompilerOptions(), target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS, strict: true });
+
+  const narrow = () => innerWidth < 600;
+  const font = { fontFamily: getComputedStyle(document.body).getPropertyValue("--mono").trim() || "monospace", fontSize: 13 };
+  const model = monaco.editor.createModel(BUGGY, "typescript", monaco.Uri.parse("file:///trip.ts"));
+  const editor = monaco.editor.create($("ed"), {
+    model, theme: "vs-dark", automaticLayout: true, ...font,
+    minimap: { enabled: !narrow() }, lineNumbersMinChars: 3, scrollBeyondLastLine: false,
+    padding: { top: 8 }, renderLineHighlight: "all", smoothScrolling: true, fixedOverflowWidgets: true,
+  });
+
+  // Problems panel mirrors the markers the TypeScript worker publishes for this model.
+  let seenMarkers = false;
+  function renderProblems() {
+    const markers = monaco.editor.getModelMarkers({ resource: model.uri })
+      .sort((a, b) => a.startLineNumber - b.startLineNumber || a.startColumn - b.startColumn);
+    const list = $("problems");
+    list.textContent = "";
+    $("count").textContent = markers.length;
+    $("count").classList.toggle("ok", markers.length === 0);
+    if (!markers.length) {
+      const li = document.createElement("li");
+      li.className = "good";
+      li.textContent = "沒有任何型別錯誤，可以放心執行。";
+      list.append(li);
+      return;
+    }
+    for (const m of markers) {
+      const li = document.createElement("li");
+      li.className = m.severity === monaco.MarkerSeverity.Error ? "" : "warn";
+      const code = Number(typeof m.code === "object" ? m.code.value : m.code);
+      li.innerHTML = `<i>${m.severity === monaco.MarkerSeverity.Error ? "✕" : "!"}</i><b></b><span></span><small></small>`;
+      li.querySelector("b").textContent = CODE_ZH[code] || "型別檢查錯誤";
+      li.querySelector("span").textContent = `第 ${m.startLineNumber} 行，第 ${m.startColumn} 欄`;
+      li.querySelector("small").textContent = `TS${code}：${m.message.split("\n")[0]}`;
+      li.onclick = () => {
+        showView("edit");
+        editor.setSelection(new monaco.Range(m.startLineNumber, m.startColumn, m.endLineNumber, m.endColumn));
+        editor.revealRangeInCenter(editor.getSelection());
+        editor.focus();
+      };
+      list.append(li);
+    }
+  }
+  monaco.editor.onDidChangeMarkers((uris) => {
+    if (!uris.some((u) => u.toString() === model.uri.toString())) return;
+    seenMarkers = true;
+    renderProblems();
+  });
+
+  // Quick fix through executeEdits: a single undoable edit operation, the same path Monaco's own code actions use.
+  $("fix").onclick = () => {
+    const edits = [];
+    for (const [find, text] of [['day: "1"', "day: 1"], [".nmae", ".name"]]) {
+      for (const match of model.findMatches(find, false, false, true, null, false)) edits.push({ range: match.range, text });
+    }
+    if (!edits.length) { flash("目前沒有可自動修正的錯誤"); return; }
+    showView("edit");
+    editor.pushUndoStop();
+    editor.executeEdits("demo-fix", edits);
+    editor.pushUndoStop();
+    editor.revealLineInCenter(edits[0].range.startLineNumber);
+    flash(`已修正 ${edits.length} 處，Ctrl+Z 可復原`);
+  };
+
+  // Run: ask the TypeScript worker for the emitted JavaScript and execute it with a captured console.
+  $("run").onclick = async () => {
+    dock("out");
+    const out = $("output");
+    out.innerHTML = '<span class="dim">編譯中…</span>';
+    try {
+      const getWorker = await ts.getTypeScriptWorker();
+      const worker = await getWorker(model.uri);
+      const emitted = await worker.getEmitOutput(model.uri.toString());
+      const js = emitted.outputFiles[0].text;
+      const lines = [];
+      const fakeConsole = { log: (...a) => lines.push(a.map(String).join(" ")), error: (...a) => lines.push(a.map(String).join(" ")) };
+      new Function("console", "exports", js)(fakeConsole, {});
+      out.textContent = "";
+      const head = document.createElement("span");
+      head.className = "dim";
+      head.textContent = `> 編譯完成（${js.split("\n").length} 行 JavaScript），執行結果：\n`;
+      out.append(head, lines.join("\n"));
+      if (monaco.editor.getModelMarkers({ resource: model.uri }).length) {
+        const warn = document.createElement("span");
+        warn.className = "err";
+        warn.textContent = "\n注意：程式仍有型別錯誤，輸出裡的 undefined 就是拼錯屬性造成的。";
+        out.append(warn);
+      }
+    } catch (e) {
+      out.innerHTML = "";
+      const err = document.createElement("span");
+      err.className = "err";
+      err.textContent = `執行失敗：${e.message}`;
+      out.append(err);
+    }
+  };
+
+  // Diff view: the original buggy file against an improved version, rendered by the built-in diff editor.
+  let diffEditor = null;
+  function ensureDiff() {
+    if (diffEditor) return;
+    diffEditor = monaco.editor.createDiffEditor($("diff"), {
+      theme: "vs-dark", automaticLayout: true, ...font, readOnly: false, originalEditable: false,
+      renderSideBySide: true, useInlineViewWhenSpaceIsLimited: true, renderSideBySideInlineBreakpoint: 700,
+      minimap: { enabled: false }, scrollBeyondLastLine: false, lineNumbersMinChars: 3,
+    });
+    diffEditor.setModel({
+      original: monaco.editor.createModel(BUGGY, "typescript", monaco.Uri.parse("file:///trip.before.ts")),
+      modified: monaco.editor.createModel(IMPROVED, "typescript", monaco.Uri.parse("file:///trip.after.ts")),
+    });
+  }
+  function showView(which) {
+    $("tabEdit").setAttribute("aria-pressed", which === "edit");
+    $("tabDiff").setAttribute("aria-pressed", which === "diff");
+    $("ed").hidden = which !== "edit";
+    $("diff").hidden = which !== "diff";
+    if (which === "diff") {
+      ensureDiff();
+      flash("左邊是原始版本，右邊是修正並擴充後的版本");
+    }
+  }
+  $("tabEdit").onclick = () => showView("edit");
+  $("tabDiff").onclick = () => showView("diff");
+  addEventListener("resize", () => editor.updateOptions({ minimap: { enabled: !narrow() } }));
+
+  // Land the cursor on the first error once diagnostics arrive, so the squiggle and its hover are in view.
+  const waitFirst = setInterval(() => {
+    if (!seenMarkers) return;
+    clearInterval(waitFirst);
+    const first = monaco.editor.getModelMarkers({ resource: model.uri })[0];
+    if (first && !editor.hasTextFocus()) {
+      editor.setPosition({ lineNumber: first.startLineNumber, column: first.startColumn + 1 });
+      editor.revealLineInCenterIfOutsideViewport(first.startLineNumber);
+    }
+  }, 200);
+}, (err) => {
+  $("loading").textContent = `Monaco 載入失敗：${err && err.message ? err.message : err}`;
+});
+</script>
+</body>
+</html>

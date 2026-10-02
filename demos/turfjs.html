@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Turf.js 示範：捷運站環域分析</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"地圖以 Leaflet 顯示，距離、緩衝區、最近點等運算由 Turf.js 完成"}</script>
+<style>
+  #map { position: fixed; inset: 0; background: #0b0d10; }
+  .dark-tiles { filter: invert(1) hue-rotate(180deg) brightness(.82) contrast(.92) saturate(.55); }
+  .leaflet-container { font: 12px/1.4 var(--font); }
+  .leaflet-control-attribution { background: rgba(14,16,19,.75) !important; color: var(--muted); font-size: 10px; }
+  .leaflet-control-attribution a { color: var(--c2); }
+  .leaflet-bar a { background: var(--bg-2); color: var(--fg); border-color: var(--line); }
+  .leaflet-tooltip.lbl { background: var(--accent); color: var(--accent-ink); border: 0; font-weight: 700; box-shadow: none; padding: 2px 8px; }
+  .leaflet-tooltip.lbl::before { display: none; }
+  .leaflet-tooltip.st { background: var(--bg-2); color: var(--fg); border: 1px solid var(--line); box-shadow: none; }
+  #panel { position: fixed; left: 12px; top: 12px; z-index: 600; width: 236px; padding: 12px 14px; }
+  #panel h2 { margin: 0 0 8px; font-size: 14px; }
+  .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 13px; padding: 3px 0; border-bottom: 1px dashed var(--line); }
+  .row b { font-family: var(--mono); color: var(--accent); font-size: 14px; text-align: right; }
+  .slider { display: flex; align-items: center; gap: 8px; margin: 2px 0 8px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .slider input { flex: 1; min-width: 0; }
+  .slider span { min-width: 52px; text-align: right; }
+  #names { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; max-height: 92px; overflow: hidden; }
+  #names span { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: rgba(76,201,240,.15); color: var(--c2); }
+  .you { width: 22px; height: 22px; border-radius: 50%; background: var(--accent); border: 3px solid #0e1013; box-shadow: 0 0 0 3px rgba(247,223,30,.4), 0 0 18px rgba(247,223,30,.8); cursor: grab; }
+  @media (max-width: 520px) {
+    #panel { width: 196px; padding: 9px 11px; }
+    #names { display: none; }
+    .row { font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel" class="panel">
+  <h2>捷運站環域分析</h2>
+  <div class="slider">半徑<input type="range" id="radius" min="300" max="2000" step="50" value="900"><span id="rv" class="mono">900 m</span></div>
+  <div class="row">範圍內站數<b id="cnt">0</b></div>
+  <div class="row">最近站<b id="near">-</b></div>
+  <div class="row">直線距離<b id="dist">-</b></div>
+  <div class="row">方位<b id="bear">-</b></div>
+  <div class="row">環域面積<b id="area">-</b></div>
+  <div id="names"></div>
+</div>
+<div class="hint">拖曳黃色定位點或點擊地圖・拉動半徑滑桿</div>
+
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@turf/turf@7.4.0/turf.min.js"></script>
+<script>
+// Turf.js spatial analysis: buffer, points-within-polygon, nearest point, distance, bearing, area, convex hull.
+// Station coordinates are approximate.
+const STATIONS = [
+  ["台北車站", 121.5174, 25.0461], ["中山", 121.5203, 25.0527], ["雙連", 121.5206, 25.0577], ["民權西路", 121.5194, 25.0625],
+  ["圓山", 121.5201, 25.0713], ["北門", 121.5103, 25.0497], ["西門", 121.5081, 25.0421], ["龍山寺", 121.4998, 25.0353],
+  ["台大醫院", 121.5163, 25.0417], ["中正紀念堂", 121.5182, 25.0326], ["古亭", 121.5228, 25.0263], ["東門", 121.5288, 25.0339],
+  ["善導寺", 121.5235, 25.0446], ["忠孝新生", 121.5329, 25.0423], ["忠孝復興", 121.5437, 25.0416], ["忠孝敦化", 121.5509, 25.0414],
+  ["國父紀念館", 121.5577, 25.0413], ["市政府", 121.5651, 25.0411], ["台北 101／世貿", 121.5637, 25.0331], ["信義安和", 121.5530, 25.0333],
+  ["大安", 121.5437, 25.0331], ["大安森林公園", 121.5354, 25.0335], ["科技大樓", 121.5433, 25.0262], ["象山", 121.5695, 25.0328],
+  ["松江南京", 121.5330, 25.0521], ["南京復興", 121.5441, 25.0521], ["南京三民", 121.5627, 25.0516], ["行天宮", 121.5333, 25.0597],
+  ["台電大樓", 121.5283, 25.0207], ["公館", 121.5343, 25.0148], ["中山國小", 121.5265, 25.0627], ["小南門", 121.5113, 25.0356],
+];
+const stations = turf.featureCollection(STATIONS.map(([name, x, y]) => turf.point([x, y], { name })));
+
+const map = L.map("map", { zoomControl: false }).setView([25.040, 121.535], 14);
+L.control.zoom({ position: "bottomright" }).addTo(map);
+// OpenStreetMap raster tiles, darkened with a CSS filter (.dark-tiles)
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  className: "dark-tiles",
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> 貢獻者',
+}).addTo(map);
+
+const hullLayer = L.geoJSON(null, { style: { color: "#9d8cff", weight: 1.5, dashArray: "4 6", fillColor: "#9d8cff", fillOpacity: 0.08 } }).addTo(map);
+const bufferLayer = L.geoJSON(null, { style: { color: "#4cc9f0", weight: 2, fillColor: "#4cc9f0", fillOpacity: 0.12 } }).addTo(map);
+const lineLayer = L.polyline([], { color: "#f7df1e", weight: 3, dashArray: "6 6" }).addTo(map);
+const lineLabel = L.tooltip({ permanent: true, direction: "center", className: "lbl" });
+const dots = stations.features.map((f) => {
+  const [x, y] = f.geometry.coordinates;
+  return L.circleMarker([y, x], { radius: 5, color: "#0e1013", weight: 2, fillColor: "#5d6370", fillOpacity: 1 })
+    .bindTooltip(f.properties.name, { className: "st", direction: "top", offset: [0, -6] })
+    .addTo(map);
+});
+
+const you = L.marker([25.0375, 121.5300], { draggable: true, icon: L.divIcon({ className: "", html: '<div class="you"></div>', iconSize: [22, 22], iconAnchor: [11, 11] }) }).addTo(map);
+const radius = document.getElementById("radius");
+const $ = (id) => document.getElementById(id);
+
+function compassName(deg) {
+  const names = ["北", "東北", "東", "東南", "南", "西南", "西", "西北"];
+  return names[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
+}
+
+function analyse() {
+  const { lat, lng } = you.getLatLng();
+  const here = turf.point([lng, lat]);
+  const r = +radius.value;
+  $("rv").textContent = `${r} m`;
+
+  const buffer = turf.buffer(here, r, { units: "meters", steps: 64 });
+  bufferLayer.clearLayers().addData(buffer);
+
+  const inside = turf.pointsWithinPolygon(stations, buffer);
+  const insideNames = new Set(inside.features.map((f) => f.properties.name));
+  const nearest = turf.nearestPoint(here, stations);
+  const d = turf.distance(here, nearest, { units: "meters" });
+  const b = turf.bearing(here, nearest);
+
+  stations.features.forEach((f, i) => {
+    const isNear = f === nearest || f.properties.name === nearest.properties.name;
+    dots[i].setStyle({
+      radius: isNear ? 8 : insideNames.has(f.properties.name) ? 6 : 4.5,
+      fillColor: isNear ? "#f7df1e" : insideNames.has(f.properties.name) ? "#4cc9f0" : "#5d6370",
+    });
+  });
+
+  hullLayer.clearLayers();
+  if (inside.features.length >= 3) {
+    const hull = turf.convex(inside);
+    if (hull) hullLayer.addData(hull);
+  }
+
+  const [nx, ny] = nearest.geometry.coordinates;
+  lineLayer.setLatLngs([[lat, lng], [ny, nx]]);
+  const mid = turf.midpoint(here, nearest).geometry.coordinates;
+  lineLabel.setLatLng([mid[1], mid[0]]).setContent(`${Math.round(d)} m`);
+  if (!map.hasLayer(lineLabel)) lineLabel.addTo(map);
+
+  $("cnt").textContent = `${inside.features.length} 站`;
+  $("near").textContent = nearest.properties.name;
+  $("dist").textContent = d >= 1000 ? `${(d / 1000).toFixed(2)} km` : `${Math.round(d)} m`;
+  $("bear").textContent = `${compassName(b)} ${Math.round((b + 360) % 360)}°`;
+  $("area").textContent = `${(turf.area(buffer) / 1e6).toFixed(2)} km²`;
+  $("names").innerHTML = [...insideNames].map((n) => `<span>${n}</span>`).join("");
+}
+
+you.on("drag", analyse);
+map.on("click", (e) => { you.setLatLng(e.latlng); analyse(); });
+radius.addEventListener("input", analyse);
+analyse();
+window.addEventListener("resize", () => map.invalidateSize());
+</script>
+</body>
+</html>

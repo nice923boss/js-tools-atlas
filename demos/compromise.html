@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>compromise 示範：英文句子即時分析</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"compromise 只處理英文，請輸入英文句子"}</script>
+<style>
+  #app { position: fixed; inset: 0; overflow: auto; padding: 14px 16px 50px; display: grid; grid-template-columns: minmax(0, 1fr) 230px; gap: 12px; align-content: start; }
+  h1 { margin: 0; font-size: 16px; grid-column: 1 / -1; }
+  h1 small { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 6px; }
+  textarea { width: 100%; height: 70px; resize: none; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg-2); font: 15px/1.5 var(--font); outline: none; }
+  textarea:focus { border-color: var(--c2); }
+  .examples { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
+  .examples button { border: 1px dashed var(--line); background: none; border-radius: 999px; padding: 3px 10px; font: 12px var(--font); color: var(--muted); cursor: pointer; }
+  .examples button:hover { color: var(--fg); border-color: var(--c2); }
+  .card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .card h2 { margin: 0 0 6px; font-size: 13px; color: var(--muted); font-weight: 500; }
+  #tokens { display: flex; flex-wrap: wrap; gap: 6px 4px; align-items: flex-end; }
+  .tok { display: inline-flex; flex-direction: column; align-items: center; padding: 3px 6px 2px; border-radius: 6px; background: color-mix(in srgb, var(--k) 16%, transparent); border-bottom: 3px solid var(--k); animation: pop .25s ease-out both; }
+  .tok b { font: 600 15px var(--font); }
+  .tok i { font: normal 10px var(--font); color: var(--k); }
+  @keyframes pop { from { transform: translateY(4px); opacity: 0; } }
+  .transform { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .transform .btn { padding: 6px 10px; font-size: 12px; }
+  #out { font-size: 15px; min-height: 26px; }
+  #out mark { background: color-mix(in srgb, var(--c3) 22%, transparent); color: inherit; border-radius: 4px; padding: 0 2px; }
+  .side { display: grid; gap: 10px; align-content: start; }
+  .ent { display: grid; grid-template-columns: 52px 1fr; gap: 4px 8px; font-size: 12px; align-items: start; }
+  .ent span { color: var(--muted); }
+  .ent em { font-style: normal; display: flex; flex-wrap: wrap; gap: 4px; }
+  .ent em u { text-decoration: none; padding: 0 7px; border-radius: 999px; background: color-mix(in srgb, var(--k) 18%, transparent); color: var(--fg); }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 2px; background: var(--k); margin-right: 4px; }
+  .stats { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
+  .stats b { color: var(--fg); font: 700 16px var(--mono); margin-right: 3px; }
+  @media (max-width: 640px) {
+    #app { grid-template-columns: 1fr; padding: 10px 10px 46px; }
+    /* single column scrolls under the fixed hint: show it briefly, then fade it out */
+    .hint { animation: hint-fade .5s 8s forwards; }
+  }
+</style>
+</head>
+<body class="paper">
+<div id="app">
+  <h1>英文句子即時分析<small>詞性標註、時態轉換、實體擷取</small></h1>
+  <div class="main" style="display:grid;gap:10px;align-content:start;min-width:0">
+    <div>
+      <textarea id="input" spellcheck="false" aria-label="英文輸入"></textarea>
+      <div class="examples" id="examples"></div>
+    </div>
+    <div class="card">
+      <h2>詞性標註</h2>
+      <div id="tokens"></div>
+    </div>
+    <div class="card">
+      <h2>句子轉換</h2>
+      <div class="transform" id="ops">
+        <button class="btn" data-op="past" aria-pressed="true">過去式</button>
+        <button class="btn" data-op="present">現在式</button>
+        <button class="btn" data-op="future">未來式</button>
+        <button class="btn" data-op="negative">否定句</button>
+        <button class="btn" data-op="numbers">數字轉文字</button>
+      </div>
+      <div id="out"></div>
+    </div>
+  </div>
+  <div class="side">
+    <div class="card"><h2>統計</h2><div class="stats" id="stats"></div></div>
+    <div class="card"><h2>擷取結果</h2><div class="ent" id="ents"></div></div>
+    <div class="card"><h2>色彩說明</h2><div class="legend" id="legend"></div></div>
+  </div>
+</div>
+<div class="hint">直接修改英文句子，分析即時更新</div>
+
+<script src="https://cdn.jsdelivr.net/npm/compromise@14.17.0/builds/compromise.js"></script>
+<script>
+// compromise: rule-based English NLP running entirely in the browser.
+const TAGS = [
+  ["Person", "人名", "var(--c3)"], ["Place", "地點", "var(--c4)"], ["Organization", "組織", "var(--c6)"],
+  ["Value", "數值", "var(--c5)"], ["ProperNoun", "專有名詞", "var(--c6)"], ["Pronoun", "代名詞", "#8a8a8a"],
+  ["Noun", "名詞", "var(--c2)"], ["Verb", "動詞", "var(--c3)"], ["Adjective", "形容詞", "var(--c4)"],
+  ["Adverb", "副詞", "var(--c1)"], ["Preposition", "介系詞", "#9a9a9a"], ["Conjunction", "連接詞", "#9a9a9a"],
+  ["Determiner", "限定詞", "#b0b0b0"],
+];
+const EXAMPLES = [
+  "Emily takes the MRT to Taipei every morning and buys 2 cups of bubble tea.",
+  "David is hiking in Taroko Gorge with 3 friends and they are taking many photos.",
+  "My grandmother cooks beef noodles every Sunday because she loves her family.",
+];
+
+const $ = (id) => document.getElementById(id);
+const input = $("input");
+let op = "past";
+
+$("legend").innerHTML = TAGS.filter((t) => !["ProperNoun", "Conjunction", "Determiner"].includes(t[0]))
+  .map(([, zh, c]) => `<span style="--k:${c}">${zh}</span>`).join("");
+$("examples").innerHTML = EXAMPLES.map((s, i) => `<button data-i="${i}">範例 ${i + 1}</button>`).join("");
+$("examples").addEventListener("click", (e) => {
+  if (!e.target.dataset.i) return;
+  input.value = EXAMPLES[+e.target.dataset.i];
+  analyse();
+});
+
+const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+function pickTag(tags) {
+  return TAGS.find(([t]) => tags.includes(t)) || [null, "其他", "#9a9a9a"];
+}
+
+function transform(text) {
+  const doc = nlp(text);
+  if (op === "past") doc.verbs().toPastTense();
+  if (op === "present") doc.verbs().toPresentTense();
+  if (op === "future") doc.verbs().toFutureTense();
+  if (op === "negative") doc.verbs().toNegative();
+  if (op === "numbers") doc.numbers().toText();
+  return doc.text();
+}
+
+function highlightDiff(before, after) {
+  const seen = new Set(before.toLowerCase().match(/[\w'-]+/g) || []);
+  return esc(after).replace(/[\w'-]+/g, (w) => (seen.has(w.toLowerCase()) ? w : `<mark>${w}</mark>`));
+}
+
+function list(arr, color) {
+  const uniq = [...new Set(arr.map((s) => s.replace(/[.,!?]+$/, "").trim()).filter(Boolean))];
+  return uniq.length ? uniq.map((s) => `<u style="--k:${color}">${esc(s)}</u>`).join("") : '<span class="muted">（無）</span>';
+}
+
+function analyse() {
+  const text = input.value.trim();
+  const doc = nlp(text);
+  const terms = doc.json().flatMap((s) => s.terms);
+  $("tokens").innerHTML = terms.map((t, i) => {
+    const [, zh, color] = pickTag(t.tags);
+    return `<span class="tok" style="--k:${color};animation-delay:${i * 18}ms" title="${t.tags.join(", ")}"><b>${esc(t.text)}</b><i>${zh}</i></span>`;
+  }).join("") || '<span class="muted">請輸入英文句子</span>';
+
+  $("out").innerHTML = text ? highlightDiff(text, transform(text)) : "";
+
+  $("stats").innerHTML = `<span><b>${doc.sentences().length}</b>句</span><span><b>${doc.terms().length}</b>字</span><span><b>${doc.verbs().length}</b>動詞</span>`;
+  const verbs = nlp(text).verbs().toInfinitive().out("array");
+  $("ents").innerHTML = [
+    ["人名", doc.people().out("array"), "var(--c3)"],
+    ["地點", doc.places().out("array"), "var(--c4)"],
+    ["組織", doc.organizations().out("array"), "var(--c6)"],
+    ["數字", doc.numbers().out("array"), "var(--c5)"],
+    ["動詞原形", verbs, "var(--c2)"],
+  ].map(([label, arr, c]) => `<span>${label}</span><em>${list(arr, c)}</em>`).join("");
+}
+
+$("ops").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-op]");
+  if (!b) return;
+  op = b.dataset.op;
+  document.querySelectorAll("#ops [data-op]").forEach((x) => x.setAttribute("aria-pressed", x === b));
+  analyse();
+});
+
+let timer;
+input.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(analyse, 120); });
+input.value = EXAMPLES[0];
+analyse();
+</script>
+</body>
+</html>

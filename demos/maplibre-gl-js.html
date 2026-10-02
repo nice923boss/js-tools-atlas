@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MapLibre GL JS 示範：3D 城市飛行</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/dist/maplibre-gl.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  #map { position: fixed; inset: 0; background: #0b0d10; }
+  .maplibregl-ctrl-attrib { background: rgba(14,16,19,.75) !important; color: var(--muted); font-size: 10px; }
+  .maplibregl-ctrl-attrib a { color: var(--c2) !important; }
+  .maplibregl-ctrl-attrib-button { filter: invert(1); }
+  #info { position: fixed; left: 12px; top: 12px; z-index: 50; padding: 10px 14px; min-width: 170px; }
+  #info b { display: block; font-size: 16px; }
+  #info small { color: var(--muted); font-size: 12px; }
+  .legend { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 11px; color: var(--muted); }
+  .legend i { display: block; width: 90px; height: 6px; border-radius: 3px; background: linear-gradient(90deg, #2b3445, #4cc9f0, #9d8cff, #f72585, #f7df1e); }
+  @media (max-width: 520px) {
+    #info { top: auto; bottom: 48px; }
+    /* the hint would cover the map attribution, and right-drag / Ctrl-drag do not apply on touch screens */
+    .hint { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="info" class="panel"><b id="placeName">台北 101</b><small id="placeSub">信義計畫區，建築依高度上色</small>
+  <div class="legend">低<i></i>高</div>
+</div>
+<div class="controls" id="places">
+  <button class="btn" data-i="0" aria-pressed="true">台北 101</button>
+  <button class="btn" data-i="1">台北車站</button>
+  <button class="btn" data-i="2">台中七期</button>
+  <button class="btn" data-i="3">高雄 85 大樓</button>
+  <button class="btn primary" id="tour">自動巡航</button>
+</div>
+<div class="hint">右鍵或 Ctrl＋拖曳可旋轉傾斜・按地點按鈕飛過去</div>
+
+<script type="module">
+// 3D extruded OSM buildings (OpenFreeMap vector tiles) with flyTo camera animations over Taiwan cities.
+import * as maplibregl from "https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/dist/maplibre-gl.mjs";
+
+const PLACES = [
+  { name: "台北 101", sub: "信義計畫區，建築依高度上色", center: [121.5645, 25.0335], zoom: 15.6, bearing: -25 },
+  { name: "台北車站", sub: "交通樞紐與周邊商辦", center: [121.5170, 25.0470], zoom: 15.8, bearing: 30 },
+  { name: "台中七期", sub: "新市政中心與豪宅天際線", center: [120.6440, 24.1600], zoom: 15.2, bearing: -60 },
+  { name: "高雄 85 大樓", sub: "亞洲新灣區與港口", center: [120.3002, 22.6116], zoom: 15.4, bearing: 70 },
+];
+
+const map = new maplibregl.Map({
+  container: "map",
+  style: "https://tiles.openfreemap.org/styles/dark",
+  center: PLACES[0].center,
+  zoom: PLACES[0].zoom,
+  pitch: 62,
+  bearing: PLACES[0].bearing,
+  maxPitch: 75,
+  attributionControl: { compact: true },
+});
+map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "bottom-right");
+
+// Add the extrusion layer as soon as the style is parsed so building tiles load in the first pass.
+map.once("style.load", () => {
+  if (map.getLayer("building")) map.setLayoutProperty("building", "visibility", "none");
+  const h = ["coalesce", ["get", "render_height"], 0];
+  map.addLayer({
+    id: "buildings-3d",
+    type: "fill-extrusion",
+    source: "openmaptiles",
+    "source-layer": "building",
+    minzoom: 12,
+    paint: {
+      "fill-extrusion-color": ["interpolate", ["linear"], h, 0, "#2b3445", 25, "#4cc9f0", 80, "#9d8cff", 180, "#f72585", 400, "#f7df1e"],
+      "fill-extrusion-height": h,
+      "fill-extrusion-base": ["coalesce", ["get", "render_min_height"], 0],
+      "fill-extrusion-opacity": 0.92,
+    },
+  });
+});
+map.once("load", spin);
+
+// Slow orbit while idle; any user interaction pauses it.
+let spinning = true;
+let current = 0;
+let tourTimer = null;
+function spin() {
+  if (!spinning || map.isMoving()) return;
+  map.easeTo({ bearing: map.getBearing() + 12, duration: 4000, easing: (t) => t });
+}
+map.on("moveend", () => { if (spinning) spin(); });
+for (const ev of ["mousedown", "touchstart", "wheel"]) {
+  map.getCanvas().addEventListener(ev, () => { spinning = false; stopTour(); });
+}
+
+const buttons = [...document.querySelectorAll("#places [data-i]")];
+function go(i) {
+  const p = PLACES[i];
+  current = i;
+  buttons.forEach((b, k) => b.setAttribute("aria-pressed", k === i));
+  document.getElementById("placeName").textContent = p.name;
+  document.getElementById("placeSub").textContent = p.sub;
+  spinning = true;
+  map.flyTo({ center: p.center, zoom: p.zoom, bearing: p.bearing, pitch: 62, duration: 6000, curve: 1.6, essential: true });
+}
+buttons.forEach((b) => b.addEventListener("click", () => { stopTour(); go(+b.dataset.i); }));
+
+// Tour: visit each place in turn, orbiting a little at each stop.
+const tourBtn = document.getElementById("tour");
+function stopTour() {
+  clearInterval(tourTimer);
+  tourTimer = null;
+  tourBtn.textContent = "自動巡航";
+}
+tourBtn.addEventListener("click", () => {
+  if (tourTimer) return stopTour();
+  const next = () => go((current + 1) % PLACES.length);
+  next();
+  tourTimer = setInterval(next, 11000);
+  tourBtn.textContent = "停止巡航";
+});
+</script>
+</body>
+</html>

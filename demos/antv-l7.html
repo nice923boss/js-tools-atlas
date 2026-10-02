@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AntV L7 示範：台灣熱力圖與光點</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@3.6.2/dist/maplibre-gl.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"底圖為 MapLibre（OpenFreeMap 向量圖磚），熱力資料為示意資料"}</script>
+<style>
+  #map { position: fixed; inset: 0; background: #0b0d10; }
+  .maplibregl-ctrl-attrib { background: rgba(14,16,19,.75) !important; color: var(--muted); font-size: 10px; }
+  .maplibregl-ctrl-attrib a { color: var(--c2) !important; }
+  .maplibregl-ctrl-attrib-button { filter: invert(1); }
+  #legend { position: fixed; left: 12px; top: 12px; z-index: 50; width: 200px; padding: 10px 14px; }
+  #legend b { display: block; font-size: 14px; }
+  #legend small { color: var(--muted); font-size: 11px; }
+  .ramp { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 11px; color: var(--muted); }
+  .ramp i { flex: 1; height: 6px; border-radius: 3px; background: linear-gradient(90deg, #1b2a4a, #4cc9f0, #9d8cff, #f72585, #ff8c42, #f7df1e); }
+  #tip { position: fixed; z-index: 60; pointer-events: none; padding: 5px 10px; font-size: 12px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); display: none; }
+  @media (max-width: 520px) { #legend { top: auto; bottom: 48px; width: 170px; } #legend small { display: none; } }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="legend" class="panel"><b id="modeName">3D 熱力圖</b><small id="modeSub">夜間人流熱度（示意）</small><div class="ramp">低<i></i>高</div></div>
+<div class="controls" id="modes">
+  <button class="btn" data-mode="heat2d">2D 熱力</button>
+  <button class="btn" data-mode="heat3d" aria-pressed="true">3D 熱力</button>
+  <button class="btn" data-mode="hex">六角柱</button>
+  <button class="btn" id="waveBtn" aria-pressed="true">城市光點</button>
+</div>
+<div class="hint">按鈕切換圖層樣式・右鍵拖曳旋轉傾斜</div>
+<div id="tip"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@antv/l7@2.29.1/dist/l7.js"></script>
+<script>
+// AntV L7 heatmap (2D / 3D / hexagon aggregation) plus animated ripple points on a MapLibre basemap.
+const { Scene, MapLibre, HeatmapLayer, PointLayer } = L7;
+
+const CITIES = [
+  ["台北", 121.5654, 25.0330, 1.0], ["新北", 121.4628, 25.0144, 0.9], ["桃園", 121.3010, 24.9936, 0.7], ["新竹", 120.9675, 24.8138, 0.45],
+  ["台中", 120.6736, 24.1477, 0.85], ["彰化", 120.5161, 24.0518, 0.35], ["嘉義", 120.4491, 23.4801, 0.25], ["台南", 120.2270, 22.9997, 0.6],
+  ["高雄", 120.3014, 22.6273, 0.8], ["屏東", 120.4880, 22.6727, 0.25], ["宜蘭", 121.7537, 24.7021, 0.2], ["花蓮", 121.6014, 23.9872, 0.18],
+  ["台東", 121.1442, 22.7583, 0.12], ["基隆", 121.7419, 25.1276, 0.2], ["苗栗", 120.8214, 24.5602, 0.15], ["南投", 120.6848, 23.9096, 0.12],
+];
+
+// Seeded RNG so the illustrative data is identical on every load
+let seed = 11;
+const rand = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+const gauss = () => Math.sqrt(-2 * Math.log(rand() + 1e-9)) * Math.cos(2 * Math.PI * rand());
+const POINTS = [];
+for (const [name, lng, lat, w] of CITIES) {
+  const n = Math.round(700 * w + 50);
+  const sigma = 0.02 + w * 0.03;
+  for (let i = 0; i < n; i++) POINTS.push({ lng: lng + gauss() * sigma, lat: lat + gauss() * sigma * 0.9, w: 0.3 + rand() * 0.7 });
+}
+const CITY_DATA = CITIES.map(([name, lng, lat, w]) => ({ name, lng, lat, w }));
+const RAMP = { colors: ["#1b2a4a", "#4cc9f0", "#9d8cff", "#f72585", "#ff8c42", "#f7df1e"], positions: [0, 0.2, 0.4, 0.6, 0.8, 1] };
+const PARSER = { parser: { type: "json", x: "lng", y: "lat" } };
+
+const narrow = innerWidth < 520;
+const scene = new Scene({
+  id: "map",
+  logoVisible: false,
+  map: new MapLibre({
+    style: "https://tiles.openfreemap.org/styles/dark",
+    center: [120.95, 23.65],
+    zoom: narrow ? 6.1 : 6.9,
+    pitch: 48,
+    rotation: -12,
+  }),
+});
+
+const MODES = {
+  heat2d: { name: "2D 熱力圖", sub: "夜間人流熱度（示意）", pitch: 0 },
+  heat3d: { name: "3D 熱力圖", sub: "熱度轉成地形高度（示意）", pitch: 48 },
+  hex: { name: "六角柱聚合", sub: "以 6 公里六角格加總（示意）", pitch: 55 },
+};
+
+function makeLayer(mode) {
+  if (mode === "hex") {
+    return new HeatmapLayer({ zIndex: 2 })
+      .source(POINTS, { ...PARSER, transforms: [{ type: "hexagon", size: 6000, field: "w", method: "sum" }] })
+      .size("sum", (s) => s * 700)
+      .shape("hexagonColumn")
+      .color("sum", RAMP.colors)
+      .style({ coverage: 0.85, angle: 0, opacity: 0.95 });
+  }
+  return new HeatmapLayer({ zIndex: 2 })
+    .source(POINTS, PARSER)
+    .size("w", [0, 0.12])
+    .shape(mode === "heat3d" ? "heatmap3D" : "heatmap")
+    .style({ intensity: mode === "heat3d" ? 0.45 : 0.5, radius: mode === "heat3d" ? 14 : 16, opacity: 1, rampColors: RAMP });
+}
+
+// Animated ripple points; rebuilt after each heat layer so they always draw on top.
+const tip = document.getElementById("tip");
+function makeWaves() {
+  const layer = new PointLayer({ zIndex: 3 })
+    .source(CITY_DATA, PARSER)
+    .shape("circle")
+    .size("w", (w) => 34 + w * 56)
+    .color("#f7df1e")
+    .animate(true)
+    .active(true)
+    .style({ opacity: 0.9 });
+  layer.on("mousemove", (e) => {
+    tip.style.display = "block";
+    tip.style.left = `${e.x + 14}px`;
+    tip.style.top = `${e.y + 10}px`;
+    tip.textContent = `${e.feature.name}・熱度指數 ${Math.round(e.feature.w * 100)}`;
+  });
+  layer.on("mouseout", () => { tip.style.display = "none"; });
+  return layer;
+}
+
+let heat = null;
+let waves = null;
+let wavesOn = true;
+
+function setMode(mode) {
+  if (heat) scene.removeLayer(heat);
+  if (waves) scene.removeLayer(waves);
+  heat = makeLayer(mode);
+  scene.addLayer(heat);
+  waves = makeWaves();
+  scene.addLayer(waves);
+  if (!wavesOn) waves.hide();
+  const m = MODES[mode];
+  document.getElementById("modeName").textContent = m.name;
+  document.getElementById("modeSub").textContent = m.sub;
+  document.querySelectorAll("[data-mode]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.mode === mode));
+  scene.getMapService().map.easeTo({ pitch: m.pitch, duration: 1200 });
+}
+
+scene.on("loaded", () => setMode("heat3d"));
+
+document.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
+document.getElementById("waveBtn").addEventListener("click", (e) => {
+  wavesOn = !wavesOn;
+  e.currentTarget.setAttribute("aria-pressed", wavesOn);
+  if (wavesOn) waves.show(); else waves.hide();
+  tip.style.display = "none";
+});
+</script>
+</body>
+</html>

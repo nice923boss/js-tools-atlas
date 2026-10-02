@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rot.js 示範：地城探索</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body { background: #0b0c0f; }
+  #top { position: fixed; left: 0; right: 0; top: 0; z-index: 50; display: flex; flex-wrap: wrap; gap: 6px 10px;
+    align-items: center; justify-content: space-between; padding: 8px 10px; }
+  #hud { font-weight: 700; color: var(--c1); font-size: 14px; white-space: nowrap; }
+  #hud .hp { color: var(--c3); }
+  #hud .dim { color: var(--muted); font-weight: 500; }
+  #top .btns { display: flex; gap: 6px; flex-wrap: wrap; }
+  #top .btn { padding: 6px 10px; }
+  #wrap { position: fixed; left: 0; right: 0; display: grid; place-items: center; }
+  #wrap canvas { display: block; border-radius: 6px; box-shadow: 0 0 0 1px var(--line); touch-action: none; cursor: crosshair; }
+  #bot { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; padding: 6px 12px 8px; font-size: 13px; line-height: 1.5; }
+  #log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #log div:first-child { color: var(--muted); }
+  #bot .tip { color: var(--muted); font-size: 12px; }
+  .overlay { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; pointer-events: none; transition: opacity .3s; }
+  .overlay.hide { opacity: 0; }
+  .overlay .card { text-align: center; padding: 14px 22px; border-radius: 14px; background: rgba(11, 12, 15, .78);
+    backdrop-filter: blur(3px); border: 1px solid var(--line); max-width: 88vw; }
+  .overlay h1 { margin: 0; font-size: clamp(24px, 5.5vw, 38px); letter-spacing: 4px; color: var(--c5);
+    text-shadow: 0 0 18px rgba(255, 140, 66, .55); }
+  .overlay p { margin: 4px 0 0; }
+  .overlay .blink { color: var(--c2); animation: blink 1.2s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+  #flash { position: fixed; inset: 0; z-index: 45; pointer-events: none; opacity: 0;
+    box-shadow: inset 0 0 90px 20px rgba(247, 37, 133, .65); transition: opacity .25s; }
+  #flash.on { opacity: 1; transition: none; }
+</style>
+</head>
+<body>
+<div id="top">
+  <div id="hud"></div>
+  <div class="btns">
+    <button class="btn" id="b-dungeon" aria-pressed="true">房間走廊</button>
+    <button class="btn" id="b-cave" aria-pressed="false">洞穴</button>
+    <button class="btn" id="b-reveal" aria-pressed="false">透視全圖</button>
+    <button class="btn primary" id="b-regen">重新生成</button>
+  </div>
+</div>
+<div id="wrap"></div>
+<div id="bot">
+  <div id="log"></div>
+  <div class="tip">方向鍵／WASD 移動，點擊地圖自動走過去，撞怪即攻擊，走到 &gt; 下樓</div>
+</div>
+<div class="overlay" id="overlay">
+  <div class="card">
+    <h1 id="ov-title">地城探索</h1>
+    <p id="ov-sub">每層即時產生，視野用陰影投射計算</p>
+    <p class="blink" id="ov-go">按任意鍵或點擊開始</p>
+  </div>
+</div>
+<div id="flash"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/rot-js@2.2.1/dist/rot.min.js"></script>
+<script>
+// rot.js roguelike: Map.Digger / Map.Cellular generation, FOV.PreciseShadowcasting, Path.AStar, Display, Color, RNG.
+const WALL = 0, FLOOR = 1, DOOR = 2, OPEN = 3, STAIRS = 4;
+const RADIUS = 7, MAX_HP = 6;
+const DIRS8 = ROT.DIRS[8];
+const $ = (id) => document.getElementById(id);
+const MONSTERS = {
+  rat: { ch: "r", fg: "#d9c2a7", name: "老鼠", hp: 1 },
+  goblin: { ch: "g", fg: "#7bd389", name: "哥布林", hp: 2 },
+  bat: { ch: "b", fg: "#b9a8ff", name: "蝙蝠", hp: 1 },
+};
+const ITEMS = { gold: { ch: "$", fg: "#ffd166" }, potion: { ch: "!", fg: "#f72585" } };
+// light ramps: [near, far] for lit tiles, single value for remembered tiles
+const LIT = {
+  floorBg: [[66, 50, 30], [22, 22, 28]], floorFg: [[170, 140, 96], [70, 70, 82]],
+  wallBg: [[104, 80, 50], [40, 40, 50]], wallFg: [[232, 196, 132], [96, 96, 112]],
+};
+const MEM = { floorBg: [14, 16, 22], floorFg: [42, 50, 66], wallBg: [24, 28, 38], wallFg: [60, 70, 92] };
+const UNKNOWN = "#0b0c0f";
+
+let kind = "dungeon", reveal = false, mode = "demo"; // demo | play | over
+let W = 40, H = 24, map, explored, visible = new Map();
+let player = { x: 0, y: 0 }, items = new Map(), monsters = [];
+let depth = 1, hp = MAX_HP, gold = 0, kills = 0, logs = [], walkQueue = [], overAt = 0;
+
+const inb = (x, y) => x >= 0 && y >= 0 && x < W && y < H;
+const passable = (t) => t !== WALL;
+const transparent = (t) => t === FLOOR || t === OPEN || t === STAIRS;
+const monsterAt = (x, y) => monsters.find((m) => m.x === x && m.y === y);
+const cheb = (a, b) => Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
+
+const display = new ROT.Display({
+  width: W, height: H, fontSize: 16, forceSquareRatio: true, bg: UNKNOWN,
+  fontFamily: '"JetBrains Mono", Consolas, "Courier New", monospace', fontStyle: "bold",
+});
+const canvas = display.getContainer();
+$("wrap").appendChild(canvas);
+
+const fov = new ROT.FOV.PreciseShadowcasting((x, y) => inb(x, y) && transparent(map[x + y * W]), { topology: 8 });
+
+function areas() {
+  const top = $("top").offsetHeight, bot = $("bot").offsetHeight;
+  return { top, bot, w: innerWidth - 16, h: innerHeight - top - bot - 6 };
+}
+
+function fit() {
+  const a = areas(), dpr = Math.min(2, devicePixelRatio || 1);
+  $("wrap").style.top = a.top + "px";
+  $("wrap").style.bottom = a.bot + "px";
+  const cell = Math.min(a.w / W, a.h / H);
+  display.setOptions({ width: W, height: H, fontSize: Math.max(6, Math.floor(cell * dpr)) });
+  canvas.style.width = canvas.width / dpr + "px";
+  canvas.style.height = canvas.height / dpr + "px";
+  render();
+}
+
+function bfsFrom(start, ok) {
+  const dist = new Int32Array(W * H).fill(-1), queue = [start];
+  dist[start] = 0;
+  for (let q = 0; q < queue.length; q++) {
+    const c = queue[q], cx = c % W, cy = (c / W) | 0;
+    for (const [dx, dy] of DIRS8) {
+      const nx = cx + dx, ny = cy + dy, n = nx + ny * W;
+      if (inb(nx, ny) && dist[n] < 0 && ok(n)) { dist[n] = dist[c] + 1; queue.push(n); }
+    }
+  }
+  return { dist, order: queue };
+}
+
+function generate() {
+  const a = areas();
+  // pick a map size that keeps cells readable for the current viewport
+  const cell = Math.max(14, Math.min(22, Math.floor(Math.min(a.w / 40, a.h / 24))));
+  W = Math.max(20, Math.floor(a.w / cell));
+  H = Math.max(16, Math.floor(a.h / cell));
+  map = new Uint8Array(W * H);
+  explored = new Uint8Array(W * H);
+  let start = -1;
+  if (kind === "dungeon") {
+    const dg = new ROT.Map.Digger(W, H, { roomWidth: [3, 9], roomHeight: [3, 6], corridorLength: [2, 7], dugPercentage: 0.34 });
+    dg.create((x, y, v) => { if (!v) map[x + y * W] = FLOOR; });
+    const rooms = dg.getRooms();
+    for (const r of rooms) r.getDoors((x, y) => { if (ROT.RNG.getUniform() < 0.5) map[x + y * W] = DOOR; });
+    const [cx, cy] = rooms[0].getCenter();
+    start = cx + cy * W;
+  } else {
+    const cv = new ROT.Map.Cellular(W, H);
+    cv.randomize(0.53);
+    for (let i = 0; i < 4; i++) cv.create();
+    cv.connect((x, y, v) => { if (v === 1 && x > 0 && y > 0 && x < W - 1 && y < H - 1) map[x + y * W] = FLOOR; }, 1);
+  }
+  const floors = [];
+  for (let i = 0; i < W * H; i++) if (map[i] === FLOOR) floors.push(i);
+  if (start < 0 || map[start] !== FLOOR) start = ROT.RNG.getItem(floors);
+  player = { x: start % W, y: (start / W) | 0 };
+  // stairs go on the floor tile farthest from the start
+  const { dist, order } = bfsFrom(start, (n) => map[n] !== WALL);
+  map[order[order.length - 1]] = STAIRS;
+
+  const free = ROT.RNG.shuffle(floors.filter((i) => i !== start && map[i] === FLOOR));
+  items = new Map();
+  monsters = [];
+  const nGold = Math.max(3, Math.round(floors.length / 55)), nPotion = 2;
+  for (let k = 0; k < nGold + nPotion && free.length; k++) items.set(free.pop(), k < nGold ? "gold" : "potion");
+  const nMon = Math.min(3 + depth * 2, Math.round(floors.length / 30));
+  for (const i of free) {
+    if (monsters.length >= nMon) break;
+    if (dist[i] < 8) continue;
+    const type = ROT.RNG.getWeightedValue({ rat: 4, goblin: depth > 1 ? 3 : 1, bat: 2 });
+    monsters.push({ x: i % W, y: (i / W) | 0, type, hp: MONSTERS[type].hp, alert: 0 });
+  }
+  walkQueue = [];
+  visible = new Map();
+  fit();
+  computeFov();
+  render();
+}
+
+function computeFov() {
+  visible = new Map();
+  fov.compute(player.x, player.y, RADIUS, (x, y, r, vis) => {
+    if (!vis || !inb(x, y)) return;
+    const i = x + y * W;
+    visible.set(i, r);
+    explored[i] = 1;
+  });
+}
+
+const mix = (pair, f) => ROT.Color.toRGB(ROT.Color.interpolate(pair[0], pair[1], f));
+const glyph = (t) => (t === WALL ? "#" : t === DOOR ? "+" : t === OPEN ? "'" : t === STAIRS ? ">" : "·");
+
+function render() {
+  if (!map) return;
+  const now = performance.now() / 1000;
+  const flicker = Math.sin(now * 9) * 0.04 + Math.sin(now * 23) * 0.03;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = x + y * W, t = map[i], r = visible.get(i);
+      const wall = t === WALL;
+      let ch = glyph(t), fg, bg;
+      if (r !== undefined) {
+        const f = Math.max(0, Math.min(1, r / (RADIUS + 0.5) + flicker));
+        bg = mix(wall ? LIT.wallBg : LIT.floorBg, f);
+        fg = mix(wall ? LIT.wallFg : LIT.floorFg, f);
+        if (t === DOOR || t === OPEN) fg = "#ff8c42";
+        if (t === STAIRS) fg = "#4cc9f0";
+        const it = items.get(i);
+        if (it) { ch = ITEMS[it].ch; fg = ITEMS[it].fg; }
+        const m = monsterAt(x, y);
+        if (m) { ch = MONSTERS[m.type].ch; fg = MONSTERS[m.type].fg; }
+      } else if (explored[i] || reveal) {
+        bg = ROT.Color.toRGB(wall ? MEM.wallBg : MEM.floorBg);
+        fg = ROT.Color.toRGB(wall ? MEM.wallFg : MEM.floorFg);
+        if (t === STAIRS) fg = "#2a6f86";
+        if (reveal) {
+          const it = items.get(i);
+          if (it) { ch = ITEMS[it].ch; fg = ITEMS[it].fg; }
+          const m = monsterAt(x, y);
+          if (m) { ch = MONSTERS[m.type].ch; fg = "#8a8aa0"; }
+        }
+      } else {
+        ch = " "; fg = null; bg = UNKNOWN;
+      }
+      if (x === player.x && y === player.y) { ch = "@"; fg = mode === "over" ? "#6d6b64" : "#f7df1e"; }
+      display.draw(x, y, ch, fg, bg);
+    }
+  }
+}
+
+function log(msg) {
+  logs.push(msg);
+  logs = logs.slice(-2);
+  $("log").innerHTML = logs.map((m) => `<div>${m}</div>`).join("");
+}
+
+function hud() {
+  $("hud").innerHTML = mode === "demo"
+    ? `展示模式 <span class="dim">第 ${depth} 層</span>`
+    : `第 ${depth} 層　<span class="hp">♥ ${hp}/${MAX_HP}</span>　金幣 ${gold}　<span class="dim">擊倒 ${kills}</span>`;
+}
+
+function flash() {
+  const el = $("flash");
+  el.classList.add("on");
+  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.remove("on")));
+}
+
+function pickup(i) {
+  const it = items.get(i);
+  if (!it) return;
+  items.delete(i);
+  if (it === "gold") {
+    const n = ROT.RNG.getUniformInt(5, 20) * depth;
+    gold += n;
+    log(`撿到 ${n} 枚金幣`);
+  } else {
+    hp = Math.min(MAX_HP, hp + 2);
+    log("喝下藥水，生命回復 2 點");
+  }
+}
+
+function descend() {
+  depth = mode === "demo" && depth >= 3 ? 1 : depth + 1;
+  log(`走下樓梯，來到第 ${depth} 層`);
+  generate();
+  hud();
+}
+
+function monstersAct() {
+  for (const m of monsters) {
+    const info = MONSTERS[m.type], d = cheb(m, player);
+    if (visible.has(m.x + m.y * W) && d <= RADIUS) m.alert = 8;
+    else if (m.alert > 0) m.alert--;
+    if (m.alert && d === 1) {
+      if (ROT.RNG.getUniform() < 0.55) {
+        if (mode === "play") { hp--; flash(); }
+        log(`${info.name}咬了你一口${mode === "play" ? "（生命 -1）" : ""}`);
+      } else log(`${info.name}撲空了`);
+      continue;
+    }
+    let step = null;
+    const erratic = m.type === "bat" && ROT.RNG.getUniform() < 0.45;
+    if (m.alert && !erratic) {
+      // A* toward the player through open floor (monsters cannot open doors)
+      const astar = new ROT.Path.AStar(player.x, player.y,
+        (x, y) => inb(x, y) && transparent(map[x + y * W]), { topology: 8 });
+      const path = [];
+      astar.compute(m.x, m.y, (x, y) => path.push([x, y]));
+      if (path.length > 1) step = path[1];
+    } else if (erratic || ROT.RNG.getUniform() < 0.35) {
+      const [dx, dy] = ROT.RNG.getItem(DIRS8);
+      step = [m.x + dx, m.y + dy];
+    }
+    if (!step) continue;
+    const [nx, ny] = step;
+    if (inb(nx, ny) && transparent(map[nx + ny * W]) && !monsterAt(nx, ny) && !(nx === player.x && ny === player.y)) {
+      m.x = nx; m.y = ny;
+    }
+  }
+}
+
+function endTurn() {
+  computeFov();
+  monstersAct();
+  render();
+  hud();
+  if (mode === "play" && hp <= 0) {
+    mode = "over";
+    overAt = performance.now();
+    walkQueue = [];
+    log("你倒下了……");
+    overlay("你倒下了", `抵達第 ${depth} 層，帶著 ${gold} 枚金幣`, "按任意鍵或點擊重新開始");
+    render();
+    hud();
+  }
+}
+
+// returns "moved", "acted" (door or attack), or false when blocked
+function tryMove(dx, dy) {
+  const nx = player.x + dx, ny = player.y + dy;
+  if (!inb(nx, ny)) return false;
+  const i = nx + ny * W, t = map[i];
+  if (t === WALL) return false;
+  const m = monsterAt(nx, ny);
+  if (m) {
+    m.hp--;
+    const name = MONSTERS[m.type].name;
+    if (m.hp <= 0) {
+      monsters.splice(monsters.indexOf(m), 1);
+      kills++;
+      log(`擊倒了${name}`);
+    } else log(`砍中${name}，牠還站著`);
+    endTurn();
+    return "acted";
+  }
+  if (t === DOOR) {
+    map[i] = OPEN;
+    log("推開了一扇門");
+    endTurn();
+    return "acted";
+  }
+  player.x = nx; player.y = ny;
+  pickup(i);
+  if (t === STAIRS) { descend(); return "moved"; }
+  endTurn();
+  return "moved";
+}
+
+function walkTo(tx, ty) {
+  const ti = tx + ty * W;
+  if (!inb(tx, ty) || map[ti] === WALL) return;
+  if (!explored[ti] && !reveal) { log("那裡還沒探索過"); return; }
+  const astar = new ROT.Path.AStar(tx, ty,
+    (x, y) => inb(x, y) && passable(map[x + y * W]) && (explored[x + y * W] || reveal), { topology: 8 });
+  const path = [];
+  astar.compute(player.x, player.y, (x, y) => path.push([x, y]));
+  walkQueue = path.slice(1);
+}
+
+function seenMonsters() {
+  return monsters.filter((m) => visible.has(m.x + m.y * W)).length;
+}
+
+function walkStep() {
+  if (mode !== "play" || !walkQueue.length) return;
+  const before = seenMonsters();
+  const [x, y] = walkQueue[0];
+  const wasDoor = map[x + y * W] === DOOR;
+  const res = tryMove(x - player.x, y - player.y);
+  if (res === "moved") walkQueue.shift();
+  else if (!(res === "acted" && wasDoor)) walkQueue = []; // keep walking through a door we just opened
+  // stop auto-walking when something new shows up
+  if (seenMonsters() > before) walkQueue = [];
+}
+
+// demo autopilot: chase visible monsters and items, otherwise explore the nearest frontier, then take the stairs
+function autoStep() {
+  const start = player.x + player.y * W;
+  const isTarget = (n) => {
+    const x = n % W, y = (n / W) | 0;
+    if (visible.has(n) && (monsterAt(x, y) || items.has(n))) return true;
+    for (const [dx, dy] of DIRS8) if (inb(x + dx, y + dy) && !explored[x + dx + (y + dy) * W]) return true;
+    return false;
+  };
+  const prev = new Int32Array(W * H).fill(-1), queue = [start];
+  prev[start] = start;
+  let goal = -1;
+  for (let q = 0; q < queue.length && goal < 0; q++) {
+    const c = queue[q], cx = c % W, cy = (c / W) | 0;
+    for (const [dx, dy] of DIRS8) {
+      const nx = cx + dx, ny = cy + dy, n = nx + ny * W;
+      if (!inb(nx, ny) || prev[n] >= 0 || map[n] === WALL || !explored[n]) continue;
+      prev[n] = c;
+      queue.push(n);
+      if (isTarget(n)) { goal = n; break; }
+    }
+  }
+  if (goal < 0) goal = queue.find((n) => map[n] === STAIRS) ?? -1;
+  if (goal < 0) { generate(); return; }
+  let step = goal;
+  while (prev[step] !== start) step = prev[step];
+  tryMove(step % W - player.x, ((step / W) | 0) - player.y);
+}
+
+function overlay(title, sub, go) {
+  $("ov-title").textContent = title;
+  $("ov-sub").textContent = sub;
+  $("ov-go").textContent = go;
+  $("overlay").classList.remove("hide");
+}
+
+function startGame() {
+  if (mode === "over" && performance.now() - overAt < 800) return; // let the death screen register
+  mode = "play";
+  depth = 1; hp = MAX_HP; gold = 0; kills = 0;
+  $("overlay").classList.add("hide");
+  logs = [];
+  log("你踏進地城，找到藍色的 &gt; 往下走");
+  generate();
+  hud();
+}
+
+const KEYS = {
+  ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
+  KeyW: [0, -1], KeyS: [0, 1], KeyA: [-1, 0], KeyD: [1, 0],
+  Numpad8: [0, -1], Numpad2: [0, 1], Numpad4: [-1, 0], Numpad6: [1, 0],
+  Numpad7: [-1, -1], Numpad9: [1, -1], Numpad1: [-1, 1], Numpad3: [1, 1],
+};
+addEventListener("keydown", (e) => {
+  if (e.target.tagName === "BUTTON" && (e.key === " " || e.key === "Enter")) return;
+  if (mode !== "play") { if (!e.repeat) startGame(); e.preventDefault(); return; }
+  const d = KEYS[e.code];
+  if (d) { e.preventDefault(); walkQueue = []; tryMove(d[0], d[1]); }
+  else if (e.code === "Space" || e.code === "Period" || e.code === "Numpad5") { e.preventDefault(); log("原地等待"); endTurn(); }
+});
+canvas.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  if (mode !== "play") { startGame(); return; }
+  const [x, y] = display.eventToPosition(e);
+  if (x >= 0) walkTo(x, y);
+});
+$("overlay").addEventListener("pointerdown", () => { if (mode !== "play") startGame(); });
+document.addEventListener("pointerdown", (e) => {
+  if (mode !== "play" && !e.target.closest("button") && e.target !== canvas) startGame();
+});
+
+function setKind(k) {
+  kind = k;
+  $("b-dungeon").setAttribute("aria-pressed", k === "dungeon");
+  $("b-cave").setAttribute("aria-pressed", k === "cave");
+  generate();
+  log(k === "dungeon" ? "改用房間走廊產生器（Digger）" : "改用細胞自動機產生洞穴（Cellular）");
+}
+$("b-dungeon").onclick = () => setKind("dungeon");
+$("b-cave").onclick = () => setKind("cave");
+$("b-regen").onclick = () => { generate(); log("重新產生這一層"); };
+$("b-reveal").onclick = (e) => {
+  reveal = !reveal;
+  e.currentTarget.setAttribute("aria-pressed", reveal);
+  render();
+};
+
+let rz = 0;
+addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(fit, 80); });
+setInterval(() => { if (mode === "demo") autoStep(); }, 130);
+setInterval(walkStep, 75);
+setInterval(render, 120); // torch flicker
+
+hud();
+log("展示模式：自動探索中");
+generate();
+</script>
+</body>
+</html>

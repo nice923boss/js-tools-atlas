@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ml5.js 示範：手部骨架、數手指與空中畫畫</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"click","needs":["camera"],"size":"約 9 MB","note":"handPose 模型在瀏覽器內執行，鏡頭影像不會上傳"}</script>
+<style>
+  .app { position: fixed; inset: 0; padding: 12px 14px 46px; }
+  .view {
+    position: relative; width: 100%; height: 100%; border-radius: 12px; overflow: hidden;
+    border: 1px solid var(--line); background: radial-gradient(circle at 50% 40%, #1d222c, #0c0e12);
+  }
+  .view canvas { display: block; }
+  /* the video only feeds the canvas and the model; keep it rendered but invisible */
+  #video { position: absolute; left: 0; top: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
+  .hud { position: absolute; left: 10px; top: 10px; display: flex; flex-wrap: wrap; gap: 6px; max-width: calc(100% - 130px); }
+  .chip {
+    padding: 4px 10px; border-radius: 999px; background: rgba(12, 14, 18, .72); backdrop-filter: blur(4px);
+    color: #ecebe6; font-size: 12.5px; white-space: nowrap; border: 1px solid rgba(255, 255, 255, .1);
+  }
+  .chip.pinch { display: none; border-color: #f72585; color: #ffd0e4; }
+  .chip.pinch.on { display: inline-block; }
+  .chip.fps { color: #9b998f; font-family: var(--mono); font-size: 11.5px; }
+  .chip.fps:empty { display: none; }
+  .total {
+    position: absolute; right: 10px; top: 10px; min-width: 96px; padding: 6px 12px 8px; border-radius: 12px;
+    background: rgba(12, 14, 18, .72); backdrop-filter: blur(4px); text-align: center; color: #ecebe6;
+    border: 1px solid rgba(255, 255, 255, .1);
+  }
+  .total b { display: block; font: 800 34px/1.1 var(--mono); color: #f7df1e; }
+  .total span { font-size: 12px; color: #9b998f; }
+  .legend {
+    position: absolute; right: 10px; bottom: 10px; display: flex; gap: 10px; padding: 4px 10px; border-radius: 999px;
+    background: rgba(12, 14, 18, .72); color: #c9c7bf; font-size: 11.5px;
+  }
+  .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: 0; }
+  .idle {
+    position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 4px;
+    color: #ecebe6; font-size: 15px; padding: 0 24px; pointer-events: none; text-shadow: 0 1px 8px rgba(0, 0, 0, .7);
+  }
+  .idle b { font-size: 46px; line-height: 1.1; animation: wave 1.6s ease-in-out infinite; transform-origin: 70% 80%; }
+  .idle small { color: #c9c7bf; font-size: 12.5px; }
+  .idle[hidden] { display: none; }
+  @keyframes wave { 0%, 100% { transform: rotate(0); } 30% { transform: rotate(14deg); } 60% { transform: rotate(-8deg); } }
+  @media (max-width: 520px) {
+    .app { padding: 10px 10px 46px; }
+    .legend { display: none; }
+    .total { min-width: 78px; padding: 4px 10px 6px; }
+    .total b { font-size: 26px; }
+    .hud { max-width: calc(100% - 100px); }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="view" id="view">
+    <video id="video" playsinline muted></video>
+    <div class="idle" id="idle"><b>🖐️</b>鏡頭畫面會顯示在這裡</div>
+    <div class="hud">
+      <span class="chip" id="chipHands">✋ 等待鏡頭</span>
+      <span class="chip pinch" id="chipPinch">🤏 捏合畫畫中</span>
+      <span class="chip fps" id="chipFps"></span>
+    </div>
+    <div class="total"><b id="total">0</b><span>根手指</span></div>
+    <div class="legend">
+      <span><i style="background:#f72585"></i>拇指</span><span><i style="background:#f7df1e"></i>食指</span>
+      <span><i style="background:#4cc9f0"></i>中指</span><span><i style="background:#7bd389"></i>無名指</span>
+      <span><i style="background:#9d8cff"></i>小指</span>
+    </div>
+  </div>
+</div>
+<div class="hint">張開手掌數手指，拇指和食指捏住可以在空中畫線</div>
+
+<script src="_shared/gate.js"></script>
+<script>
+const P5_URL = "https://cdn.jsdelivr.net/npm/p5@2.3.4/lib/p5.min.js";
+const ML5_URL = "https://cdn.jsdelivr.net/npm/ml5@1.4.0/dist/ml5.min.js";
+
+// MediaPipe hand landmark order: 0 wrist, then 4 joints per finger (thumb, index, middle, ring, pinky)
+const FINGERS = [
+  { chain: [0, 1, 2, 3, 4], color: "#f72585" },
+  { chain: [5, 6, 7, 8], color: "#f7df1e" },
+  { chain: [9, 10, 11, 12], color: "#4cc9f0" },
+  { chain: [13, 14, 15, 16], color: "#7bd389" },
+  { chain: [17, 18, 19, 20], color: "#9d8cff" },
+];
+const PALM = [0, 5, 9, 13, 17, 0];
+const TRAIL_COLORS = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#9d8cff"];
+const TRAIL_LIFE = 6000;           // ms a drawn point stays visible
+const PINCH_ON = 0.3, PINCH_OFF = 0.45; // thumb-index gap relative to palm length, with hysteresis
+const LOST_AFTER = 300;            // ms without detection before a hand is dropped
+
+const view = document.getElementById("view");
+const video = document.getElementById("video");
+const idleEl = document.getElementById("idle");
+const chipHands = document.getElementById("chipHands");
+const chipPinch = document.getElementById("chipPinch");
+const chipFps = document.getElementById("chipFps");
+const totalEl = document.getElementById("total");
+
+let tracks = new Map(); // hand key -> { target, shown, seen, fingers, pinching, stroke }
+let strokes = [];       // { id, color, pts: [{ x, y, t }] } in mirrored video pixels
+let strokeSeq = 0, handSeq = 0;
+let detecting = false, detections = 0, fpsStamp = performance.now();
+
+const alpha = (hex, a) => hex + Math.round(Math.max(0, Math.min(1, a)) * 255).toString(16).padStart(2, "0");
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+// ---------- hand analysis ----------
+function extendedFingers(pts) {
+  const fromWrist = (i) => dist(pts[i], pts[0]);
+  // fingers: tip farther from the wrist than the middle joint
+  const others = [[8, 6], [12, 10], [16, 14], [20, 18]].map(([tip, pip]) => fromWrist(tip) > fromWrist(pip) * 1.1);
+  // thumb: tip well away from the middle knuckle and farther from the pinky side than the index knuckle is
+  const palm = dist(pts[0], pts[9]);
+  const thumb = dist(pts[4], pts[9]) > palm * 0.6 && dist(pts[4], pts[17]) > dist(pts[5], pts[17]) * 1.1;
+  return [thumb, ...others];
+}
+
+function updatePinch(track, now) {
+  const pts = track.target;
+  const gap = dist(pts[4], pts[8]) / Math.max(1, dist(pts[0], pts[9]));
+  const pinching = track.pinching ? gap < PINCH_OFF : gap < PINCH_ON;
+  if (pinching && !track.pinching) {
+    const stroke = { id: ++strokeSeq, color: TRAIL_COLORS[strokeSeq % TRAIL_COLORS.length], pts: [] };
+    strokes = [...strokes, stroke];
+    track.strokeId = stroke.id; track.strokeColor = stroke.color;
+  }
+  if (pinching) {
+    const mid = { x: (pts[4].x + pts[8].x) / 2, y: (pts[4].y + pts[8].y) / 2, t: now };
+    strokes = strokes.map((s) => {
+      if (s.id !== track.strokeId) return s;
+      const last = s.pts[s.pts.length - 1];
+      return !last || dist(last, mid) > 2 ? { ...s, pts: [...s.pts, mid] } : s;
+    });
+  } else {
+    track.strokeId = null;
+  }
+  track.pinching = pinching;
+}
+
+function gotHands(results) {
+  const now = performance.now();
+  const vw = video.videoWidth;
+  const next = new Map();
+  results.forEach((hand) => {
+    // mirror x so the overlay matches the selfie view
+    const target = hand.keypoints.map((k) => ({ x: vw - k.x, y: k.y }));
+    // follow the same hand across frames by matching the nearest unused wrist
+    let key = null, best = dist(target[0], target[9]) * 1.5;
+    for (const [k, t] of tracks) {
+      const d = dist(t.target[0], target[0]);
+      if (!next.has(k) && d < best) { best = d; key = k; }
+    }
+    const prev = key && tracks.get(key);
+    if (!key) key = ++handSeq;
+    const track = prev
+      ? { ...prev, target, seen: now }
+      : { target, shown: target, seen: now, pinching: false, strokeId: null, strokeColor: null };
+    track.fingers = extendedFingers(target);
+    updatePinch(track, now);
+    next.set(key, track);
+  });
+  // keep briefly lost hands for a moment so a single missed frame does not flicker
+  for (const [key, track] of tracks) {
+    if (!next.has(key) && now - track.seen < LOST_AFTER) next.set(key, track);
+  }
+  tracks = next;
+  detections++;
+  updateHud();
+}
+
+function updateHud() {
+  const live = [...tracks.values()];
+  const total = live.reduce((n, t) => n + t.fingers.filter(Boolean).length, 0);
+  totalEl.textContent = total;
+  chipHands.textContent = live.length ? `✋ 偵測到 ${live.length} 隻手` : "✋ 尚未偵測到手";
+  chipPinch.classList.toggle("on", live.some((t) => t.pinching));
+  idleEl.hidden = live.length > 0;
+}
+
+// ---------- p5 sketch ----------
+function sketch(p) {
+  p.setup = () => {
+    p.createCanvas(view.clientWidth, view.clientHeight);
+    p.pixelDensity(Math.min(window.devicePixelRatio || 1, 2));
+    p.strokeJoin(p.ROUND);
+    p.strokeCap(p.ROUND);
+    p.textAlign(p.CENTER, p.CENTER);
+  };
+  p.windowResized = () => p.resizeCanvas(view.clientWidth, view.clientHeight);
+
+  p.draw = () => {
+    const W = p.width, H = p.height, now = performance.now();
+    p.clear();
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw || !vh) return;
+    // cover-fit the mirrored webcam frame
+    const sc = Math.max(W / vw, H / vh), ox = (W - vw * sc) / 2, oy = (H - vh * sc) / 2;
+    const ctx = p.drawingContext;
+    ctx.save();
+    ctx.translate(W, 0); ctx.scale(-1, 1);
+    ctx.drawImage(video, ox, oy, vw * sc, vh * sc);
+    ctx.restore();
+    p.noStroke(); p.fill(10, 12, 16, 120); p.rect(0, 0, W, H);
+
+    const toScreen = (pt) => ({ x: ox + pt.x * sc, y: oy + pt.y * sc });
+    drawTrails(p, now, toScreen);
+
+    for (const track of tracks.values()) {
+      // ease the drawn skeleton toward the latest detection for smooth motion between model frames
+      track.shown = track.shown.map((s, i) => ({ x: s.x + (track.target[i].x - s.x) * 0.45, y: s.y + (track.target[i].y - s.y) * 0.45 }));
+      drawHand(p, track, track.shown.map(toScreen), now);
+    }
+
+    const elapsed = now - fpsStamp;
+    if (detecting && elapsed > 1000) {
+      const rate = (detections * 1000) / elapsed;
+      chipFps.textContent = `偵測 ${rate < 10 ? rate.toFixed(1) : Math.round(rate)} fps`;
+      detections = 0; fpsStamp = now;
+    }
+  };
+}
+
+function drawTrails(p, now, toScreen) {
+  const live = new Set([...tracks.values()].map((t) => t.strokeId));
+  strokes = strokes
+    .map((s) => ({ ...s, pts: s.pts.filter((pt) => now - pt.t < TRAIL_LIFE) }))
+    .filter((s) => s.pts.length || live.has(s.id));
+  p.noFill();
+  for (const s of strokes) {
+    const pts = s.pts.map((pt) => ({ ...toScreen(pt), t: pt.t }));
+    for (let pass = 0; pass < 2; pass++) {
+      p.strokeWeight(pass ? 5 : 16);
+      for (let i = 1; i < pts.length; i++) {
+        const life = 1 - (now - pts[i].t) / TRAIL_LIFE;
+        p.stroke(alpha(s.color, pass ? life : life * 0.22));
+        p.line(pts[i - 1].x, pts[i - 1].y, pts[i].x, pts[i].y);
+      }
+    }
+  }
+}
+
+function drawHand(p, track, pts, now) {
+  const palm = dist(pts[0], pts[9]);
+  const w = Math.max(2, Math.min(8, palm * 0.055));
+  const ctx = p.drawingContext;
+
+  // palm fill and outline
+  p.noStroke(); p.fill(255, 255, 255, 22);
+  p.beginShape(); PALM.forEach((i) => p.vertex(pts[i].x, pts[i].y)); p.endShape(p.CLOSE);
+  p.noFill(); p.stroke(255, 255, 255, 120); p.strokeWeight(w * 0.7);
+  p.beginShape(); PALM.forEach((i) => p.vertex(pts[i].x, pts[i].y)); p.endShape();
+
+  // glowing finger bones, dimmed when the finger is folded
+  FINGERS.forEach((f, fi) => {
+    const on = track.fingers[fi];
+    ctx.shadowColor = f.color; ctx.shadowBlur = on ? 14 : 0;
+    p.stroke(alpha(f.color, on ? 1 : 0.45)); p.strokeWeight(on ? w : w * 0.7);
+    p.beginShape(); f.chain.forEach((i) => p.vertex(pts[i].x, pts[i].y)); p.endShape();
+  });
+  ctx.shadowBlur = 0;
+
+  // joints, with bigger fingertips
+  p.noStroke();
+  pts.forEach((pt, i) => {
+    const tip = i % 4 === 0 && i > 0;
+    const f = FINGERS[Math.max(0, Math.ceil(i / 4) - 1)];
+    if (tip) {
+      p.fill(alpha(f.color, track.fingers[FINGERS.indexOf(f)] ? 1 : 0.5)); p.circle(pt.x, pt.y, w * 3.2);
+      p.fill(255); p.circle(pt.x, pt.y, w * 1.3);
+    } else {
+      p.fill(236, 235, 230, 220); p.circle(pt.x, pt.y, w * 1.6);
+    }
+  });
+
+  // pinch cursor
+  if (track.pinching) {
+    const mx = (pts[4].x + pts[8].x) / 2, my = (pts[4].y + pts[8].y) / 2;
+    const pulse = 1 + 0.25 * Math.sin(now / 120);
+    p.noFill(); p.stroke(track.strokeColor || "#ffffff"); p.strokeWeight(2.5);
+    p.circle(mx, my, w * 6 * pulse);
+  }
+
+  // finger count badge in the middle of the palm
+  const n = track.fingers.filter(Boolean).length;
+  const r = Math.max(15, Math.min(26, palm * 0.2));
+  const c = [0, 5, 9, 13, 17].reduce((a, i) => ({ x: a.x + pts[i].x / 5, y: a.y + pts[i].y / 5 }), { x: 0, y: 0 });
+  const bx = Math.max(r + 4, Math.min(p.width - r - 4, c.x));
+  const by = Math.max(r + 4, Math.min(p.height - r - 4, c.y));
+  p.noStroke(); p.fill(12, 14, 18, 215); p.circle(bx, by, r * 2);
+  p.stroke("#f7df1e"); p.strokeWeight(2); p.noFill(); p.circle(bx, by, r * 2);
+  p.noStroke(); p.fill("#f7df1e"); p.textStyle(p.BOLD); p.textSize(r * 1.05); p.text(n, bx, by + 1);
+}
+
+// ---------- start ----------
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const el = document.createElement("script");
+    el.src = src;
+    el.onload = resolve;
+    el.onerror = () => reject(new Error("函式庫下載失敗"));
+    document.head.append(el);
+  });
+}
+function cameraError(err) {
+  const name = err && err.name;
+  if (name === "NotAllowedError" || name === "SecurityError") return "鏡頭權限被拒絕。請在瀏覽器網址列的權限設定允許使用鏡頭，再重新整理頁面";
+  if (name === "NotFoundError" || name === "OverconstrainedError") return "找不到鏡頭。這個示範需要網路攝影機，請接上鏡頭後重新整理";
+  if (name === "NotReadableError") return "鏡頭正被其他程式使用中，請關閉該程式後重新整理";
+  return `無法開啟鏡頭：${(err && err.message) || err}`;
+}
+
+(async () => {
+  await demoGate({
+    icon: "🖐️",
+    title: "用手勢在空中畫畫",
+    desc: "ml5.js 的 handPose 會從鏡頭畫面找出每隻手的 21 個關節點，p5.js 即時畫出骨架並數出伸出幾根手指；拇指和食指捏住就能在空中留下光軌。影像只在瀏覽器內處理，不會上傳。",
+    tags: ["需要鏡頭", "約 9 MB"],
+    button: "開啟鏡頭",
+  });
+  const s = demoStatus("開啟鏡頭…");
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    s.error("這個瀏覽器不支援鏡頭存取（需要 HTTPS 與較新的瀏覽器）");
+    idleEl.hidden = true; // the status card carries the message
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: "user" }, audio: false });
+    video.srcObject = stream;
+    await video.play();
+    // the detector reads the element's width/height attributes as the frame size
+    video.width = video.videoWidth;
+    video.height = video.videoHeight;
+    idleEl.hidden = true;
+    chipHands.textContent = "✋ 載入模型中";
+  } catch (err) {
+    console.error(err);
+    s.error(cameraError(err));
+    idleEl.hidden = true; // the status card carries the message
+    chipHands.textContent = "✋ 沒有鏡頭";
+    return;
+  }
+  try {
+    s.text("下載 p5.js…"); s.progress(0.15);
+    await loadScript(P5_URL);
+    new p5(sketch, view);
+    s.text("下載 ml5.js…"); s.progress(0.35);
+    await loadScript(ML5_URL);
+    s.text("載入 handPose 手部模型…"); s.progress(0.6);
+    const handPose = await ml5.handPose({ maxHands: 2, modelType: "full" });
+    if (handPose.ready) await handPose.ready;
+    handPose.detectStart(video, gotHands);
+    detecting = true; fpsStamp = performance.now();
+    s.done();
+  } catch (err) {
+    console.error(err);
+    s.error(`載入失敗：${err.message || err}，請確認網路連線後重新整理`);
+    chipHands.textContent = "✋ 模型載入失敗";
+    return;
+  }
+  idleEl.innerHTML = "<b>🖐️</b>把手舉到鏡頭前<small>可以同時偵測兩隻手</small>";
+  idleEl.hidden = tracks.size > 0;
+  if (!tracks.size) chipHands.textContent = "✋ 尚未偵測到手";
+})();
+</script>
+</body>
+</html>

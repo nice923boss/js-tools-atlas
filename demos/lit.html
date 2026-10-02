@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lit 示範：Web Components 智慧家庭面板</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"自訂元素的 reactive properties 與 Shadow DOM 樣式隔離"}</script>
+<style>
+  body { background: radial-gradient(60% 60% at 20% 0%, rgba(157,140,255,.14), transparent 60%), var(--bg); }
+  .app { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px 46px; }
+  header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: space-between; }
+  header h1 { margin: 0; font-size: 18px; }
+  header h1 small { font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 6px; }
+  .grid { flex: 1; min-height: 0; display: grid; gap: 10px; grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(0, 1.25fr); grid-template-rows: minmax(0, 1.1fr) minmax(0, 1fr); }
+  lamp-card, thermo-dial, power-meter { min-height: 0; }
+  .plain { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 16px; background: var(--bg-2); border: 1px solid var(--line); min-height: 0; }
+  .plain .title { margin: 0; font-size: 14px; }
+  .plain p { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
+  .plain button { align-self: flex-start; border: 0; border-radius: 999px; padding: 4px 14px; background: var(--c4); color: #0d1a10; font: 700 12px var(--font); cursor: pointer; }
+  .inspect { grid-column: span 2; display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 16px; background: #0b0d10; border: 1px solid var(--line); min-height: 0; overflow: hidden; }
+  .inspect h2 { margin: 0; font-size: 13px; color: var(--muted); font-weight: 600; }
+  .inspect pre { margin: 0; font: 11.5px/1.6 var(--mono); color: #8d8a80; white-space: pre-wrap; overflow: hidden; }
+  .inspect .tag { color: var(--c3); } .inspect .at { color: var(--c2); } .inspect .val { color: var(--c4); } .inspect .sr { color: var(--c6); }
+  .inspect .flash { background: rgba(247,223,30,.25); border-radius: 3px; transition: background .8s; }
+  #attack[aria-pressed="true"] { background: var(--c3); color: #fff; border-color: transparent; }
+  @media (max-width: 720px) {
+    .app { overflow-y: auto; }
+    .grid { flex: none; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: none; grid-auto-rows: auto; }
+    lamp-card { height: 190px; }
+    thermo-dial { height: 200px; }
+    power-meter { height: 150px; }
+    power-meter, .plain { grid-column: 1 / -1; }
+    .inspect { grid-column: 1 / -1; }
+    header h1 small { display: none; }
+  }
+</style>
+<!-- Page-level "attack" stylesheet, toggled on and off. Global selectors cannot reach into shadow roots. -->
+<style id="evil" media="not all">
+  h3, .title { font-family: "Comic Sans MS", "Brush Script MT", cursive !important; color: #39ff14 !important; transform: rotate(-5deg); text-decoration: wavy underline #f72585; }
+  button { background: repeating-linear-gradient(45deg, #ff2d2d 0 6px, #ffe600 6px 12px) !important; color: #000 !important; border-radius: 0 !important; }
+  .card, .plain { border: 3px dashed #ff3df2 !important; }
+  p { font-style: italic; letter-spacing: 3px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>🧩 Lit 智慧家庭面板<small>5 種自訂元素，各自封裝在 Shadow DOM</small></h1>
+    <button class="btn" id="attack" aria-pressed="false">💥 注入全域 CSS</button>
+  </header>
+  <div class="grid">
+    <lamp-card id="l1" name="客廳" icon="🛋️" hue="38" brightness="80" on></lamp-card>
+    <lamp-card id="l2" name="臥室" icon="🛏️" hue="280" brightness="45" on></lamp-card>
+    <lamp-card id="l3" name="書房" icon="📚" hue="190" brightness="60"></lamp-card>
+    <thermo-dial id="t1" value="24"></thermo-dial>
+    <power-meter id="pm"></power-meter>
+    <div class="plain"><h3 class="title">💡 一般 DOM 對照組</h3><p>同樣的 class 與標籤，但沒有 Shadow DOM，按上方按鈕注入全域 CSS 就會被改壞。</p><button>開關</button></div>
+    <section class="inspect"><h2>DOM 檢視：屬性跟著 reactive property 即時反映</h2><pre id="dom"></pre></section>
+  </div>
+</div>
+<div class="hint">拖曳亮度、切換開關，或注入全域 CSS 看樣式隔離</div>
+
+<script type="module">
+// Lit demo: five custom elements with reactive properties (reflected to attributes) and scoped Shadow DOM styles.
+import { LitElement, html, svg, css } from "https://cdn.jsdelivr.net/npm/lit@3.3.3/+esm";
+
+const shared = css`
+  :host { display: block; font-family: var(--font); color: var(--fg); }
+  .card { position: relative; box-sizing: border-box; height: 100%; padding: 12px 14px; border-radius: 16px; background: var(--bg-2); border: 1px solid var(--line); overflow: hidden; display: flex; flex-direction: column; gap: 8px; }
+  .title { margin: 0; font: 600 14px/1.3 var(--font); color: var(--fg); position: relative; }
+  button { font: 700 12px var(--font); cursor: pointer; border: 0; }
+`;
+
+class LampCard extends LitElement {
+  static properties = {
+    name: {}, icon: {},
+    hue: { type: Number, reflect: true },
+    brightness: { type: Number, reflect: true },
+    on: { type: Boolean, reflect: true },
+  };
+  static styles = [shared, css`
+    .card { --b: calc(var(--br) / 100); }
+    .glow { position: absolute; left: -30%; right: -30%; top: -50%; height: 150%; pointer-events: none; transition: opacity .3s;
+      background: radial-gradient(circle at 50% 42%, hsl(var(--h) 95% 60% / calc(var(--b) * .5)), transparent 58%); }
+    :host(:not([on])) .glow { opacity: 0; }
+    .bulb { position: relative; width: 50px; height: 50px; margin: 2px auto 0; border-radius: 50%; transition: all .3s;
+      background: radial-gradient(circle at 40% 35%, #fff, hsl(var(--h) 95% 62%) 70%);
+      box-shadow: 0 0 calc(var(--b) * 46px) hsl(var(--h) 95% 60%); opacity: calc(.35 + var(--b) * .65); }
+    :host(:not([on])) .bulb { background: #2a2d33; box-shadow: inset 0 -6px 12px rgba(0,0,0,.4); opacity: 1; }
+    .row { position: relative; display: flex; justify-content: space-between; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+    .toggle { padding: 4px 12px; border-radius: 999px; background: hsl(var(--h) 90% 62%); color: #111; }
+    :host(:not([on])) .toggle { background: #33363d; color: var(--muted); }
+    input { position: relative; width: 100%; margin: 0; accent-color: hsl(var(--h) 90% 62%); }
+    .hues { position: relative; display: flex; gap: 6px; justify-content: center; }
+    .hues button { width: 16px; height: 16px; padding: 0; border-radius: 50%; background: hsl(var(--hh) 90% 62%); box-shadow: 0 0 0 2px transparent; }
+    .hues button.sel { box-shadow: 0 0 0 2px var(--bg-2), 0 0 0 4px hsl(var(--hh) 90% 62%); }
+  `];
+  constructor() {
+    super();
+    this.name = "燈";
+    this.icon = "💡";
+    this.hue = 40;
+    this.brightness = 70;
+    this.on = false;
+  }
+  #changed() { this.dispatchEvent(new CustomEvent("lamp-change", { bubbles: true, composed: true })); }
+  updated(changed) { if (changed.has("on") || changed.has("brightness")) this.#changed(); }
+  render() {
+    return html`<div class="card" style="--h:${this.hue};--br:${this.brightness}">
+      <div class="glow"></div>
+      <div class="bulb"></div>
+      <h3 class="title">${this.icon} ${this.name}</h3>
+      <div class="row"><span>${this.on ? `亮度 ${this.brightness}%` : "已關閉"}</span>
+        <button class="toggle" @click=${() => { this.on = !this.on; }}>${this.on ? "開" : "關"}</button></div>
+      <input type="range" min="5" max="100" .value=${String(this.brightness)} @input=${(e) => { this.brightness = +e.target.value; this.on = true; }}>
+      <div class="hues">${[38, 0, 120, 190, 280].map((h) => html`<button class=${h === this.hue ? "sel" : ""} style="--hh:${h}" title="色相 ${h}" @click=${() => { this.hue = h; }}></button>`)}</div>
+    </div>`;
+  }
+}
+customElements.define("lamp-card", LampCard);
+
+const MIN = 16, MAX = 30;
+const polar = (cx, cy, r, deg) => [cx + r * Math.cos((deg - 90) * Math.PI / 180), cy + r * Math.sin((deg - 90) * Math.PI / 180)];
+function arc(cx, cy, r, a0, a1) {
+  const [x0, y0] = polar(cx, cy, r, a0), [x1, y1] = polar(cx, cy, r, a1);
+  return `M${x0} ${y0} A${r} ${r} 0 ${a1 - a0 > 180 ? 1 : 0} 1 ${x1} ${y1}`;
+}
+
+class ThermoDial extends LitElement {
+  static properties = { value: { type: Number, reflect: true } };
+  static styles = [shared, css`
+    svg { flex: 1; min-height: 0; width: 100%; }
+    .ctl { display: flex; justify-content: center; align-items: center; gap: 14px; font-size: 12px; color: var(--muted); }
+    .ctl button { width: 30px; height: 30px; border-radius: 50%; background: #2a2d33; color: var(--fg); font-size: 16px; }
+    :host { container-type: inline-size; }
+    @container (max-width: 200px) { .range { display: none; } }
+  `];
+  constructor() { super(); this.value = 24; }
+  render() {
+    const t = (this.value - MIN) / (MAX - MIN);
+    const hue = 200 - t * 185;
+    const mode = this.value <= 21 ? "❄️ 冷氣" : this.value >= 27 ? "🔥 暖氣" : "🍃 舒適";
+    return html`<div class="card">
+      <h3 class="title">🌡️ 空調溫度</h3>
+      <svg viewBox="0 0 160 130">
+        <path d=${arc(80, 74, 56, -135, 135)} fill="none" stroke="#2a2d33" stroke-width="12" stroke-linecap="round"/>
+        <path d=${arc(80, 74, 56, -135, -135 + 270 * Math.max(0.01, t))} fill="none" stroke="hsl(${hue} 90% 58%)" stroke-width="12" stroke-linecap="round" style="filter: drop-shadow(0 0 6px hsl(${hue} 90% 58%))"/>
+        ${svg`<text x="80" y="82" text-anchor="middle" fill="currentColor" font-size="30" font-weight="700" font-family="Consolas, monospace">${this.value}°</text>`}
+        <text x="80" y="102" text-anchor="middle" fill="#9b998f" font-size="11">${mode}</text>
+      </svg>
+      <div class="ctl"><button @click=${() => this.#step(-1)}>−</button><span class="range">${MIN}° ~ ${MAX}°</span><button @click=${() => this.#step(1)}>+</button></div>
+    </div>`;
+  }
+  #step(d) { this.value = Math.min(MAX, Math.max(MIN, this.value + d)); }
+}
+customElements.define("thermo-dial", ThermoDial);
+
+class PowerMeter extends LitElement {
+  static properties = { watts: { type: Number }, max: { type: Number }, lamps: { type: Number } };
+  static styles = [shared, css`
+    .big { font: 700 30px/1 var(--mono); color: var(--c1); }
+    .big small { font-size: 13px; color: var(--muted); margin-left: 4px; }
+    .segs { display: grid; grid-template-columns: repeat(18, 1fr); gap: 3px; height: 26px; margin-top: auto; }
+    .segs i { border-radius: 3px; background: #2a2d33; transition: background .3s, box-shadow .3s; }
+    .segs i.on { background: hsl(calc(120 - var(--k) * 120) 85% 55%); box-shadow: 0 0 8px hsl(calc(120 - var(--k) * 120) 85% 55% / .6); }
+    p { margin: 0; font-size: 12px; color: var(--muted); }
+  `];
+  constructor() { super(); this.watts = 0; this.max = 36; this.lamps = 0; }
+  render() {
+    const n = Math.round((this.watts / this.max) * 18);
+    return html`<div class="card">
+      <h3 class="title">⚡ 即時耗電</h3>
+      <div class="big">${this.watts.toFixed(1)}<small>W / ${this.max} W</small></div>
+      <p>${this.lamps} 盞燈開啟中，由父層把 .watts 屬性傳進來</p>
+      <div class="segs">${Array.from({ length: 18 }, (_, i) => html`<i class=${i < n ? "on" : ""} style="--k:${i / 17}"></i>`)}</div>
+    </div>`;
+  }
+}
+customElements.define("power-meter", PowerMeter);
+
+// ---------- page wiring ----------
+const lamps = [...document.querySelectorAll("lamp-card")];
+const meter = document.getElementById("pm");
+function updateMeter() {
+  const lit = lamps.filter((l) => l.on);
+  meter.watts = lit.reduce((s, l) => s + l.brightness * 0.12, 0);
+  meter.lamps = lit.length;
+}
+document.addEventListener("lamp-change", updateMeter);
+
+const watched = [...lamps, document.getElementById("t1")];
+const pre = document.getElementById("dom");
+let lastAttrs = new Map();
+function renderDom() {
+  const lines = watched.map((el) => {
+    const prev = lastAttrs.get(el) || {};
+    const now = {};
+    const attrs = [...el.attributes].filter((a) => a.name !== "id").map((a) => {
+      now[a.name] = a.value;
+      const changed = prev[a.name] !== a.value && Object.keys(prev).length;
+      const body = a.value === "" ? `<span class="at">${a.name}</span>` : `<span class="at">${a.name}</span>=<span class="val">"${a.value}"</span>`;
+      return changed ? `<span class="flash">${body}</span>` : body;
+    }).join(" ");
+    lastAttrs.set(el, now);
+    const tag = el.localName;
+    return `<span class="tag">&lt;${tag}</span> ${attrs}<span class="tag">&gt;</span> <span class="sr">#shadow-root (open)</span>`;
+  });
+  pre.innerHTML = lines.join("\n") + `\n<span class="tag">&lt;power-meter</span><span class="tag">&gt;</span>  .watts = <span class="val">${meter.watts.toFixed(1)}</span>`;
+  setTimeout(() => pre.querySelectorAll(".flash").forEach((f) => (f.style.background = "transparent")), 60);
+}
+const mo = new MutationObserver(renderDom);
+watched.forEach((el) => mo.observe(el, { attributes: true }));
+
+const evil = document.getElementById("evil");
+const attackBtn = document.getElementById("attack");
+function setAttack(onState) {
+  evil.media = onState ? "all" : "not all";
+  attackBtn.setAttribute("aria-pressed", onState);
+  attackBtn.textContent = onState ? "🧹 移除全域 CSS" : "💥 注入全域 CSS";
+}
+let auto = true;
+attackBtn.addEventListener("click", () => { auto = false; setAttack(evil.media !== "all"); });
+document.querySelector(".grid").addEventListener("pointerdown", () => { auto = false; });
+
+await Promise.all(watched.map((el) => el.updateComplete));
+updateMeter();
+await meter.updateComplete;
+renderDom();
+
+// Auto tour: set properties from outside (they re-render and reflect to attributes), then toggle the global CSS.
+const STEPS = [
+  () => { lamps[2].on = true; lamps[2].brightness = 90; },
+  () => { document.getElementById("t1").value = 19; lamps[0].hue = 0; },
+  () => setAttack(true),
+  () => { lamps[1].brightness = 100; lamps[0].on = false; },
+  () => setAttack(false),
+  () => { lamps[0].on = true; lamps[0].hue = 38; lamps[1].brightness = 45; lamps[2].on = false; document.getElementById("t1").value = 24; },
+];
+let step = 0;
+setInterval(() => {
+  if (!auto) return;
+  STEPS[step % STEPS.length]();
+  step += 1;
+}, 2200);
+</script>
+</body>
+</html>

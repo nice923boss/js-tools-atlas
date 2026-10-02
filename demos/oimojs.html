@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Oimo.js 示範：馬達轉輪與珠鏈</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"轉輪是 Oimo.js 的鉸鏈關節加馬達，珠鏈是一節一節的球窩關節，物理全部由 Oimo.js 1.0.9 計算，3D 繪圖使用 three.js 0.186.1"}</script>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"}}</script>
+<script src="https://cdn.jsdelivr.net/npm/oimo@1.0.9/build/oimo.min.js"></script>
+<style>
+  body { background: radial-gradient(circle at 50% 30%, #1f2034 0%, #0b0e14 75%); }
+  #stage { position: fixed; inset: 0; touch-action: none; }
+  #stage canvas { display: block; }
+  .heading { position: fixed; left: 16px; top: 14px; z-index: 40; pointer-events: none; }
+  .heading h1 { margin: 0; font-size: clamp(18px, 4vw, 26px); letter-spacing: .06em; }
+  .heading p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+  .stats { position: fixed; right: 12px; bottom: 12px; z-index: 40; padding: 5px 10px; border-radius: 999px; font-size: 12px; pointer-events: none; }
+  @media (max-width: 600px) { .heading { top: 58px; } .heading p { max-width: 230px; } .stats { bottom: 46px; } }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div class="heading"><h1>馬達轉輪與珠鏈</h1><p>鉸鏈關節加馬達帶動轉輪擊球，球窩關節串成 10 條珠鏈</p></div>
+<div class="controls">
+  <button class="btn primary" id="rain">球雨</button>
+  <button class="btn" id="reverse">馬達反轉</button>
+  <button class="btn" id="reset">重置</button>
+  <button class="btn" id="auto" aria-pressed="true">自動</button>
+</div>
+<div class="panel stats mono" id="stats">載入中</div>
+<div class="hint">點珠鏈或轉輪朝該處射球・拖曳旋轉視角</div>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+const STEP = 1 / 60;
+const AXLE_Y = 4.6, ARM = 7, ARM_T = 0.36, ARM_D = 1.5;
+const MOTOR_SPEED = 2.2, MOTOR_FORCE = 400;
+const CHAIN_X = 6.4, BEAM_Y = 8.2, LINKS = 10, GAP = 0.42, BEAD_R = 0.15, WEIGHT_R = 0.34;
+const BALLS = 70, BALL_R = 0.28;
+const PALETTE = [0xf7df1e, 0x4cc9f0, 0xf72585, 0x7bd389, 0xff8c42, 0x9d8cff];
+
+// --- three.js scene ---------------------------------------------------------------------
+const stage = document.getElementById("stage");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+stage.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0e1019);
+scene.fog = new THREE.Fog(0x0e1019, 24, 52);
+const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 200);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.minDistance = 7;
+controls.maxDistance = 36;
+controls.enablePan = false;
+controls.autoRotateSpeed = 0.6;
+
+scene.add(new THREE.HemisphereLight(0xe6ecff, 0x1c1f2c, 1.4));
+const sun = new THREE.DirectionalLight(0xfff2dc, 2.5);
+sun.position.set(7, 15, 10);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -11, right: 11, top: 13, bottom: -8, near: 1, far: 50 });
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(160, 160), new THREE.MeshStandardMaterial({ color: 0x1b1f2e, roughness: 0.95 }));
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+const grid = new THREE.GridHelper(36, 36, 0x34395a, 0x252a40);
+grid.position.y = 0.003;
+scene.add(grid);
+
+// --- Oimo world -------------------------------------------------------------------------
+const world = new OIMO.World({ timestep: STEP, iterations: 10, broadphase: 2, worldscale: 1, random: true, info: false, gravity: [0, -9.8, 0] });
+
+const frameMat = new THREE.MeshStandardMaterial({ color: 0x3a4362, roughness: 0.5, metalness: 0.4 });
+function addStatic(size, pos, mat) {
+  const body = world.add({ type: "box", size, pos, move: false, friction: 0.6 });
+  if (mat) {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(...size), mat);
+    mesh.position.set(...pos);
+    mesh.castShadow = mesh.receiveShadow = true;
+    scene.add(mesh);
+  }
+  return body;
+}
+addStatic([60, 1, 60], [0, -0.5, 0], null);
+
+// Wheel: two crossed boxes in one rigid body, hinged to a post behind it, driven by the hinge motor.
+const post = addStatic([0.5, AXLE_Y, 0.4], [0, AXLE_Y / 2, -1.3], frameMat);
+const wheel = world.add({ type: ["box", "box"], size: [ARM, ARM_T, ARM_D, ARM_T, ARM, ARM_D], pos: [0, AXLE_Y, 0], posShape: [0, 0, 0, 0, 0, 0], move: true, density: 1, friction: 0.4, restitution: 0.3, neverSleep: true });
+const hinge = world.add({ type: "jointHinge", body1: post, body2: wheel, pos1: [0, AXLE_Y / 2, 1.3], pos2: [0, 0, 0], axe1: [0, 0, 1], axe2: [0, 0, 1], motor: [MOTOR_SPEED, MOTOR_FORCE] });
+let motorDir = 1;
+
+const wheelMesh = new THREE.Group();
+for (const [w, h, color] of [[ARM, ARM_T, 0xf7df1e], [ARM_T, ARM, 0x4cc9f0]]) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, ARM_D), new THREE.MeshStandardMaterial({ color, roughness: 0.35, metalness: 0.15 }));
+  m.castShadow = m.receiveShadow = true;
+  wheelMesh.add(m);
+}
+const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, ARM_D + 0.2, 32), new THREE.MeshStandardMaterial({ color: 0xf72585, roughness: 0.3, metalness: 0.3 }));
+hub.rotation.x = Math.PI / 2;
+hub.castShadow = true;
+wheelMesh.add(hub);
+scene.add(wheelMesh);
+
+// Bead chains: every bead is a sphere joined to the one above with a ball-and-socket joint.
+const chains = [];
+const beadCount = 2 * 5 * (LINKS - 1);
+const beadMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(BEAD_R, 16, 10), new THREE.MeshStandardMaterial({ color: 0xdfe6f5, roughness: 0.3, metalness: 0.6 }), beadCount);
+beadMesh.castShadow = true;
+beadMesh.frustumCulled = false; // instances move far from their initial bounds
+scene.add(beadMesh);
+const weightGeo = new THREE.SphereGeometry(WEIGHT_R, 28, 18);
+let jointCount = 1;
+for (const side of [-1, 1]) {
+  const bx = side * CHAIN_X;
+  const beam = addStatic([0.4, 0.4, 5.8], [bx, BEAM_Y, 0], frameMat);
+  for (const z of [-2.9, 2.9]) addStatic([0.3, BEAM_Y - 0.2, 0.3], [bx, (BEAM_Y - 0.2) / 2, z], frameMat);
+  for (let c = 0; c < 5; c++) {
+    const z = -2 + c;
+    const nodes = [];
+    let prev = beam, prevAnchor = [0, -0.2, z], y = BEAM_Y - 0.2;
+    for (let k = 0; k < LINKS; k++) {
+      const last = k === LINKS - 1;
+      const r = last ? WEIGHT_R : BEAD_R;
+      const top = last ? r + 0.06 : GAP / 2;
+      y -= (k === 0 ? 0 : GAP / 2) + top;
+      const body = world.add({ type: "sphere", size: [r], pos: [bx, y, z], move: true, density: last ? 3 : 1, friction: 0.4, restitution: 0.2 });
+      world.add({ type: "jointBall", body1: prev, body2: body, pos1: prevAnchor, pos2: [0, top, 0] });
+      jointCount++;
+      nodes.push(body);
+      prev = body;
+      prevAnchor = [0, -GAP / 2, 0];
+    }
+    const color = PALETTE[(c + (side > 0 ? 3 : 0)) % PALETTE.length];
+    const weight = new THREE.Mesh(weightGeo, new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.25, roughness: 0.25 }));
+    weight.castShadow = true;
+    scene.add(weight);
+    chains.push({ nodes, weight, anchor: new THREE.Vector3(bx, BEAM_Y - 0.2, z), home: nodes.map((n) => [n.position.x, n.position.y, n.position.z]) });
+  }
+}
+// String lines through every chain, redrawn each frame.
+const linePos = new Float32Array(chains.length * LINKS * 2 * 3);
+const lineGeo = new THREE.BufferGeometry();
+lineGeo.setAttribute("position", new THREE.BufferAttribute(linePos, 3));
+scene.add(new THREE.LineSegments(lineGeo, new THREE.LineBasicMaterial({ color: 0x8d97b5 })));
+
+// Balls
+const ballMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(BALL_R, 20, 14), new THREE.MeshStandardMaterial({ roughness: 0.3, metalness: 0.1 }), BALLS);
+ballMesh.castShadow = true;
+ballMesh.frustumCulled = false;
+scene.add(ballMesh);
+const balls = [];
+const col = new THREE.Color();
+for (let i = 0; i < BALLS; i++) {
+  const body = world.add({ type: "sphere", size: [BALL_R], pos: [0, -50 - i, 0], move: true, density: 1, friction: 0.4, restitution: 0.45 });
+  ballMesh.setColorAt(i, col.setHex(PALETTE[i % PALETTE.length]));
+  balls.push({ body, rest: 0 });
+}
+function dropFromTop(b, y) {
+  b.body.resetPosition((Math.random() - 0.5) * 5.4, y, (Math.random() - 0.5) * 1.2);
+  b.rest = 0;
+}
+function rain() { balls.forEach((b, i) => dropFromTop(b, 9 + i * 0.22)); }
+
+// --- input & UI -------------------------------------------------------------------------
+let auto = true, simTime = 0, nextShot = 1.5, nextFlip = 8, shotIdx = 0;
+const autoBtn = document.getElementById("auto");
+const setAuto = (on) => { auto = on; autoBtn.setAttribute("aria-pressed", String(on)); controls.autoRotate = on; };
+autoBtn.addEventListener("click", () => setAuto(!auto));
+function reverseMotor() {
+  motorDir = -motorDir;
+  hinge.limitMotor.setMotor(MOTOR_SPEED * motorDir, MOTOR_FORCE);
+  wheel.awake();
+}
+document.getElementById("reverse").addEventListener("click", reverseMotor);
+document.getElementById("rain").addEventListener("click", rain);
+document.getElementById("reset").addEventListener("click", resetAll);
+
+// Shooting reuses the ball that has waited longest, so the body count stays fixed.
+function shootAt(target) {
+  const b = balls[shotIdx++ % BALLS];
+  const from = camera.position.clone().lerp(target, 0.25);
+  const dir = target.clone().sub(from);
+  const t = Math.max(0.3, dir.length() / 18);
+  b.body.resetPosition(from.x, from.y, from.z);
+  b.body.linearVelocity.set(dir.x / t, dir.y / t + 4.9 * t, dir.z / t);
+  b.rest = 0;
+}
+
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+let down = null;
+renderer.domElement.addEventListener("pointerdown", (e) => { down = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener("pointerup", (e) => {
+  if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return;
+  ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const hit = ray.intersectObjects([beadMesh, wheelMesh, ...chains.map((c) => c.weight), ground])[0];
+  shootAt(hit ? hit.point : ray.ray.at(18, new THREE.Vector3()));
+  setAuto(false);
+});
+
+function resetAll() {
+  for (const c of chains) c.nodes.forEach((n, k) => { n.resetPosition(...c.home[k]); n.resetRotation(0, 0, 0); });
+  wheel.resetPosition(0, AXLE_Y, 0);
+  wheel.resetRotation(0, 0, 0);
+  if (motorDir < 0) reverseMotor();
+  rain();
+}
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  const dist = 19 / Math.min(1, camera.aspect * 0.9);
+  const dir = camera.position.clone().sub(controls.target);
+  if (dir.lengthSq() < 0.01) dir.set(0.3, 0.2, 1);
+  camera.position.copy(controls.target).addScaledVector(dir.normalize(), dist);
+  controls.update();
+}
+
+// --- loop -------------------------------------------------------------------------------
+const statsEl = document.getElementById("stats");
+const m4 = new THREE.Matrix4(), v3 = new THREE.Vector3(), q4 = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1);
+let last = performance.now(), acc = 0, frameNo = 0;
+function frame(now) {
+  acc += Math.min(0.1, (now - last) / 1000);
+  last = now;
+  let n = 0;
+  while (acc >= STEP && n < 2) { world.step(); acc -= STEP; simTime += STEP; n++; }
+  if (n === 2) acc = 0;
+
+  if (auto) {
+    if (simTime > nextShot) {
+      const c = chains[(Math.random() * chains.length) | 0];
+      shootAt(new THREE.Vector3().copy(c.weight.position).add(new THREE.Vector3(0, 1.2, 0)));
+      nextShot = simTime + 1.4;
+    }
+    if (simTime > nextFlip) { reverseMotor(); nextFlip = simTime + 8; }
+  }
+
+  // Balls resting on the floor (or lost far away) rain down again from above the wheel.
+  for (let i = 0; i < BALLS; i++) {
+    const b = balls[i], p = b.body.getPosition();
+    if (p.y < BALL_R + 0.15) b.rest += 1 / 60; else b.rest = 0;
+    if (b.rest > 1.2 || Math.abs(p.x) > 30 || Math.abs(p.z) > 30 || p.y < -5) dropFromTop(b, 10 + Math.random() * 3);
+    ballMesh.setMatrixAt(i, m4.compose(v3.set(p.x, p.y, p.z), q4.set(0, 0, 0, 1), ONE));
+  }
+  ballMesh.instanceMatrix.needsUpdate = true;
+
+  const wp = wheel.getPosition(), wq = wheel.getQuaternion();
+  wheelMesh.position.set(wp.x, wp.y, wp.z);
+  wheelMesh.quaternion.set(wq.x, wq.y, wq.z, wq.w);
+
+  let bi = 0, li = 0;
+  for (const c of chains) {
+    let px = c.anchor.x, py = c.anchor.y, pz = c.anchor.z;
+    c.nodes.forEach((node, k) => {
+      const p = node.getPosition();
+      linePos[li++] = px; linePos[li++] = py; linePos[li++] = pz;
+      linePos[li++] = p.x; linePos[li++] = p.y; linePos[li++] = p.z;
+      px = p.x; py = p.y; pz = p.z;
+      if (k < LINKS - 1) beadMesh.setMatrixAt(bi++, m4.compose(v3.set(p.x, p.y, p.z), q4.set(0, 0, 0, 1), ONE));
+      else c.weight.position.set(p.x, p.y, p.z);
+    });
+  }
+  beadMesh.instanceMatrix.needsUpdate = true;
+  lineGeo.attributes.position.needsUpdate = true;
+
+  if (frameNo++ % 10 === 0) {
+    statsEl.textContent = "剛體 " + world.numRigidBodies + " 個・關節 " + jointCount + " 個・馬達 " + (motorDir > 0 ? "+" : "-") + MOTOR_SPEED.toFixed(1) + " rad/s";
+  }
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+
+controls.target.set(0, 4.6, 0);
+camera.position.set(5, 8.5, 19);
+addEventListener("resize", resize);
+resize();
+setAuto(true);
+rain();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

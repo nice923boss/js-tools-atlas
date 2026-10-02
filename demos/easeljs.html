@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EaselJS 示範：Flash 風互動太陽系課件</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body { background: radial-gradient(80% 80% at 50% 50%, #131a2e, #06070c); }
+  #c { position: fixed; inset: 0; display: block; }
+  .sep { width: 1px; background: var(--line); margin: 0 2px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="controls">
+  <button class="btn" data-speed="0.3">慢速</button>
+  <button class="btn" data-speed="1" aria-pressed="true">正常</button>
+  <button class="btn" data-speed="4">快轉</button>
+  <span class="sep"></span>
+  <button class="btn" id="labels" aria-pressed="true">名稱</button>
+</div>
+<div class="hint">滑過行星放大・點擊行星或月球看小卡</div>
+
+<script src="https://cdn.jsdelivr.net/npm/easeljs@1.0.2/lib/easeljs.min.js"></script>
+<script>
+// Classic display-list scene: stage > system > orbit pivot (rotates) > planet (counter-rotates) > moon pivot > moon.
+// Rotating a parent container carries all of its children, which is the core idea of EaselJS / Flash.
+const FONT = "'Microsoft JhengHei', 'PingFang TC', 'Noto Sans TC', sans-serif";
+const TILT = 0.58;
+const PLANETS = [
+  { id: "mercury", name: "水星", r: 0.2, size: 5, colors: ["#e8e2d6", "#9a8f80"], period: 88, dist: "0.39 AU", fact: "白天約 430°C，夜晚降到零下 180°C。" },
+  { id: "venus", name: "金星", r: 0.32, size: 8, colors: ["#ffe7a8", "#d49a3a"], period: 225, dist: "0.72 AU", fact: "自轉方向和多數行星相反。" },
+  { id: "earth", name: "地球", r: 0.46, size: 9, colors: ["#9be7ff", "#1d6fd1"], period: 365, dist: "1 AU", fact: "目前已知唯一有生命的星球。", moon: true },
+  { id: "mars", name: "火星", r: 0.6, size: 7, colors: ["#ffb38a", "#c2452d"], period: 687, dist: "1.52 AU", fact: "有太陽系最高的火山：奧林帕斯山。" },
+  { id: "jupiter", name: "木星", r: 0.78, size: 17, colors: ["#ffe2bf", "#c98b4f"], period: 4333, dist: "5.2 AU", fact: "大紅斑是一個比地球還大的風暴。", bands: true },
+  { id: "saturn", name: "土星", r: 0.96, size: 13, colors: ["#fff1c4", "#d6b16a"], period: 10759, dist: "9.5 AU", fact: "平均密度比水還低。", ring: true },
+];
+const SUN = { name: "太陽", colors: ["#fffbe0", "#f7df1e", "#ff8c42"], period: 0, dist: "太陽系中心", fact: "質量約佔整個太陽系的 99.8%。", path: "stage › 太陽系 › 太陽" };
+const MOON = { name: "月球", colors: ["#ffffff", "#9aa0aa"], period: 27.3, dist: "距地球約 38 萬公里", fact: "地球唯一的天然衛星，總是同一面朝向地球。", path: "stage › 太陽系 › 地球軌道 › 地球 › 月球軌道 › 月球" };
+
+const canvas = document.getElementById("c");
+const stage = new createjs.Stage(canvas);
+stage.enableMouseOver(20);
+const dpr = Math.min(2, window.devicePixelRatio || 1);
+
+let speed = 1, showLabels = true, selected = null;
+const bodies = []; // { data, pivot, holder, body, label, hover }
+let system, stars, orbits, card, selRing, sunGroup, moonPivot, moonBody, moonOrbit;
+
+function ball(colors, size) {
+  const s = new createjs.Shape();
+  const ratios = colors.map((c, i) => i / (colors.length - 1));
+  s.graphics.beginRadialGradientFill(colors, ratios, -size * 0.35, -size * 0.35, 0, 0, 0, size).drawCircle(0, 0, size);
+  return s;
+}
+
+function makeLabel(text) {
+  const t = new createjs.Text(text, "bold 12px " + FONT, "#e8e8ea");
+  t.textAlign = "center";
+  t.textBaseline = "top";
+  t.shadow = new createjs.Shadow("rgba(0,0,0,0.8)", 0, 1, 3);
+  return t;
+}
+
+function hoverable(target, rec) {
+  target.cursor = "pointer";
+  target.on("rollover", () => { rec.hover = 1; });
+  target.on("rollout", () => { rec.hover = 0; });
+  target.on("click", () => select(rec));
+}
+
+function build() {
+  stage.removeAllChildren();
+  bodies.length = 0;
+  const w = innerWidth, h = innerHeight;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  canvas.style.width = w + "px"; canvas.style.height = h + "px";
+  stage.scaleX = stage.scaleY = dpr;
+
+  // Background stars, cached into a single bitmap for speed
+  stars = new createjs.Shape();
+  for (let i = 0; i < 220; i++) {
+    const a = 0.25 + Math.random() * 0.6;
+    stars.graphics.beginFill(`rgba(255,255,255,${a.toFixed(2)})`).drawCircle(Math.random() * w, Math.random() * h, Math.random() < 0.08 ? 1.4 : 0.7);
+  }
+  stars.cache(0, 0, w, h);
+  stage.addChild(stars);
+
+  const narrow = w < 560;
+  const R = Math.min(w * (narrow ? 0.41 : 0.47), (h - 120) / (TILT * 2) * 0.96);
+  const k = Math.max(0.75, Math.min(1.35, R / 300));
+  system = new createjs.Container();
+  system.x = w / 2;
+  system.y = narrow ? h * 0.4 : h * 0.53;
+  stage.addChild(system);
+
+  // Orbit rings live in a squashed container so they read as a tilted plane
+  orbits = new createjs.Shape();
+  orbits.scaleY = TILT;
+  for (const p of PLANETS) {
+    orbits.graphics.setStrokeStyle(1 / TILT * 0.8).setStrokeDash([4, 6]).beginStroke("rgba(157,140,255,0.35)").drawCircle(0, 0, p.r * R).endStroke();
+  }
+  system.addChild(orbits);
+
+  // Sun with layered glow
+  sunGroup = new createjs.Container();
+  const sunR = 26 * k;
+  for (let i = 4; i >= 1; i--) {
+    const g = new createjs.Shape();
+    g.graphics.beginFill(`rgba(255,170,60,${0.05 * (5 - i)})`).drawCircle(0, 0, sunR * (1 + i * 0.35));
+    sunGroup.addChild(g);
+  }
+  const sunBody = ball(SUN.colors, sunR);
+  sunBody.shadow = new createjs.Shadow("#ff8c42", 0, 0, 30);
+  sunGroup.addChild(sunBody);
+  const sunRec = { data: SUN, holder: sunGroup, body: sunBody, hover: 0, scale: 1, size: sunR };
+  hoverable(sunGroup, sunRec);
+  system.addChild(sunGroup);
+
+  for (const p of PLANETS) {
+    // Pivot is squashed by TILT and rotated every tick; holder undoes both so the planet stays round
+    const plane = new createjs.Container();
+    plane.scaleY = TILT;
+    const pivot = new createjs.Container();
+    pivot.rotation = Math.random() * 360;
+    const holder = new createjs.Container();
+    holder.x = p.r * R;
+    holder.scaleY = 1 / TILT;
+    const size = p.size * k;
+    if (p.ring) {
+      const back = new createjs.Shape();
+      back.graphics.setStrokeStyle(3 * k).beginStroke("rgba(240,220,170,0.55)").drawEllipse(-size * 2.1, -size * 0.55, size * 4.2, size * 1.1);
+      back.rotation = -18;
+      holder.addChild(back);
+    }
+    const body = ball(p.colors, size);
+    body.shadow = new createjs.Shadow(p.colors[1], 0, 0, 12);
+    holder.addChild(body);
+    if (p.bands) {
+      const bands = new createjs.Shape();
+      bands.graphics.beginFill("rgba(150,90,50,0.35)").drawRect(-size, -size * 0.35, size * 2, size * 0.18)
+        .drawRect(-size, size * 0.15, size * 2, size * 0.14)
+        .beginFill("rgba(200,80,60,0.7)").drawEllipse(size * 0.15, size * 0.32, size * 0.42, size * 0.22);
+      const m = new createjs.Shape();
+      m.graphics.beginFill("#000").drawCircle(0, 0, size);
+      bands.mask = m;
+      holder.addChild(bands);
+    }
+    if (p.ring) {
+      const front = new createjs.Shape();
+      front.graphics.setStrokeStyle(3 * k).beginStroke("rgba(255,236,190,0.85)").arc(0, 0, size * 2.1, 0, Math.PI);
+      front.scaleY = 0.26;
+      front.rotation = -18;
+      holder.addChild(front);
+    }
+    const label = makeLabel(p.name);
+    label.y = size + 5;
+    holder.addChild(label);
+    const rec = { data: { ...p, path: `stage › 太陽系 › ${p.name}軌道 › ${p.name}` }, pivot, holder, body, label, hover: 0, scale: 1, size, omega: 0.9 * Math.pow(365 / p.period, 0.55) };
+    hoverable(body, rec);
+
+    if (p.moon) {
+      moonOrbit = new createjs.Container();
+      moonOrbit.scaleY = TILT;
+      moonPivot = new createjs.Container();
+      const ring = new createjs.Shape();
+      ring.graphics.setStrokeStyle(1).beginStroke("rgba(255,255,255,0.18)").drawCircle(0, 0, size * 2.4);
+      moonOrbit.addChild(ring);
+      const mHolder = new createjs.Container();
+      mHolder.x = size * 2.4;
+      mHolder.scaleY = 1 / TILT;
+      const moonSize = Math.max(2.5, size * 0.32);
+      moonBody = ball(MOON.colors, moonSize);
+      mHolder.addChild(moonBody);
+      moonPivot.addChild(mHolder);
+      moonOrbit.addChild(moonPivot);
+      holder.addChildAt(moonOrbit, 0);
+      const mRec = { data: MOON, holder: mHolder, body: moonBody, hover: 0, scale: 1, size: moonSize };
+      hoverable(moonBody, mRec);
+      rec.moonHolder = mHolder;
+      bodies.push(mRec);
+    }
+    pivot.addChild(holder);
+    plane.addChild(pivot);
+    system.addChild(plane);
+    bodies.push(rec);
+  }
+  bodies.push(sunRec);
+
+  selRing = new createjs.Shape();
+  stage.addChild(selRing);
+
+  buildCard(narrow);
+  for (const b of bodies) if (b.label) b.label.visible = showLabels;
+  const again = selected ? bodies.find((b) => b.data.name === selected.data.name) : bodies.find((b) => b.data.name === "地球");
+  select(again);
+}
+
+function buildCard(narrow) {
+  card = new createjs.Container();
+  const cw = narrow ? Math.min(innerWidth - 24, 300) : 250;
+  const bg = new createjs.Shape();
+  card.addChild(bg);
+  const icon = new createjs.Shape();
+  icon.x = 30; icon.y = 32;
+  const title = new createjs.Text("", "bold 18px " + FONT, "#ffffff");
+  title.x = 56; title.y = 20;
+  const meta = new createjs.Text("", "12px " + FONT, "#a9abb3");
+  meta.x = 56; meta.y = 44;
+  const fact = new createjs.Text("", "13px " + FONT, "#e8e8ea");
+  fact.x = 16; fact.y = 70; fact.lineWidth = cw - 32; fact.lineHeight = 19;
+  const path = new createjs.Text("", "11px Consolas, monospace", "#f7df1e");
+  path.x = 16; path.lineWidth = cw - 32; path.lineHeight = 15;
+  card.addChild(icon, title, meta, fact, path);
+  card.set({ x: 12, y: 12, alpha: 0, cw, narrow, bg, icon, title, meta, fact, path });
+  stage.addChild(card);
+}
+
+function select(rec) {
+  if (!rec) return;
+  selected = rec;
+  const d = rec.data;
+  const cw = card.cw;
+  card.icon.graphics.clear().beginRadialGradientFill(d.colors.slice(0, 2), [0, 1], -5, -5, 0, 0, 0, 14).drawCircle(0, 0, 14);
+  card.title.text = d.name;
+  card.title.color = d.colors[d.colors.length > 2 ? 1 : 0];
+  card.meta.text = d.period ? `公轉 ${d.period >= 1000 ? (d.period / 365).toFixed(1) + " 年" : d.period + " 天"}・${d.dist}` : d.dist;
+  card.fact.text = d.fact;
+  card.path.text = "顯示清單：" + d.path;
+  const fh = card.fact.getMeasuredHeight();
+  card.path.y = card.fact.y + fh + 10;
+  const ch = card.path.y + card.path.getMeasuredHeight() + 14;
+  card.bg.graphics.clear().beginFill("rgba(18,20,27,0.88)").setStrokeStyle(1).beginStroke("rgba(255,255,255,0.12)").drawRoundRect(0, 0, cw, ch, 12)
+    .endStroke().beginFill(d.colors[d.colors.length > 2 ? 1 : 0]).drawRoundRect(0, 0, 4, ch, 2);
+  card.y = card.narrow ? innerHeight - 56 - ch : 12;
+  card.alpha = 0;
+  card.offset = 14;
+}
+
+createjs.Ticker.timingMode = createjs.Ticker.RAF;
+createjs.Ticker.on("tick", (e) => {
+  const dt = Math.min(50, e.delta) / 1000;
+  for (const b of bodies) {
+    if (b.pivot) {
+      b.pivot.rotation += b.omega * speed * dt * 20;
+      // Counter-rotate so the planet, its label and ring stay upright
+      b.holder.rotation = -b.pivot.rotation;
+    }
+    const target = b.hover ? 1.35 : 1;
+    b.scale += (target - b.scale) * 0.2;
+    b.body.scaleX = b.body.scaleY = b.scale;
+  }
+  if (moonPivot) {
+    moonPivot.rotation += 120 * speed * dt;
+    moonPivot.children[0].rotation = -moonPivot.rotation;
+  }
+  // Selection ring follows the selected body in global space
+  if (selected) {
+    const pt = selected.body.localToGlobal(0, 0);
+    const r = selected.size * selected.scale + 6;
+    selRing.x = pt.x / dpr; selRing.y = pt.y / dpr;
+    selRing.rotation += 40 * dt;
+    selRing.graphics.clear().setStrokeStyle(1.5).setStrokeDash([5, 4]).beginStroke("#f7df1e").drawCircle(0, 0, r);
+  }
+  card.alpha += (1 - card.alpha) * 0.15;
+  card.offset = (card.offset || 0) * 0.85;
+  card.x = 12 + card.offset;
+  stage.update(e);
+});
+
+document.querySelectorAll("[data-speed]").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll("[data-speed]").forEach((x) => x.setAttribute("aria-pressed", x === b));
+  speed = Number(b.dataset.speed);
+}));
+const labelsBtn = document.getElementById("labels");
+labelsBtn.addEventListener("click", () => {
+  showLabels = !showLabels;
+  labelsBtn.setAttribute("aria-pressed", showLabels);
+  for (const b of bodies) if (b.label) b.label.visible = showLabels;
+});
+let rt;
+addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(build, 120); });
+build();
+</script>
+</body>
+</html>

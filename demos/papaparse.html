@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Papa Parse 示範：CSV 解析與欄位型別推斷</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  .app { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(250px, 38%) 1fr; }
+  .left { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: var(--bg-2); padding: 12px 12px 48px; gap: 8px; }
+  .left h1 { font-size: 16px; margin: 0; }
+  .left h1 b { color: var(--c4); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips .btn { padding: 6px 10px; font-size: 12px; }
+  .chips .btn[aria-pressed="true"] { background: var(--c4); color: #fff; border-color: transparent; }
+  textarea { flex: 1; min-height: 80px; resize: none; width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg);
+    font: 12px/1.55 var(--mono); outline: none; white-space: pre; overflow: auto; }
+  textarea:focus { border-color: var(--c4); }
+  textarea.drag { border-color: var(--c4); box-shadow: 0 0 0 3px rgba(47, 158, 85, .2); }
+  .opts { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13px; }
+  .opts input { accent-color: var(--c4); }
+  .right { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .stats { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  .stat { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: var(--bg-2); border: 1px solid var(--line); }
+  .stat b { font-family: var(--mono); }
+  .stat.err { color: var(--c3); border-color: rgba(214, 31, 105, .4); }
+  .tableWrap { flex: 1; min-height: 0; overflow: auto; }
+  table { border-collapse: separate; border-spacing: 0; font-size: 13px; min-width: 100%; }
+  th { position: sticky; top: 0; z-index: 1; background: var(--bg-2); text-align: left; padding: 8px 10px 6px; border-bottom: 2px solid var(--line); white-space: nowrap; vertical-align: top; }
+  th .name { display: block; font-weight: 700; }
+  th .type { display: inline-block; margin-top: 3px; font: 600 11px var(--font); padding: 1px 7px; border-radius: 999px; color: #fff; }
+  th .nulls { font-size: 11px; color: var(--muted); margin-left: 4px; font-weight: 400; }
+  td { padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+  td.n { text-align: right; font-family: var(--mono); color: var(--c2); }
+  td.b span { font-size: 11px; padding: 1px 8px; border-radius: 999px; background: rgba(47, 158, 85, .14); color: var(--c4); }
+  td.b span.f { background: rgba(0,0,0,.06); color: var(--muted); }
+  td.d { font-family: var(--mono); color: var(--c6); }
+  td.e { color: var(--muted); font-style: italic; }
+  td.idx { color: var(--muted); font: 11px var(--mono); text-align: right; background: var(--bg-2); position: sticky; left: 0; }
+  th.idx { left: 0; z-index: 2; }
+  tr.bad td { background: rgba(214, 31, 105, .07); }
+  .errors { max-height: 30%; overflow: auto; border-top: 1px solid var(--line); padding: 8px 12px 46px; font-size: 12px; color: var(--c3); display: none; }
+  .errors.show { display: block; }
+  .errors div { padding: 2px 0; }
+  @media (max-width: 640px) {
+    /* stacked layout scrolls under the fixed hint; the form labels already explain the controls */
+    .hint { display: none; }
+    .app { grid-template-columns: 1fr; grid-template-rows: 44% 56%; }
+    .left { padding: 8px 10px 8px; gap: 6px; }
+    .left h1 { display: none; }
+    .stats { padding: 6px 8px; gap: 4px; }
+    .stat { font-size: 11px; padding: 2px 7px; }
+  }
+</style>
+</head>
+<body class="paper">
+<div class="app">
+  <div class="left">
+    <h1><b>Papa Parse</b> CSV 解析器</h1>
+    <div class="chips" id="samples">
+      <button class="btn" data-s="signup" aria-pressed="true">課程報名</button>
+      <button class="btn" data-s="semi">分號分隔</button>
+      <button class="btn" data-s="dirty">髒資料</button>
+      <button class="btn" id="big">10 萬列壓測</button>
+      <button class="btn" id="upload">上傳 CSV</button>
+      <input type="file" id="file" accept=".csv,.tsv,.txt,text/csv" hidden>
+    </div>
+    <textarea id="src" spellcheck="false" aria-label="CSV 內容"></textarea>
+    <div class="opts">
+      <label><input type="checkbox" id="header" checked> 第一列是欄名</label>
+      <label><input type="checkbox" id="typing" checked> 自動轉型別</label>
+      <label><input type="checkbox" id="skip" checked> 略過空白列</label>
+    </div>
+  </div>
+  <div class="right">
+    <div class="stats" id="stats"></div>
+    <div class="tableWrap"><table id="table"></table></div>
+    <div class="errors" id="errors"></div>
+  </div>
+</div>
+<div class="hint">直接改左側文字或拖曳 CSV 檔進來，右側即時解析</div>
+
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.7.0/papaparse.min.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const SAMPLES = {
+  signup: `姓名,縣市,年齡,報名日期,已繳費,金額,備註
+林怡君,臺北市,28,2026-09-12,true,3600,"想學 D3, 也想學 Three.js"
+陳柏翰,新北市,35,2026-09-14,false,3600,
+王思妤,臺中市,22,2026-09-15,true,2880,學生優惠
+張家豪,高雄市,41,2026-09-18,true,3600,"公司統一報名
+（兩人同行）"
+李雅婷,臺南市,30,2026-09-20,false,3240,早鳥九折
+黃冠宇,桃園市,26,2026-09-21,true,3600,
+吳佩珊,新竹市,33,2026-09-23,true,3600,"備註含 ""雙引號"" 也沒問題"`,
+  semi: `品項;庫存;單價;上架;最後盤點
+帆布托特包;120;450.5;TRUE;2026/09/30
+手沖濾杯;38;680;TRUE;2026/09/28
+木質杯墊組;0;220.25;FALSE;2026/09/15
+旅行收納袋;76;399;TRUE;2026/10/01`,
+  dirty: `編號,測站,氣溫,濕度
+1,臺北,31.5,72
+2,臺中,29.8
+3,高雄,33.1,80,多出一欄
+4,花蓮,N/A,77
+5,臺東,30.2,81
+6,"嘉義,28.4,70`,
+};
+
+const TYPE_STYLE = { 整數: "#1f8fb8", 小數: "#0f6f94", 布林: "#2f9e55", 日期: "#6a5ae0", 文字: "#8a877d", 混合: "#e06a1b", 空值: "#b9b6ab" };
+const DATE_RE = /^\d{4}[-/]\d{1,2}[-/]\d{1,2}([ T]\d{1,2}:\d{2}(:\d{2})?)?$/;
+
+function inferType(values) {
+  const vals = values.filter((v) => v !== null && v !== undefined && v !== "");
+  if (!vals.length) return "空值";
+  const kinds = new Set(vals.map((v) => {
+    if (typeof v === "number") return Number.isInteger(v) ? "整數" : "小數";
+    if (typeof v === "boolean") return "布林";
+    if (DATE_RE.test(v)) return "日期";
+    if (/^-?\d+(\.\d+)?$/.test(v)) return "數字字串";
+    return "文字";
+  }));
+  if (kinds.size === 1) { const k = [...kinds][0]; return k === "數字字串" ? "文字" : k; }
+  if ([...kinds].every((k) => k === "整數" || k === "小數")) return "小數";
+  return "混合";
+}
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function cell(v, type) {
+  if (v === null || v === undefined || v === "") return `<td class="e">空</td>`;
+  if (typeof v === "number") return `<td class="n">${v.toLocaleString("zh-TW", { maximumFractionDigits: 6 })}</td>`;
+  if (typeof v === "boolean") return `<td class="b"><span class="${v ? "" : "f"}">${v ? "是" : "否"}</span></td>`;
+  if (type === "日期") return `<td class="d">${esc(v)}</td>`;
+  return `<td title="${esc(v)}">${esc(v).replace(/\n/g, "↵")}</td>`;
+}
+
+let sampleNote = "";
+function render(res, ms, totalLabel) {
+  const header = $("header").checked;
+  const rows = res.data;
+  const fields = header ? (res.meta.fields || []) : (rows[0] || []).map((_, i) => `欄 ${i + 1}`);
+  const get = (row, i) => (header ? row[fields[i]] : row[i]);
+  const types = fields.map((_, i) => inferType(rows.map((r) => get(r, i))));
+  const nulls = fields.map((_, i) => rows.filter((r) => { const v = get(r, i); return v === null || v === undefined || v === ""; }).length);
+  const badRows = new Set(res.errors.map((e) => e.row));
+
+  const shown = rows.slice(0, 300);
+  let html = `<thead><tr><th class="idx">#</th>${fields.map((f, i) =>
+    `<th><span class="name">${esc(f)}</span><span class="type" style="background:${TYPE_STYLE[types[i]]}">${types[i]}</span>${nulls[i] ? `<span class="nulls">${nulls[i]} 空</span>` : ""}</th>`).join("")}</tr></thead><tbody>`;
+  html += shown.map((r, ri) => `<tr${badRows.has(ri) ? ` class="bad"` : ""}><td class="idx">${ri + 1}</td>${fields.map((_, i) => cell(get(r, i), types[i])).join("")}</tr>`).join("");
+  if (rows.length > shown.length) html += `<tr><td class="idx"></td><td colspan="${fields.length}" class="e">其餘 ${(rows.length - shown.length).toLocaleString()} 列未顯示</td></tr>`;
+  $("table").innerHTML = html + "</tbody>";
+
+  const delim = { ",": "逗號", ";": "分號", "\t": "Tab", "|": "直線" }[res.meta.delimiter] || JSON.stringify(res.meta.delimiter);
+  $("stats").innerHTML = [
+    `<span class="stat">列數 <b>${(totalLabel || rows.length).toLocaleString()}</b></span>`,
+    `<span class="stat">欄數 <b>${fields.length}</b></span>`,
+    `<span class="stat">分隔符號 <b>${delim}</b>（自動偵測）</span>`,
+    `<span class="stat">解析 <b>${ms < 10 ? ms.toFixed(1) : Math.round(ms)} ms</b></span>`,
+    sampleNote ? `<span class="stat">${sampleNote}</span>` : "",
+    res.errors.length ? `<span class="stat err">錯誤 <b>${res.errors.length}</b></span>` : `<span class="stat">無錯誤</span>`,
+  ].join("");
+  const ZH = { TooFewFields: "欄位太少", TooManyFields: "欄位太多", MissingQuotes: "引號未閉合", InvalidQuotes: "引號格式錯誤", UndetectableDelimiter: "無法判斷分隔符號" };
+  $("errors").innerHTML = res.errors.slice(0, 50).map((e) => `<div>第 ${e.row === undefined ? "?" : e.row + 1} 列：${ZH[e.code] || e.code}（${esc(e.message)}）</div>`).join("");
+  $("errors").classList.toggle("show", res.errors.length > 0);
+}
+
+function parseText() {
+  const t0 = performance.now();
+  const res = Papa.parse($("src").value, { header: $("header").checked, dynamicTyping: $("typing").checked, skipEmptyLines: $("skip").checked ? "greedy" : false });
+  render(res, performance.now() - t0);
+}
+
+function loadSample(key) {
+  sampleNote = "示意資料";
+  $("src").value = SAMPLES[key];
+  $("samples").querySelectorAll("[data-s]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.s === key));
+  parseText();
+}
+
+// Large file: build 100k rows, parse inside a Web Worker so the page stays responsive
+$("big").addEventListener("click", () => {
+  const cities = ["臺北市", "新北市", "桃園市", "臺中市", "臺南市", "高雄市"];
+  const lines = ["訂單編號,縣市,數量,金額,已出貨,下單日"];
+  for (let i = 1; i <= 100000; i++) {
+    lines.push(`${100000 + i},${cities[i % 6]},${1 + (i * 7) % 9},${((i * 37) % 5000 + 99.5).toFixed(1)},${i % 3 ? "true" : "false"},2026-${String(1 + (i % 9)).padStart(2, "0")}-${String(1 + (i % 28)).padStart(2, "0")}`);
+  }
+  const csv = lines.join("\n");
+  sampleNote = "程式產生的示意資料";
+  $("src").value = lines.slice(0, 40).join("\n") + "\n…（共 100,000 列，已在背景解析）";
+  $("samples").querySelectorAll("[data-s]").forEach((b) => b.setAttribute("aria-pressed", "false"));
+  $("stats").innerHTML = `<span class="stat">Web Worker 解析中…</span>`;
+  const t0 = performance.now();
+  Papa.parse(csv, {
+    worker: true, header: true, dynamicTyping: true, skipEmptyLines: true,
+    complete: (res) => render(res, performance.now() - t0),
+    error: (err) => { $("stats").innerHTML = `<span class="stat err">解析失敗：${esc(err.message)}</span>`; },
+  });
+});
+
+$("samples").addEventListener("click", (e) => { const b = e.target.closest("[data-s]"); if (b) loadSample(b.dataset.s); });
+$("upload").addEventListener("click", () => $("file").click());
+function readFile(f) {
+  if (!f) return;
+  const t0 = performance.now();
+  sampleNote = "";
+  $("samples").querySelectorAll("[data-s]").forEach((b) => b.setAttribute("aria-pressed", "false"));
+  // Papa reads the File directly (streams large files)
+  Papa.parse(f, { header: $("header").checked, dynamicTyping: $("typing").checked, skipEmptyLines: "greedy",
+    complete: (res) => { render(res, performance.now() - t0); f.slice(0, 4000).text().then((t) => { $("src").value = t; }); } });
+}
+$("file").addEventListener("change", (e) => readFile(e.target.files[0]));
+const src = $("src");
+src.addEventListener("dragover", (e) => { e.preventDefault(); src.classList.add("drag"); });
+src.addEventListener("dragleave", () => src.classList.remove("drag"));
+src.addEventListener("drop", (e) => { e.preventDefault(); src.classList.remove("drag"); readFile(e.dataTransfer.files[0]); });
+let timer;
+src.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(parseText, 120); });
+for (const id of ["header", "typing", "skip"]) $(id).addEventListener("change", parseText);
+
+loadSample("signup");
+</script>
+</body>
+</html>

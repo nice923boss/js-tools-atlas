@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bpmn-js 示範：請假申請流程編輯器</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bpmn-js@18.31.0/dist/assets/diagram-js.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bpmn-js@18.31.0/dist/assets/bpmn-js.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bpmn-js@18.31.0/dist/assets/bpmn-font/css/bpmn.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  .head {
+    position: fixed; left: 12px; top: 10px; z-index: 40;
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+    max-width: calc(100% - 330px);
+  }
+  .head h1 { margin: 0; font-size: 17px; line-height: 1.3; }
+  .head .meta { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .head .meta b { color: var(--fg); font-variant-numeric: tabular-nums; }
+  #canvas {
+    position: fixed; inset: 58px 10px 44px;
+    background: #fffefb; border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: 0 6px 22px rgba(40, 30, 10, .08); overflow: hidden;
+  }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .hint { transition: color .2s, border-color .2s; }
+  .hint.on { color: var(--fg); border-color: var(--c2); }
+  .djs-palette { border-radius: 10px; }
+  /* Show canvas focus on the rounded frame instead of a square outline on the SVG. */
+  .djs-container svg:focus { outline: none; }
+  #canvas:focus-within { border-color: rgba(31, 143, 184, .6); }
+  @media (max-width: 640px) {
+    .head { display: none; }
+    #canvas { inset: 52px 6px 42px; }
+    .djs-palette { display: none; }
+  }
+</style>
+</head>
+<body class="paper">
+<div class="head">
+  <h1>請假申請流程</h1>
+  <span class="meta">BPMN 2.0・節點 <b id="nodes">0</b>・連線 <b id="flows">0</b></span>
+</div>
+<div class="controls">
+  <button class="btn" id="undo" disabled>復原</button>
+  <button class="btn" id="fit">置中</button>
+  <button class="btn" id="xml">匯出 XML</button>
+  <button class="btn" id="svg">匯出 SVG</button>
+</div>
+<div id="canvas"></div>
+<div class="hint">拖曳移動元素・點元素開快捷選單・雙擊改文字</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bpmn-js@18.31.0/dist/bpmn-modeler.production.min.js"></script>
+<script>
+// Leave request process with three lanes. Shapes carry BPMN-in-Color fills from the paper palette.
+const EMP = 'color:background-color="#d6ebf4" color:border-color="#1f8fb8"';
+const MGR = 'color:background-color="#e5e1fb" color:border-color="#6a5ae0"';
+const HR = 'color:background-color="#d7efe0" color:border-color="#2f9e55"';
+const GATE = 'color:background-color="#fff3c4" color:border-color="#b38f00"';
+const NO = 'color:background-color="#fbe3ec" color:border-color="#d61f69"';
+const label = (x, y, w, h) => `<bpmndi:BPMNLabel><dc:Bounds x="${x}" y="${y}" width="${w}" height="${h}" /></bpmndi:BPMNLabel>`;
+const shape = (id, x, y, w, h, extra = "", lbl = "") =>
+  `<bpmndi:BPMNShape id="${id}_di" bpmnElement="${id}" ${extra}><dc:Bounds x="${x}" y="${y}" width="${w}" height="${h}" />${lbl}</bpmndi:BPMNShape>`;
+const edge = (id, pts, lbl = "") =>
+  `<bpmndi:BPMNEdge id="${id}_di" bpmnElement="${id}">${pts.map(([x, y]) => `<di:waypoint x="${x}" y="${y}" />`).join("")}${lbl}</bpmndi:BPMNEdge>`;
+
+const XML = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:color="http://www.omg.org/spec/BPMN/non-normative/color/1.0"
+  id="Definitions_Leave" targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:collaboration id="Collaboration_1">
+    <bpmn:participant id="Participant_1" name="請假申請流程" processRef="Process_Leave" />
+  </bpmn:collaboration>
+  <bpmn:process id="Process_Leave" isExecutable="false">
+    <bpmn:laneSet id="LaneSet_1">
+      <bpmn:lane id="Lane_Emp" name="員工">
+        <bpmn:flowNodeRef>Start</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_Fill</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_Notify</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>End_Reject</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_Mgr" name="主管">
+        <bpmn:flowNodeRef>Gateway_Days</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_Direct</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Task_Dept</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>Gateway_Approved</bpmn:flowNodeRef>
+      </bpmn:lane>
+      <bpmn:lane id="Lane_HR" name="人資">
+        <bpmn:flowNodeRef>Task_HR</bpmn:flowNodeRef>
+        <bpmn:flowNodeRef>End_OK</bpmn:flowNodeRef>
+      </bpmn:lane>
+    </bpmn:laneSet>
+    <bpmn:startEvent id="Start" name="提出請假"><bpmn:outgoing>Flow_1</bpmn:outgoing></bpmn:startEvent>
+    <bpmn:userTask id="Task_Fill" name="填寫請假單"><bpmn:incoming>Flow_1</bpmn:incoming><bpmn:outgoing>Flow_2</bpmn:outgoing></bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_Days" name="天數超過 3 天？"><bpmn:incoming>Flow_2</bpmn:incoming><bpmn:outgoing>Flow_Short</bpmn:outgoing><bpmn:outgoing>Flow_Long</bpmn:outgoing></bpmn:exclusiveGateway>
+    <bpmn:userTask id="Task_Direct" name="直屬主管核准"><bpmn:incoming>Flow_Short</bpmn:incoming><bpmn:outgoing>Flow_D1</bpmn:outgoing></bpmn:userTask>
+    <bpmn:userTask id="Task_Dept" name="部門主管審核"><bpmn:incoming>Flow_Long</bpmn:incoming><bpmn:outgoing>Flow_D2</bpmn:outgoing></bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_Approved" name="核准？"><bpmn:incoming>Flow_D1</bpmn:incoming><bpmn:incoming>Flow_D2</bpmn:incoming><bpmn:outgoing>Flow_Reject</bpmn:outgoing><bpmn:outgoing>Flow_Approve</bpmn:outgoing></bpmn:exclusiveGateway>
+    <bpmn:sendTask id="Task_Notify" name="通知員工退回"><bpmn:incoming>Flow_Reject</bpmn:incoming><bpmn:outgoing>Flow_N</bpmn:outgoing></bpmn:sendTask>
+    <bpmn:endEvent id="End_Reject" name="申請退回"><bpmn:incoming>Flow_N</bpmn:incoming></bpmn:endEvent>
+    <bpmn:userTask id="Task_HR" name="人資登錄假單"><bpmn:incoming>Flow_Approve</bpmn:incoming><bpmn:outgoing>Flow_H</bpmn:outgoing></bpmn:userTask>
+    <bpmn:endEvent id="End_OK" name="請假完成"><bpmn:incoming>Flow_H</bpmn:incoming></bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="Start" targetRef="Task_Fill" />
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_Fill" targetRef="Gateway_Days" />
+    <bpmn:sequenceFlow id="Flow_Short" name="否" sourceRef="Gateway_Days" targetRef="Task_Direct" />
+    <bpmn:sequenceFlow id="Flow_Long" name="是" sourceRef="Gateway_Days" targetRef="Task_Dept" />
+    <bpmn:sequenceFlow id="Flow_D1" sourceRef="Task_Direct" targetRef="Gateway_Approved" />
+    <bpmn:sequenceFlow id="Flow_D2" sourceRef="Task_Dept" targetRef="Gateway_Approved" />
+    <bpmn:sequenceFlow id="Flow_Reject" name="否" sourceRef="Gateway_Approved" targetRef="Task_Notify" />
+    <bpmn:sequenceFlow id="Flow_Approve" name="是" sourceRef="Gateway_Approved" targetRef="Task_HR" />
+    <bpmn:sequenceFlow id="Flow_N" sourceRef="Task_Notify" targetRef="End_Reject" />
+    <bpmn:sequenceFlow id="Flow_H" sourceRef="Task_HR" targetRef="End_OK" />
+    <bpmn:textAnnotation id="Annot_1"><bpmn:text>病假超過 3 天須附診斷證明</bpmn:text></bpmn:textAnnotation>
+    <bpmn:association id="Assoc_1" sourceRef="Task_Fill" targetRef="Annot_1" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="Diagram_1">
+    <bpmndi:BPMNPlane id="Plane_1" bpmnElement="Collaboration_1">
+      ${shape("Participant_1", 160, 60, 930, 500, 'isHorizontal="true"')}
+      ${shape("Lane_Emp", 190, 60, 900, 140, 'isHorizontal="true"')}
+      ${shape("Lane_Mgr", 190, 200, 900, 220, 'isHorizontal="true"')}
+      ${shape("Lane_HR", 190, 420, 900, 140, 'isHorizontal="true"')}
+      ${shape("Start", 242, 112, 36, 36, EMP, label(232, 155, 56, 14))}
+      ${shape("Task_Fill", 320, 90, 110, 80, EMP)}
+      ${shape("Annot_1", 560, 88, 170, 44)}
+      ${shape("Gateway_Days", 475, 285, 50, 50, GATE + ' isMarkerVisible="true"', label(396, 290, 72, 40))}
+      ${shape("Task_Direct", 590, 220, 110, 80, MGR)}
+      ${shape("Task_Dept", 590, 320, 110, 80, MGR)}
+      ${shape("Gateway_Approved", 745, 285, 50, 50, GATE + ' isMarkerVisible="true"', label(802, 303, 40, 14))}
+      ${shape("Task_Notify", 860, 90, 110, 80, NO)}
+      ${shape("End_Reject", 1012, 112, 36, 36, NO, label(1002, 155, 56, 14))}
+      ${shape("Task_HR", 860, 450, 110, 80, HR)}
+      ${shape("End_OK", 1012, 472, 36, 36, HR, label(1002, 515, 56, 14))}
+      ${edge("Flow_1", [[278, 130], [320, 130]])}
+      ${edge("Flow_2", [[430, 130], [500, 130], [500, 285]])}
+      ${edge("Flow_Short", [[525, 310], [555, 310], [555, 260], [590, 260]], label(561, 278, 14, 14))}
+      ${edge("Flow_Long", [[500, 335], [500, 360], [590, 360]], label(536, 342, 14, 14))}
+      ${edge("Flow_D1", [[700, 260], [722, 260], [722, 310], [745, 310]])}
+      ${edge("Flow_D2", [[700, 360], [722, 360], [722, 310], [745, 310]])}
+      ${edge("Flow_Reject", [[770, 285], [770, 130], [860, 130]], label(778, 200, 14, 14))}
+      ${edge("Flow_Approve", [[770, 335], [770, 490], [860, 490]], label(778, 410, 14, 14))}
+      ${edge("Flow_N", [[970, 130], [1012, 130]])}
+      ${edge("Flow_H", [[970, 490], [1012, 490]])}
+      ${edge("Assoc_1", [[430, 110], [560, 110]])}
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>`;
+
+// Traditional Chinese labels for the editor UI (palette, context pad, replace menu).
+const ZH = {
+  "Activate hand tool": "拖曳畫布",
+  "Activate lasso tool": "套索選取",
+  "Activate create/remove space tool": "插入／移除空間",
+  "Activate global connect tool": "連線工具",
+  "Create start event": "新增開始事件",
+  "Create end event": "新增結束事件",
+  "Create task": "新增任務",
+  "Create gateway": "新增閘道",
+  "Create intermediate/boundary event": "新增中間／邊界事件",
+  "Create data object reference": "新增資料物件",
+  "Create data store reference": "新增資料儲存",
+  "Create expanded sub-process": "新增展開子流程",
+  "Create pool/participant": "新增泳池／參與者",
+  "Create group": "新增群組",
+  "Append task": "接續任務",
+  "Append end event": "接續結束事件",
+  "Append gateway": "接續閘道",
+  "Append intermediate/boundary event": "接續中間事件",
+  "Append text annotation": "接續文字註解",
+  "Change element": "變更元素類型",
+  "Delete": "刪除",
+  "Connect to other element": "連到其他元素",
+  "Connect using association": "以關聯連線",
+  "Add text annotation": "加入文字註解",
+  "Add lane above": "上方新增泳道",
+  "Add lane below": "下方新增泳道",
+  "Divide into two lanes": "分成兩條泳道",
+  "Divide into three lanes": "分成三條泳道",
+  "Align elements": "對齊元素",
+  "Distribute elements horizontally": "水平平均分布",
+  "Distribute elements vertically": "垂直平均分布",
+  "Search in diagram": "在圖中搜尋",
+  "Task": "任務",
+  "User task": "使用者任務",
+  "Service task": "服務任務",
+  "Send task": "傳送任務",
+  "Receive task": "接收任務",
+  "Manual task": "手動任務",
+  "Script task": "腳本任務",
+  "Business rule task": "商業規則任務",
+  "Call activity": "呼叫活動",
+  "Sub-process (collapsed)": "子流程（收合）",
+  "Sub-process (expanded)": "子流程（展開）",
+  "Start event": "開始事件",
+  "End event": "結束事件",
+  "Intermediate throw event": "中間拋出事件",
+  "Message start event": "訊息開始事件",
+  "Timer start event": "計時開始事件",
+  "Message end event": "訊息結束事件",
+  "Terminate end event": "終止結束事件",
+  "Error end event": "錯誤結束事件",
+  "Exclusive gateway": "互斥閘道",
+  "Parallel gateway": "平行閘道",
+  "Inclusive gateway": "包容閘道",
+  "Complex gateway": "複合閘道",
+  "Event-based gateway": "事件閘道",
+  "Sequence flow": "順序流",
+  "Default flow": "預設流程",
+  "Conditional flow": "條件流程",
+};
+const translateModule = {
+  translate: ["value", (template, replacements = {}) =>
+    (ZH[template] || template).replace(/{([^}]+)}/g, (_, key) => replacements[key] ?? `{${key}}`)],
+};
+
+const font = getComputedStyle(document.body).fontFamily;
+const modeler = new BpmnJS({
+  container: "#canvas",
+  additionalModules: [translateModule],
+  textRenderer: {
+    defaultStyle: { fontFamily: font, fontSize: 13 },
+    externalStyle: { fontFamily: font, fontSize: 12 },
+  },
+});
+const canvas = modeler.get("canvas");
+const commandStack = modeler.get("commandStack");
+const registry = modeler.get("elementRegistry");
+
+const hint = document.querySelector(".hint");
+const HINT_TEXT = hint.textContent;
+let hintTimer;
+function flash(msg) {
+  hint.textContent = msg;
+  hint.classList.add("on");
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => { hint.textContent = HINT_TEXT; hint.classList.remove("on"); }, 2800);
+}
+
+// Fit the diagram while keeping clear of the palette on the left.
+function fit() {
+  const { inner, outer } = canvas.viewbox();
+  const palette = document.querySelector(".djs-palette");
+  const left = palette && palette.offsetWidth ? palette.offsetLeft + palette.offsetWidth + 16 : 16;
+  const pad = { l: left, r: 16, t: 20, b: 36 };
+  const w = outer.width - pad.l - pad.r;
+  const h = outer.height - pad.t - pad.b;
+  const scale = Math.min(w / inner.width, h / inner.height, 1.25);
+  canvas.viewbox({
+    x: inner.x - (pad.l + (w - inner.width * scale) / 2) / scale,
+    y: inner.y - (pad.t + (h - inner.height * scale) / 2) / scale,
+    width: outer.width / scale,
+    height: outer.height / scale,
+  });
+}
+
+// Live counts read back from the model, so edits show up immediately.
+function updateStats() {
+  const is = (el, type) => el.businessObject && el.businessObject.$instanceOf(type) && !el.labelTarget;
+  document.getElementById("nodes").textContent = registry.filter((el) => is(el, "bpmn:FlowNode")).length;
+  document.getElementById("flows").textContent = registry.filter((el) => is(el, "bpmn:SequenceFlow")).length;
+  document.getElementById("undo").disabled = !commandStack.canUndo();
+}
+
+modeler.on("commandStack.changed", updateStats);
+
+function download(name, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+document.getElementById("xml").addEventListener("click", async () => {
+  try {
+    const { xml } = await modeler.saveXML({ format: true });
+    download("請假申請流程.bpmn", xml, "application/xml");
+    flash(`已匯出 BPMN 2.0 XML（${(xml.length / 1024).toFixed(1)} KB）`);
+  } catch (err) {
+    console.error(err);
+    flash("匯出 XML 失敗，請再試一次");
+  }
+});
+document.getElementById("svg").addEventListener("click", async () => {
+  try {
+    const { svg } = await modeler.saveSVG();
+    download("請假申請流程.svg", svg, "image/svg+xml");
+    flash("已匯出 SVG 向量圖");
+  } catch (err) {
+    console.error(err);
+    flash("匯出 SVG 失敗，請再試一次");
+  }
+});
+document.getElementById("fit").addEventListener("click", fit);
+document.getElementById("undo").addEventListener("click", () => {
+  if (commandStack.canUndo()) commandStack.undo();
+});
+
+modeler.importXML(XML)
+  .then(({ warnings }) => {
+    if (warnings.length) console.warn("BPMN import warnings", warnings);
+    fit();
+    updateStats();
+  })
+  .catch((err) => {
+    console.error(err);
+    flash("流程圖載入失敗");
+  });
+
+let rz;
+addEventListener("resize", () => {
+  clearTimeout(rz);
+  rz = setTimeout(fit, 150);
+});
+</script>
+</body>
+</html>

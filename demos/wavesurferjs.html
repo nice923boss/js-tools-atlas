@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wavesurfer.js 示範：波形播放與段落標記</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"]}</script>
+<style>
+  body {
+    background:
+      radial-gradient(70% 60% at 50% 0%, rgba(247, 37, 133, 0.10), transparent 70%),
+      radial-gradient(70% 60% at 50% 100%, rgba(76, 201, 240, 0.10), transparent 70%),
+      var(--bg);
+  }
+  .wrap {
+    position: fixed; inset: 0; display: flex; flex-direction: column; justify-content: center;
+    padding: 56px 18px 50px; gap: 12px; max-width: 1000px; margin: 0 auto;
+  }
+  .top { display: flex; align-items: center; gap: 12px; }
+  .big {
+    width: 54px; height: 54px; flex: none; border-radius: 50%; border: 0; cursor: pointer;
+    background: var(--accent); color: var(--accent-ink); font-size: 20px; font-weight: 700;
+    box-shadow: 0 0 0 6px rgba(247, 223, 30, 0.12);
+  }
+  .meta h1 { margin: 0; font-size: 18px; }
+  .meta div { color: var(--muted); font: 12px var(--mono); }
+  #wave {
+    border-radius: 12px; padding: 10px 0 0; background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--line); overflow: hidden;
+  }
+  .list { display: flex; gap: 8px; flex-wrap: wrap; min-height: 34px; }
+  .chip {
+    display: flex; align-items: center; gap: 6px; padding: 5px 10px 5px 8px; border-radius: 999px;
+    background: var(--panel); border: 1px solid var(--line); font-size: 12px; cursor: pointer;
+  }
+  .chip i { width: 10px; height: 10px; border-radius: 50%; background: var(--rc); }
+  .chip span { font-family: var(--mono); color: var(--muted); }
+  .chip.active { border-color: var(--accent); }
+  .opts { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); align-items: center; }
+  .opts label { display: flex; align-items: center; gap: 8px; }
+  .opts input[type=range] { width: 130px; }
+  @media (max-width: 560px) {
+    .wrap { padding-top: 52px; gap: 8px; }
+    .meta h1 { font-size: 15px; }
+    .big { width: 44px; height: 44px; font-size: 16px; }
+    .opts input[type=range] { width: 90px; }
+    .chip { font-size: 11px; padding: 4px 8px; }
+  }
+</style>
+</head>
+<body>
+<div class="controls">
+  <button class="btn" id="loopBtn" aria-pressed="false">循環目前段落</button>
+  <button class="btn" id="clearBtn">清除標記</button>
+</div>
+<div class="wrap">
+  <div class="top">
+    <button class="big" id="play" aria-label="播放">▶</button>
+    <div class="meta">
+      <h1>示範循環音樂・段落標記</h1>
+      <div id="time">0:00.0 / 0:19.2</div>
+    </div>
+  </div>
+  <div id="wave"></div>
+  <div class="list" id="list"></div>
+  <div class="opts">
+    <label>縮放 <input type="range" id="zoom" min="0" max="300" value="0"></label>
+    <label>速度 <input type="range" id="rate" min="50" max="150" value="100"><b id="ratev">1.0x</b></label>
+  </div>
+</div>
+<div class="hint">在波形上拖曳可新增段落，點段落只播放那一段</div>
+
+<script type="module">
+// wavesurfer.js v8: waveform + Regions / Timeline / Hover plugins on the shared loop.
+import WaveSurfer from "https://cdn.jsdelivr.net/npm/wavesurfer.js@8.0.1/dist/wavesurfer.esm.js";
+import RegionsPlugin from "https://cdn.jsdelivr.net/npm/wavesurfer.js@8.0.1/dist/plugins/regions.esm.js";
+import TimelinePlugin from "https://cdn.jsdelivr.net/npm/wavesurfer.js@8.0.1/dist/plugins/timeline.esm.js";
+import HoverPlugin from "https://cdn.jsdelivr.net/npm/wavesurfer.js@8.0.1/dist/plugins/hover.esm.js";
+
+const $ = (id) => document.getElementById(id);
+const narrow = () => innerWidth < 560;
+const height = narrow() ? 130 : 180;
+
+// Vertical gradients for the unplayed / played parts of the waveform
+const g = document.createElement("canvas").getContext("2d");
+const waveGrad = g.createLinearGradient(0, 0, 0, height);
+waveGrad.addColorStop(0, "#6c7a96");
+waveGrad.addColorStop(0.5, "#3a4152");
+waveGrad.addColorStop(1, "#6c7a96");
+const progGrad = g.createLinearGradient(0, 0, 0, height);
+progGrad.addColorStop(0, "#f7df1e");
+progGrad.addColorStop(0.5, "#ff8c42");
+progGrad.addColorStop(1, "#f72585");
+
+// Own <audio> element with an absolute src: wavesurfer keeps it instead of swapping in a blob URL.
+const audio = new Audio();
+audio.preload = "auto";
+audio.src = "_shared/audio/loop.mp3";
+
+const regions = RegionsPlugin.create();
+const ws = WaveSurfer.create({
+  container: "#wave",
+  media: audio,
+  url: audio.src,
+  height,
+  waveColor: waveGrad,
+  progressColor: progGrad,
+  cursorColor: "#ffffff",
+  cursorWidth: 2,
+  barWidth: 3,
+  barGap: 2,
+  barRadius: 3,
+  normalize: true,
+  plugins: [
+    regions,
+    TimelinePlugin.create({
+      height: 22,
+      timeInterval: 0.6,
+      primaryLabelInterval: 2.4,
+      secondaryLabelOpacity: 0,
+      style: { color: "#9b998f", fontSize: "11px" },
+      formatTimeCallback: (s) => `${s.toFixed(1)}s`,
+    }),
+    HoverPlugin.create({
+      lineColor: "#f7df1e", lineWidth: 2, labelBackground: "#f7df1e", labelColor: "#1a1a14", labelSize: "11px",
+    }),
+  ],
+});
+
+const COLORS = ["rgba(76, 201, 240, 0.28)", "rgba(247, 37, 133, 0.26)", "rgba(123, 211, 137, 0.28)",
+  "rgba(157, 140, 255, 0.30)", "rgba(255, 140, 66, 0.28)"];
+const SOLID = ["#4cc9f0", "#f72585", "#7bd389", "#9d8cff", "#ff8c42"];
+let colorIdx = 0;
+let active = null;
+let loopOn = false;
+
+function label(text) {
+  const el = document.createElement("span");
+  el.textContent = text;
+  // Regions live inside wavesurfer's shadow DOM, so the label is styled inline.
+  el.style.cssText = "font:600 12px sans-serif;color:#111;padding:2px 8px;margin:6px;border-radius:6px;" +
+    "background:rgba(255,255,255,0.85);display:inline-block;white-space:nowrap;";
+  return el;
+}
+
+const fmt = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`;
+
+ws.on("decode", () => {
+  const bar = 2.4;
+  [["開場", 0, bar * 2], ["重點段落", bar * 3, bar * 5], ["結尾", bar * 6.5, bar * 8]].forEach(([t, s, e]) => {
+    regions.addRegion({ start: s, end: e, content: label(t), color: COLORS[colorIdx % 5], drag: true, resize: true });
+    colorIdx++;
+  });
+  regions.enableDragSelection({ color: "rgba(247, 223, 30, 0.22)" });
+  renderList();
+});
+
+regions.on("region-created", (r) => {
+  if (!r.content) {
+    const n = regions.getRegions().length;
+    r.setOptions({ content: label(`標記 ${n}`), color: COLORS[colorIdx % 5] });
+    colorIdx++;
+  }
+  renderList();
+});
+regions.on("region-updated", renderList);
+regions.on("region-clicked", (r, e) => {
+  e.stopPropagation();
+  playRegion(r);
+});
+regions.on("region-out", (r) => {
+  if (r !== active) return;
+  if (loopOn) r.play();
+});
+
+function playRegion(r) {
+  active = r;
+  r.play(!loopOn);
+  renderList();
+}
+
+function renderList() {
+  const list = $("list");
+  list.innerHTML = "";
+  regions.getRegions()
+    .slice()
+    .sort((a, b) => a.start - b.start)
+    .forEach((r) => {
+      const chip = document.createElement("div");
+      chip.className = "chip" + (r === active ? " active" : "");
+      const idx = COLORS.indexOf(r.color);
+      chip.style.setProperty("--rc", idx >= 0 ? SOLID[idx] : "#f7df1e");
+      const name = r.content ? r.content.textContent : "段落";
+      chip.innerHTML = `<i></i>${name} <span>${r.start.toFixed(1)}到${r.end.toFixed(1)}s</span>`;
+      chip.addEventListener("click", () => playRegion(r));
+      list.append(chip);
+    });
+}
+
+const playBtn = $("play");
+playBtn.addEventListener("click", () => ws.playPause());
+ws.on("play", () => { playBtn.textContent = "❚❚"; });
+ws.on("pause", () => { playBtn.textContent = "▶"; });
+ws.on("timeupdate", (t) => { $("time").textContent = `${fmt(t)} / ${fmt(ws.getDuration() || 19.2)}`; });
+ws.on("interaction", () => { active = null; renderList(); });
+
+$("loopBtn").addEventListener("click", (e) => {
+  loopOn = !loopOn;
+  e.currentTarget.setAttribute("aria-pressed", loopOn);
+});
+$("clearBtn").addEventListener("click", () => { regions.clearRegions(); active = null; renderList(); });
+$("zoom").addEventListener("input", (e) => ws.zoom(+e.target.value));
+$("rate").addEventListener("input", (e) => {
+  const r = e.target.value / 100;
+  ws.setPlaybackRate(r, true);
+  $("ratev").textContent = `${r.toFixed(1)}x`;
+});
+window.addEventListener("keydown", (e) => {
+  if (e.code === "Space") { e.preventDefault(); ws.playPause(); }
+});
+</script>
+</body>
+</html>

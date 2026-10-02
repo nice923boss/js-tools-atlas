@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cannon-es 示範：骨牌連鎖反應</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"3D 繪圖使用 three.js 0.186.1，物理全部由 cannon-es 計算"}</script>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"}}</script>
+<style>
+  body { background: radial-gradient(circle at 50% 35%, #2b2230 0%, #0e0c10 75%); }
+  #stage { position: fixed; inset: 0; touch-action: none; }
+  #stage canvas { display: block; }
+  .heading { position: fixed; left: 16px; top: 14px; z-index: 40; pointer-events: none; }
+  .heading h1 { margin: 0; font-size: clamp(18px, 4vw, 26px); letter-spacing: .06em; }
+  .heading p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+  .stats { position: fixed; right: 12px; bottom: 12px; z-index: 40; padding: 5px 10px; border-radius: 999px; font-size: 12px; pointer-events: none; }
+  @media (max-width: 600px) { .heading { top: 100px; } .stats { bottom: 46px; } }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<div class="heading"><h1>骨牌連鎖</h1><p>每張骨牌都是 cannon-es 剛體，點任何一張把它推倒</p></div>
+<div class="controls" id="bar">
+  <button class="btn" data-shape="spiral" aria-pressed="true">螺旋</button>
+  <button class="btn" data-shape="wave">波浪</button>
+  <button class="btn" data-shape="heart">愛心</button>
+  <button class="btn primary" id="push">推倒</button>
+  <button class="btn" id="auto" aria-pressed="true">自動輪播</button>
+</div>
+<div class="panel stats mono" id="stats">骨牌 0 張</div>
+<div class="hint">拖曳旋轉視角・點骨牌推倒</div>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
+import * as CANNON from "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js";
+
+const SIZE = { t: 0.08, h: 0.5, w: 0.26 };  // thickness, height, width
+const GAP = 0.25;                              // distance between domino centers along the path
+const MAX = 400;
+
+// Each shape is a parametric curve on the floor; it gets resampled at equal arc length.
+const SHAPES = {
+  spiral: (u) => {
+    const th = u * Math.PI * 2 * 3;
+    const r = 3.4 - 2.4 * u;
+    return [r * Math.cos(th), r * Math.sin(th)];
+  },
+  wave: (u) => [(u - 0.5) * 7.2, 1.5 * Math.sin(u * Math.PI * 2 * 1.5)],
+  heart: (u) => {
+    const t = u * Math.PI * 2, s = 0.21;
+    const y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+    return [16 * Math.sin(t) ** 3 * s, -(y + 6) * s];
+  },
+};
+
+function samplePath(fn) {
+  const pts = [];
+  let prev = fn(0), acc = 0, next = 0;
+  for (let i = 1; i <= 4000; i++) {
+    const p = fn(i / 4000);
+    acc += Math.hypot(p[0] - prev[0], p[1] - prev[1]);
+    if (acc >= next) {
+      const dx = p[0] - prev[0], dz = p[1] - prev[1], l = Math.hypot(dx, dz) || 1;
+      pts.push({ x: p[0], z: p[1], tx: dx / l, tz: dz / l });
+      next += GAP;
+    }
+    prev = p;
+  }
+  // Closed curves would put the last domino on top of the first.
+  const a = pts[0], b = pts[pts.length - 1];
+  if (Math.hypot(a.x - b.x, a.z - b.z) < GAP * 1.2) pts.pop();
+  return pts.slice(0, MAX);
+}
+
+// --- three.js scene -----------------------------------------------------------------------
+const stage = document.getElementById("stage");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+stage.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x0e0c10, 12, 26);
+const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.6;
+controls.maxPolarAngle = Math.PI * 0.47;
+controls.minDistance = 4;
+controls.maxDistance = 20;
+
+scene.add(new THREE.HemisphereLight(0xfff4e6, 0x2a1d24, 1.4));
+const sun = new THREE.DirectionalLight(0xffffff, 2.6);
+sun.position.set(4, 9, 5);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6, near: 1, far: 30 });
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+
+const floor = new THREE.Mesh(new THREE.CircleGeometry(9, 64), new THREE.MeshStandardMaterial({ color: 0x4a3328, roughness: 0.85 }));
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+
+const dominoMesh = new THREE.InstancedMesh(
+  new RoundedBoxGeometry(SIZE.t, SIZE.h, SIZE.w, 2, 0.015),
+  new THREE.MeshStandardMaterial({ roughness: 0.35, metalness: 0.05 }),
+  MAX,
+);
+dominoMesh.castShadow = true;
+dominoMesh.receiveShadow = true;
+scene.add(dominoMesh);
+
+// --- cannon-es world ----------------------------------------------------------------------
+const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.82, 0), allowSleep: true });
+world.broadphase = new CANNON.SAPBroadphase(world);
+world.solver.iterations = 12;
+const matFloor = new CANNON.Material("floor");
+const matDomino = new CANNON.Material("domino");
+world.addContactMaterial(new CANNON.ContactMaterial(matFloor, matDomino, { friction: 0.5, restitution: 0.02 }));
+world.addContactMaterial(new CANNON.ContactMaterial(matDomino, matDomino, { friction: 0.25, restitution: 0.05 }));
+const ground = new CANNON.Body({ mass: 0, material: matFloor, shape: new CANNON.Plane() });
+ground.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+world.addBody(ground);
+
+const boxShape = new CANNON.Box(new CANNON.Vec3(SIZE.t / 2, SIZE.h / 2, SIZE.w / 2));
+let dominoes = [];   // { body, pt }
+let shape = "spiral";
+let phase = "wait", phaseAt = 0, lastFallen = 0, lastChange = 0;
+
+function setup(name) {
+  shape = name;
+  for (const d of dominoes) world.removeBody(d.body);
+  const pts = samplePath(SHAPES[name]);
+  const color = new THREE.Color();
+  dominoes = pts.map((pt, i) => {
+    const body = new CANNON.Body({ mass: 0.12, material: matDomino, shape: boxShape, sleepSpeedLimit: 0.08, sleepTimeLimit: 0.4 });
+    body.position.set(pt.x, SIZE.h / 2, pt.z);
+    body.quaternion.setFromEuler(0, Math.atan2(-pt.tz, pt.tx), 0);
+    world.addBody(body);
+    body.sleep();
+    color.setHSL((i / pts.length) * 0.85, 0.75, 0.58);
+    if (i === 0) color.set(0xffffff);
+    dominoMesh.setColorAt(i, color);
+    return { body, pt };
+  });
+  dominoMesh.count = dominoes.length;
+  dominoMesh.instanceColor.needsUpdate = true;
+  document.querySelectorAll("[data-shape]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.shape === name)));
+  phase = "wait";
+  phaseAt = world.time;
+  lastFallen = 0;
+}
+
+function push(i) {
+  const d = dominoes[i];
+  if (!d) return;
+  d.body.wakeUp();
+  // Tap the top edge forward along the path.
+  d.body.applyImpulse(new CANNON.Vec3(d.pt.tx * 0.09, 0, d.pt.tz * 0.09), new CANNON.Vec3(0, SIZE.h * 0.45, 0));
+  if (phase === "wait") phase = "run";
+  phaseAt = lastChange = world.time;
+}
+
+// y component of the body's local up axis: 1 when standing, near 0 when lying flat.
+const upY = (b) => 1 - 2 * (b.quaternion.x ** 2 + b.quaternion.z ** 2);
+const fallenCount = () => dominoes.reduce((n, d) => n + (upY(d.body) < 0.8 ? 1 : 0), 0);
+
+// A sleeping body is treated as immovable during the step it gets hit, which would soak up the
+// chain's momentum. Wake the next two dominoes ahead of anything that has started to tip.
+function wakeAhead() {
+  for (let i = 0; i < dominoes.length; i++) {
+    const b = dominoes[i].body;
+    if (b.sleepState !== CANNON.Body.AWAKE || upY(b) > 0.995) continue;
+    for (const j of [i + 1, i + 2]) if (dominoes[j] && dominoes[j].body.sleepState !== CANNON.Body.AWAKE) dominoes[j].body.wakeUp();
+  }
+}
+
+// --- input --------------------------------------------------------------------------------
+const ray = new THREE.Raycaster();
+let down = null;
+renderer.domElement.addEventListener("pointerdown", (e) => { down = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener("pointerup", (e) => {
+  if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return;
+  ray.setFromCamera(new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1), camera);
+  const hit = ray.intersectObject(dominoMesh)[0];
+  if (hit) { push(hit.instanceId); setAuto(false); }
+});
+const autoBtn = document.getElementById("auto");
+let auto = true;
+const setAuto = (on) => { auto = on; autoBtn.setAttribute("aria-pressed", String(on)); };
+autoBtn.addEventListener("click", () => setAuto(!auto));
+document.getElementById("push").addEventListener("click", () => {
+  if (phase !== "wait") setup(shape);
+  push(0);
+});
+document.querySelectorAll("[data-shape]").forEach((b) => b.addEventListener("click", () => setup(b.dataset.shape)));
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  // Portrait screens need the camera further back to fit the whole layout.
+  const dist = 9.5 / Math.min(1, camera.aspect * 1.25);
+  camera.position.set(0, dist * 0.72, dist * 0.7);
+  controls.target.set(0, 0, 0);
+  controls.update();
+}
+
+// --- loop ---------------------------------------------------------------------------------
+const m = new THREE.Matrix4(), pos = new THREE.Vector3(), quat = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1);
+const shapes = Object.keys(SHAPES);
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  wakeAhead();
+  world.step(1 / 120, dt, 6);
+  dominoes.forEach((d, i) => {
+    pos.copy(d.body.position);
+    quat.copy(d.body.quaternion);
+    dominoMesh.setMatrixAt(i, m.compose(pos, quat, one));
+  });
+  dominoMesh.instanceMatrix.needsUpdate = true;
+  dominoMesh.computeBoundingSphere();
+
+  // Phase timing uses simulated seconds so slow devices still see the whole chain.
+  const t = world.time;
+  const fallen = fallenCount();
+  if (fallen !== lastFallen) { lastFallen = fallen; lastChange = t; }
+  if (phase === "wait" && auto && t - phaseAt > 1.2) push(0);
+  if (phase === "run" && (fallen === dominoes.length || t - lastChange > 2.5)) { phase = "done"; phaseAt = t; }
+  if (phase === "done" && auto && t - phaseAt > 2.5) setup(shapes[(shapes.indexOf(shape) + 1) % shapes.length]);
+  document.getElementById("stats").textContent = "骨牌 " + dominoes.length + " 張・已倒 " + fallen;
+
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+
+addEventListener("resize", resize);
+resize();
+setup("spiral");
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

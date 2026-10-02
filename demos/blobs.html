@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>blobs 示範：流動的形狀海報</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body { background: #f4ead8; color: #1d1d1b; }
+  #cv { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: pointer; }
+  .grain { position: fixed; inset: 0; pointer-events: none; mix-blend-mode: multiply; opacity: .5; }
+  .frame { position: fixed; inset: 10px; border: 1.5px solid rgba(29, 29, 27, .55); pointer-events: none; }
+  .poster {
+    position: fixed; left: 26px; bottom: 54px; pointer-events: none; mix-blend-mode: multiply;
+  }
+  .poster h1 { margin: 0; font: 900 clamp(40px, 10.5vw, 104px)/0.95 var(--font); letter-spacing: 2px; color: #1d1d1b; }
+  .poster p { margin: 8px 0 0 4px; font-size: 13px; letter-spacing: 1px; color: #4a453c; }
+  .stamp {
+    position: fixed; left: 26px; top: 24px; font: 600 12px/1.5 var(--mono); letter-spacing: 1.5px; color: #4a453c; pointer-events: none;
+  }
+  .stamp b { display: block; font-size: 20px; color: #1d1d1b; }
+  body.paper .controls .btn { padding: 6px 10px; }
+  .ctl { display: flex; align-items: center; gap: 4px; background: rgba(255, 255, 255, .55); border-radius: 999px; padding: 2px 4px 2px 10px; border: 1px solid var(--line); }
+  .ctl span { font-size: 12px; color: #4a453c; }
+  .ctl output { font: 700 13px var(--mono); min-width: 18px; text-align: center; }
+  .ctl .btn { border-radius: 999px; padding: 4px 9px !important; }
+  @media (max-width: 560px) {
+    .poster { left: 20px; bottom: 50px; }
+    .stamp { top: 104px; left: 20px; }
+  }
+</style>
+</head>
+<body class="paper">
+<canvas id="cv"></canvas>
+<div class="grain" id="grain"></div>
+<div class="frame"></div>
+<div class="stamp"><b>第 07 號</b>有機形狀研究・2026</div>
+<div class="poster">
+  <h1>流動的形狀</h1>
+  <p>blobs 即時生成・四色相乘疊印</p>
+</div>
+<div class="controls">
+  <div class="ctl"><span>點數</span><button class="btn" data-k="points" data-d="-1" aria-label="減少點數">－</button><output id="points">5</output><button class="btn" data-k="points" data-d="1" aria-label="增加點數">＋</button></div>
+  <div class="ctl"><span>隨機度</span><button class="btn" data-k="rand" data-d="-1" aria-label="降低隨機度">－</button><output id="rand">6</output><button class="btn" data-k="rand" data-d="1" aria-label="提高隨機度">＋</button></div>
+  <button class="btn primary" id="play" aria-pressed="true">流動中</button>
+</div>
+<div class="hint">點擊色塊讓它彈跳變形・移動滑鼠有視差</div>
+
+<script src="https://cdn.jsdelivr.net/npm/blobs@2.2.0/v2/animate/index.js"></script>
+<script>
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+const UNIT = 200; // every blob is generated at this size, then scaled by the canvas transform
+const opts = { points: 5, rand: 6 };
+
+// Layer recipe: relative position, size, depth for parallax, paint style
+const LAYERS = [
+  { color: "#b9a4f2", px: -0.17, py: -0.10, size: 0.74, depth: 0.4, spin: 0.03 },
+  { color: "#f2b134", px: 0.21, py: -0.12, size: 0.48, depth: 0.7, spin: -0.05 },
+  { color: "#ff6b5b", px: 0.02, py: 0.04, size: 0.62, depth: 1.0, spin: 0.04, main: true },
+  { color: "#1f9e89", px: -0.24, py: 0.20, size: 0.34, depth: 1.3, spin: -0.06 },
+  { stroke: "#1d1d1b", px: 0.08, py: -0.03, size: 0.55, depth: 1.6, spin: 0.02 },
+  { dots: "#1d1d1b", px: 0.27, py: 0.17, size: 0.3, depth: 1.9, spin: -0.03 },
+];
+
+function keyframe(duration, timing, extra) {
+  return {
+    duration, timingFunction: timing,
+    blobOptions: { seed: Math.random(), extraPoints: opts.points, randomness: opts.rand, size: UNIT, ...extra },
+  };
+}
+function loop(layer) {
+  layer.anim.transition({ ...keyframe(2600 + Math.random() * 2400, "ease"), callback: () => loop(layer) });
+}
+LAYERS.forEach((layer) => {
+  layer.anim = blobs2Animate.canvasPath();
+  layer.ox = 0; layer.oy = 0;
+  layer.anim.transition({ ...keyframe(0, "linear"), callback: () => loop(layer) });
+});
+
+// Halftone dot pattern for the "printed" layer
+function dotPattern() {
+  const p = document.createElement("canvas");
+  p.width = p.height = 9;
+  const c = p.getContext("2d");
+  c.fillStyle = "#1d1d1b";
+  c.beginPath(); c.arc(4.5, 4.5, 1.7, 0, Math.PI * 2); c.fill();
+  return ctx.createPattern(p, "repeat");
+}
+
+// Paper grain: random speckles rendered once into a tile
+(function grain() {
+  const g = document.createElement("canvas");
+  g.width = g.height = 220;
+  const c = g.getContext("2d");
+  const img = c.createImageData(220, 220);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const v = 200 + Math.random() * 55;
+    img.data[i] = v; img.data[i + 1] = v * 0.97; img.data[i + 2] = v * 0.9;
+    img.data[i + 3] = Math.random() < 0.5 ? 40 : 0;
+  }
+  c.putImageData(img, 0, 0);
+  document.getElementById("grain").style.background = `url(${g.toDataURL()})`;
+})();
+
+let W = 0, H = 0, dpr = 1, pattern = null;
+function resize() {
+  dpr = Math.min(devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  pattern = dotPattern();
+}
+addEventListener("resize", resize);
+resize();
+
+const mouse = { x: 0, y: 0, tx: 0, ty: 0 };
+addEventListener("pointermove", (e) => {
+  mouse.tx = (e.clientX / W) * 2 - 1;
+  mouse.ty = (e.clientY / H) * 2 - 1;
+});
+
+// Sets the canvas transform for one layer and returns its on-screen scale
+function place(layer, t) {
+  const S = Math.min(W, H * 1.15);
+  const cx = W / 2 + layer.px * Math.min(W, H * 1.4) + layer.ox;
+  const cy = H * 0.44 + layer.py * H + layer.oy;
+  const k = (S * layer.size) / UNIT;
+  ctx.setTransform(dpr * k, 0, 0, dpr * k, cx * dpr, cy * dpr);
+  ctx.rotate(t * layer.spin);
+  ctx.translate(-UNIT / 2, -UNIT / 2);
+  return k;
+}
+
+function frame(now) {
+  const t = now / 1000;
+  mouse.x += (mouse.tx - mouse.x) * 0.06;
+  mouse.y += (mouse.ty - mouse.y) * 0.06;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  LAYERS.forEach((layer) => {
+    layer.ox = -mouse.x * layer.depth * 16;
+    layer.oy = -mouse.y * layer.depth * 12;
+    const k = place(layer, t);
+    const path = layer.anim.renderFrame();
+    layer.path = path;
+    if (layer.stroke) {
+      ctx.globalCompositeOperation = "source-over";
+      ctx.strokeStyle = layer.stroke;
+      ctx.lineWidth = 2 / k;
+      ctx.stroke(path);
+    } else if (layer.dots) {
+      ctx.globalCompositeOperation = "multiply";
+      ctx.fillStyle = pattern;
+      ctx.fill(path);
+    } else {
+      ctx.globalCompositeOperation = "multiply";
+      ctx.fillStyle = layer.color;
+      ctx.fill(path);
+    }
+  });
+  ctx.globalCompositeOperation = "source-over";
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// Click a blob: the topmost filled layer under the pointer springs into a new shape
+cv.addEventListener("click", (e) => {
+  const t = performance.now() / 1000;
+  const hit = LAYERS.slice().reverse().find((layer) => {
+    if (!layer.path || layer.stroke) return false;
+    place(layer, t);
+    return ctx.isPointInPath(layer.path, e.clientX * dpr, e.clientY * dpr);
+  });
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  if (!hit) return;
+  hit.anim.play();
+  hit.anim.transition({ ...keyframe(1500, "elasticEnd1", { randomness: Math.min(14, opts.rand + 4) }), callback: () => loop(hit) });
+});
+
+document.querySelectorAll("[data-k]").forEach((b) => b.addEventListener("click", () => {
+  const key = b.dataset.k;
+  const lim = key === "points" ? [1, 12] : [1, 14];
+  opts[key] = Math.max(lim[0], Math.min(lim[1], opts[key] + Number(b.dataset.d)));
+  document.getElementById(key).textContent = opts[key];
+  LAYERS.forEach((layer) => layer.anim.transition({ ...keyframe(900, "elasticEnd0"), callback: () => loop(layer) }));
+}));
+
+const playBtn = document.getElementById("play");
+let playing = true;
+playBtn.addEventListener("click", () => {
+  playing = !playing;
+  LAYERS.forEach((layer) => (playing ? layer.anim.play() : layer.anim.pause()));
+  playBtn.setAttribute("aria-pressed", playing);
+  playBtn.textContent = playing ? "流動中" : "已暫停";
+});
+</script>
+</body>
+</html>

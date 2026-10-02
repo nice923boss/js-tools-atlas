@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Marzipano 示範：嵌入式看板與全景小地圖</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  #pano { position: fixed; inset: 0; background: #000; }
+  /* Regular hotspot: a zero-size anchor, children centered on the point. */
+  .pin { width: 0; height: 0; cursor: pointer; }
+  .pin i {
+    position: absolute; left: -11px; top: -11px; width: 22px; height: 22px; border-radius: 50%;
+    background: var(--c2); border: 3px solid #fff; box-shadow: 0 2px 10px rgba(0,0,0,.5);
+  }
+  .pin span {
+    position: absolute; left: 16px; top: -12px; white-space: nowrap; padding: 4px 9px; border-radius: 999px;
+    background: rgba(0,0,0,.62); color: #fff; font: 600 12px/1.3 var(--font); backdrop-filter: blur(4px);
+  }
+  .pin:hover i { background: var(--accent); }
+  /* Embedded hotspot: rendered with a CSS 3D transform so it sits on the sphere like a real sign. */
+  .board {
+    width: 340px; padding: 16px 20px; border-radius: 14px; color: #fff; text-align: center;
+    background: linear-gradient(160deg, rgba(255,140,66,.85), rgba(247,37,133,.72));
+    border: 2px solid rgba(255,255,255,.8); box-shadow: 0 0 40px rgba(255,140,66,.5);
+    font-family: var(--font); pointer-events: none;
+  }
+  .board small { font: 600 12px/1 var(--mono); letter-spacing: .2em; opacity: .85; }
+  .board h2 { margin: 6px 0 4px; font-size: 30px; letter-spacing: .08em; }
+  .board p { margin: 0; font-size: 15px; opacity: .92; }
+  .board.hidden { display: none; }
+  .mini {
+    position: fixed; right: 12px; bottom: 12px; z-index: 50; width: min(260px, 46vw);
+    padding: 6px; border-radius: 10px;
+  }
+  .mini .map { position: relative; aspect-ratio: 2 / 1; border-radius: 6px; overflow: hidden; cursor: pointer; }
+  .mini img { width: 100%; height: 100%; display: block; opacity: .85; }
+  .mini .frame { position: absolute; border: 2px solid var(--accent); background: rgba(247,223,30,.18); border-radius: 2px; pointer-events: none; }
+  .mini .dot { position: absolute; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: var(--c2); pointer-events: none; }
+  .mini .cap { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); padding: 4px 2px 0; }
+  .mini .cap b { color: var(--fg); font: 11px var(--mono); }
+  .pad {
+    position: fixed; left: 12px; bottom: 48px; z-index: 50;
+    display: grid; grid-template-columns: repeat(3, 34px); grid-template-rows: repeat(2, 34px); gap: 4px;
+  }
+  .pad .btn { padding: 0; font-size: 15px; display: grid; place-items: center; user-select: none; touch-action: none; }
+  @media (max-width: 520px) { .board { width: 260px; } .board h2 { font-size: 24px; } .hint { display: none; } .pad { bottom: 12px; } }
+</style>
+</head>
+<body>
+<div id="pano"></div>
+<div class="controls">
+  <button class="btn primary" id="spin" aria-pressed="true">自動旋轉：開</button>
+  <button class="btn" id="board">隱藏看板</button>
+</div>
+<div class="pad" id="pad">
+  <button class="btn" id="vIn" title="放大">＋</button>
+  <button class="btn" id="vUp" title="向上">↑</button>
+  <button class="btn" id="vOut" title="縮小">－</button>
+  <button class="btn" id="vLeft" title="向左">←</button>
+  <button class="btn" id="vDown" title="向下">↓</button>
+  <button class="btn" id="vRight" title="向右">→</button>
+</div>
+<div class="panel mini">
+  <div class="map" id="map">
+    <img src="_shared/img/panorama.jpg" alt="全景小地圖">
+    <div class="frame" id="f1"></div><div class="frame" id="f2"></div>
+  </div>
+  <div class="cap"><span>點小地圖可跳轉</span><b id="readout">0°</b></div>
+</div>
+<div class="hint">拖曳環顧・按住方向鍵移動・點藍點飛過去</div>
+
+<script src="https://cdn.jsdelivr.net/npm/marzipano@0.10.2/dist/marzipano.js"></script>
+<script>
+// Marzipano: WebGL panorama viewer with DOM hotspots (flat or perspective-embedded), control methods and movements.
+const deg = (d) => (d * Math.PI) / 180;
+const viewer = new Marzipano.Viewer(document.getElementById("pano"), { controls: { mouseViewMode: "drag" } });
+
+const source = Marzipano.ImageUrlSource.fromString("_shared/img/panorama.jpg");
+const geometry = new Marzipano.EquirectGeometry([{ width: 4096 }]);
+const limiter = Marzipano.RectilinearView.limit.traditional(4096, deg(110), deg(130));
+const view = new Marzipano.RectilinearView({ yaw: deg(18), pitch: deg(-6), fov: deg(85) }, limiter);
+const scene = viewer.createScene({ source, geometry, view, pinFirstLevel: true });
+scene.switchTo();
+
+// Marzipano pitch is positive downward; POINTS use "up is positive" and are negated below.
+const POINTS = [
+  ["夕陽", 36, 3.5], ["水岸石階", 97, -11], ["紅窗別墅", 156, 8], ["老房子", -135, 7], ["繫船柱", -77, -22],
+];
+const spots = scene.hotspotContainer();
+POINTS.forEach(([name, yaw, pitch]) => {
+  const el = document.createElement("div");
+  el.className = "pin";
+  el.innerHTML = `<i></i><span>${name}</span>`;
+  el.addEventListener("click", () => {
+    stopSpin();
+    scene.lookTo({ yaw: deg(yaw), pitch: deg(-pitch), fov: deg(60) }, { transitionDuration: 1400 });
+  });
+  spots.createHotspot(el, { yaw: deg(yaw), pitch: deg(-pitch) });
+});
+
+// The sign is placed on the sphere (radius in px) instead of facing the screen, so it warps as you pan.
+const board = document.createElement("div");
+board.className = "board";
+board.innerHTML = "<small>威尼斯水岸</small><h2>日落觀景點</h2><p>每天傍晚，太陽從這裡沉入潟湖</p>";
+spots.createHotspot(board, { yaw: deg(34), pitch: deg(-19) }, { perspective: { radius: 900 } });
+
+// Arrow pad: Marzipano control methods give the same inertia as dragging.
+const controls = viewer.controls();
+[["vUp", "y", -0.7], ["vDown", "y", 0.7], ["vLeft", "x", -0.7], ["vRight", "x", 0.7], ["vIn", "zoom", -0.7], ["vOut", "zoom", 0.7]]
+  .forEach(([id, param, v]) => controls.registerMethod(id, new Marzipano.ElementPressControlMethod(document.getElementById(id), param, v, 3), true));
+
+// Autorotate as an idle movement: resumes 4 s after the last interaction.
+const autorotate = Marzipano.autorotate({ yawSpeed: 0.04, targetPitch: deg(-4), targetFov: deg(80) });
+const spinBtn = document.getElementById("spin");
+let spinning = true;
+function startSpin() { spinning = true; viewer.startMovement(autorotate); viewer.setIdleMovement(4000, autorotate); syncSpin(); }
+function stopSpin() { spinning = false; viewer.stopMovement(); viewer.setIdleMovement(Infinity); syncSpin(); }
+function syncSpin() { spinBtn.textContent = `自動旋轉：${spinning ? "開" : "關"}`; spinBtn.setAttribute("aria-pressed", spinning); }
+spinBtn.onclick = () => (spinning ? stopSpin() : startSpin());
+startSpin();
+
+document.getElementById("board").onclick = (e) => {
+  const hidden = board.classList.toggle("hidden");
+  e.target.textContent = hidden ? "顯示看板" : "隱藏看板";
+};
+
+// Minimap: draw the current field of view as a frame on the equirectangular thumbnail.
+const map = document.getElementById("map");
+const f1 = document.getElementById("f1"), f2 = document.getElementById("f2");
+const readout = document.getElementById("readout");
+function drawFrame() {
+  const W = map.clientWidth, H = map.clientHeight;
+  const vfov = view.fov();
+  const aspect = view.width() / Math.max(1, view.height());
+  const hfov = 2 * Math.atan(Math.tan(vfov / 2) * aspect);
+  const w = (hfov / (2 * Math.PI)) * W, h = (vfov / Math.PI) * H;
+  let x = ((view.yaw() + Math.PI) / (2 * Math.PI)) * W - w / 2;
+  x = ((x % W) + W) % W;
+  const y = Math.max(0, Math.min(H - h, ((Math.PI / 2 + view.pitch()) / Math.PI) * H - h / 2));
+  for (const [f, dx] of [[f1, 0], [f2, -W]]) {
+    Object.assign(f.style, { left: `${x + dx}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` });
+  }
+  const yawDeg = Math.round((((view.yaw() * 180) / Math.PI) % 360 + 540) % 360 - 180);
+  readout.textContent = `${yawDeg}°`;
+}
+view.addEventListener("change", drawFrame);
+window.addEventListener("resize", () => requestAnimationFrame(drawFrame));
+map.addEventListener("click", (e) => {
+  const r = map.getBoundingClientRect();
+  const yaw = ((e.clientX - r.left) / r.width) * 2 * Math.PI - Math.PI;
+  const pitch = ((e.clientY - r.top) / r.height) * Math.PI - Math.PI / 2;
+  stopSpin();
+  scene.lookTo({ yaw, pitch: Math.max(deg(-60), Math.min(deg(60), pitch)) }, { transitionDuration: 900 });
+});
+drawFrame();
+</script>
+</body>
+</html>

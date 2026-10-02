@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Three.js 示範：機器人材質展示間</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  .controls { flex-direction: column; align-items: flex-end; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+  .row .label { font-size: 12px; color: var(--fg); align-self: center; padding: 6px 8px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); }
+  .btn { padding: 7px 10px; font-size: 12px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="controls">
+  <div class="row" id="anims"><span class="label">動作</span></div>
+  <div class="row" id="mats"><span class="label">材質</span></div>
+</div>
+<div class="hint">拖曳旋轉視角・滾輪縮放・點機器人讓它跳一下</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+
+const canvas = document.getElementById("c");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0e1013);
+const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 200);
+camera.position.set(-7.5, 4.2, 12.5);
+
+const controls = new OrbitControls(camera, canvas);
+controls.target.set(0, 2.1, 0);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.6;
+controls.minDistance = 5;
+controls.maxDistance = 24;
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.enablePan = false;
+
+// Equirectangular panorama as both background (blurred) and image-based lighting
+new THREE.TextureLoader().load("_shared/img/panorama.jpg", (tex) => {
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  scene.environment = tex;
+  scene.background = tex;
+  scene.backgroundBlurriness = 0.06;
+  scene.backgroundIntensity = 0.7;
+  scene.environmentIntensity = 0.9;
+});
+
+// Lights: warm key with soft shadows, cool rim, sky/ground fill
+const key = new THREE.DirectionalLight(0xffe2b8, 2.4);
+key.position.set(5, 9, 6);
+key.castShadow = true;
+key.shadow.mapSize.set(1024, 1024);
+key.shadow.camera.left = -6; key.shadow.camera.right = 6;
+key.shadow.camera.top = 6; key.shadow.camera.bottom = -6;
+key.shadow.radius = 4;
+scene.add(key);
+const rim = new THREE.SpotLight(0x4cc9f0, 60, 30, Math.PI / 6, 0.6);
+rim.position.set(-6, 6, -6);
+scene.add(rim);
+scene.add(new THREE.HemisphereLight(0xbfd8ff, 0x332211, 0.4));
+
+// Glossy pedestal with a glowing ring
+const pedestal = new THREE.Mesh(
+  new THREE.CylinderGeometry(3.2, 3.4, 0.5, 96),
+  new THREE.MeshPhysicalMaterial({ color: 0x15171c, metalness: 0.6, roughness: 0.45, clearcoat: 0.6, clearcoatRoughness: 0.3, envMapIntensity: 0.35 })
+);
+pedestal.position.y = -0.25;
+pedestal.receiveShadow = true;
+scene.add(pedestal);
+const ring = new THREE.Mesh(
+  new THREE.TorusGeometry(3.25, 0.035, 12, 160),
+  new THREE.MeshBasicMaterial({ color: 0xf7df1e })
+);
+ring.rotation.x = Math.PI / 2;
+ring.position.y = 0.01;
+scene.add(ring);
+
+// Robot model with animation mixer
+let mixer, model, actions = {}, current, originalMats = new Map();
+const ANIMS = [["Idle", "待機"], ["Walking", "走路"], ["Running", "跑步"], ["Dance", "跳舞"], ["Wave", "揮手"]];
+const MATS = [["orig", "原色"], ["chrome", "鍍鉻"], ["glass", "玻璃"], ["gold", "霧金"]];
+const matLib = {
+  chrome: new THREE.MeshPhysicalMaterial({ color: 0xe8e8ea, metalness: 1, roughness: 0.08 }),
+  glass: new THREE.MeshPhysicalMaterial({ color: 0xbfe9ff, metalness: 0, roughness: 0.04, transmission: 1, thickness: 0.8, ior: 1.45 }),
+  gold: new THREE.MeshPhysicalMaterial({ color: 0xf7c95a, metalness: 1, roughness: 0.38, clearcoat: 0.6 }),
+};
+
+new GLTFLoader().load("_shared/models/robot.glb", (gltf) => {
+  model = gltf.scene;
+  model.traverse((o) => {
+    if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; originalMats.set(o, o.material); }
+  });
+  scene.add(model);
+  mixer = new THREE.AnimationMixer(model);
+  for (const clip of gltf.animations) actions[clip.name] = mixer.clipAction(clip);
+  for (const name of ["Jump", "Wave"]) {
+    actions[name].setLoop(THREE.LoopOnce);
+    actions[name].clampWhenFinished = true;
+  }
+  mixer.addEventListener("finished", () => play(lastLoop));
+  play("Idle");
+});
+
+let lastLoop = "Idle";
+function play(name) {
+  const next = actions[name];
+  if (!next || next === current) return;
+  next.reset().setEffectiveWeight(1).fadeIn(0.35).play();
+  if (current) current.fadeOut(0.35);
+  current = next;
+  if (next.loop !== THREE.LoopOnce) lastLoop = name;
+  const shown = name === "Jump" ? lastLoop : name;
+  document.querySelectorAll("#anims .btn").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.k === shown)));
+}
+
+function setMaterial(kind) {
+  if (!model) return;
+  model.traverse((o) => {
+    if (o.isMesh) o.material = kind === "orig" ? originalMats.get(o) : matLib[kind];
+  });
+  document.querySelectorAll("#mats .btn").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.k === kind)));
+}
+
+function addButtons(rowId, list, onClick, first) {
+  const row = document.getElementById(rowId);
+  for (const [k, label] of list) {
+    const b = document.createElement("button");
+    b.className = "btn";
+    b.dataset.k = k;
+    b.textContent = label;
+    b.setAttribute("aria-pressed", String(k === first));
+    b.addEventListener("click", () => onClick(k));
+    row.append(b);
+  }
+}
+addButtons("anims", ANIMS, play, "Idle");
+addButtons("mats", MATS, setMaterial, "orig");
+
+// Click the robot to make it jump
+const ray = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+let downAt = 0;
+canvas.addEventListener("pointerdown", () => { downAt = performance.now(); });
+canvas.addEventListener("pointerup", (e) => {
+  if (!model || performance.now() - downAt > 250) return;
+  ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  if (ray.intersectObject(model, true).length) play("Jump");
+});
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  // Pull the camera back on narrow screens so the robot stays in frame
+  camera.fov = w < h ? 55 : 40;
+  camera.updateProjectionMatrix();
+}
+addEventListener("resize", resize);
+resize();
+
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  if (mixer) mixer.update(dt);
+  ring.material.color.setHSL(0.15, 0.95, 0.5 + Math.sin(clock.elapsedTime * 2) * 0.08);
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

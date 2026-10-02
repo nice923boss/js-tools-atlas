@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Matter.js 示範：會掉下來的招牌字</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body { background: linear-gradient(#141826 0%, #0e1013 75%); }
+  #stage { position: fixed; inset: 0; touch-action: none; cursor: grab; }
+  #stage canvas { display: block; width: 100%; height: 100%; }
+  .heading { position: fixed; left: 16px; top: 14px; z-index: 40; pointer-events: none; }
+  .heading h1 { margin: 0; font-size: clamp(18px, 4vw, 26px); letter-spacing: .06em; }
+  .heading p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
+  .stats { position: fixed; right: 12px; bottom: 12px; z-index: 40; padding: 5px 10px; border-radius: 999px; font-size: 12px; pointer-events: none; }
+  @media (max-width: 600px) { .heading { top: 60px; } }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv"></canvas></div>
+<div class="heading"><h1>歡迎光臨</h1><p>每個字都是剛體：抓起來、甩出去</p></div>
+<div class="controls">
+  <button class="btn primary" id="drop">重新掉落</button>
+  <button class="btn" id="boba">珍珠雨</button>
+  <button class="btn" id="quake">地震</button>
+</div>
+<div class="panel stats mono" id="stats">剛體 0 個</div>
+<div class="hint">拖曳文字方塊丟出去・點空白處加一顆珍珠</div>
+
+<script src="https://cdn.jsdelivr.net/npm/matter-js@0.20.0/build/matter.min.js"></script>
+<script>
+// Matter.js handles the physics; drawing is a plain 2D canvas loop so the blocks can carry text.
+const { Engine, Runner, Bodies, Body, Composite, Mouse, MouseConstraint, Events } = Matter;
+const WORD = ["歡", "迎", "光", "臨"];
+const COLORS = ["#f72585", "#ffb703", "#4cc9f0", "#7bd389", "#9d8cff", "#ff7b54"];
+const stage = document.getElementById("stage");
+const canvas = document.getElementById("cv");
+const ctx = canvas.getContext("2d");
+const engine = Engine.create({ gravity: { y: 1.1 } });
+const world = engine.world;
+let W = innerWidth;
+let H = innerHeight;
+
+// Static walls: a wide floor plus two side walls, repositioned on resize.
+const wallOpts = { isStatic: true, render: { visible: false } };
+const FLOOR_GAP = 48;
+const floor = Bodies.rectangle(W / 2, H - FLOOR_GAP + 50, 6000, 100, wallOpts);
+const left = Bodies.rectangle(-50, H / 2, 100, 6000, wallOpts);
+const right = Bodies.rectangle(W + 50, H / 2, 100, 6000, wallOpts);
+Composite.add(world, [floor, left, right]);
+
+const blockSize = () => Math.round(Math.max(56, Math.min(W / 5.4, H / 4.6, 140)));
+
+function dropWord() {
+  Composite.allBodies(world).filter((b) => b.label === "char" || b.label === "pearl").forEach((b) => Composite.remove(world, b));
+  const s = blockSize();
+  WORD.forEach((ch, i) => {
+    const x = W / 2 + (i - 1.5) * s * 1.15;
+    const b = Bodies.rectangle(x, -s * (1 + i * 0.9), s, s, {
+      chamfer: { radius: s * 0.16 }, restitution: 0.35, friction: 0.5, density: 0.002, label: "char",
+    });
+    b.plugin = { ch, color: COLORS[i % COLORS.length], size: s };
+    Body.setAngle(b, (Math.random() - 0.5) * 0.6);
+    Composite.add(world, b);
+  });
+}
+
+function addPearl(x, y) {
+  const r = Math.max(9, blockSize() * 0.11);
+  const b = Bodies.circle(x, y, r, { restitution: 0.55, friction: 0.05, density: 0.004, label: "pearl" });
+  b.plugin = { r };
+  Composite.add(world, b);
+}
+
+// Mouse is attached to the wrapper div so its coordinates stay in CSS pixels on HiDPI screens.
+const mouse = Mouse.create(stage);
+const grab = MouseConstraint.create(engine, { mouse, constraint: { stiffness: 0.2, damping: 0.1 } });
+Composite.add(world, grab);
+let pressAt = null;
+Events.on(grab, "mousedown", () => { pressAt = { ...mouse.position, body: grab.body }; });
+Events.on(grab, "startdrag", () => stage.style.cursor = "grabbing");
+Events.on(grab, "enddrag", () => stage.style.cursor = "grab");
+Events.on(grab, "mouseup", () => {
+  // A click (no drag, nothing grabbed) on empty space drops a pearl there.
+  if (pressAt && !pressAt.body && Math.hypot(mouse.position.x - pressAt.x, mouse.position.y - pressAt.y) < 6) addPearl(mouse.position.x, mouse.position.y);
+  pressAt = null;
+});
+
+document.getElementById("drop").addEventListener("click", dropWord);
+document.getElementById("boba").addEventListener("click", () => {
+  for (let i = 0; i < 40; i++) setTimeout(() => addPearl(W * (0.15 + Math.random() * 0.7), -20 - Math.random() * 60), i * 35);
+});
+document.getElementById("quake").addEventListener("click", () => {
+  for (const b of Composite.allBodies(world)) {
+    if (b.isStatic) continue;
+    Body.setVelocity(b, { x: (Math.random() - 0.5) * 18, y: -8 - Math.random() * 14 });
+    Body.setAngularVelocity(b, (Math.random() - 0.5) * 0.4);
+  }
+});
+
+function resize() {
+  W = innerWidth;
+  H = innerHeight;
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  Body.setPosition(floor, { x: W / 2, y: H - FLOOR_GAP + 50 });
+  Body.setPosition(right, { x: W + 50, y: H / 2 });
+}
+
+function pathOf(b) {
+  ctx.beginPath();
+  b.vertices.forEach((v, i) => (i ? ctx.lineTo(v.x, v.y) : ctx.moveTo(v.x, v.y)));
+  ctx.closePath();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  // Shop counter the blocks land on.
+  ctx.fillStyle = "#2a1d14";
+  ctx.fillRect(0, H - FLOOR_GAP, W, FLOOR_GAP);
+  ctx.fillStyle = "#5c3d26";
+  ctx.fillRect(0, H - FLOOR_GAP, W, 5);
+  let count = 0;
+  for (const b of Composite.allBodies(world)) {
+    if (b.label === "char") {
+      count++;
+      const { ch, color, size } = b.plugin;
+      ctx.save();
+      ctx.shadowColor = "rgba(0,0,0,.45)";
+      ctx.shadowBlur = 16;
+      ctx.shadowOffsetY = 6;
+      pathOf(b);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.restore();
+      ctx.save();
+      ctx.translate(b.position.x, b.position.y);
+      ctx.rotate(b.angle);
+      ctx.fillStyle = "#0e1013";
+      ctx.font = "800 " + Math.round(size * 0.62) + "px " + getComputedStyle(document.body).fontFamily;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(ch, 0, size * 0.04);
+      ctx.restore();
+    } else if (b.label === "pearl") {
+      count++;
+      const r = b.plugin.r;
+      const g = ctx.createRadialGradient(b.position.x - r * 0.35, b.position.y - r * 0.35, r * 0.1, b.position.x, b.position.y, r);
+      g.addColorStop(0, "#8a5a3b");
+      g.addColorStop(1, "#2b160c");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(b.position.x, b.position.y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  document.getElementById("stats").textContent = "剛體 " + count + " 個";
+  requestAnimationFrame(draw);
+}
+
+addEventListener("resize", resize);
+resize();
+dropWord();
+Runner.run(Runner.create(), engine);
+requestAnimationFrame(draw);
+
+// Idle previews: a few pearls drizzle in every couple of seconds until there are plenty.
+setInterval(() => {
+  const pearls = Composite.allBodies(world).filter((b) => b.label === "pearl").length;
+  if (pearls < 60) for (let i = 0; i < 3; i++) addPearl(W * (0.2 + Math.random() * 0.6), -20);
+}, 1800);
+</script>
+</body>
+</html>

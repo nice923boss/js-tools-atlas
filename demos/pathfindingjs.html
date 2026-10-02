@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PathFinding.js 示範：尋路實驗室</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  #top { position: fixed; left: 0; right: 0; top: 0; z-index: 50; display: flex; flex-wrap: wrap; gap: 6px;
+    align-items: center; padding: 8px 10px; }
+  #top select { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; color: var(--fg); }
+  #top .btn { padding: 7px 10px; }
+  #top label { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--muted); cursor: pointer; }
+  #top label input { accent-color: var(--accent); }
+  #top .sp { flex: 1; }
+  #cv { position: fixed; left: 0; touch-action: none; cursor: crosshair; }
+  #bot { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; padding: 6px 12px 8px; font-size: 13px; }
+  #stats { font-weight: 700; }
+  #stats .bad { color: var(--c3); }
+  #stats .dim { color: var(--muted); font-weight: 500; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+</style>
+</head>
+<body>
+<div id="top">
+  <select id="algo" aria-label="演算法">
+    <option value="astar">A* 搜尋</option>
+    <option value="dijkstra">Dijkstra</option>
+    <option value="bfs">廣度優先 BFS</option>
+    <option value="best">最佳優先（貪婪）</option>
+    <option value="bi">雙向 A*</option>
+    <option value="jps">跳點搜尋 JPS</option>
+  </select>
+  <label><input type="checkbox" id="diag" checked>允許斜走</label>
+  <span class="sp"></span>
+  <button class="btn" id="b-scatter">隨機障礙</button>
+  <button class="btn" id="b-maze">迷宮</button>
+  <button class="btn" id="b-clear">清空</button>
+</div>
+<canvas id="cv"></canvas>
+<div id="bot">
+  <div id="stats"></div>
+  <div class="legend">
+    <span><i style="background:#22b39c"></i>待檢查</span>
+    <span><i style="background:#1f3f7a"></i>已檢查</span>
+    <span><i style="background:#8d95a8"></i>牆</span>
+    <span><i style="background:#f7df1e"></i>路徑</span>
+    <span>拖曳畫牆或擦牆，拖動「起」「終」移動端點</span>
+  </div>
+</div>
+
+<script type="module">
+// PathFinding.js: Grid + finders (A*, Dijkstra, BFS, Best-First, Bi-A*, JPS). Node opened/closed flags are
+// instrumented with property setters so the search order can be replayed as an animation.
+import PF from "https://cdn.jsdelivr.net/npm/pathfinding@0.4.18/+esm";
+
+const $ = (id) => document.getElementById(id);
+const cv = $("cv"), ctx = cv.getContext("2d");
+const NAMES = { astar: "A*", dijkstra: "Dijkstra", bfs: "廣度優先", best: "最佳優先", bi: "雙向 A*", jps: "跳點搜尋" };
+const ORDER = ["astar", "dijkstra", "bfs", "best", "bi", "jps"];
+
+let cols = 0, rows = 0, cell = 24, ox = 0, oy = 0, dpr = 1;
+let walls = new Set(), start = [2, 2], goal = [10, 10];
+let state, side, born, path = [], ops = [], opIdx = 0, pathT = 0, animating = false, animStart = 0, lastStats = null;
+const SEARCH_MS = 1100, PATH_MS = 380;
+let demo = true, demoTimer = 0;
+
+const key = (x, y) => x + "," + y;
+const inGrid = (x, y) => x >= 0 && y >= 0 && x < cols && y < rows;
+
+function makeFinder() {
+  const diagonalMovement = $("diag").checked ? PF.DiagonalMovement.OnlyWhenNoObstacles : PF.DiagonalMovement.Never;
+  switch ($("algo").value) {
+    case "dijkstra": return new PF.DijkstraFinder({ diagonalMovement });
+    case "bfs": return new PF.BreadthFirstFinder({ diagonalMovement });
+    case "best": return new PF.BestFirstFinder({ diagonalMovement });
+    case "bi": return new PF.BiAStarFinder({ diagonalMovement });
+    case "jps": return new PF.JumpPointFinder({ diagonalMovement });
+    default: return new PF.AStarFinder({ diagonalMovement });
+  }
+}
+
+function buildGrid() {
+  const g = new PF.Grid(cols, rows);
+  for (const k of walls) {
+    const [x, y] = k.split(",").map(Number);
+    if (inGrid(x, y)) g.setWalkableAt(x, y, false);
+  }
+  return g;
+}
+
+// record every opened/closed write the finder makes, in order
+function instrument(grid) {
+  const log = [];
+  for (const row of grid.nodes) {
+    for (const n of row) {
+      let opened, closed;
+      Object.defineProperty(n, "opened", { get: () => opened, set: (v) => { opened = v; log.push([n.x, n.y, 1, v]); } });
+      Object.defineProperty(n, "closed", { get: () => closed, set: (v) => { closed = v; log.push([n.x, n.y, 2, v]); } });
+    }
+  }
+  return log;
+}
+
+function search(animate) {
+  const base = buildGrid();
+  const t0 = performance.now();
+  makeFinder().findPath(start[0], start[1], goal[0], goal[1], base.clone());
+  const ms = performance.now() - t0;
+  const grid = base.clone();
+  const rec = instrument(grid);
+  path = makeFinder().findPath(start[0], start[1], goal[0], goal[1], grid);
+  ops = rec;
+  state = new Uint8Array(cols * rows);
+  side = new Uint8Array(cols * rows);
+  born = new Float32Array(cols * rows);
+  const closedCount = rec.filter((o) => o[2] === 2 && o[3]).length;
+  lastStats = { ms, closedCount, len: path.length ? PF.Util.pathLength(path) : 0 };
+  opIdx = 0;
+  pathT = 0;
+  animating = animate;
+  animStart = performance.now();
+  if (!animate) { applyOps(ops.length, -1e9); pathT = 1; }
+  showStats(animate);
+}
+
+function applyOps(n, now) {
+  const end = Math.min(ops.length, opIdx + n);
+  for (; opIdx < end; opIdx++) {
+    const [x, y, attr, v] = ops[opIdx];
+    const i = x + y * cols;
+    if (attr === 1) { if (v) { if (!state[i]) { state[i] = 1; born[i] = now; } if (v === 2) side[i] = 1; } }
+    else if (v) { if (state[i] !== 2) born[i] = now; state[i] = 2; }
+  }
+}
+
+function showStats(pending) {
+  const s = lastStats, name = NAMES[$("algo").value];
+  const tag = demo ? `<span class="dim">自動比較中　</span>` : "";
+  if (pending) { $("stats").innerHTML = `${tag}${name} 搜尋中……`; return; }
+  $("stats").innerHTML = path.length
+    ? `${tag}${name}：路徑長度 ${s.len.toFixed(1)}，檢查 ${s.closedCount} 格，耗時 ${s.ms.toFixed(2)} ms`
+    : `${tag}${name}：<span class="bad">找不到路徑</span>，檢查 ${s.closedCount} 格`;
+}
+
+function layout() {
+  dpr = Math.min(2, devicePixelRatio || 1);
+  const top = $("top").offsetHeight, bot = $("bot").offsetHeight;
+  const aw = innerWidth - 16, ah = innerHeight - top - bot - 8;
+  const c = Math.max(16, Math.min(30, Math.floor(Math.min(aw / 34, ah / 20))));
+  const nc = Math.max(10, Math.floor(aw / c)), nr = Math.max(8, Math.floor(ah / c));
+  const changed = nc !== cols || nr !== rows;
+  cols = nc; rows = nr; cell = Math.min(aw / cols, ah / rows);
+  ox = Math.round((innerWidth - cols * cell) / 2);
+  oy = Math.round(top + 4 + (ah - rows * cell) / 2);
+  cv.style.top = "0px";
+  cv.width = innerWidth * dpr; cv.height = innerHeight * dpr;
+  cv.style.width = innerWidth + "px"; cv.style.height = innerHeight + "px";
+  return changed;
+}
+
+function clampEnds() {
+  start = [Math.min(start[0], cols - 1), Math.min(start[1], rows - 1)];
+  goal = [Math.min(goal[0], cols - 1), Math.min(goal[1], rows - 1)];
+  if (start[0] === goal[0] && start[1] === goal[1]) goal = [cols - 1, rows - 1];
+  walls.delete(key(...start));
+  walls.delete(key(...goal));
+}
+
+function scatter() {
+  // retry until the random map is solvable so the first impression always shows a path
+  for (let tries = 0; tries < 12; tries++) {
+    walls = new Set();
+    start = [Math.max(1, Math.floor(cols * 0.12)), Math.floor(rows / 2)];
+    goal = [Math.min(cols - 2, Math.ceil(cols * 0.88)), Math.floor(rows / 2)];
+    for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) if (Math.random() < 0.22) walls.add(key(x, y));
+    // a few long bars make the difference between algorithms more visible
+    for (let b = 0; b < 3; b++) {
+      const x = Math.floor(cols * (0.3 + b * 0.2)), y0 = Math.floor(Math.random() * rows * 0.4), len = Math.floor(rows * 0.6);
+      for (let y = y0; y < Math.min(rows, y0 + len); y++) walls.add(key(x, y));
+    }
+    clampEnds();
+    if (new PF.AStarFinder().findPath(start[0], start[1], goal[0], goal[1], buildGrid()).length) return;
+  }
+}
+
+function maze() {
+  walls = new Set();
+  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) walls.add(key(x, y));
+  const stack = [[1, 1]];
+  walls.delete(key(1, 1));
+  while (stack.length) {
+    const [x, y] = stack[stack.length - 1];
+    const next = [[2, 0], [-2, 0], [0, 2], [0, -2]]
+      .map(([dx, dy]) => [x + dx, y + dy, x + dx / 2, y + dy / 2])
+      .filter(([nx, ny]) => nx > 0 && ny > 0 && nx < cols - 1 && ny < rows - 1 && walls.has(key(nx, ny)));
+    if (!next.length) { stack.pop(); continue; }
+    const [nx, ny, mx, my] = next[Math.floor(Math.random() * next.length)];
+    walls.delete(key(mx, my));
+    walls.delete(key(nx, ny));
+    stack.push([nx, ny]);
+  }
+  // knock out some walls so there are loops and several possible routes
+  for (const k of [...walls]) {
+    const [x, y] = k.split(",").map(Number);
+    if (x > 0 && y > 0 && x < cols - 1 && y < rows - 1 && Math.random() < 0.12) walls.delete(k);
+  }
+  start = [1, 1];
+  goal = [cols - 2 - ((cols - 3) % 2), rows - 2 - ((rows - 3) % 2)];
+  clampEnds();
+}
+
+function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); ctx.fill(); }
+
+function draw(now) {
+  if (animating) {
+    // time based so slow devices finish in the same duration
+    const el = now - animStart;
+    applyOps(Math.ceil(ops.length * Math.min(1, el / SEARCH_MS)) - opIdx, now);
+    pathT = Math.max(0, Math.min(1, (el - SEARCH_MS) / PATH_MS));
+    if (pathT >= 1) { animating = false; showStats(false); }
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, innerWidth, innerHeight);
+  ctx.fillStyle = "#14171c";
+  rr(ox - 3, oy - 3, cols * cell + 6, rows * cell + 6, 8);
+  const g = Math.max(1, cell * 0.08);
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const i = x + y * cols, px = ox + x * cell, py = oy + y * cell;
+      if (walls.has(key(x, y))) {
+        ctx.fillStyle = "#8d95a8";
+        rr(px + g / 2, py + g / 2, cell - g, cell - g, cell * 0.18);
+        ctx.fillStyle = "#b3bacb";
+        rr(px + g / 2, py + g / 2, cell - g, (cell - g) * 0.45, cell * 0.18);
+        continue;
+      }
+      const s = state ? state[i] : 0;
+      if (s) {
+        const k = Math.min(1, (now - born[i]) / 220), sz = (cell - g) * (0.35 + 0.65 * (1 - (1 - k) ** 3));
+        ctx.fillStyle = s === 1 ? (side[i] ? "#b06ef0" : "#22b39c") : (side[i] ? "#4a2f7d" : "#1f3f7a");
+        if (k < 1) ctx.fillStyle = s === 1 ? "#8cffe9" : "#7fa8ff";
+        rr(px + (cell - sz) / 2, py + (cell - sz) / 2, sz, sz, cell * 0.16);
+      } else {
+        ctx.fillStyle = "#1c2027";
+        rr(px + g / 2, py + g / 2, cell - g, cell - g, cell * 0.14);
+      }
+    }
+  }
+  // path, drawn progressively
+  if (path.length > 1 && pathT > 0) {
+    const pts = path.map(([x, y]) => [ox + (x + 0.5) * cell, oy + (y + 0.5) * cell]);
+    const segs = pts.slice(1).map((p, k) => Math.hypot(p[0] - pts[k][0], p[1] - pts[k][1]));
+    let left = segs.reduce((a, b) => a + b, 0) * pathT;
+    ctx.save();
+    ctx.strokeStyle = "#f7df1e"; ctx.lineWidth = Math.max(3, cell * 0.26); ctx.lineCap = "round"; ctx.lineJoin = "round";
+    ctx.shadowColor = "rgba(247,223,30,.7)"; ctx.shadowBlur = cell * 0.6;
+    ctx.beginPath(); ctx.moveTo(...pts[0]);
+    for (let k = 0; k < segs.length && left > 0; k++) {
+      const f = Math.min(1, left / segs[k]);
+      ctx.lineTo(pts[k][0] + (pts[k + 1][0] - pts[k][0]) * f, pts[k][1] + (pts[k + 1][1] - pts[k][1]) * f);
+      left -= segs[k];
+    }
+    ctx.stroke();
+    ctx.restore();
+  }
+  endpoint(start, "#7bd389", "起");
+  endpoint(goal, "#f72585", "終");
+  requestAnimationFrame(draw);
+}
+
+function endpoint([x, y], color, label) {
+  const cx = ox + (x + 0.5) * cell, cy = oy + (y + 0.5) * cell, r = cell * 0.46;
+  ctx.save();
+  ctx.fillStyle = color; ctx.shadowColor = color; ctx.shadowBlur = cell * 0.5;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+  ctx.fillStyle = "#0e1013";
+  ctx.font = `700 ${Math.round(cell * 0.56)}px "Noto Sans TC", "Microsoft JhengHei", sans-serif`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(label, cx, cy + cell * 0.03);
+}
+
+// ---- interaction ----
+let drag = null, last = null;
+function cellAt(e) {
+  return [Math.floor((e.clientX - ox) / cell), Math.floor((e.clientY - oy) / cell)];
+}
+function stopDemo() {
+  if (!demo) return;
+  demo = false;
+  clearInterval(demoTimer);
+}
+function paintLine(a, b) {
+  // Bresenham so fast drags do not leave gaps
+  let [x0, y0] = a; const [x1, y1] = b;
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let err = dx + dy;
+  for (;;) {
+    const k = key(x0, y0);
+    const isEnd = (x0 === start[0] && y0 === start[1]) || (x0 === goal[0] && y0 === goal[1]);
+    if (inGrid(x0, y0) && !isEnd) drag === "wall" ? walls.add(k) : walls.delete(k);
+    if (x0 === x1 && y0 === y1) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x0 += sx; }
+    if (e2 <= dx) { err += dx; y0 += sy; }
+  }
+}
+cv.addEventListener("pointerdown", (e) => {
+  const [x, y] = cellAt(e);
+  if (!inGrid(x, y)) return;
+  stopDemo();
+  cv.setPointerCapture(e.pointerId);
+  if (x === start[0] && y === start[1]) drag = "start";
+  else if (x === goal[0] && y === goal[1]) drag = "goal";
+  else { drag = walls.has(key(x, y)) ? "erase" : "wall"; paintLine([x, y], [x, y]); }
+  last = [x, y];
+  search(false);
+});
+cv.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  const [x, y] = cellAt(e);
+  if (!inGrid(x, y) || (x === last[0] && y === last[1])) return;
+  if (drag === "start" || drag === "goal") {
+    const other = drag === "start" ? goal : start;
+    if (walls.has(key(x, y)) || (x === other[0] && y === other[1])) return;
+    if (drag === "start") start = [x, y]; else goal = [x, y];
+  } else paintLine(last, [x, y]);
+  last = [x, y];
+  search(false);
+});
+const end = () => { drag = null; };
+cv.addEventListener("pointerup", end);
+cv.addEventListener("pointercancel", end);
+
+$("algo").onchange = () => { stopDemo(); search(true); };
+$("diag").onchange = () => { stopDemo(); search(true); };
+$("b-scatter").onclick = () => { stopDemo(); scatter(); search(true); };
+$("b-maze").onclick = () => { stopDemo(); maze(); search(true); };
+$("b-clear").onclick = () => { stopDemo(); walls = new Set(); search(true); };
+
+let rz = 0;
+addEventListener("resize", () => {
+  clearTimeout(rz);
+  rz = setTimeout(() => { if (layout()) clampEnds(); search(false); }, 80);
+});
+
+layout();
+scatter();
+search(true);
+requestAnimationFrame(draw);
+// idle demo: compare algorithms on the same map until the viewer touches anything
+demoTimer = setInterval(() => {
+  const sel = $("algo");
+  sel.value = ORDER[(ORDER.indexOf(sel.value) + 1) % ORDER.length];
+  if (sel.value === "astar") scatter();
+  search(true);
+}, 3200);
+</script>
+</body>
+</html>

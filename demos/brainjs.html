@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>brain.js 示範：神經網路挑文字顏色</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  #app { position: fixed; inset: 0; overflow: auto; padding: 14px 16px 50px; display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 14px; align-content: start; }
+  h1 { margin: 0; font-size: 16px; grid-column: 1 / -1; }
+  h1 small { font-weight: 400; color: var(--muted); font-size: 12px; margin-left: 6px; }
+  .left { display: grid; gap: 10px; align-content: start; }
+  #preview { height: 130px; border-radius: 12px; display: grid; place-items: center; text-align: center; transition: background .3s, color .3s; border: 1px solid var(--line); }
+  #preview b { font-size: 26px; display: block; }
+  #preview small { font-size: 12px; opacity: .8; }
+  .pick { display: flex; gap: 8px; align-items: center; }
+  .pick input[type=color] { width: 44px; height: 34px; border: 1px solid var(--line); border-radius: 8px; background: none; padding: 2px; cursor: pointer; }
+  .meter { font-size: 12px; color: var(--muted); }
+  .meter .bar { height: 8px; margin: 4px 0 2px; display: flex; overflow: hidden; }
+  .meter .bar i { display: block; height: 100%; transition: width .3s; width: 50%; }
+  .meter .bar .w { background: #ecebe6; }
+  .meter .bar .k { background: #3a3f47; }
+  canvas { width: 100%; height: 90px; display: block; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); }
+  .loss { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; margin-top: 4px; }
+  .loss b { color: var(--accent); font-family: var(--mono); }
+  .right h2 { margin: 0 0 6px; font-size: 13px; color: var(--muted); font-weight: 500; }
+  #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 8px; }
+  .sw { position: relative; height: 62px; border-radius: 10px; border: 0; cursor: pointer; font: 700 18px var(--font); display: grid; place-items: center; transition: transform .12s; }
+  .sw:hover { transform: scale(1.05); }
+  .sw small { position: absolute; bottom: 4px; right: 6px; font: 500 10px var(--mono); opacity: .75; }
+  .sw.taught::after { content: "已教"; position: absolute; top: 4px; left: 6px; font: 500 10px var(--font); padding: 0 5px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+  @media (max-width: 600px) {
+    #app { grid-template-columns: 1fr; padding: 10px 10px 12px; }
+    /* single column: the page scrolls under the fixed hint, and the heading above the swatches says the same */
+    .hint { display: none; }
+    #preview { height: 96px; }
+    #grid { grid-template-columns: repeat(4, 1fr); }
+    .sw { height: 50px; font-size: 15px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <h1>神經網路挑文字顏色<small>輸入背景 RGB，預測黑字或白字比較好讀</small></h1>
+  <div class="left">
+    <div id="preview"><div><b>台灣 JS 圖鑑</b><small id="pv">Aa 0123</small></div></div>
+    <div class="pick">
+      <input type="color" id="color" value="#2a9d8f" aria-label="背景色">
+      <button class="btn" id="rand">隨機顏色</button>
+    </div>
+    <div class="meter">網路判斷<div class="bar"><i class="w" id="mw"></i><i class="k" id="mk"></i></div><span id="mtext">白字 50%</span></div>
+    <div>
+      <canvas id="chart" width="520" height="180"></canvas>
+      <div class="loss"><span>訓練誤差</span><span>第 <b id="iter">0</b> 回・誤差 <b id="err">-</b></span></div>
+    </div>
+  </div>
+  <div class="right">
+    <h2>點色塊可以糾正網路（切換黑字／白字），它會立刻重新訓練</h2>
+    <div id="grid"></div>
+    <div class="row">
+      <button class="btn" id="shuffle">換一組色塊</button>
+      <button class="btn" id="reset">清除教學</button>
+    </div>
+  </div>
+</div>
+<div class="hint">點色塊糾正・選色器測試新顏色</div>
+
+<script src="https://cdn.jsdelivr.net/npm/brain.js@2.0.0-beta.24/dist/browser.js"></script>
+<script>
+// brain.js feed-forward network: input = background RGB (0..1), output = probability that white text reads better.
+const $ = (id) => document.getElementById(id);
+let seed = 3;
+const rand = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+const hex = ({ r, g, b }) => "#" + [r, g, b].map((v) => Math.round(v * 255).toString(16).padStart(2, "0")).join("");
+const parse = (h) => ({ r: parseInt(h.slice(1, 3), 16) / 255, g: parseInt(h.slice(3, 5), 16) / 255, b: parseInt(h.slice(5, 7), 16) / 255 });
+const randomColor = () => ({ r: rand(), g: rand(), b: rand() });
+
+// Starter examples: a handful of colors labeled by hand
+const SEED = [
+  ["#000000", 1], ["#ffffff", 0], ["#1d3557", 1], ["#f1faee", 0], ["#e63946", 1], ["#ffd166", 0],
+  ["#06d6a0", 0], ["#118ab2", 1], ["#7b2cbf", 1], ["#f4a261", 0], ["#2b2d42", 1], ["#a8dadc", 0],
+];
+let taught = [];
+let swatches = [];
+let net;
+
+function trainingData() {
+  return [...SEED.map(([h, w]) => ({ input: parse(h), output: { white: w } })), ...taught.map((t) => ({ input: t.c, output: { white: t.w } }))];
+}
+
+function train() {
+  net = new brain.NeuralNetwork({ hiddenLayers: [5] });
+  const history = [];
+  const res = net.train(trainingData(), {
+    iterations: 3000,
+    errorThresh: 0.003,
+    learningRate: 0.3,
+    callbackPeriod: 20,
+    callback: (s) => history.push(s.error),
+  });
+  drawLoss(history, res);
+}
+
+function drawLoss(history, res) {
+  const cv = $("chart");
+  const ctx = cv.getContext("2d");
+  const W = cv.width, H = cv.height;
+  const max = Math.max(...history, 0.01);
+  let shown = 0;
+  cancelAnimationFrame(drawLoss.raf);
+  const step = () => {
+    shown = Math.min(history.length, shown + Math.ceil(history.length / 30));
+    ctx.clearRect(0, 0, W, H);
+    ctx.strokeStyle = "rgba(255,255,255,.08)";
+    for (let y = 1; y < 4; y++) { ctx.beginPath(); ctx.moveTo(0, (H * y) / 4); ctx.lineTo(W, (H * y) / 4); ctx.stroke(); }
+    const grad = ctx.createLinearGradient(0, 0, W, 0);
+    grad.addColorStop(0, "#f72585"); grad.addColorStop(0.5, "#9d8cff"); grad.addColorStop(1, "#4cc9f0");
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    for (let i = 0; i < shown; i++) {
+      const x = (i / Math.max(1, history.length - 1)) * (W - 10) + 5;
+      const y = H - 10 - (history[i] / max) * (H - 20);
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    }
+    ctx.stroke();
+    $("iter").textContent = Math.round((shown / Math.max(1, history.length)) * res.iterations);
+    $("err").textContent = (history[shown - 1] ?? res.error).toFixed(4);
+    if (shown < history.length) drawLoss.raf = requestAnimationFrame(step);
+    else $("err").textContent = res.error.toFixed(4);
+  };
+  step();
+}
+
+const predict = (c) => net.run(c).white;
+
+function renderGrid() {
+  $("grid").innerHTML = "";
+  for (const s of swatches) {
+    const p = predict(s.c);
+    const btn = document.createElement("button");
+    btn.className = "sw" + (s.taught ? " taught" : "");
+    btn.style.background = hex(s.c);
+    btn.style.color = p > 0.5 ? "#fff" : "#111";
+    btn.innerHTML = `Aa<small>${Math.round(Math.max(p, 1 - p) * 100)}%</small>`;
+    btn.title = `${hex(s.c)}，點一下改成${p > 0.5 ? "黑字" : "白字"}`;
+    btn.addEventListener("click", () => {
+      // The user disagrees with the current prediction: teach the opposite and retrain
+      const w = p > 0.5 ? 0 : 1;
+      taught = taught.filter((t) => t.c !== s.c).concat({ c: s.c, w });
+      s.taught = true;
+      update();
+    });
+    $("grid").append(btn);
+  }
+}
+
+function renderPreview() {
+  const c = parse($("color").value);
+  const p = predict(c);
+  const pv = $("preview");
+  pv.style.background = hex(c);
+  pv.style.color = p > 0.5 ? "#fff" : "#111";
+  $("pv").textContent = `${hex(c).toUpperCase()}・建議${p > 0.5 ? "白字" : "黑字"}`;
+  $("mw").style.width = `${p * 100}%`;
+  $("mk").style.width = `${(1 - p) * 100}%`;
+  $("mtext").textContent = `白字 ${Math.round(p * 100)}%・黑字 ${Math.round((1 - p) * 100)}%`;
+}
+
+function newSwatches() {
+  const n = innerWidth < 600 ? 12 : 20;
+  swatches = Array.from({ length: n }, () => ({ c: randomColor(), taught: false }));
+}
+
+function update() { train(); renderGrid(); renderPreview(); }
+
+$("color").addEventListener("input", renderPreview);
+$("rand").addEventListener("click", () => { $("color").value = hex(randomColor()); renderPreview(); });
+$("shuffle").addEventListener("click", () => { newSwatches(); renderGrid(); });
+$("reset").addEventListener("click", () => { taught = []; swatches.forEach((s) => (s.taught = false)); update(); });
+
+newSwatches();
+update();
+</script>
+</body>
+</html>

@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signature Pad 示範：線上簽名板</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  .wrap { position: fixed; inset: 0; padding: 14px 14px 46px; display: grid; place-items: center; }
+  .doc {
+    width: min(760px, 100%); height: 100%; max-height: 540px;
+    display: grid; grid-template-rows: auto 1fr auto; gap: 10px;
+    background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.08);
+  }
+  .doc header h1 { margin: 0; font-size: 18px; letter-spacing: .02em; }
+  .doc header p { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); }
+  .doc header .meta { display: flex; gap: 2px 14px; flex-wrap: wrap; margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .doc header .meta b { color: var(--fg); font-weight: 600; }
+  .pad {
+    position: relative; min-height: 120px; border-radius: 10px;
+    background: repeating-linear-gradient(0deg, transparent 0 27px, rgba(0,0,0,.035) 27px 28px), #fdfcf8;
+    border: 1.5px dashed rgba(0,0,0,.18);
+  }
+  .pad canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+  .pad .line { position: absolute; left: 6%; right: 6%; bottom: 26%; border-bottom: 1.5px solid rgba(0,0,0,.35); pointer-events: none; }
+  .pad .x { position: absolute; left: 6%; bottom: calc(26% + 4px); font: 600 18px/1 var(--font); color: rgba(0,0,0,.35); pointer-events: none; }
+  .pad .ph { position: absolute; inset: 0; display: grid; place-items: center; color: rgba(0,0,0,.25); font-size: 15px; pointer-events: none; }
+  .pad .ph[hidden] { display: none; }
+  .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+  .sw { width: 24px; height: 24px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px var(--line); cursor: pointer; padding: 0; }
+  .sw[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--fg); }
+  .tools label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .tools input[type=range] { width: 90px; }
+  .tools .btn { padding: 7px 11px; font-size: 12.5px; }
+  .tools .grow { flex: 1; }
+  .count { font: 12px var(--mono); color: var(--muted); }
+</style>
+</head>
+<body class="paper">
+<div class="wrap">
+  <div class="doc">
+    <header>
+      <h1>課程報名同意書</h1>
+      <p>本人已詳閱「JavaScript 互動網頁設計班」課程須知與退費辦法，同意遵守上課規範並於下方簽名確認。</p>
+      <div class="meta"><span>上課地點：<b>臺北市信義區</b></span><span>開課日期：<b>11 月 8 日</b></span><span>學員編號：<b>A-1024</b></span></div>
+    </header>
+    <div class="pad" id="pad">
+      <div class="line"></div><div class="x">✕</div>
+      <div class="ph" id="ph">請在此簽名</div>
+      <canvas id="sig"></canvas>
+    </div>
+    <div class="tools">
+      <button class="sw" data-c="#1c1c1a" style="background:#1c1c1a" aria-pressed="true" title="墨黑"></button>
+      <button class="sw" data-c="#1f4fb8" style="background:#1f4fb8" title="鋼筆藍"></button>
+      <button class="sw" data-c="#c7302b" style="background:#c7302b" title="朱紅"></button>
+      <label>筆寬<input type="range" id="width" min="1.5" max="6" step="0.5" value="3.5"></label>
+      <span class="count" id="count">0 筆畫</span>
+      <span class="grow"></span>
+      <button class="btn" id="demo">示範簽名</button>
+      <button class="btn" id="undo">復原</button>
+      <button class="btn" id="clear">清除</button>
+      <button class="btn primary" id="save">下載 PNG</button>
+    </div>
+  </div>
+</div>
+<div class="hint">用滑鼠或手指在虛線框內簽名，速度越慢筆畫越粗</div>
+
+<script src="https://cdn.jsdelivr.net/npm/signature_pad@5.1.4/dist/signature_pad.umd.min.js"></script>
+<script>
+// Signature Pad: velocity-based variable-width strokes, undo via toData/fromData, PNG export.
+const canvas = document.getElementById("sig");
+const pad = new SignaturePad(canvas, { minWidth: 0.8, maxWidth: 3.5, penColor: "#1c1c1a" });
+const ph = document.getElementById("ph");
+const count = document.getElementById("count");
+let anim = 0;
+
+function refresh() {
+  const n = pad.toData().length;
+  count.textContent = `${n} 筆畫`;
+  ph.textContent = "請在此簽名";
+  ph.hidden = n > 0;
+}
+
+function resize() {
+  const ratio = Math.max(window.devicePixelRatio || 1, 1);
+  const data = pad.toData();
+  canvas.width = canvas.offsetWidth * ratio;
+  canvas.height = canvas.offsetHeight * ratio;
+  canvas.getContext("2d").scale(ratio, ratio);
+  pad.fromData(data);
+  refresh();
+}
+
+// Build a cursive-looking sample signature as point groups (CSS px), with timing so speed varies width.
+function sampleStrokes() {
+  const w = canvas.offsetWidth, h = canvas.offsetHeight;
+  const base = h * 0.74 - 6, x0 = w * 0.12, span = w * 0.62;
+  const opts = { penColor: pad.penColor, minWidth: pad.minWidth, maxWidth: pad.maxWidth };
+  const loops = [], t0 = 0;
+  let time = t0;
+  const N = 220, turns = 5.2;
+  for (let i = 0; i <= N; i++) {
+    const t = (i / N) * turns * Math.PI * 2;
+    const k = i / N;
+    const amp = h * (0.12 + 0.16 * Math.exp(-k * 7) + 0.1 * Math.max(0, Math.sin(k * Math.PI * 2.6)));
+    const x = x0 + (k * span) + Math.sin(t) * w * 0.03;
+    const y = base - amp * (1 - Math.cos(t)) * 0.5 - Math.sin(k * Math.PI) * h * 0.06;
+    time += 6 + 10 * (1 - Math.abs(Math.cos(t)));
+    loops.push({ x, y, pressure: 0.5, time });
+  }
+  const swoosh = [];
+  time += 120;
+  for (let i = 0; i <= 60; i++) {
+    const k = i / 60;
+    const x = x0 - w * 0.03 + k * (span + w * 0.12);
+    const y = base + h * 0.05 - Math.sin(k * Math.PI) * h * 0.08 + k * h * 0.02;
+    time += 4 + 14 * Math.sin(k * Math.PI);
+    swoosh.push({ x, y, pressure: 0.5, time });
+  }
+  const dot = [{ x: x0 + span + w * 0.06, y: base - h * 0.2, pressure: 0.5, time: time + 200 }];
+  return [{ ...opts, points: loops }, { ...opts, points: swoosh }, { ...opts, dotSize: 3, points: dot }];
+}
+
+// Animate the sample by feeding growing slices of the stroke data into fromData().
+function playSample() {
+  cancelAnimationFrame(anim);
+  const strokes = sampleStrokes();
+  const total = strokes.reduce((s, g) => s + g.points.length, 0);
+  let shown = 0;
+  const step = () => {
+    shown = Math.min(total, shown + 6);
+    let left = shown;
+    const partial = [];
+    for (const g of strokes) {
+      if (left <= 0) break;
+      partial.push({ ...g, points: g.points.slice(0, left) });
+      left -= g.points.length;
+    }
+    pad.fromData(partial);
+    refresh();
+    if (shown < total) anim = requestAnimationFrame(step);
+  };
+  step();
+}
+
+pad.addEventListener("beginStroke", () => cancelAnimationFrame(anim));
+pad.addEventListener("endStroke", refresh);
+
+document.querySelectorAll(".sw").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll(".sw").forEach((x) => x.setAttribute("aria-pressed", x === b));
+  pad.penColor = b.dataset.c;
+}));
+document.getElementById("width").addEventListener("input", (e) => {
+  pad.maxWidth = Number(e.target.value);
+  pad.minWidth = pad.maxWidth / 4;
+});
+document.getElementById("undo").onclick = () => {
+  cancelAnimationFrame(anim);
+  const data = pad.toData();
+  data.pop();
+  pad.fromData(data);
+  refresh();
+};
+document.getElementById("clear").onclick = () => { cancelAnimationFrame(anim); pad.clear(); refresh(); };
+document.getElementById("demo").onclick = playSample;
+document.getElementById("save").onclick = () => {
+  if (pad.isEmpty()) { ph.textContent = "請先簽名再下載"; ph.hidden = false; return; }
+  const a = document.createElement("a");
+  a.href = pad.toDataURL("image/png");
+  a.download = "signature.png";
+  a.click();
+};
+
+window.addEventListener("resize", resize);
+resize();
+playSample();
+</script>
+</body>
+</html>

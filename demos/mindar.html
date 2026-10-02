@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MindAR 示範：臉部特效與圖片追蹤</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"click","needs":["camera"],"size":"約 17 MB","note":"沒有鏡頭時可改用範例照片或模擬畫面"}</script>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.1/examples/jsm/"}}</script>
+<style>
+  .app { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr) 300px; }
+  .main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 10px; padding: 12px 12px 48px; min-width: 0; min-height: 0; }
+  .top { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .chip { margin-left: auto; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg-2); color: var(--muted); white-space: nowrap; }
+  .chip.on { color: #0a0c0f; background: var(--c4); border-color: var(--c4); font-weight: 700; }
+  .stage { position: relative; inset: auto; display: block; min-height: 0; border-radius: 14px; overflow: hidden;
+    background: radial-gradient(70% 90% at 50% 0%, rgba(76, 201, 240, .10), transparent 70%), #0a0c0f; border: 1px solid var(--line); }
+  /* MindAR puts its video at z-index -2, so the container must form its own stacking context */
+  .ar { position: absolute; inset: 0; z-index: 0; overflow: hidden; }
+  .ov { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; gap: 14px; align-items: center; justify-content: center; pointer-events: none;
+    font-size: 13px; color: var(--fg); text-align: center; padding: 16px; }
+  .ov span { padding: 4px 12px; border-radius: 999px; background: rgba(10, 12, 15, .85); border: 1px solid var(--line); }
+  #loading { background: rgba(10, 12, 15, .55); }
+  .spin { width: 46px; height: 46px; border-radius: 50%; border: 4px solid rgba(255, 255, 255, .15); border-top-color: var(--c2); animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .scan { position: relative; width: min(56%, 300px); aspect-ratio: 674 / 372; opacity: .85;
+    background: linear-gradient(90deg, #fff 3px, transparent 3px) 0 0 / 28px 28px no-repeat, linear-gradient(180deg, #fff 3px, transparent 3px) 0 0 / 28px 28px no-repeat,
+      linear-gradient(270deg, #fff 3px, transparent 3px) 100% 0 / 28px 28px no-repeat, linear-gradient(180deg, #fff 3px, transparent 3px) 100% 0 / 28px 28px no-repeat,
+      linear-gradient(90deg, #fff 3px, transparent 3px) 0 100% / 28px 28px no-repeat, linear-gradient(0deg, #fff 3px, transparent 3px) 0 100% / 28px 28px no-repeat,
+      linear-gradient(270deg, #fff 3px, transparent 3px) 100% 100% / 28px 28px no-repeat, linear-gradient(0deg, #fff 3px, transparent 3px) 100% 100% / 28px 28px no-repeat; }
+  .scan i { position: absolute; left: 6%; right: 6%; height: 2px; background: var(--c2); box-shadow: 0 0 12px var(--c2); animation: sweep 2s ease-in-out infinite; }
+  @keyframes sweep { 0%, 100% { top: 8%; } 50% { top: 92%; } }
+  #arError span { border-color: #e5484d; }
+  .hidden { display: none !important; }
+  .badge { position: absolute; top: 8px; left: 8px; z-index: 3; font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
+    background: rgba(10, 12, 15, .78); border: 1px solid var(--line); pointer-events: none; }
+  .badge:empty { display: none; }
+  .empty { position: absolute; left: 50%; bottom: 10px; z-index: 3; transform: translateX(-50%); max-width: 92%; color: var(--fg); font-size: 12px; pointer-events: none;
+    padding: 4px 12px; border-radius: 999px; background: rgba(10, 12, 15, .85); border: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .empty:empty { display: none; }
+  .src { display: flex; gap: 8px; align-items: center; min-width: 0; }
+  .src .btn { flex: none; white-space: nowrap; }
+  .src .or { flex: none; font-size: 12px; color: var(--muted); }
+  .thumbs { display: flex; gap: 6px; min-width: 0; overflow-x: auto; }
+  .thumb { flex: none; width: 52px; height: 40px; padding: 0; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: #000; cursor: pointer; }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb.wide { width: auto; display: flex; align-items: center; gap: 6px; padding: 0 10px 0 0; color: var(--fg); font: inherit; font-size: 12px; white-space: nowrap; }
+  .thumb.wide img { width: 56px; }
+  .thumb[aria-pressed="true"], .src .btn[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .side { border-left: 1px solid var(--line); background: var(--bg-2); padding: 14px 14px 48px; overflow-y: auto; min-height: 0; }
+  .side h2 { margin: 0 0 4px; font-size: 16px; }
+  .side p { margin: 0 0 12px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .side p.howto { color: var(--fg); padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(76, 201, 240, .45); background: rgba(76, 201, 240, .08); }
+  .fxs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 0 0 12px; }
+  .fxs .btn { padding: 6px 8px; font-size: 12px; }
+  .bars { display: grid; gap: 6px; margin: 0 0 12px; }
+  .bsr { display: grid; grid-template-columns: 44px minmax(0, 1fr) 34px; gap: 8px; align-items: center; font-size: 12px; }
+  .bsr i { display: block; height: 8px; border-radius: 4px; background: rgba(255, 255, 255, .08); overflow: hidden; }
+  .bsr i b { display: block; height: 100%; width: 0; border-radius: 4px; background: linear-gradient(90deg, var(--c2), var(--c3)); transition: width .08s linear; }
+  .bsr em { font: 600 11px var(--mono); font-style: normal; text-align: right; color: var(--muted); }
+  .sub { font-size: 11px; color: var(--muted); margin: 0 0 6px; }
+  .marker { margin: 0 0 8px; padding: 6px; border-radius: 10px; background: #fff; }
+  .marker img { display: block; width: 100%; border-radius: 4px; }
+  .dl { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 12px; }
+  .dl .btn { padding: 5px 9px; font-size: 12px; text-decoration: none; }
+  pre.code { margin: 0; padding: 10px; border-radius: 10px; background: #0a0c0f; border: 1px solid var(--line); font: 11px/1.65 var(--mono); color: #c9d1d9;
+    white-space: pre-wrap; overflow-wrap: anywhere; }
+  pre.code em { font-style: normal; color: var(--c3); }
+  pre.code u { text-decoration: none; color: var(--c2); }
+  pre.code s { text-decoration: none; color: var(--muted); }
+  @media (max-width: 640px) {
+    /* single column: the side panel scrolls under the fixed hint, and its own text already explains the controls */
+    .hint { display: none; }
+    .app { grid-template-columns: 1fr; grid-template-rows: minmax(0, 58%) minmax(0, 42%); }
+    .main { padding: 8px 8px 6px; gap: 6px; }
+    .top .btn { padding: 6px 8px; font-size: 12px; }
+    .chip { padding: 2px 8px; font-size: 11px; }
+    .src .btn { padding: 7px 9px; font-size: 12px; }
+    .src .or { display: none; }
+    .thumb { width: 44px; height: 34px; }
+    .thumb.wide img { width: 44px; }
+    .side { border-left: 0; border-top: 1px solid var(--line); padding: 8px 12px 12px; }
+    .side h2 { font-size: 14px; }
+    .side p:not(.howto) { display: none; }
+    .fxs { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .fxs .btn { padding: 5px 4px; font-size: 11px; }
+    .marker { max-width: 220px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <section class="main">
+    <div class="top" id="tabs">
+      <button class="btn" data-mode="face" aria-pressed="true">🙂 臉部特效</button>
+      <button class="btn" data-mode="image" aria-pressed="false">🖼️ 圖片追蹤</button>
+      <span class="chip" id="chip">尚未啟動</span>
+    </div>
+    <div class="stage" id="stage">
+      <div class="ar" id="ar"></div>
+      <div class="ov hidden" id="loading"><div class="spin"></div><span id="loadingText">載入中…</span></div>
+      <div class="ov hidden" id="scanning"><div class="scan"><i></i></div><span>把鏡頭對準標記圖</span></div>
+      <div class="ov hidden" id="arError"><span>這個瀏覽器無法開啟鏡頭</span></div>
+      <span class="badge" id="badge"></span>
+      <div class="empty" id="empty"></div>
+    </div>
+    <div class="src">
+      <button class="btn" id="camBtn" aria-pressed="false">📷 鏡頭</button>
+      <span class="or">或</span>
+      <div class="thumbs" id="thumbs"></div>
+    </div>
+  </section>
+  <aside class="side" id="side"></aside>
+</div>
+<div class="hint" id="hint">張嘴試試看，派對帽會跳起來</div>
+
+<script src="_shared/gate.js"></script>
+<script type="module">
+const MINDAR = "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/";
+const HF_IMG = "https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/fbe92bd97d48f3ec17779d8d8f2964e1c6bc7634/";
+// Sample portraits (Unsplash photos mirrored in the transformers.js docs dataset); fx/fy = crop center, z = share of image height shown
+const FACES = [
+  { url: HF_IMG + "portrait-of-woman_small.jpg", fx: 0.5, fy: 0.5, z: 0.92 },
+  { url: HF_IMG + "woman-with-afro.jpg", fx: 0.46, fy: 0.45, z: 0.58 },
+  { url: HF_IMG + "selfie_segmentation.png", fx: 0.48, fy: 0.5, z: 1 },
+];
+const CARD_PNG = "assets/mindar/card.png", CARD_MIND = "assets/mindar/card.mind";
+const CARD_ASPECT = 372 / 674;
+const FEED_W = 640, FEED_H = 480;
+
+const $ = (id) => document.getElementById(id);
+const arBox = $("ar"), stage = $("stage");
+
+let THREE = null, FaceAR = null, ImageAR = null;
+let mode = "face", useCamera = true, photoIdx = 0;
+let inst = null, started = false, busy = false, feed = null, clock = null;
+let fx = null, faceMesh = null, robot = null, mixer = null;
+const fxOn = { glasses: true, hat: true, nose: false, mesh: true };
+
+/* ---------- small UI helpers ---------- */
+const note = (t) => { $("empty").textContent = t; };
+function setChip(text, on = false) { const c = $("chip"); c.textContent = text; c.classList.toggle("on", on); }
+function showLoading(text) { $("loadingText").textContent = text; $("loading").classList.remove("hidden"); }
+function hideOverlays() { for (const id of ["loading", "scanning", "arError"]) $(id).classList.add("hidden"); }
+const nextFrames = (n) => new Promise((ok) => { const f = () => (--n <= 0 ? ok() : requestAnimationFrame(f)); requestAnimationFrame(f); });
+function loadImage(url) {
+  return new Promise((ok, fail) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => ok(img);
+    img.onerror = () => fail(new Error("圖片載入失敗"));
+    img.src = url;
+  });
+}
+
+/* ---------- side panel ---------- */
+const BLEND = [["眨眼", ["eyeBlinkLeft", "eyeBlinkRight"]], ["張嘴", ["jawOpen"]], ["微笑", ["mouthSmileLeft", "mouthSmileRight"]],
+  ["挑眉", ["browInnerUp"]], ["嘟嘴", ["mouthPucker"]]];
+function buildSide() {
+  if (mode === "face") {
+    $("side").innerHTML = `
+      <h2>臉部追蹤特效</h2>
+      <p>MindAR 透過 MediaPipe Face Landmarker 找出 468 個臉部特徵點並算出頭部姿態，掛在特徵點上的 three.js 物件會跟著轉頭、靠近。這個模式不需要標記圖。</p>
+      <div class="fxs">
+        <button class="btn" data-fx="glasses">🕶️ 眼鏡</button>
+        <button class="btn" data-fx="hat">🎉 派對帽</button>
+        <button class="btn" data-fx="nose">🔴 紅鼻子</button>
+        <button class="btn" data-fx="mesh">🕸️ 網格</button>
+      </div>
+      <div class="sub" id="blendNote">表情係數（blendshapes）</div>
+      <div class="bars">${BLEND.map(([n], i) => `<div class="bsr"><span>${n}</span><i><b id="bb${i}"></b></i><em id="bv${i}">0</em></div>`).join("")}</div>
+      <pre class="code"><s>// 錨點：168 眉心、10 額頭、1 鼻尖</s>
+const ar = new <u>MindARThree</u>({ container })
+ar.<u>addAnchor</u>(<em>168</em>).group.add(glasses)
+ar.<u>addAnchor</u>(<em>10</em>).group.add(hat)
+ar.scene.add(ar.<u>addFaceMesh</u>())
+await ar.<u>start</u>()
+ar.<u>getLatestEstimate</u>().blendshapes</pre>`;
+    for (const b of $("side").querySelectorAll("[data-fx]")) b.setAttribute("aria-pressed", String(fxOn[b.dataset.fx]));
+  } else {
+    $("side").innerHTML = `
+      <h2>圖片追蹤</h2>
+      <p class="howto">📱 用手機開啟此頁、對準另一個螢幕上的標記（下方這張卡片），機器人會站在卡片上跳舞。也可以下載後印出來。</p>
+      <div class="marker"><img src="${CARD_PNG}" alt="MindAR 官方範例標記圖"></div>
+      <div class="dl">
+        <a class="btn" href="${CARD_PNG}" download="mindar-card.png">⬇️ 標記圖 PNG</a>
+        <a class="btn" href="${CARD_MIND}" download="mindar-card.mind">⬇️ .mind 特徵檔</a>
+      </div>
+      <p>.mind 是事先從標記圖萃取的特徵點，換成自己的圖片要先用 MindAR 官方的編譯工具產生。沒有手機時，左下角的「模擬畫面」會用電腦繪製的卡片代替鏡頭。</p>
+      <pre class="code">const ar = new <u>MindARThree</u>({
+  container, imageTargetSrc: <em>"card.mind"</em> })
+const anchor = ar.<u>addAnchor</u>(<em>0</em>)
+anchor.group.add(robot)
+anchor.<u>onTargetFound</u> = () => dance()
+await ar.<u>start</u>()</pre>`;
+  }
+  $("hint").textContent = mode === "face" ? "張嘴試試看，派對帽會跳起來" : "標記被擋住或離開畫面時機器人會消失";
+}
+$("side").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-fx]");
+  if (!b) return;
+  const k = b.dataset.fx;
+  fxOn[k] = !fxOn[k];
+  b.setAttribute("aria-pressed", String(fxOn[k]));
+  applyFx();
+});
+
+/* ---------- source row ---------- */
+function buildThumbs() {
+  $("thumbs").innerHTML = mode === "face"
+    ? FACES.map((f, i) => `<button class="thumb" data-photo="${i}" title="範例照片"><img src="${f.url}" alt="範例人像照片" crossorigin="anonymous"></button>`).join("")
+    : `<button class="thumb wide" data-photo="sim" title="模擬畫面"><img src="${CARD_PNG}" alt="">模擬畫面</button>`;
+  markSource();
+}
+function markSource() {
+  $("camBtn").setAttribute("aria-pressed", String(useCamera));
+  for (const b of $("thumbs").children) {
+    const on = !useCamera && (mode === "image" || Number(b.dataset.photo) === photoIdx);
+    b.setAttribute("aria-pressed", String(on));
+  }
+  for (const b of $("tabs").querySelectorAll("[data-mode]")) b.setAttribute("aria-pressed", String(b.dataset.mode === mode));
+}
+$("camBtn").addEventListener("click", () => { if (!busy && THREE) { useCamera = true; restart(); } });
+$("thumbs").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-photo]");
+  if (!b || busy || !THREE) return;
+  useCamera = false;
+  if (b.dataset.photo !== "sim") photoIdx = Number(b.dataset.photo);
+  restart();
+});
+$("tabs").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-mode]");
+  if (!b || busy || !THREE || b.dataset.mode === mode) return;
+  mode = b.dataset.mode;
+  buildSide();
+  buildThumbs();
+  restart();
+});
+
+/* ---------- synthetic camera feeds (for readers without a webcam) ---------- */
+function canvasFeed(draw) {
+  const c = document.createElement("canvas");
+  c.width = FEED_W; c.height = FEED_H;
+  const g = c.getContext("2d");
+  let alive = true;
+  const t0 = performance.now();
+  const loop = () => { if (!alive) return; draw(g, (performance.now() - t0) / 1000); requestAnimationFrame(loop); };
+  loop();
+  const stream = c.captureStream(30);
+  return { stream, stop() { alive = false; stream.getTracks().forEach((t) => t.stop()); } };
+}
+async function photoFeed(p) {
+  const img = await loadImage(p.url);
+  const W = img.naturalWidth, H = img.naturalHeight;
+  const sh = p.z * H, k = FEED_H / sh;
+  const cx = p.fx * W, cy = Math.max(sh / 2, Math.min(H - sh / 2, p.fy * H));
+  const cover = Math.max(FEED_W / W, FEED_H / H);
+  // Gentle sway so the tracking visibly follows a moving head; blurred copy fills any side gaps
+  return canvasFeed((g, t) => {
+    g.filter = "blur(18px) brightness(.7)";
+    g.drawImage(img, (FEED_W - W * cover) / 2, (FEED_H - H * cover) / 2, W * cover, H * cover);
+    g.filter = "none";
+    g.save();
+    g.translate(FEED_W / 2 + Math.sin(t * 0.7) * 12, FEED_H / 2 + Math.sin(t * 0.9) * 5);
+    g.rotate(Math.sin(t * 0.6) * 0.07);
+    const s = k * (1 + Math.sin(t * 0.5) * 0.03);
+    g.scale(s, s);
+    g.drawImage(img, -cx, -cy, W, H);
+    g.restore();
+  });
+}
+async function simFeed() {
+  const card = await loadImage(CARD_PNG);
+  return canvasFeed((g, t) => {
+    const bg = g.createRadialGradient(FEED_W / 2, FEED_H * 0.3, 40, FEED_W / 2, FEED_H / 2, FEED_W * 0.75);
+    bg.addColorStop(0, "#2a3340"); bg.addColorStop(1, "#0b0e12");
+    g.fillStyle = bg; g.fillRect(0, 0, FEED_W, FEED_H);
+    g.save();
+    g.translate(FEED_W / 2 + Math.sin(t * 0.45) * 36, FEED_H / 2 + 30 + Math.sin(t * 0.7) * 14);
+    g.rotate(Math.sin(t * 0.35) * 0.16);
+    g.transform(1, 0, Math.sin(t * 0.3) * 0.1, 1, 0, 0);
+    const w = 330 * (0.95 + Math.sin(t * 0.55) * 0.07), h = w * CARD_ASPECT;
+    g.shadowColor = "rgba(0, 0, 0, .6)"; g.shadowBlur = 30; g.shadowOffsetY = 12;
+    g.fillStyle = "#fff"; g.fillRect(-w / 2 - 8, -h / 2 - 8, w + 16, h + 16);
+    g.shadowColor = "transparent";
+    g.drawImage(card, -w / 2, -h / 2, w, h);
+    g.restore();
+  });
+}
+// MindAR only reads getUserMedia; this subclass hands it a canvas stream instead, using the same video setup as the library
+function fedBy(Base, stream) {
+  return class extends Base {
+    _startVideo() {
+      return new Promise((resolve) => {
+        const v = document.createElement("video");
+        v.setAttribute("autoplay", ""); v.setAttribute("muted", ""); v.setAttribute("playsinline", "");
+        v.muted = true;
+        Object.assign(v.style, { position: "absolute", top: "0px", left: "0px", zIndex: "-2" });
+        this.video = v;
+        this.container.appendChild(v);
+        v.addEventListener("loadedmetadata", () => {
+          v.setAttribute("width", v.videoWidth); v.setAttribute("height", v.videoHeight); resolve();
+        }, { once: true });
+        v.srcObject = stream;
+      });
+    }
+  };
+}
+
+/* ---------- 3D content ---------- */
+function stripeTexture() {
+  const c = document.createElement("canvas");
+  c.width = c.height = 128;
+  const g = c.getContext("2d");
+  const cols = ["#f72585", "#f7df1e", "#4cc9f0", "#f7df1e"];
+  for (let i = 0; i < 8; i++) { g.fillStyle = cols[i % 4]; g.fillRect(0, i * 16, 128, 16); }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(1, 2);
+  return tex;
+}
+function buildFaceFx() {
+  // Anchor space: 1 unit = face width, +z points out of the face
+  const frameMat = new THREE.MeshStandardMaterial({ color: 0xf7df1e, metalness: 0.4, roughness: 0.3 });
+  const lensMat = new THREE.MeshStandardMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0.35, roughness: 0.1, depthWrite: false });
+  const glasses = new THREE.Group();
+  for (const x of [-0.175, 0.175]) {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.115, 0.016, 12, 48), frameMat);
+    ring.position.set(x, 0, 0);
+    const lens = new THREE.Mesh(new THREE.CircleGeometry(0.11, 40), lensMat);
+    lens.position.set(x, 0, -0.005);
+    glasses.add(ring, lens);
+  }
+  const bridge = new THREE.Mesh(new THREE.TorusGeometry(0.045, 0.013, 8, 24, Math.PI), frameMat);
+  bridge.position.set(0, 0.015, 0);
+  glasses.add(bridge);
+  glasses.position.set(0, -0.04, 0.05);
+
+  const hat = new THREE.Group();
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.5, 40), new THREE.MeshStandardMaterial({ map: stripeTexture(), roughness: 0.6 }));
+  cone.position.y = 0.25;
+  const pom = new THREE.Mesh(new THREE.SphereGeometry(0.055, 20, 14), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 }));
+  pom.position.y = 0.52;
+  hat.add(cone, pom);
+  hat.position.set(0.04, 0.12, -0.28);
+  hat.rotation.set(-0.3, 0, -0.18);
+  hat.userData.baseY = hat.position.y;
+
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.07, 28, 20), new THREE.MeshStandardMaterial({ color: 0xe5484d, roughness: 0.25 }));
+  nose.position.set(0, 0, 0.03);
+
+  const meshMat = new THREE.MeshBasicMaterial({ color: 0x4cc9f0, wireframe: true, transparent: true, opacity: 0.35 });
+  fx = { glasses, hat, nose, meshMat };
+}
+async function buildImageFx() {
+  const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js");
+  const gltf = await new GLTFLoader().loadAsync("_shared/models/robot.glb");
+  const model = gltf.scene;
+  // Skinned hand meshes report bind-pose bounds hundreds of units wide, so size the robot from rigid meshes only
+  const box = new THREE.Box3();
+  model.updateMatrixWorld(true);
+  model.traverse((o) => { if (o.isMesh && !o.isSkinnedMesh) box.expandByObject(o); });
+  const k = 0.55 / (box.max.y - box.min.y);
+  model.scale.setScalar(k);
+  model.position.set(0, -0.22 - box.min.y * k, 0.06);
+  mixer = new THREE.AnimationMixer(model);
+  const clip = gltf.animations.find((a) => a.name === "Dance") || gltf.animations[0];
+  if (clip) mixer.clipAction(clip).play();
+
+  const group = new THREE.Group();
+  const w = 1, h = CARD_ASPECT;
+  const plane = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0.12, depthWrite: false }));
+  const pts = [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]].map(([x, y]) => new THREE.Vector3(x, y, 0.002));
+  const outline = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0x4cc9f0 }));
+  const disc = new THREE.Mesh(new THREE.CircleGeometry(0.16, 40), new THREE.MeshBasicMaterial({ color: 0xf7df1e, transparent: true, opacity: 0.35, depthWrite: false }));
+  disc.position.set(0, -0.22, 0.004);
+  group.add(plane, outline, disc, model);
+  robot = group;
+}
+function addLights(scene) {
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 2.2));
+  const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+  sun.position.set(0.5, 1, 2);
+  scene.add(sun);
+}
+function applyFx() {
+  if (!fx) return;
+  fx.glasses.visible = fxOn.glasses;
+  fx.hat.visible = fxOn.hat;
+  fx.nose.visible = fxOn.nose;
+  fx.meshMat.visible = fxOn.mesh;
+}
+
+/* ---------- session lifecycle ---------- */
+async function ensureLib() {
+  if (!THREE) THREE = await import("three");
+  if (mode === "face" && !FaceAR) {
+    ({ MindARThree: FaceAR } = await import(MINDAR + "mindar-face-three.prod.js"));
+    buildFaceFx();
+    applyFx();
+  }
+  if (mode === "image" && !ImageAR) {
+    ({ MindARThree: ImageAR } = await import(MINDAR + "mindar-image-three.prod.js"));
+    await buildImageFx();
+  }
+}
+async function teardown() {
+  const old = inst;
+  inst = null; started = false;
+  if (feed) { feed.stop(); feed = null; }
+  if (!old) { arBox.replaceChildren(); return; }
+  old.renderer.setAnimationLoop(null);
+  old.video?.srcObject?.getTracks().forEach((t) => t.stop());
+  try { old.controller?.stopProcessVideo(); } catch (err) { console.warn(err); }
+  old.video = null;  // the library's own window-resize handler returns early without a video
+  old.renderer.dispose();
+  old.renderer.forceContextLoss();
+  arBox.replaceChildren();
+  const landmarker = old.controller?.faceMeshHelper?.faceLandmarker;
+  if (landmarker) { await nextFrames(3); landmarker.close(); }
+}
+function setFound(on) {
+  if (mode === "face") setChip(on ? "👤 偵測到臉部" : "🔍 尋找臉部中", on);
+  else setChip(on ? "🎯 已鎖定標記" : "🔍 尋找標記中", on);
+}
+let frameNo = 0, jawSmooth = 0;
+function updateFace(ar) {
+  const est = ar.getLatestEstimate();
+  if (++frameNo % 3) return;
+  setFound(!!est);
+  const cats = est?.blendshapes?.categories;
+  const score = {};
+  if (cats) for (const c of cats) score[c.categoryName] = c.score;
+  BLEND.forEach(([, keys], i) => {
+    const v = cats ? keys.reduce((a, k) => a + (score[k] || 0), 0) / keys.length : 0;
+    const b = $(`bb${i}`);
+    if (b) { b.style.width = `${Math.round(v * 100)}%`; $(`bv${i}`).textContent = v.toFixed(2); }
+  });
+  jawSmooth += ((score.jawOpen || 0) - jawSmooth) * 0.5;
+  fx.hat.position.y = fx.hat.userData.baseY + Math.max(0, jawSmooth - 0.1) * 0.45;
+}
+async function startSession() {
+  await teardown();
+  hideOverlays();
+  note("");
+  $("badge").textContent = "";
+  showLoading(mode === "face" ? "下載 MindAR 臉部追蹤與 three.js…" : "下載 MindAR 圖片追蹤與 three.js…");
+  await ensureLib();
+  let Cls = mode === "face" ? FaceAR : ImageAR;
+  if (!useCamera) {
+    feed = mode === "face" ? await photoFeed(FACES[photoIdx]) : await simFeed();
+    Cls = fedBy(Cls, feed.stream);
+    $("badge").textContent = mode === "face" ? "範例照片" : "模擬畫面";
+  }
+  const opts = { container: arBox, uiLoading: "#loading", uiScanning: "#scanning", uiError: "#arError" };
+  if (mode === "image") Object.assign(opts, { imageTargetSrc: CARD_MIND, maxTrack: 1 });
+  const ar = new Cls(opts);
+  addLights(ar.scene);
+  if (mode === "face") {
+    faceMesh = ar.addFaceMesh();
+    faceMesh.material = fx.meshMat;
+    ar.scene.add(faceMesh);
+    ar.addAnchor(168).group.add(fx.glasses);
+    ar.addAnchor(10).group.add(fx.hat);
+    ar.addAnchor(1).group.add(fx.nose);
+  } else {
+    const anchor = ar.addAnchor(0);
+    anchor.group.add(robot);
+    anchor.onTargetFound = () => setFound(true);
+    anchor.onTargetLost = () => setFound(false);
+  }
+  inst = ar;
+  showLoading(mode === "face" ? (useCamera ? "開啟鏡頭並載入臉部模型…" : "載入臉部模型…") : (useCamera ? "開啟鏡頭並載入標記特徵…" : "載入標記特徵…"));
+  await ar.start();
+  if (inst !== ar) return;
+  hideOverlays();
+  if (mode === "image") $("scanning").classList.remove("hidden");
+  started = true;
+  setFound(false);
+  clock = new THREE.Clock();
+  ar.renderer.setAnimationLoop(() => {
+    const dt = clock.getDelta();
+    if (mode === "face") updateFace(ar); else mixer?.update(dt);
+    ar.renderer.render(ar.scene, ar.camera);
+  });
+}
+async function restart() {
+  busy = true;
+  markSource();
+  try {
+    await startSession();
+  } catch (err) {
+    hideOverlays();
+    if (useCamera && !(err instanceof Error && !(err instanceof DOMException))) {
+      // getUserMedia failed (MindAR rejects without a reason): fall back to the synthetic feed
+      console.warn("camera unavailable, using synthetic feed");
+      useCamera = false;
+      markSource();
+      try {
+        await startSession();
+        note(mode === "face" ? "找不到可用的鏡頭，改用範例照片" : "找不到可用的鏡頭，改用模擬畫面");
+      } catch (err2) { fail(err2); }
+    } else fail(err);
+  } finally {
+    busy = false;
+    markSource();
+  }
+}
+function fail(err) {
+  console.error(err);
+  hideOverlays();
+  setChip("啟動失敗");
+  note(`AR 引擎啟動失敗：${err?.message || err || "未知錯誤"}`);
+}
+// MindAR runs parts of start() inside async Promise executors, so some failures surface only as unhandled rejections
+window.addEventListener("unhandledrejection", (e) => {
+  if (!busy) return;
+  busy = false;
+  markSource();
+  hideOverlays();
+  setChip("啟動失敗");
+  note(`AR 引擎啟動失敗：${e.reason?.message || e.reason || "未知錯誤"}`);
+});
+new ResizeObserver(() => {
+  if (!started || !inst) return;
+  if (mode === "face") inst._resize(); else inst.resize();
+}).observe(arBox);
+
+buildSide();
+buildThumbs();
+await demoGate({
+  icon: "🕶️",
+  title: "MindAR 臉部特效與圖片追蹤",
+  desc: "開啟鏡頭後替你的臉戴上 3D 眼鏡與派對帽；切到圖片追蹤，機器人會站在標記圖上跳舞。沒有鏡頭可改用範例照片或模擬畫面。",
+  tags: ["需要鏡頭", "約 17 MB", "MindAR 1.2.5"],
+  button: "開啟鏡頭",
+});
+restart();
+</script>
+</body>
+</html>

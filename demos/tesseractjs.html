@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tesseract.js 示範：繁體中文與英文 OCR</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"click","size":"約 9 MB","note":"辨識引擎與繁中、英文字庫下載後在瀏覽器內執行，圖片不會上傳"}</script>
+<style>
+  #app { position: fixed; inset: 0; overflow: auto; padding: 14px 16px 50px; display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 14px; align-content: start; }
+  .left { display: grid; gap: 10px; align-content: start; min-width: 0; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .row .btn { padding: 6px 11px; font-size: 12px; }
+  .imgwrap { position: relative; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); background: #222; }
+  .imgwrap canvas { display: block; width: 100%; height: auto; }
+  #overlay { position: absolute; inset: 0; pointer-events: none; }
+  #scan { position: absolute; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, transparent, var(--c2), transparent); box-shadow: 0 0 14px var(--c2); top: 0; display: none; }
+  .scanning #scan { display: block; animation: scan 1.6s ease-in-out infinite alternate; }
+  @keyframes scan { to { top: calc(100% - 3px); } }
+  .side { display: grid; gap: 10px; align-content: start; }
+  .card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+  .card h2 { margin: 0 0 6px; font-size: 13px; color: var(--muted); font-weight: 500; display: flex; justify-content: space-between; }
+  .card h2 b { color: var(--fg); font-family: var(--mono); font-weight: 500; }
+  #lines { display: grid; gap: 4px; max-height: 300px; overflow: auto; }
+  .ln { display: flex; gap: 8px; align-items: baseline; padding: 4px 6px; border-radius: 6px; font-size: 14px; cursor: default; }
+  .ln:hover { background: rgba(255,255,255,.06); }
+  .ln i { font: normal 11px var(--mono); color: var(--k); flex: none; width: 34px; }
+  .bar { height: 5px; border-radius: 3px; background: rgba(255,255,255,.08); overflow: hidden; margin-top: 6px; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--c2); transition: width .2s; }
+  .legend { display: flex; gap: 10px; font-size: 11px; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 10px; height: 3px; margin-right: 4px; vertical-align: middle; background: var(--k); }
+  .muted { color: var(--muted); font-size: 13px; }
+  @media (max-width: 680px) {
+    /* stacked layout scrolls under the fixed hint; the on-screen controls are self-explanatory */
+    .hint { display: none; }
+    #app { grid-template-columns: minmax(0, 1fr); padding: 10px 10px 46px; }
+    #lines { max-height: none; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="left">
+    <div class="row" id="samples">
+      <button class="btn" data-s="0" aria-pressed="true">招牌</button>
+      <button class="btn" data-s="1">高鐵車票</button>
+      <button class="btn" data-s="2">社區公告</button>
+      <button class="btn" id="upload">上傳圖片</button>
+      <button class="btn primary" id="go">重新辨識</button>
+      <input type="file" id="file" accept="image/*" hidden>
+    </div>
+    <div class="imgwrap" id="wrap"><canvas id="img" width="720" height="400"></canvas><canvas id="overlay" width="720" height="400"></canvas><div id="scan"></div></div>
+    <div class="legend"><span style="--k:#7bd389">信心 80% 以上</span><span style="--k:#f7df1e">60% 到 80%</span><span style="--k:#f72585">60% 以下</span></div>
+  </div>
+  <div class="side">
+    <div class="card">
+      <h2>辨識結果<b id="meta">-</b></h2>
+      <div id="lines"><span class="muted">等待辨識…</span></div>
+      <div class="bar"><i id="prog"></i></div>
+    </div>
+    <div class="card muted" style="font-size:12px">語言：繁體中文＋英文（chi_tra + eng）<br>引擎：Tesseract LSTM，WebAssembly 執行於 Web Worker</div>
+  </div>
+</div>
+<div class="hint">切換範例或上傳圖片，滑過結果看對應位置</div>
+
+<script src="_shared/gate.js"></script>
+<script type="module">
+// Tesseract.js: chi_tra + eng LSTM OCR in a Web Worker; line boxes drawn back over the image.
+const $ = (id) => document.getElementById(id);
+const img = $("img");
+const ctx = img.getContext("2d");
+const ov = $("overlay");
+const octx = ov.getContext("2d");
+const FONT = '"Microsoft JhengHei", "PingFang TC", "Noto Sans TC", sans-serif';
+
+function size(w, h) {
+  img.width = ov.width = w;
+  img.height = ov.height = h;
+}
+
+const SAMPLES = [
+  () => {
+    size(720, 400);
+    ctx.fillStyle = "#8f1d22"; ctx.fillRect(0, 0, 720, 400);
+    ctx.strokeStyle = "#e9c46a"; ctx.lineWidth = 4; ctx.strokeRect(6, 6, 708, 388);
+    ctx.fillStyle = "#fff"; ctx.textAlign = "center";
+    ctx.font = `700 60px ${FONT}`; ctx.fillText("阿嬤的滷肉飯", 360, 115);
+    ctx.font = `600 34px ${FONT}`; ctx.fillText("Grandma's Braised Pork Rice", 360, 185);
+    ctx.fillStyle = "#e9c46a";
+    ctx.font = `700 32px ${FONT}`; ctx.fillText("營業時間 11:00 - 20:00", 360, 260);
+    ctx.fillStyle = "#fff";
+    ctx.font = `600 28px ${FONT}`; ctx.fillText("週一公休 Closed on Mondays", 360, 325);
+  },
+  () => {
+    size(720, 400);
+    ctx.fillStyle = "#f4f1ea"; ctx.fillRect(0, 0, 720, 400);
+    ctx.fillStyle = "#e35b1f"; ctx.fillRect(0, 0, 720, 14); ctx.fillRect(0, 386, 720, 14);
+    ctx.fillStyle = "#c2410c"; ctx.textAlign = "left";
+    ctx.font = `700 34px ${FONT}`; ctx.fillText("臺灣高鐵 THSR", 30, 62);
+    ctx.fillStyle = "#222";
+    ctx.font = `700 48px ${FONT}`; ctx.fillText("台北 Taipei 到 左營 Zuoying", 30, 150);
+    ctx.font = `600 30px ${FONT}`; ctx.fillText("2026/10/03 12:30 出發", 30, 215);
+    ctx.fillText("標準車廂 6 車 12A 座位", 30, 270);
+    ctx.font = `700 40px ${FONT}`; ctx.fillText("NT$ 1,490", 30, 345);
+  },
+  () => {
+    size(720, 400);
+    ctx.fillStyle = "#fffbe6"; ctx.fillRect(0, 0, 720, 400);
+    ctx.fillStyle = "#c0392b"; ctx.textAlign = "center";
+    ctx.font = `700 56px ${FONT}`; ctx.fillText("停水公告 Notice", 360, 90);
+    ctx.fillStyle = "#222"; ctx.textAlign = "left";
+    ctx.font = `600 32px ${FONT}`;
+    ctx.fillText("本週六上午九點至下午三點停水", 50, 170);
+    ctx.fillText("Water outage: Sat 9 AM to 3 PM", 50, 225);
+    ctx.fillText("請住戶提前儲水，謝謝合作！", 50, 280);
+    ctx.font = `600 26px ${FONT}`; ctx.fillStyle = "#555";
+    ctx.fillText("管理委員會 敬啟", 440, 350);
+  },
+];
+
+let current = 0;
+SAMPLES[0]();
+
+await demoGate({
+  icon: "🔍",
+  title: "中英文 OCR 文字辨識",
+  desc: "按下後下載 Tesseract 辨識引擎與繁體中文、英文字庫，在瀏覽器內辨識圖片中的文字。",
+  tags: ["約 9 MB", "繁中＋英文", "WebAssembly"],
+  button: "下載並開始辨識",
+});
+
+const status = demoStatus("載入 Tesseract.js…");
+const STEP = {
+  "loading tesseract core": "載入辨識引擎",
+  "initializing tesseract": "初始化引擎",
+  "loading language traineddata": "下載語言字庫",
+  "initializing api": "初始化語言模型",
+  "recognizing text": "辨識文字中",
+};
+let loading = true;
+const logger = (m) => {
+  const label = STEP[m.status] || m.status;
+  if (loading) {
+    status.text(`${label}… ${Math.round((m.progress || 0) * 100)}%`);
+    status.progress(m.progress || 0);
+  } else if (m.status === "recognizing text") {
+    $("prog").style.width = `${Math.round(m.progress * 100)}%`;
+  }
+};
+
+let worker;
+try {
+  await new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/tesseract.min.js";
+    s.onload = resolve;
+    s.onerror = () => reject(new Error("無法載入 tesseract.js"));
+    document.head.append(s);
+  });
+  // The engine prints harmless "Parameter not found" notices through console.error inside the worker;
+  // a tiny wrapper filters only those before loading the official worker script.
+  const workerPath = URL.createObjectURL(new Blob([
+    'const e = console.error; console.error = (...a) => { if (!String(a[0]).includes("Parameter not found")) e(...a); };' +
+    'importScripts("https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/worker.min.js");',
+  ], { type: "text/javascript" }));
+  worker = await Tesseract.createWorker(["chi_tra", "eng"], 1, { logger, workerPath, workerBlobURL: false });
+  loading = false;
+  status.done();
+} catch (err) {
+  console.warn(err);
+  status.error(`載入失敗：${err.message}`);
+  throw err;
+}
+
+const confColor = (c) => (c >= 80 ? "#7bd389" : c >= 60 ? "#f7df1e" : "#f72585");
+// Tesseract inserts spaces between CJK glyphs; drop them for readability
+const tidy = (t) => t.trim().replace(/([　-鿿＀-￯])\s+(?=[　-鿿＀-￯])/g, "$1");
+const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+
+function drawBoxes(lines, hi = -1) {
+  octx.clearRect(0, 0, ov.width, ov.height);
+  const lw = Math.max(2, ov.width / 260);
+  lines.forEach((l, i) => {
+    const { x0, y0, x1, y1 } = l.bbox;
+    octx.lineWidth = i === hi ? lw * 2 : lw;
+    octx.strokeStyle = confColor(l.confidence);
+    octx.fillStyle = i === hi ? "rgba(76,201,240,.25)" : "rgba(0,0,0,0)";
+    octx.fillRect(x0 - 4, y0 - 4, x1 - x0 + 8, y1 - y0 + 8);
+    octx.strokeRect(x0 - 4, y0 - 4, x1 - x0 + 8, y1 - y0 + 8);
+  });
+}
+
+let busy = false;
+async function recognize() {
+  if (busy) return;
+  busy = true;
+  octx.clearRect(0, 0, ov.width, ov.height);
+  $("wrap").classList.add("scanning");
+  $("lines").innerHTML = '<span class="muted">辨識中…</span>';
+  $("prog").style.width = "0";
+  const t0 = performance.now();
+  try {
+    const { data } = await worker.recognize(img, {}, { text: true, blocks: true });
+    const lines = (data.blocks || []).flatMap((b) => b.paragraphs.flatMap((p) => p.lines)).filter((l) => tidy(l.text));
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    $("meta").textContent = `${lines.length} 行・平均信心 ${Math.round(data.confidence)}%・${secs} 秒`;
+    $("lines").innerHTML = lines.length
+      ? lines.map((l, i) => `<div class="ln" data-i="${i}" style="--k:${confColor(l.confidence)}"><i>${Math.round(l.confidence)}%</i><span>${esc(tidy(l.text))}</span></div>`).join("")
+      : '<span class="muted">沒有找到文字</span>';
+    drawBoxes(lines);
+    $("lines").onmouseover = (e) => { const el = e.target.closest(".ln"); if (el) drawBoxes(lines, +el.dataset.i); };
+    $("lines").onmouseleave = () => drawBoxes(lines);
+  } catch (err) {
+    console.warn(err);
+    $("lines").innerHTML = `<span class="muted">辨識失敗：${esc(err.message)}</span>`;
+  }
+  $("wrap").classList.remove("scanning");
+  $("prog").style.width = "100%";
+  busy = false;
+}
+
+$("samples").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-s]");
+  if (!b || busy) return;
+  current = +b.dataset.s;
+  document.querySelectorAll("[data-s]").forEach((x) => x.setAttribute("aria-pressed", x === b));
+  SAMPLES[current]();
+  recognize();
+});
+$("go").addEventListener("click", recognize);
+$("upload").addEventListener("click", () => $("file").click());
+$("file").addEventListener("change", async (e) => {
+  const f = e.target.files[0];
+  if (!f || busy) return;
+  const bmp = await createImageBitmap(f);
+  const s = Math.min(1, 1200 / bmp.width, 1200 / bmp.height);
+  size(Math.round(bmp.width * s), Math.round(bmp.height * s));
+  ctx.drawImage(bmp, 0, 0, img.width, img.height);
+  document.querySelectorAll("[data-s]").forEach((x) => x.setAttribute("aria-pressed", "false"));
+  e.target.value = "";
+  recognize();
+});
+
+recognize();
+</script>
+</body>
+</html>

@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teachable Machine 示範：用鏡頭現場訓練影像分類</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"click","needs":["camera"],"size":"約 3 MB","note":"樣本與訓練都在瀏覽器內完成，影像不會上傳"}</script>
+<style>
+  .app {
+    position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    gap: 12px; padding: 12px 14px 46px;
+  }
+  .cam {
+    position: relative; min-height: 0; border-radius: 12px; overflow: hidden; border: 1px solid var(--line);
+    background: radial-gradient(circle at 50% 40%, #1d222c, #0c0e12);
+  }
+  .cam video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+  .cam .frame { position: absolute; inset: 0; border-radius: 12px; pointer-events: none; transition: box-shadow .15s; }
+  .cam .empty {
+    position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 6px;
+    color: var(--muted); font-size: 13px; padding: 0 20px;
+  }
+  .cam .empty b { font-size: 34px; }
+  .pred {
+    position: absolute; left: 10px; top: 10px; right: 10px; display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; border-radius: 10px; background: rgba(12, 14, 18, .74); backdrop-filter: blur(4px);
+    font-size: 12.5px; color: var(--muted);
+  }
+  .pred strong { font-size: 19px; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pred .pct { margin-left: auto; font: 700 18px var(--mono); }
+  .rec-badge {
+    position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); padding: 5px 12px; border-radius: 999px;
+    background: rgba(229, 72, 77, .9); color: #fff; font-size: 12.5px; font-weight: 600; white-space: nowrap; display: none;
+  }
+  .rec-badge.on { display: block; animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: .65; } }
+
+  .side { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+  .cls {
+    --cc: var(--c1); border: 1px solid var(--line); border-left: 4px solid var(--cc); border-radius: 10px;
+    background: var(--panel); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; flex: 1 1 0; min-height: 0;
+  }
+  .cls.win { box-shadow: 0 0 0 1px var(--cc), 0 0 18px -4px var(--cc); }
+  .cls-head { display: flex; align-items: center; gap: 8px; }
+  .cls-head input {
+    flex: 1; min-width: 0; background: transparent; border: 1px solid transparent; border-radius: 6px;
+    color: var(--fg); font: 600 15px var(--font); padding: 3px 6px;
+  }
+  .cls-head input:hover, .cls-head input:focus { border-color: var(--line); outline: none; background: var(--bg-2); }
+  .count { font: 600 12px var(--mono); color: var(--muted); white-space: nowrap; }
+  .strip { --t: 34px; position: relative; flex: 1; min-height: calc(var(--t) + 8px); border-radius: 6px; background: var(--bg-2); }
+  /* absolutely sized grid so auto-fill knows the height: rows past the box get a zero-height implicit track */
+  .thumbs {
+    position: absolute; inset: 4px; display: grid; gap: 4px; align-content: start; overflow: hidden;
+    grid-template-columns: repeat(auto-fill, var(--t)); grid-template-rows: repeat(auto-fill, var(--t)); grid-auto-rows: 0;
+  }
+  .thumbs canvas { width: 100%; height: 100%; border-radius: 4px; }
+  .thumbs .ph { grid-column: 1 / -1; font-size: 12px; color: var(--muted); padding: 9px 0 0 6px; white-space: nowrap; }
+  .cls-foot { display: flex; align-items: center; gap: 10px; }
+  .rec { user-select: none; -webkit-user-select: none; touch-action: none; white-space: nowrap; }
+  .rec.active { background: var(--cc); color: #111; border-color: var(--cc); }
+  .bar { flex: 1; height: 22px; border-radius: 6px; background: var(--bg-2); position: relative; overflow: hidden; }
+  .bar i { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--cc); opacity: .85; transition: width .12s; }
+  .bar b { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font: 600 12px var(--mono); }
+
+  .train {
+    border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 10px 12px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .train-row { display: flex; align-items: center; gap: 8px; }
+  .train-row .info { flex: 1; min-width: 0; font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #chart { width: 100%; height: 46px; display: block; border-radius: 6px; background: var(--bg-2); }
+  .legend { display: flex; gap: 12px; font-size: 11.5px; color: var(--muted); }
+  .legend i { display: inline-block; width: 12px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+  .msg { font-size: 12.5px; color: var(--muted); min-height: 1.4em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .msg.err { color: var(--c3); }
+
+  @media (max-width: 720px) and (max-aspect-ratio: 1/1) {
+    .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(150px, 1fr) auto; padding: 10px 10px 46px; gap: 8px; overflow-y: auto; }
+    .side { gap: 8px; }
+    .cls { padding: 8px 10px; gap: 6px; flex: none; }
+    .strip { --t: 28px; flex: none; height: 36px; min-height: 0; }
+    .thumbs .ph { padding-top: 5px; }
+    .train { padding: 8px 10px; gap: 6px; }
+    #chart, .legend { display: none; }
+    .pred strong { font-size: 16px; } .pred .pct { font-size: 15px; }
+  }
+  @media (max-height: 460px) {
+    .cls { padding: 7px 10px; gap: 6px; }
+    .strip { --t: 26px; }
+    .thumbs .ph { padding-top: 5px; }
+    #chart, .legend { display: none; }
+    .train { padding: 8px 10px; gap: 6px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="cam" id="cam">
+    <div class="empty" id="camEmpty"><b>📷</b>鏡頭畫面會顯示在這裡</div>
+    <video id="video" playsinline muted></video>
+    <div class="frame" id="frame"></div>
+    <div class="pred" id="pred"><span id="predText">先替兩個類別收集樣本</span></div>
+    <div class="rec-badge" id="recBadge"></div>
+  </div>
+  <div class="side">
+    <div class="cls" data-i="0" style="--cc: var(--c1)">
+      <div class="cls-head"><input value="✋ 舉手" maxlength="12" aria-label="類別 1 名稱"><span class="count">0 張</span></div>
+      <div class="strip"><div class="thumbs"><span class="ph">按住下方按鈕，對著鏡頭舉起手</span></div></div>
+      <div class="cls-foot"><button class="btn rec">● 按住收集</button><div class="bar"><i></i><b>0%</b></div></div>
+    </div>
+    <div class="cls" data-i="1" style="--cc: var(--c2)">
+      <div class="cls-head"><input value="🙂 沒舉手" maxlength="12" aria-label="類別 2 名稱"><span class="count">0 張</span></div>
+      <div class="strip"><div class="thumbs"><span class="ph">按住下方按鈕，手放下只露出臉</span></div></div>
+      <div class="cls-foot"><button class="btn rec">● 按住收集</button><div class="bar"><i></i><b>0%</b></div></div>
+    </div>
+    <div class="train">
+      <div class="train-row">
+        <button class="btn primary" id="trainBtn">🧠 訓練模型</button>
+        <span class="info" id="trainInfo">每類至少 10 張</span>
+        <button class="btn" id="resetBtn">↺ 重來</button>
+      </div>
+      <canvas id="chart"></canvas>
+      <div class="legend"><span><i style="background:var(--c3)"></i>損失</span><span><i style="background:var(--c4)"></i>準確率</span></div>
+      <div class="msg" id="msg"></div>
+    </div>
+  </div>
+</div>
+<div class="hint">按住「收集」各錄 10 張以上，再按「訓練模型」</div>
+
+<script src="_shared/gate.js"></script>
+<script>
+const TF_URL = "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js";
+const TM_URL = "https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8.5/dist/teachablemachine-image.min.js";
+const MIN_SAMPLES = 10, MAX_SAMPLES = 120, SAMPLE_GAP = 90; // ms between captured frames while holding
+const TRAIN = { denseUnits: 100, epochs: 40, learningRate: 0.001, batchSize: 16 };
+const COLORS = ["#f7df1e", "#4cc9f0"];
+
+const video = document.getElementById("video");
+const cards = [...document.querySelectorAll(".cls")];
+const nameIns = cards.map((c) => c.querySelector("input"));
+const countEls = cards.map((c) => c.querySelector(".count"));
+const strips = cards.map((c) => c.querySelector(".thumbs"));
+const recBtns = cards.map((c) => c.querySelector(".rec"));
+const barFills = cards.map((c) => c.querySelector(".bar i"));
+const barTexts = cards.map((c) => c.querySelector(".bar b"));
+const predEl = document.getElementById("pred"), frameEl = document.getElementById("frame");
+const recBadge = document.getElementById("recBadge");
+const trainBtn = document.getElementById("trainBtn"), resetBtn = document.getElementById("resetBtn");
+const trainInfo = document.getElementById("trainInfo"), msgEl = document.getElementById("msg");
+const chart = document.getElementById("chart"), cctx = chart.getContext("2d");
+
+// 224x224 mirrored center crop of the webcam, shared by addExample and predict
+const cap = document.createElement("canvas");
+cap.width = cap.height = 224;
+const capCtx = cap.getContext("2d");
+
+let model = null;
+let counts = [0, 0];
+let recording = -1, recToken = 0;
+let training = false, trained = false, dirty = false;
+let history = [];
+let smooth = null; // smoothed class probabilities for display
+
+function setMsg(text, kind) { msgEl.textContent = msgEl.title = text; msgEl.className = "msg" + (kind ? " " + kind : ""); }
+function labels() { return nameIns.map((el, i) => el.value.trim() || `類別 ${i + 1}`); }
+
+function grab() {
+  const vw = video.videoWidth, vh = video.videoHeight, side = Math.min(vw, vh);
+  capCtx.save();
+  capCtx.translate(224, 0); capCtx.scale(-1, 1);
+  capCtx.drawImage(video, (vw - side) / 2, (vh - side) / 2, side, side, 0, 0, 224, 224);
+  capCtx.restore();
+}
+
+function addThumb(i) {
+  const t = document.createElement("canvas");
+  t.width = t.height = 48;
+  t.getContext("2d").drawImage(cap, 0, 0, 48, 48);
+  const strip = strips[i];
+  strip.querySelector(".ph")?.remove();
+  strip.prepend(t);
+  while (strip.children.length > 48) strip.lastChild.remove();
+}
+
+function refreshCounts() {
+  counts.forEach((n, i) => { countEls[i].textContent = `${n} 張`; });
+  const ready = counts.every((n) => n >= MIN_SAMPLES);
+  if (!training) trainInfo.textContent = ready ? (trained && !dirty ? "模型已訓練，可再加樣本重訓" : "樣本足夠，可以訓練了") : `每類至少 ${MIN_SAMPLES} 張`;
+}
+
+// ---------- hold-to-record ----------
+async function recordLoop(i) {
+  const token = ++recToken;
+  recording = i;
+  recBtns[i].classList.add("active");
+  recBadge.textContent = `● 收集中：${labels()[i]}`;
+  recBadge.classList.add("on");
+  frameEl.style.boxShadow = `inset 0 0 0 4px ${COLORS[i]}`;
+  while (recording === i && token === recToken) {
+    if (counts[i] >= MAX_SAMPLES) { setMsg(`每類最多 ${MAX_SAMPLES} 張，已達上限`); break; }
+    const t0 = performance.now();
+    grab();
+    await model.addExample(i, cap);
+    counts[i]++;
+    addThumb(i);
+    if (trained) dirty = true;
+    refreshCounts();
+    await new Promise((r) => setTimeout(r, Math.max(0, SAMPLE_GAP - (performance.now() - t0))));
+  }
+  if (token === recToken) stopRecording();
+}
+function stopRecording() {
+  recording = -1;
+  recBtns.forEach((b) => b.classList.remove("active"));
+  recBadge.classList.remove("on");
+  frameEl.style.boxShadow = "";
+  if (dirty) setMsg("新增了樣本，再按一次「訓練模型」更新辨識結果");
+}
+recBtns.forEach((btn, i) => {
+  btn.addEventListener("pointerdown", (e) => {
+    if (!model || training) return;
+    e.preventDefault();
+    btn.setPointerCapture(e.pointerId);
+    recordLoop(i);
+  });
+  const end = () => { if (recording === i) { recToken++; stopRecording(); } };
+  btn.addEventListener("pointerup", end);
+  btn.addEventListener("pointercancel", end);
+  btn.addEventListener("lostpointercapture", end);
+  btn.addEventListener("contextmenu", (e) => e.preventDefault());
+});
+nameIns.forEach((el, i) => el.addEventListener("input", () => model && model.setLabel(i, labels()[i])));
+
+// ---------- training ----------
+function drawChart() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const w = chart.clientWidth, h = chart.clientHeight;
+  if (chart.width !== Math.round(w * dpr)) { chart.width = Math.round(w * dpr); chart.height = Math.round(h * dpr); }
+  cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cctx.clearRect(0, 0, w, h);
+  if (!history.length) return;
+  const n = TRAIN.epochs, pad = 4;
+  const maxLoss = Math.max(...history.map((l) => l.loss), 0.01);
+  const line = (vals, color) => {
+    cctx.beginPath();
+    vals.forEach((v, k) => {
+      const x = pad + (k / Math.max(1, n - 1)) * (w - pad * 2), y = h - pad - v * (h - pad * 2);
+      k ? cctx.lineTo(x, y) : cctx.moveTo(x, y);
+    });
+    cctx.strokeStyle = color; cctx.lineWidth = 2; cctx.lineJoin = "round"; cctx.stroke();
+  };
+  line(history.map((l) => l.loss / maxLoss), "#f72585");
+  line(history.map((l) => l.acc ?? l.accuracy ?? 0), "#7bd389");
+}
+
+async function train() {
+  if (!model || training) return;
+  const short = counts.findIndex((n) => n < MIN_SAMPLES);
+  if (short >= 0) { setMsg(`「${labels()[short]}」還差 ${MIN_SAMPLES - counts[short]} 張樣本`, "err"); return; }
+  training = true; history = []; drawChart();
+  trainBtn.disabled = resetBtn.disabled = true;
+  recBtns.forEach((b) => (b.disabled = true));
+  setMsg("在瀏覽器內訓練中，請稍候…");
+  try {
+    model.prepare(); // rebuild the dataset so newly added samples are included
+    await model.train(TRAIN, {
+      onEpochEnd: async (epoch, logs) => {
+        history.push(logs);
+        drawChart();
+        const acc = logs.acc ?? logs.accuracy ?? 0;
+        trainInfo.textContent = `第 ${epoch + 1}/${TRAIN.epochs} 輪．準確率 ${Math.round(acc * 100)}%`;
+        await tf.nextFrame();
+      },
+    });
+    trained = true; dirty = false; smooth = null;
+    const last = history[history.length - 1] || {};
+    setMsg(`訓練完成（${counts[0] + counts[1]} 張樣本，最後一輪準確率 ${Math.round((last.acc ?? last.accuracy ?? 0) * 100)}%），對著鏡頭試試看`);
+  } catch (err) {
+    console.error(err);
+    setMsg(`訓練失敗：${err.message || err}`, "err");
+  }
+  training = false;
+  trainBtn.disabled = resetBtn.disabled = false;
+  recBtns.forEach((b) => (b.disabled = false));
+  refreshCounts();
+}
+trainBtn.addEventListener("click", train);
+
+resetBtn.addEventListener("click", () => {
+  if (!model || training) return;
+  model.setLabels(labels()); // also clears the stored examples
+  counts = [0, 0]; trained = false; dirty = false; smooth = null; history = []; drawChart();
+  strips.forEach((s, i) => { s.innerHTML = `<span class="ph">${i ? "按住下方按鈕，手放下只露出臉" : "按住下方按鈕，對著鏡頭舉起手"}</span>`; });
+  showIdle();
+  refreshCounts();
+  setMsg("已清除所有樣本");
+});
+
+// ---------- live prediction ----------
+function showIdle() {
+  predEl.innerHTML = '<span>先替兩個類別收集樣本，再按「訓練模型」</span>';
+  cards.forEach((c) => c.classList.remove("win"));
+  barFills.forEach((b) => (b.style.width = "0"));
+  barTexts.forEach((b) => (b.textContent = "0%"));
+}
+function showPrediction(res) {
+  const names = labels();
+  // light smoothing so the label does not flicker between frames
+  const probs = res.map((r) => r.probability);
+  smooth = smooth ? smooth.map((v, i) => v * 0.6 + probs[i] * 0.4) : probs;
+  let best = 0;
+  smooth.forEach((v, i) => {
+    if (v > smooth[best]) best = i;
+    barFills[i].style.width = `${(v * 100).toFixed(1)}%`;
+    barTexts[i].textContent = `${Math.round(v * 100)}%`;
+  });
+  cards.forEach((c, i) => c.classList.toggle("win", i === best));
+  const p = Math.round(smooth[best] * 100);
+  predEl.innerHTML = `<span>辨識結果</span><strong></strong><span class="pct" style="color:${COLORS[best]}">${p}%</span>`;
+  predEl.querySelector("strong").textContent = names[best];
+  if (recording < 0) frameEl.style.boxShadow = `inset 0 0 0 ${2 + smooth[best] * 4}px ${COLORS[best]}`;
+}
+async function predictLoop() {
+  if (trained && !training && video.readyState >= 2) {
+    try {
+      grab();
+      showPrediction(await model.predict(cap));
+    } catch (err) {
+      console.error(err);
+    }
+  }
+  requestAnimationFrame(predictLoop);
+}
+
+// ---------- start ----------
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const el = document.createElement("script");
+    el.src = src;
+    el.onload = resolve;
+    el.onerror = () => reject(new Error("函式庫下載失敗"));
+    document.head.append(el);
+  });
+}
+function cameraError(err) {
+  const name = err && err.name;
+  if (name === "NotAllowedError" || name === "SecurityError") return "鏡頭權限被拒絕。請在瀏覽器網址列的權限設定允許使用鏡頭，再重新整理頁面";
+  if (name === "NotFoundError" || name === "OverconstrainedError") return "找不到鏡頭。這個示範需要網路攝影機，請接上鏡頭後重新整理";
+  if (name === "NotReadableError") return "鏡頭正被其他程式使用中，請關閉該程式後重新整理";
+  return `無法開啟鏡頭：${(err && err.message) || err}`;
+}
+
+(async () => {
+  await demoGate({
+    icon: "🧠",
+    title: "現場教 AI 認東西",
+    desc: "用鏡頭替兩個類別各拍幾張樣本，Teachable Machine 會在瀏覽器內用遷移學習訓練分類模型，接著即時辨識鏡頭畫面。影像不會上傳。",
+    tags: ["需要鏡頭", "約 3 MB"],
+    button: "開啟鏡頭",
+  });
+  const s = demoStatus("開啟鏡頭…");
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    s.error("這個瀏覽器不支援鏡頭存取（需要 HTTPS 與較新的瀏覽器）");
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: "user" }, audio: false });
+    video.srcObject = stream;
+    await video.play();
+    document.getElementById("camEmpty").remove();
+  } catch (err) {
+    console.error(err);
+    s.error(cameraError(err));
+    document.getElementById("camEmpty").innerHTML = "<b>📷</b>沒有鏡頭畫面，無法收集樣本";
+    return;
+  }
+  try {
+    s.text("下載 TensorFlow.js…"); s.progress(0.2);
+    await loadScript(TF_URL);
+    s.text("下載 Teachable Machine…"); s.progress(0.45);
+    await loadScript(TM_URL);
+    s.text("載入 MobileNet 基底模型（約 1.7 MB）…"); s.progress(0.65);
+    model = await tmImage.createTeachable({ tfjsVersion: tf.version.tfjs }, { version: 2, alpha: 0.35 });
+    model.setLabels(labels());
+    s.done();
+  } catch (err) {
+    console.error(err);
+    s.error(`載入失敗：${err.message || err}，請確認網路連線後重新整理`);
+    return;
+  }
+  showIdle();
+  refreshCounts();
+  setMsg("按住「● 按住收集」錄下兩種畫面，越多樣越準");
+  predictLoop();
+})();
+</script>
+</body>
+</html>

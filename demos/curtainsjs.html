@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>curtains.js 示範：會鼓起的 WebGL 相片輪播</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body {
+    background:
+      radial-gradient(60% 60% at 50% 40%, #1c2130 0%, transparent 75%),
+      var(--bg);
+  }
+  #gl { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+  .controls { z-index: 60; }
+  .controls .label { font-size: 12px; align-self: center; padding: 6px 8px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); }
+  .btn { padding: 7px 10px; font-size: 12px; }
+  .wrap { position: fixed; inset: 0; z-index: 1; display: grid; place-items: center; padding: 64px 16px 56px; }
+  .deck { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+  .plane {
+    position: relative; cursor: pointer;
+    width: min(820px, calc(100vw - 32px), calc((100vh - 190px) * 1.5));
+    aspect-ratio: 3 / 2;
+  }
+  .plane img { display: none; }
+  .no-gl .plane img.on { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 6px; }
+  .caption {
+    position: absolute; left: 18px; bottom: 16px; z-index: 2; pointer-events: none;
+    color: #fff; text-shadow: 0 2px 12px rgba(0, 0, 0, 0.6);
+    transition: opacity 0.35s, transform 0.35s;
+  }
+  .caption.out { opacity: 0; transform: translateY(8px); }
+  .caption .idx { font: 12px/1 var(--mono); letter-spacing: 0.08em; opacity: 0.85; }
+  .caption h1 { margin: 6px 0 0; font-size: 28px; line-height: 1.15; font-weight: 700; letter-spacing: 0.02em; }
+  .caption p { margin: 4px 0 0; font-size: 13px; opacity: 0.85; }
+  .nav { display: flex; align-items: center; gap: 12px; }
+  .dots { display: flex; gap: 6px; }
+  .dots button {
+    width: 8px; height: 8px; padding: 0; border: 0; border-radius: 99px; cursor: pointer;
+    background: rgba(255, 255, 255, 0.28); transition: width 0.3s, background 0.3s;
+  }
+  .dots button[aria-current="true"] { width: 26px; background: var(--accent); }
+  .err { position: fixed; left: 50%; top: 14px; transform: translateX(-50%); z-index: 70; color: var(--c3); font-size: 13px; }
+  @media (max-width: 520px) {
+    .plane { width: calc(100vw - 32px); aspect-ratio: 1 / 1; }
+    .caption { left: 14px; bottom: 12px; }
+    .caption h1 { font-size: 22px; }
+    .nav .btn span { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="gl"></div>
+<div class="controls" id="bar"><span class="label">轉場</span></div>
+<main class="wrap">
+  <div class="deck">
+    <div class="plane" id="plane" role="img" aria-label="相片輪播">
+      <img src="_shared/img/photo-1.jpg" crossorigin="anonymous" alt="峽灣">
+      <img src="_shared/img/photo-2.jpg" crossorigin="anonymous" alt="紅岩峽谷">
+      <img src="_shared/img/photo-3.jpg" crossorigin="anonymous" alt="山谷公路">
+      <img src="_shared/img/photo-4.jpg" crossorigin="anonymous" alt="巴哥犬">
+      <img src="_shared/img/photo-5.jpg" crossorigin="anonymous" alt="瀑布彩虹">
+      <img src="_shared/img/photo-6.jpg" crossorigin="anonymous" alt="水母">
+      <img src="_shared/img/photo-7.jpg" crossorigin="anonymous" alt="母獅">
+      <img src="_shared/img/photo-8.jpg" crossorigin="anonymous" alt="海象">
+      <div class="caption" id="caption"><div class="idx" id="idx"></div><h1 id="title"></h1><p id="sub"></p></div>
+    </div>
+    <nav class="nav">
+      <button class="btn" id="prev" type="button" aria-label="上一張">‹<span> 上一張</span></button>
+      <div class="dots" id="dots"></div>
+      <button class="btn" id="next" type="button" aria-label="下一張"><span>下一張 </span>›</button>
+    </nav>
+  </div>
+</main>
+<div class="hint">游標移到照片上會鼓起並分離色版，點照片換下一張</div>
+
+<script src="https://cdn.jsdelivr.net/npm/curtainsjs@8.1.6/dist/curtains.umd.min.js"></script>
+<script>
+const SLIDES = [
+  ["峽灣", "冰河切出的深谷"],
+  ["紅岩峽谷", "砂岩層層堆疊"],
+  ["山谷公路", "穿過綠色山谷"],
+  ["巴哥犬", "皺眉的小鬥士"],
+  ["瀑布彩虹", "水霧裡的光譜"],
+  ["水母", "深海的發光傘"],
+  ["母獅", "草原上的凝視"],
+  ["海象", "冰洋上的長牙"],
+];
+const MODES = [["dissolve", "溶解"], ["ripple", "水波"], ["shift", "位移"]];
+const DURATION = 1.5;
+const AUTO_EVERY = 3.6;
+
+const vertexShader = `
+precision mediump float;
+attribute vec3 aVertexPosition;
+attribute vec2 aTextureCoord;
+uniform mat4 uMVMatrix;
+uniform mat4 uPMatrix;
+uniform mat4 activeTexMatrix;
+uniform mat4 nextTexMatrix;
+uniform vec2 uMouse;
+uniform float uHover;
+uniform float uTime;
+uniform float uProgress;
+varying vec2 vUv;
+varying vec2 vActiveUv;
+varying vec2 vNextUv;
+varying float vLift;
+void main() {
+  vec3 p = aVertexPosition;
+  // Bulge toward the camera around the cursor
+  float d = distance(p.xy, uMouse);
+  float lift = uHover * exp(-d * d * 3.0);
+  // Gentle idle cloth wave plus a bow during transitions
+  float wave = sin(p.x * 2.5 + uTime * 1.3) * cos(p.y * 2.0 + uTime * 0.9) * 0.018;
+  float bow = sin(uProgress * 3.14159) * (1.0 - p.x * p.x) * 0.08;
+  p.z += lift * 0.22 + wave + bow;
+  gl_Position = uPMatrix * uMVMatrix * vec4(p, 1.0);
+  vUv = aTextureCoord;
+  vActiveUv = (activeTexMatrix * vec4(aTextureCoord, 0.0, 1.0)).xy;
+  vNextUv = (nextTexMatrix * vec4(aTextureCoord, 0.0, 1.0)).xy;
+  vLift = lift;
+}`;
+
+const fragmentShader = `
+precision mediump float;
+varying vec2 vUv;
+varying vec2 vActiveUv;
+varying vec2 vNextUv;
+varying float vLift;
+uniform sampler2D activeTex;
+uniform sampler2D nextTex;
+uniform float uProgress;
+uniform float uMode;
+uniform float uTime;
+uniform float uAspect;
+uniform vec2 uMouse;
+uniform vec2 uOrigin;
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float noise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x),
+             mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float fbm(vec2 p) {
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 4; i++) { v += a * noise(p); p *= 2.0; a *= 0.5; }
+  return v;
+}
+// Mirror out-of-range coordinates so displaced edges never smear
+vec2 mirror(vec2 uv) { return 1.0 - abs(1.0 - mod(uv, 2.0)); }
+// RGB split sample: red and blue are pulled apart along dir
+vec3 split(sampler2D t, vec2 uv, vec2 dir) {
+  return vec3(texture2D(t, mirror(uv + dir)).r, texture2D(t, mirror(uv)).g, texture2D(t, mirror(uv - dir)).b);
+}
+
+void main() {
+  const float PI = 3.14159;
+  float p = uProgress;
+  vec2 aspect = vec2(uAspect, 1.0);
+  vec2 m = uMouse * 0.5 + 0.5;
+  vec2 toM = vUv - m;
+  vec2 dir = toM * vLift * 0.025;
+  vec2 lens = -toM * vLift * 0.12;
+  vec2 ua = vActiveUv + lens;
+  vec2 ub = vNextUv + lens;
+  vec3 col;
+
+  if (uMode < 0.5) {
+    // Noise dissolve with a glowing burn edge
+    float n = fbm(vUv * aspect * 3.0 + vec2(0.0, uTime * 0.05));
+    float edge = p * 1.3 - 0.15;
+    float reveal = 1.0 - smoothstep(edge - 0.025, edge + 0.025, n);
+    float glow = exp(-abs(n - edge) * 35.0) * sin(p * PI);
+    col = mix(split(activeTex, ua, dir), split(nextTex, ub, dir), reveal);
+    col += glow * vec3(1.0, 0.55, 0.15) * 1.6;
+  } else if (uMode < 1.5) {
+    // Ring wave expanding from where the user clicked
+    vec2 dv = (vUv - uOrigin) * aspect;
+    float r = length(dv);
+    float maxR = length(max(uOrigin, 1.0 - uOrigin) * aspect) + 0.15;
+    float k = r - p * maxR;
+    float ring = exp(-k * k * 60.0) * sin(p * PI);
+    vec2 off = normalize(dv + 1e-5) / aspect * ring * sin(k * 70.0) * 0.035;
+    float reveal = smoothstep(0.02, -0.02, k);
+    col = mix(split(activeTex, ua + off, dir), split(nextTex, ub + off, dir), reveal);
+    col += ring * 0.18;
+  } else {
+    // Displacement slide: each image is pushed sideways by the other one's brightness
+    float la = dot(texture2D(activeTex, vActiveUv).rgb, vec3(0.299, 0.587, 0.114));
+    float lb = dot(texture2D(nextTex, vNextUv).rgb, vec3(0.299, 0.587, 0.114));
+    float w = sin(vUv.y * 9.0 + uTime * 2.0) * 0.03;
+    vec2 pa = vec2(p * (lb * 0.4 + w), 0.0);
+    vec2 pb = vec2((1.0 - p) * (la * 0.4 + w), 0.0);
+    col = mix(split(activeTex, ua + pa, dir), split(nextTex, ub - pb, dir), smoothstep(0.25, 0.75, p));
+  }
+
+  col *= 1.0 + vLift * 0.12;
+  // Soft vignette
+  vec2 q = vUv - 0.5;
+  col *= 1.0 - dot(q, q) * 0.5;
+  gl_FragColor = vec4(col, 1.0);
+}`;
+
+const planeEl = document.getElementById("plane");
+const caption = document.getElementById("caption");
+const dots = document.getElementById("dots");
+const imgs = planeEl.querySelectorAll("img");
+
+let active = 0, mode = 0, auto = true, lastAuto = 0, clock = performance.now() / 1000;
+let transition = null; // { to, start }
+
+function showCaption(i) {
+  document.getElementById("idx").textContent = `${String(i + 1).padStart(2, "0")} / ${String(SLIDES.length).padStart(2, "0")}`;
+  document.getElementById("title").textContent = SLIDES[i][0];
+  document.getElementById("sub").textContent = SLIDES[i][1];
+  dots.querySelectorAll("button").forEach((b, k) => b.setAttribute("aria-current", String(k === i)));
+  imgs.forEach((img, k) => img.classList.toggle("on", k === i));
+}
+
+SLIDES.forEach(([name], i) => {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.setAttribute("aria-label", `第 ${i + 1} 張：${name}`);
+  b.addEventListener("click", () => { lastAuto = clock; goTo(i); });
+  dots.append(b);
+});
+showCaption(0);
+
+const bar = document.getElementById("bar");
+MODES.forEach(([key, label], i) => {
+  const b = document.createElement("button");
+  b.className = "btn"; b.type = "button"; b.dataset.i = i; b.textContent = label;
+  b.setAttribute("aria-pressed", String(i === 0));
+  b.addEventListener("click", () => {
+    mode = i;
+    bar.querySelectorAll(".btn[data-i]").forEach((x) => x.setAttribute("aria-pressed", String(+x.dataset.i === i)));
+    lastAuto = clock;
+    goTo((active + 1) % SLIDES.length);
+  });
+  bar.append(b);
+});
+const autoBtn = document.createElement("button");
+autoBtn.type = "button";
+function setAuto(on) {
+  auto = on; lastAuto = clock;
+  autoBtn.className = on ? "btn primary" : "btn";
+  autoBtn.textContent = on ? "自動播放中" : "自動播放";
+}
+autoBtn.addEventListener("click", () => setAuto(!auto));
+bar.append(autoBtn);
+setAuto(true);
+
+let plane = null, activeTex = null, nextTex = null;
+const origin = { x: 0.5, y: 0.5 };
+
+function goTo(i, from) {
+  if (i === active || transition) return;
+  if (!plane || !nextTex) {
+    // No WebGL: plain image swap
+    active = i; showCaption(i);
+    return;
+  }
+  origin.x = from ? from.x : 0.5;
+  origin.y = from ? from.y : 0.5;
+  plane.uniforms.origin.value.set(origin.x, origin.y);
+  plane.uniforms.mode.value = mode;
+  nextTex.setSource(plane.images[i]);
+  transition = { to: i, start: clock };
+  caption.classList.add("out");
+}
+
+document.getElementById("prev").addEventListener("click", () => { lastAuto = clock; goTo((active - 1 + SLIDES.length) % SLIDES.length); });
+document.getElementById("next").addEventListener("click", () => { lastAuto = clock; goTo((active + 1) % SLIDES.length); });
+
+const curtains = new Curtains({ container: "gl", watchScroll: false, pixelRatio: Math.min(1.5, window.devicePixelRatio) });
+curtains.onError(() => {
+  document.body.classList.add("no-gl");
+  const msg = document.createElement("div");
+  msg.className = "err panel";
+  msg.textContent = "此瀏覽器無法建立 WebGL，改用一般圖片切換";
+  document.body.append(msg);
+});
+
+if (curtains.gl) plane = new Plane(curtains, planeEl, {
+  vertexShader,
+  fragmentShader,
+  widthSegments: 24,
+  heightSegments: 24,
+  uniforms: {
+    time: { name: "uTime", type: "1f", value: 0 },
+    progress: { name: "uProgress", type: "1f", value: 0 },
+    mode: { name: "uMode", type: "1f", value: 0 },
+    hover: { name: "uHover", type: "1f", value: 0 },
+    aspect: { name: "uAspect", type: "1f", value: 1.5 },
+    mouse: { name: "uMouse", type: "2f", value: new Vec2(0, 0) },
+    origin: { name: "uOrigin", type: "2f", value: new Vec2(0.5, 0.5) },
+  },
+});
+
+// Pointer: real cursor when present, otherwise a slow Lissajous path so the bulge is always visible
+const pointer = { x: 0, y: 0, inside: false, last: -10 };
+const mouse = { x: 0, y: 0, hover: 0 };
+addEventListener("pointermove", (e) => {
+  if (!plane) return;
+  const c = plane.mouseToPlaneCoords(new Vec2(e.clientX, e.clientY));
+  pointer.x = c.x; pointer.y = c.y;
+  pointer.inside = Math.abs(c.x) <= 1 && Math.abs(c.y) <= 1;
+  pointer.last = clock;
+});
+planeEl.addEventListener("click", (e) => {
+  if (!plane) return;
+  const c = plane.mouseToPlaneCoords(new Vec2(e.clientX, e.clientY));
+  lastAuto = clock;
+  goTo((active + 1) % SLIDES.length, { x: c.x * 0.5 + 0.5, y: c.y * 0.5 + 0.5 });
+});
+
+plane?.onReady(() => {
+  activeTex = plane.createTexture({ sampler: "activeTex", fromTexture: plane.textures[0] });
+  nextTex = plane.createTexture({ sampler: "nextTex", fromTexture: plane.textures[1] });
+}).onRender(() => {
+  clock = performance.now() / 1000;
+  const u = plane.uniforms;
+  u.time.value = clock;
+  const rect = plane.getBoundingRect();
+  u.aspect.value = rect.width / rect.height;
+
+  const idle = clock - pointer.last > 2.5;
+  const tx = idle ? Math.sin(clock * 0.7) * 0.55 : pointer.x;
+  const ty = idle ? Math.sin(clock * 1.1 + 1) * 0.45 : pointer.y;
+  const th = idle ? 0.75 : pointer.inside ? 1 : 0;
+  mouse.x += (tx - mouse.x) * 0.08;
+  mouse.y += (ty - mouse.y) * 0.08;
+  mouse.hover += (th - mouse.hover) * 0.06;
+  u.mouse.value.set(mouse.x, mouse.y);
+  u.hover.value = mouse.hover;
+
+  if (transition) {
+    const t = Math.min(1, (clock - transition.start) / DURATION);
+    u.progress.value = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    if (t >= 0.5 && caption.classList.contains("out")) {
+      showCaption(transition.to);
+      caption.classList.remove("out");
+    }
+    if (t >= 1) {
+      active = transition.to;
+      activeTex.setSource(plane.images[active]);
+      u.progress.value = 0;
+      transition = null;
+    }
+  } else if (auto && clock - lastAuto > AUTO_EVERY) {
+    lastAuto = clock;
+    goTo((active + 1) % SLIDES.length);
+  }
+});
+</script>
+</body>
+</html>

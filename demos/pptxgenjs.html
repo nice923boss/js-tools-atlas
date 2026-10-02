@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PptxGenJS 示範：課程招生簡報產生器</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"瀏覽器無法直接顯示 .pptx，右側是依同一份版面規格繪製的示意預覽，下載後用 PowerPoint 開啟可看到原生圖表與表格"}</script>
+<style>
+  .app { position: fixed; inset: 0; display: grid; grid-template-columns: 260px 1fr; }
+  .form { padding: 16px 16px 56px; border-right: 1px solid var(--line); background: var(--bg-2); overflow-y: auto; }
+  .form h1 { font-size: 17px; margin: 0 0 2px; }
+  .form h1 b { color: #c43e1c; }
+  .form p.sub { margin: 0 0 10px; font-size: 12px; color: var(--muted); }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  .field { width: 100%; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); outline: none; }
+  .field:focus { border-color: #c43e1c; }
+  .swatches { display: flex; gap: 8px; }
+  .swatch { width: 30px; height: 30px; border-radius: 8px; border: 2px solid #fff; box-shadow: 0 0 0 1px var(--line); cursor: pointer; position: relative; overflow: hidden; }
+  .swatch i { position: absolute; right: 0; bottom: 0; width: 45%; height: 45%; border-top-left-radius: 6px; }
+  .swatch[aria-pressed="true"] { box-shadow: 0 0 0 2px var(--fg); }
+  .seg { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; background: var(--bg); padding: 7px 0; cursor: pointer; font: 13px var(--font); color: var(--fg); }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: #c43e1c; color: #fff; }
+  .actions { margin-top: 14px; }
+  .actions .btn { width: 100%; padding: 10px; }
+  .btn.primary { background: #c43e1c; color: #fff; }
+  .tip { margin-top: 10px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .view { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #e9e7e2; padding: 14px 16px 10px; gap: 10px; }
+  .main { flex: 1; min-height: 0; display: grid; place-items: center; container-type: size; }
+  .strip { display: flex; gap: 8px; justify-content: center; }
+  .slide { position: relative; aspect-ratio: 16 / 9; overflow: hidden; container-type: inline-size; background: #fff; }
+  .main .slide { width: min(100cqw, 100cqh * 16 / 9); box-shadow: 0 10px 30px rgba(0,0,0,.2); }
+  .strip .slide { width: 96px; cursor: pointer; border-radius: 3px; outline: 2px solid transparent; outline-offset: 2px; box-shadow: 0 2px 6px rgba(0,0,0,.15); }
+  .strip .slide[aria-current="true"] { outline-color: #c43e1c; }
+  .slide > * { position: absolute; }
+  .slide .tx { display: flex; padding: 0 1cqw; line-height: 1.25; white-space: pre-line; }
+  .slide svg { display: block; }
+  .slide table { border-collapse: collapse; table-layout: fixed; }
+  .slide td { border: 0.1cqw solid #d9d9d9; padding: 0 1cqw; }
+  .meta { position: absolute; right: 16px; top: 14px; z-index: 2; font: 12px var(--mono); color: var(--muted);
+    background: var(--panel); border: 1px solid var(--line); padding: 4px 10px; border-radius: 999px; }
+  .label { position: absolute; left: 16px; top: 14px; z-index: 2; font-size: 12px; color: var(--muted);
+    background: var(--panel); border: 1px solid var(--line); padding: 4px 10px; border-radius: 999px; }
+  .main { padding-top: 30px; }
+  @media (max-width: 640px) {
+    /* stacked layout scrolls under the fixed hint; the form labels already explain the controls */
+    .hint { display: none; }
+    .app { grid-template-columns: 1fr; grid-template-rows: 52% 48%; }
+    .view { grid-row: 1; padding: 8px 10px; gap: 6px; }
+    .form { grid-row: 2; border-right: 0; border-top: 1px solid var(--line); padding: 10px 14px 56px; }
+    .form h1, .form p.sub { display: none; }
+    .strip .slide { width: 56px; }
+    .label { display: none; }
+    .meta { top: 8px; right: 10px; }
+    .main { padding-top: 28px; }
+  }
+</style>
+</head>
+<body class="paper">
+<div class="app">
+  <div class="form">
+    <h1><b>PptxGenJS</b> 簡報產生器</h1>
+    <p class="sub">在瀏覽器裡組出含原生圖表與表格的 .pptx</p>
+    <label for="title">簡報標題</label>
+    <input class="field" id="title" value="2026 秋季課程招生說明" maxlength="20">
+    <label for="subtitle">副標題</label>
+    <input class="field" id="subtitle" value="JS 工具圖鑑學院｜前端與資料視覺化系列" maxlength="30">
+    <label>主題配色</label>
+    <div class="swatches" id="swatches"></div>
+    <label>第 3 頁圖表類型</label>
+    <div class="seg" id="chartType">
+      <button data-v="bar" aria-pressed="true">長條</button>
+      <button data-v="line">折線</button>
+      <button data-v="pie">圓餅</button>
+      <button data-v="doughnut">環圈</button>
+    </div>
+    <div class="actions"><button class="btn primary" id="download">下載 .pptx</button></div>
+    <p class="tip">下載後用 PowerPoint、Keynote 或 Google 簡報開啟，圖表與表格都是原生物件，可直接改數字。</p>
+  </div>
+  <div class="view">
+    <span class="label">示意預覽（依同一份版面規格繪製）</span>
+    <span class="meta" id="meta">產生中…</span>
+    <div class="main"><div class="slide" id="big"></div></div>
+    <div class="strip" id="strip"></div>
+  </div>
+</div>
+<div class="hint">改標題、配色或圖表類型，簡報檔會重新產生</div>
+
+<script src="https://cdn.jsdelivr.net/npm/pptxgenjs@4.0.1/dist/pptxgen.bundle.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const W = 10, H = 5.625; // LAYOUT_16x9 in inches
+const FONT = "Microsoft JhengHei";
+
+const THEMES = [
+  { name: "深藍", cover: "10243F", coverText: "FFFFFF", page: "FFFFFF", text: "1C2B3A", accent: "F2B632", soft: "EEF3F9", chart: ["9FB3C8", "1F5FA8", "F2B632", "E4572E", "4CB944"] },
+  { name: "森綠", cover: "1B4332", coverText: "FFFFFF", page: "FFFFFF", text: "1B2E25", accent: "52B788", soft: "EDF6F0", chart: ["B7D7C4", "2D6A4F", "52B788", "D4A373", "8E7DBE"] },
+  { name: "珊瑚", cover: "FFF1E8", coverText: "3A2418", page: "FFFAF6", text: "3A2418", accent: "E4572E", soft: "FFE4D6", chart: ["F6BBA6", "E4572E", "F2B632", "3C8DAD", "6A994E"] },
+  { name: "墨黑", cover: "141414", coverText: "F5F5F0", page: "1E1E1E", text: "EDEDE8", accent: "F7DF1E", soft: "2B2B2B", chart: ["6B6B6B", "F7DF1E", "4CC9F0", "F72585", "7BD389"] },
+];
+const COURSES = ["資料視覺化", "Node.js", "AI 工作坊", "前端動畫", "Python"];
+const SERIES = [
+  { name: "上期", values: [42, 35, 28, 31, 38] },
+  { name: "本期", values: [58, 41, 66, 37, 49] },
+];
+const TABLE = [
+  ["課程", "開課日", "時數", "名額"],
+  ["資料視覺化入門", "10/18", "18", "30"],
+  ["Node.js 實戰班", "10/25", "24", "25"],
+  ["AI 工具工作坊", "11/01", "12", "40"],
+  ["前端動畫設計", "11/08", "15", "30"],
+];
+
+const state = { theme: 0, chart: "bar", current: 0 };
+
+// One layout spec drives both the real .pptx and the HTML preview.
+function buildSpec() {
+  const t = THEMES[state.theme];
+  const title = $("title").value.trim() || "未命名簡報";
+  const subtitle = $("subtitle").value.trim();
+  const heading = (text) => [
+    { kind: "rect", x: 0.6, y: 0.55, w: 0.12, h: 0.5, fill: t.accent },
+    { kind: "text", text, x: 0.8, y: 0.45, w: 8.6, h: 0.7, size: 26, bold: true, color: t.text, valign: "middle" },
+  ];
+  const cards = [
+    ["01", "小班實作", "每班 30 人以內，助教即時協助除錯"],
+    ["02", "真實專案", "課程作品直接放進作品集"],
+    ["03", "終身複習", "錄影與教材永久開放回看"],
+  ];
+  return [
+    { bg: t.cover, items: [
+      { kind: "rect", x: 0.7, y: 1.55, w: 0.16, h: 2.0, fill: t.accent },
+      { kind: "text", text: title, x: 1.05, y: 1.45, w: 8.4, h: 1.3, size: 40, bold: true, color: t.coverText, valign: "middle" },
+      { kind: "text", text: subtitle, x: 1.05, y: 2.75, w: 8.4, h: 0.8, size: 18, color: t.coverText, valign: "top", alpha: 0.75 },
+      { kind: "text", text: "2026.10　報名說明會", x: 1.05, y: 4.6, w: 5, h: 0.4, size: 12, color: t.coverText, alpha: 0.6 },
+    ] },
+    { bg: t.page, items: [
+      ...heading("為什麼選擇我們"),
+      ...cards.flatMap(([n, h, d], i) => {
+        const x = 0.6 + i * 3.0;
+        return [
+          { kind: "rect", x, y: 1.6, w: 2.75, h: 3.1, fill: t.soft, round: true },
+          { kind: "text", text: n, x: x + 0.2, y: 1.8, w: 2.3, h: 0.9, size: 40, bold: true, color: t.accent },
+          { kind: "text", text: h, x: x + 0.2, y: 2.75, w: 2.3, h: 0.55, size: 20, bold: true, color: t.text },
+          { kind: "text", text: d, x: x + 0.2, y: 3.3, w: 2.35, h: 1.1, size: 13, color: t.text, valign: "top", alpha: 0.75 },
+        ];
+      }),
+    ] },
+    { bg: t.page, items: [
+      ...heading("各班報名人數（示意資料）"),
+      { kind: "chart", chart: state.chart, x: 0.6, y: 1.35, w: 8.8, h: 3.9, colors: t.chart, text: t.text },
+    ] },
+    { bg: t.page, items: [
+      ...heading("課程時程"),
+      { kind: "table", rows: TABLE, x: 0.6, y: 1.5, w: 8.8, rowH: 0.62, colW: [3.8, 1.8, 1.6, 1.6], head: t.cover === "FFF1E8" ? t.accent : t.cover, headText: "FFFFFF", text: t.text, stripe: t.soft },
+    ] },
+    { bg: t.cover, items: [
+      { kind: "text", text: "謝謝聆聽", x: 0.5, y: 1.6, w: 9, h: 1.2, size: 44, bold: true, color: t.coverText, align: "center", valign: "middle" },
+      { kind: "rect", x: 4.4, y: 2.95, w: 1.2, h: 0.08, fill: t.accent },
+      { kind: "text", text: "報名專線 02-2345-6789（示意資料）", x: 0.5, y: 3.3, w: 9, h: 0.6, size: 16, color: t.coverText, align: "center", alpha: 0.75 },
+    ] },
+  ];
+}
+
+// ---------- real .pptx via PptxGenJS ----------
+function buildDeck(spec) {
+  const pptx = new PptxGenJS();
+  pptx.layout = "LAYOUT_16x9";
+  pptx.title = $("title").value;
+  pptx.company = "JS 工具圖鑑";
+  for (const s of spec) {
+    const slide = pptx.addSlide();
+    slide.background = { color: s.bg };
+    for (const it of s.items) {
+      const box = { x: it.x, y: it.y, w: it.w, h: it.h };
+      if (it.kind === "rect") {
+        slide.addShape(it.round ? pptx.ShapeType.roundRect : pptx.ShapeType.rect,
+          { ...box, fill: { color: it.fill }, line: { color: it.fill, width: 0 }, rectRadius: it.round ? 0.12 : undefined });
+      } else if (it.kind === "text") {
+        slide.addText(it.text, { ...box, fontFace: FONT, fontSize: it.size, bold: !!it.bold, color: it.color,
+          align: it.align || "left", valign: it.valign || "top", transparency: it.alpha ? Math.round((1 - it.alpha) * 100) : 0 });
+      } else if (it.kind === "chart") {
+        const pie = it.chart === "pie" || it.chart === "doughnut";
+        const data = (pie ? SERIES.slice(1) : SERIES).map((sr) => ({ name: sr.name, labels: COURSES, values: sr.values }));
+        slide.addChart(pptx.ChartType[it.chart], data, {
+          ...box,
+          chartColors: pie ? it.colors : it.colors.slice(0, 2),
+          showLegend: true, legendPos: pie ? "r" : "b", legendFontSize: 12, legendColor: it.text, legendFontFace: FONT,
+          catAxisLabelColor: it.text, valAxisLabelColor: it.text, catAxisLabelFontFace: FONT, catAxisLabelFontSize: 12,
+          valGridLine: { color: "D9D9D9", size: 0.5 },
+          barGrouping: "clustered", barGapWidthPct: 60,
+          lineSize: 3, lineDataSymbol: "circle", lineDataSymbolSize: 8,
+          showPercent: pie, showValue: false, dataLabelColor: "FFFFFF", holeSize: 55,
+        });
+      } else if (it.kind === "table") {
+        const rows = it.rows.map((r, i) => r.map((c, j) => ({ text: c, options: {
+          bold: i === 0, color: i === 0 ? it.headText : it.text,
+          fill: { color: i === 0 ? it.head : (i % 2 ? it.stripe : s.bg) },
+          align: j === 0 ? "left" : "center",
+        } })));
+        slide.addTable(rows, { x: it.x, y: it.y, w: it.w, colW: it.colW, rowH: it.rowH, fontFace: FONT, fontSize: 15, valign: "middle",
+          border: { type: "solid", pt: 0.75, color: "D9D9D9" } });
+      }
+    }
+  }
+  return pptx;
+}
+
+// ---------- HTML preview ----------
+const hex = (c) => "#" + c;
+const pct = (v, total) => (v / total * 100).toFixed(3) + "%";
+const pt = (size) => `calc(${size} * 100cqw / 720)`;
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function chartSvg(it) {
+  const vw = it.w * 100, vh = it.h * 100, u = 100 / 72; // 1pt in viewBox units
+  const ink = hex(it.text);
+  const fs = 12 * u;
+  let out = "";
+  if (it.chart === "pie" || it.chart === "doughnut") {
+    const vals = SERIES[1].values, sum = vals.reduce((a, b) => a + b, 0);
+    const r = vh * 0.44, cx = vw * 0.38, cy = vh / 2, hole = it.chart === "doughnut" ? r * 0.55 : 0;
+    let a0 = -Math.PI / 2;
+    vals.forEach((v, i) => {
+      const a1 = a0 + v / sum * Math.PI * 2, large = a1 - a0 > Math.PI ? 1 : 0;
+      const p = (a, rr) => `${cx + rr * Math.cos(a)},${cy + rr * Math.sin(a)}`;
+      const d = hole
+        ? `M${p(a0, r)}A${r},${r} 0 ${large} 1 ${p(a1, r)}L${p(a1, hole)}A${hole},${hole} 0 ${large} 0 ${p(a0, hole)}Z`
+        : `M${cx},${cy}L${p(a0, r)}A${r},${r} 0 ${large} 1 ${p(a1, r)}Z`;
+      out += `<path d="${d}" fill="${hex(it.colors[i])}" stroke="#fff" stroke-width="2"/>`;
+      const mid = (a0 + a1) / 2, lr = hole ? (r + hole) / 2 : r * 0.62;
+      out += `<text x="${cx + lr * Math.cos(mid)}" y="${cy + lr * Math.sin(mid) + fs * 0.35}" font-size="${fs}" fill="#fff" text-anchor="middle" font-weight="700">${Math.round(v / sum * 100)}%</text>`;
+      out += `<rect x="${vw * 0.7}" y="${vh * 0.22 + i * fs * 2}" width="${fs}" height="${fs}" fill="${hex(it.colors[i])}"/>`;
+      out += `<text x="${vw * 0.7 + fs * 1.5}" y="${vh * 0.22 + i * fs * 2 + fs * 0.85}" font-size="${fs}" fill="${ink}">${COURSES[i]}</text>`;
+      a0 = a1;
+    });
+  } else {
+    const left = 40, bottom = vh - 60, top = 10, right = vw - 10, max = 70;
+    const y = (v) => bottom - v / max * (bottom - top);
+    for (let g = 0; g <= max; g += 10) {
+      out += `<line x1="${left}" x2="${right}" y1="${y(g)}" y2="${y(g)}" stroke="#d9d9d9" stroke-width="0.7"/>`;
+      out += `<text x="${left - 6}" y="${y(g) + 4}" font-size="${10 * u}" fill="${ink}" text-anchor="end">${g}</text>`;
+    }
+    const slot = (right - left) / COURSES.length;
+    COURSES.forEach((c, i) => out += `<text x="${left + slot * (i + 0.5)}" y="${bottom + fs * 1.3}" font-size="${fs}" fill="${ink}" text-anchor="middle">${c}</text>`);
+    SERIES.forEach((sr, k) => {
+      const col = hex(it.colors[k]);
+      if (it.chart === "bar") {
+        const bw = slot * 0.62 / 2;
+        sr.values.forEach((v, i) => out += `<rect x="${left + slot * i + slot * 0.19 + k * bw}" y="${y(v)}" width="${bw - 2}" height="${bottom - y(v)}" fill="${col}"/>`);
+      } else {
+        const pts = sr.values.map((v, i) => `${left + slot * (i + 0.5)},${y(v)}`);
+        out += `<polyline points="${pts.join(" ")}" fill="none" stroke="${col}" stroke-width="4"/>`;
+        pts.forEach((p) => { const [px, py] = p.split(","); out += `<circle cx="${px}" cy="${py}" r="5" fill="${col}"/>`; });
+      }
+      const lx = vw / 2 - 70 + k * 80;
+      out += `<rect x="${lx}" y="${vh - fs * 1.2}" width="${fs}" height="${fs}" fill="${col}"/><text x="${lx + fs * 1.4}" y="${vh - fs * 0.3}" font-size="${fs}" fill="${ink}">${sr.name}</text>`;
+    });
+  }
+  return `<svg viewBox="0 0 ${vw} ${vh}" width="100%" height="100%" font-family="var(--font)">${out}</svg>`;
+}
+
+function renderSlide(el, s) {
+  el.style.background = hex(s.bg);
+  el.innerHTML = s.items.map((it) => {
+    const pos = `left:${pct(it.x, W)};top:${pct(it.y, H)};width:${pct(it.w, W)};height:${it.h ? pct(it.h, H) : "auto"};`;
+    if (it.kind === "rect") return `<div style="${pos}background:${hex(it.fill)};border-radius:${it.round ? "1.2cqw" : 0}"></div>`;
+    if (it.kind === "text") {
+      const v = { top: "flex-start", middle: "center", bottom: "flex-end" }[it.valign || "top"];
+      const h = { left: "flex-start", center: "center", right: "flex-end" }[it.align || "left"];
+      return `<div class="tx" style="${pos}align-items:${v};justify-content:${h};text-align:${it.align || "left"};font-size:${pt(it.size)};font-weight:${it.bold ? 700 : 400};color:${hex(it.color)};opacity:${it.alpha || 1}">${esc(it.text)}</div>`;
+    }
+    if (it.kind === "chart") return `<div style="${pos}">${chartSvg(it)}</div>`;
+    if (it.kind === "table") {
+      const cols = it.colW.map((w) => `<col style="width:${pct(w, it.w)}">`).join("");
+      const rows = it.rows.map((r, i) => `<tr style="height:${pct(it.rowH, W).replace("%", "cqw")}">${r.map((c, j) =>
+        `<td style="background:${hex(i === 0 ? it.head : (i % 2 ? it.stripe : s.bg))};color:${hex(i === 0 ? it.headText : it.text)};font-weight:${i === 0 ? 700 : 400};text-align:${j ? "center" : "left"}">${esc(c)}</td>`).join("")}</tr>`).join("");
+      return `<table style="${pos.replace(/height:[^;]+;/, "")}font-size:${pt(15)}"><colgroup>${cols}</colgroup>${rows}</table>`;
+    }
+    return "";
+  }).join("");
+}
+
+let spec = [];
+let gen = 0;
+async function update() {
+  spec = buildSpec();
+  renderSlide($("big"), spec[state.current]);
+  const strip = $("strip");
+  if (strip.children.length !== spec.length) {
+    strip.innerHTML = spec.map((_, i) => `<div class="slide" data-i="${i}" title="第 ${i + 1} 張"></div>`).join("");
+  }
+  [...strip.children].forEach((el, i) => { renderSlide(el, spec[i]); el.setAttribute("aria-current", i === state.current); });
+
+  // Build the real file in the background to report its size
+  const my = ++gen, t0 = performance.now();
+  try {
+    const blob = await buildDeck(spec).write({ outputType: "blob" });
+    if (my !== gen) return;
+    $("meta").textContent = `${spec.length} 張投影片・${(blob.size / 1024).toFixed(1)} KB・產生 ${Math.round(performance.now() - t0)} ms`;
+  } catch (err) {
+    console.error(err);
+    $("meta").textContent = "產生失敗：" + err.message;
+  }
+}
+
+// ---------- controls ----------
+$("swatches").innerHTML = THEMES.map((t, i) =>
+  `<button class="swatch" title="${t.name}" aria-pressed="${i === 0}" data-i="${i}" style="background:${hex(t.cover)}"><i style="background:${hex(t.accent)}"></i></button>`).join("");
+$("swatches").addEventListener("click", (e) => {
+  const b = e.target.closest(".swatch"); if (!b) return;
+  state.theme = +b.dataset.i;
+  $("swatches").querySelectorAll(".swatch").forEach((s) => s.setAttribute("aria-pressed", s === b));
+  update();
+});
+$("chartType").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  state.chart = b.dataset.v; state.current = 2;
+  $("chartType").querySelectorAll("button").forEach((s) => s.setAttribute("aria-pressed", s === b));
+  update();
+});
+$("strip").addEventListener("click", (e) => {
+  const s = e.target.closest(".slide"); if (!s) return;
+  state.current = +s.dataset.i; update();
+});
+let timer;
+for (const id of ["title", "subtitle"]) $(id).addEventListener("input", () => { state.current = 0; clearTimeout(timer); timer = setTimeout(update, 150); });
+$("download").addEventListener("click", () => buildDeck(buildSpec()).writeFile({ fileName: "課程招生簡報.pptx" }));
+document.addEventListener("keydown", (e) => {
+  if (e.target.matches("input")) return;
+  if (e.key === "ArrowRight") { state.current = Math.min(spec.length - 1, state.current + 1); update(); }
+  if (e.key === "ArrowLeft") { state.current = Math.max(0, state.current - 1); update(); }
+});
+
+update();
+// Cycle through slides once so the preview shows the deck, stop on first user input
+let auto = setInterval(() => { state.current = (state.current + 1) % spec.length; update(); }, 2600);
+for (const ev of ["pointerdown", "keydown"]) addEventListener(ev, () => clearInterval(auto), { once: true });
+</script>
+</body>
+</html>

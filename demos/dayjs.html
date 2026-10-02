@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Day.js 示範：世界時鐘、倒數計時與日期計算</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"載入 zh-tw 語系與 utc、timezone、relativeTime、duration 等外掛"}</script>
+<style>
+  body { background: radial-gradient(60% 70% at 0% 0%, rgba(255,140,66,.12), transparent 60%), radial-gradient(60% 60% at 100% 100%, rgba(157,140,255,.12), transparent 60%), var(--bg); }
+  .app { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px 46px; }
+  header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 18px; }
+  .plugins { display: flex; gap: 4px; flex-wrap: wrap; }
+  .plugins span { font: 11px var(--mono); padding: 2px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .plugins span:first-child { color: #1a1a14; background: #ff8c42; border-color: transparent; font-weight: 700; }
+  .grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+  .card { min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 14px; background: var(--bg-2); border: 1px solid var(--line); }
+  .card h2 { margin: 0; font-size: 13px; color: var(--muted); font-weight: 600; display: flex; justify-content: space-between; gap: 8px; }
+  .card h2 code { font: 11px var(--mono); color: var(--c5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* world clock */
+  .big { font: 700 30px/1 var(--mono); letter-spacing: 1px; }
+  .big small { font-size: 15px; color: var(--muted); margin-left: 6px; }
+  .sub { font-size: 13px; color: var(--muted); }
+  .zones { display: grid; gap: 0; }
+  .zone { display: grid; grid-template-columns: 22px 56px 58px minmax(0, 1fr) auto; gap: 6px; align-items: center; font-size: 13px; line-height: 1.3; padding: 3px 0; border-top: 1px dashed var(--line); }
+  .zone b { font: 700 14px var(--mono); }
+  .zone .off { font: 11px var(--mono); color: var(--muted); }
+  .zone .rel { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .zone .day { font-size: 11px; padding: 1px 6px; border-radius: 999px; background: rgba(255,255,255,.06); }
+  .zone .day.next { background: rgba(123,211,137,.18); color: var(--c4); }
+  .zone .day.prev { background: rgba(157,140,255,.18); color: var(--c6); }
+  /* countdown */
+  .targets { display: flex; gap: 4px; flex-wrap: wrap; }
+  .targets button { border: 1px solid var(--line); background: none; color: var(--fg); border-radius: 999px; padding: 3px 10px; font: 12px var(--font); cursor: pointer; }
+  .targets button[aria-pressed="true"] { background: #ff8c42; color: #1a1a14; border-color: transparent; font-weight: 700; }
+  .cd { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 2px; }
+  .cd div { text-align: center; padding: 8px 0 6px; border-radius: 10px; background: linear-gradient(180deg, rgba(255,140,66,.16), rgba(255,140,66,.04)); border: 1px solid rgba(255,140,66,.25); }
+  .cd b { display: block; font: 700 26px/1.1 var(--mono); }
+  .cd small { font-size: 11px; color: var(--muted); }
+  .when { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .when b { color: var(--fg); font-weight: 600; }
+  .year { margin-top: auto; font-size: 12px; color: var(--muted); }
+  .year .bar { height: 6px; margin-top: 4px; }
+  .year .bar > i { background: linear-gradient(90deg, #ff8c42, #f7df1e); }
+  #custom { display: none; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); font-size: 12px; }
+  /* relative feed */
+  .feed { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; overflow: hidden; -webkit-mask-image: linear-gradient(180deg, #000 78%, transparent); mask-image: linear-gradient(180deg, #000 78%, transparent); }
+  .feed li { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 13px; padding: 4px 0; border-top: 1px dashed var(--line); }
+  .feed li span:nth-child(2) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .feed .ago { font-size: 12px; color: var(--c6); font-weight: 600; text-align: right; white-space: nowrap; }
+  .feed .ago small { display: block; color: var(--muted); font: 10px var(--mono); font-weight: 400; }
+  .feed li.fresh .ago { color: var(--c4); }
+  /* calculator */
+  .calc { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+  .calc input, .calc select { padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); }
+  .calc input[type=number] { width: 64px; }
+  .quick { display: flex; gap: 4px; flex-wrap: wrap; }
+  .quick button { border: 1px dashed rgba(157,140,255,.6); background: rgba(157,140,255,.08); color: var(--fg); border-radius: 999px; padding: 2px 9px; font: 12px var(--font); cursor: pointer; }
+  .result { font: 700 22px/1.2 var(--font); color: var(--c6); }
+  .desc { font: 12px/1.5 var(--mono); color: var(--muted); }
+  .desc b { color: var(--fg); font-weight: 600; }
+  .facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: auto; }
+  .facts div { padding: 6px 8px; border-radius: 8px; background: rgba(255,255,255,.04); }
+  .facts b { display: block; font: 700 15px var(--mono); }
+  .facts small { font-size: 11px; color: var(--muted); }
+  @media (max-width: 720px) {
+    .grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-auto-rows: max-content; overflow-y: auto; scrollbar-width: thin; }
+    .card { overflow: visible; }
+    .plugins span:nth-child(n+4) { display: none; }
+    header h1 { font-size: 16px; }
+    .big { font-size: 28px; }
+    .zone { grid-template-columns: 22px 50px 54px minmax(0, 1fr); }
+    .zone .rel { display: none; }
+    .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .feed { -webkit-mask-image: none; mask-image: none; }
+    .cd b { font-size: 22px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>🕰️ Day.js 時間工具箱</h1>
+    <div class="plugins"><span>核心約 2 KB</span><span>zh-tw</span><span>utc</span><span>timezone</span><span>relativeTime</span><span>duration</span><span>isoWeek</span><span>dayOfYear</span></div>
+  </header>
+  <div class="grid">
+    <section class="card">
+      <h2>世界時鐘 <code>dayjs().tz("Asia/Tokyo")</code></h2>
+      <div class="big" id="tpe">--:--:--</div>
+      <div class="sub" id="tpeDate">台北</div>
+      <div class="zones" id="zones"></div>
+    </section>
+    <section class="card">
+      <h2>倒數計時 <code>dayjs.duration(target.diff(now))</code></h2>
+      <div class="targets" id="targets"></div>
+      <input type="datetime-local" id="custom">
+      <div class="cd"><div><b id="dd">0</b><small>天</small></div><div><b id="hh">00</b><small>時</small></div><div><b id="mm">00</b><small>分</small></div><div><b id="ss">00</b><small>秒</small></div></div>
+      <div class="when"><span>目標 <b id="tgt">-</b></span><span>fromNow：<b id="from">-</b></span></div>
+      <div class="year"><span id="yearText">今年進度</span><div class="bar"><i id="yearBar"></i></div></div>
+    </section>
+    <section class="card">
+      <h2>相對時間 <code>dayjs(t).fromNow()</code></h2>
+      <ul class="feed" id="feed"></ul>
+    </section>
+    <section class="card">
+      <h2>日期計算 <code>dayjs(d).add(n, unit)</code></h2>
+      <div class="calc">
+        <input type="date" id="start">
+        <select id="sign"><option value="1">加</option><option value="-1">減</option></select>
+        <input type="number" id="n" value="100" min="0" max="9999">
+        <select id="unit"><option value="day">天</option><option value="week">週</option><option value="month">個月</option><option value="year">年</option></select>
+      </div>
+      <div class="quick" id="quick"></div>
+      <div class="result" id="result">-</div>
+      <div class="desc" id="desc"></div>
+      <div class="facts">
+        <div><b id="fWeek">-</b><small>ISO 週數</small></div>
+        <div><b id="fDoy">-</b><small>一年第幾天</small></div>
+        <div><b id="fLeap">-</b><small>閏年</small></div>
+        <div><b id="fDiff">-</b><small>距今天數</small></div>
+      </div>
+    </section>
+  </div>
+</div>
+<div class="hint">切換倒數目標、改日期或數字，時間每秒更新</div>
+
+<script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.23/dayjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.23/locale/zh-tw.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.23/plugin/utc.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.23/plugin/timezone.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.23/plugin/relativeTime.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.23/plugin/duration.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.23/plugin/localizedFormat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.23/plugin/isoWeek.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.23/plugin/dayOfYear.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dayjs@1.11.23/plugin/isLeapYear.js"></script>
+<script>
+// Day.js with zh-tw locale + plugins: time zones, live countdown (duration), relative time feed, date arithmetic.
+["utc", "timezone", "relativeTime", "duration", "localizedFormat", "isoWeek", "dayOfYear", "isLeapYear"]
+  .forEach((p) => dayjs.extend(window[`dayjs_plugin_${p}`]));
+dayjs.locale("zh-tw");
+const TZ = "Asia/Taipei";
+const $ = (id) => document.getElementById(id);
+const pad = (n) => String(n).padStart(2, "0");
+
+// ---------- world clock ----------
+const ZONES = [["🗼", "東京", "Asia/Tokyo"], ["💂", "倫敦", "Europe/London"], ["🗽", "紐約", "America/New_York"], ["🌉", "舊金山", "America/Los_Angeles"], ["🦘", "雪梨", "Australia/Sydney"]];
+$("zones").innerHTML = ZONES.map(([e, n], i) => `<div class="zone"><span>${e}</span><span>${n}</span><b id="z${i}">--:--</b><span class="rel" id="zr${i}"></span><span class="day" id="zd${i}"></span></div>`).join("");
+function tickClock(now) {
+  const tpe = now.tz(TZ);
+  $("tpe").innerHTML = `${tpe.format("HH:mm:ss")}<small>${tpe.format("A")}</small>`;
+  $("tpeDate").textContent = `台北 ${tpe.format("LL dddd")}（UTC${tpe.format("Z")}）`;
+  ZONES.forEach(([, , zone], i) => {
+    const t = now.tz(zone);
+    const diffH = (t.utcOffset() - tpe.utcOffset()) / 60;
+    const dayDiff = dayjs(t.format("YYYY-MM-DD")).diff(dayjs(tpe.format("YYYY-MM-DD")), "day");
+    $(`z${i}`).textContent = t.format("HH:mm");
+    $(`zr${i}`).textContent = diffH === 0 ? "與台北同時" : `比台北${diffH > 0 ? "快" : "慢"} ${Math.abs(diffH)} 小時`;
+    const d = $(`zd${i}`);
+    d.textContent = (t.hour() >= 6 && t.hour() < 18 ? "☀️ " : "🌙 ") + (dayDiff > 0 ? "明天" : dayDiff < 0 ? "昨天" : "今天");
+    d.className = "day" + (dayDiff > 0 ? " next" : dayDiff < 0 ? " prev" : "");
+  });
+}
+
+// ---------- countdown ----------
+const LUNAR_NEW_YEAR = ["2027-02-06", "2028-01-26", "2029-02-13", "2030-02-03", "2031-01-23"];
+const TARGETS = [
+  ["跨年", (now) => dayjs.tz(`${now.year() + 1}-01-01 00:00`, TZ)],
+  ["農曆春節", (now) => {
+    const d = LUNAR_NEW_YEAR.find((s) => dayjs.tz(`${s} 00:00`, TZ).isAfter(now));
+    return d ? dayjs.tz(`${d} 00:00`, TZ) : null;
+  }],
+  ["聖誕節", (now) => {
+    const t = dayjs.tz(`${now.year()}-12-25 00:00`, TZ);
+    return t.isAfter(now) ? t : t.add(1, "year");
+  }],
+  ["自訂", () => ($("custom").value ? dayjs.tz($("custom").value, TZ) : null)],
+];
+let targetIdx = 0;
+$("targets").innerHTML = TARGETS.map(([n], i) => `<button data-i="${i}" aria-pressed="${i === 0}">${n}</button>`).join("");
+$("targets").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  targetIdx = +b.dataset.i;
+  document.querySelectorAll("#targets button").forEach((x) => x.setAttribute("aria-pressed", x === b));
+  $("custom").style.display = targetIdx === 3 ? "block" : "none";
+  tick();
+});
+$("custom").value = dayjs().tz(TZ).add(10, "day").hour(18).minute(0).format("YYYY-MM-DDTHH:mm");
+$("custom").addEventListener("input", () => tick());
+function tickCountdown(now) {
+  const target = TARGETS[targetIdx][1](now.tz(TZ));
+  if (!target) {
+    ["dd", "hh", "mm", "ss"].forEach((id) => ($(id).textContent = "-"));
+    $("tgt").textContent = "請選擇日期";
+    $("from").textContent = "-";
+  } else {
+    const ms = Math.max(0, target.diff(now));
+    const d = dayjs.duration(ms);
+    $("dd").textContent = Math.floor(d.asDays());
+    $("hh").textContent = pad(d.hours());
+    $("mm").textContent = pad(d.minutes());
+    $("ss").textContent = pad(d.seconds());
+    $("tgt").textContent = target.format("YYYY/MM/DD dddd HH:mm");
+    $("from").textContent = ms ? target.fromNow() : "已到達";
+  }
+  const tpe = now.tz(TZ);
+  const total = tpe.isLeapYear() ? 366 : 365;
+  const pct = ((tpe.dayOfYear() - 1) + (tpe.hour() * 3600 + tpe.minute() * 60 + tpe.second()) / 86400) / total * 100;
+  $("yearText").textContent = `${tpe.year()} 年已過 ${pct.toFixed(4)}%，還剩 ${total - tpe.dayOfYear()} 天`;
+  $("yearBar").style.width = `${pct}%`;
+}
+
+// ---------- relative time feed ----------
+const loadedAt = dayjs();
+const FEED = [
+  ["❤️", "小美按讚了你的九份夜景照", -8, "second"],
+  ["💬", "阿凱留言：今晚逢甲夜市集合？", -4, "minute"],
+  ["📷", "你上傳了 12 張日月潭照片", -2, "hour"],
+  ["🚲", "你加入了「單車環島」社團", -1, "day"],
+  ["🎫", "高鐵車票已完成付款", -9, "day"],
+  ["🌄", "小明分享了阿里山日出", -2, "month"],
+  ["🎂", "你註冊了帳號", -1, "year"],
+].map(([icon, text, n, unit]) => ({ icon, text, at: loadedAt.add(n, unit) }));
+function tickFeed(now) {
+  $("feed").innerHTML = FEED.map((f) => `<li class="${now.diff(f.at, "minute") < 1 ? "fresh" : ""}"><span>${f.icon}</span><span>${f.text}</span>` +
+    `<span class="ago">${f.at.from(now)}<small>${f.at.tz(TZ).format("YYYY/MM/DD HH:mm")}</small></span></li>`).join("");
+}
+
+// ---------- date calculator ----------
+$("start").value = dayjs().tz(TZ).format("YYYY-MM-DD");
+const QUICK = [["寶寶百日", 1, 100, "day"], ["滿月", 1, 1, "month"], ["兩週前", -1, 2, "week"], ["十年後", 1, 10, "year"]];
+$("quick").innerHTML = QUICK.map(([n], i) => `<button data-i="${i}">${n}</button>`).join("");
+$("quick").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  const [, s, n, u] = QUICK[+b.dataset.i];
+  $("sign").value = s; $("n").value = n; $("unit").value = u;
+  calc();
+});
+function calc() {
+  const base = dayjs($("start").value || undefined);
+  const n = Math.max(0, Math.min(9999, parseInt($("n").value, 10) || 0)) * +$("sign").value;
+  const r = base.add(n, $("unit").value);
+  $("result").textContent = r.isValid() ? r.format("YYYY 年 M 月 D 日 dddd") : "日期無效";
+  if (!r.isValid()) return;
+  $("fWeek").textContent = `第 ${r.isoWeek()} 週`;
+  $("fDoy").textContent = `${r.dayOfYear()}`;
+  $("fLeap").textContent = r.isLeapYear() ? "是" : "否";
+  const diff = r.startOf("day").diff(dayjs().startOf("day"), "day");
+  $("fDiff").textContent = diff === 0 ? "今天" : `${diff > 0 ? "+" : ""}${diff}`;
+  $("desc").innerHTML = `相對今天：<b>${diff === 0 ? "就是今天" : r.from(dayjs().startOf("day"))}</b><br>ISO 8601：<b>${r.format()}</b>`;
+}
+["start", "sign", "n", "unit"].forEach((id) => $(id).addEventListener("input", calc));
+
+function tick() {
+  const now = dayjs();
+  tickClock(now);
+  tickCountdown(now);
+  tickFeed(now);
+}
+tick();
+calc();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>

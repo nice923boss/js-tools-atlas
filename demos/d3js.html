@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>D3.js 示範：JS 生態力導向圖與放射樹</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  body { background: radial-gradient(80% 90% at 50% 45%, #1a1e26 0%, var(--bg) 70%); }
+  svg { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+  svg:active { cursor: grabbing; }
+  .title { position: fixed; left: 14px; top: 12px; z-index: 40; pointer-events: none; }
+  .title h1 { margin: 0; font-size: 16px; letter-spacing: .5px; }
+  .title p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+  .link { stroke: rgba(255,255,255,.18); stroke-width: 1.2; fill: none; transition: stroke .2s, opacity .2s; }
+  .node circle { stroke: #0e1013; stroke-width: 2; transition: opacity .2s; }
+  .node text { font: 12px var(--font); fill: var(--fg); paint-order: stroke; stroke: #0e1013; stroke-width: 3px; stroke-linejoin: round; pointer-events: none; transition: opacity .2s; }
+  .node.cat text { font-weight: 700; font-size: 13px; }
+  .node.root text { font-weight: 800; font-size: 13px; fill: var(--accent-ink); stroke: none; }
+  .dim { opacity: .12; }
+  .link.hot { stroke: var(--accent); opacity: 1; }
+</style>
+</head>
+<body>
+<div class="title">
+  <h1>JS 工具生態圖</h1>
+  <p>6 大類、36 個工具</p>
+</div>
+<div class="controls">
+  <button class="btn primary" id="toggle">切換：放射樹</button>
+  <button class="btn" id="shake">打散重排</button>
+</div>
+<div class="hint">拖曳節點・滾輪縮放・滑過看關聯</div>
+<svg id="chart"></svg>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script>
+// Force-directed graph of a small JS ecosystem tree, morphing to a radial tree layout with transitions.
+const DATA = {
+  name: "JavaScript",
+  children: [
+    { name: "視覺化", children: ["D3.js", "ECharts", "Chart.js", "Plotly", "Vega-Lite", "uPlot", "G2"] },
+    { name: "3D 與遊戲", children: ["three.js", "Babylon.js", "PixiJS", "Phaser", "Matter.js"] },
+    { name: "動畫", children: ["GSAP", "anime.js", "Lottie", "Motion", "p5.js"] },
+    { name: "UI 框架", children: ["React", "Vue", "Svelte", "Solid", "Alpine.js", "Lit"] },
+    { name: "表格與資料", children: ["Tabulator", "Grid.js", "DataTables", "Day.js", "Lodash"] },
+    { name: "工具鏈", children: ["Vite", "esbuild", "Rollup", "Vitest", "ESLint", "Prettier"] },
+  ].map((c) => ({ name: c.name, children: c.children.map((n) => ({ name: n })) })),
+};
+const COLORS = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#9d8cff"];
+
+const svg = d3.select("#chart");
+const zoomLayer = svg.append("g");
+const linkG = zoomLayer.append("g");
+const nodeG = zoomLayer.append("g");
+
+const root = d3.hierarchy(DATA);
+root.children.forEach((c, i) => c.descendants().forEach((d) => (d.color = COLORS[i])));
+root.color = "#f7df1e";
+const nodes = root.descendants();
+const links = root.links();
+const radius = (d) => (d.depth === 0 ? 40 : d.depth === 1 ? 13 : 6);
+
+let W = 0, H = 0, K = 1, S = 1, mode = "force";
+
+const linkSel = linkG.selectAll("line").data(links).join("line").attr("class", "link");
+const nodeSel = nodeG.selectAll("g").data(nodes).join("g")
+  .attr("class", (d) => "node" + (d.depth === 0 ? " root" : d.depth === 1 ? " cat" : ""));
+nodeSel.append("circle")
+  .attr("r", radius)
+  .attr("fill", (d) => d.color)
+  .attr("fill-opacity", (d) => (d.depth === 2 ? 0.85 : 1));
+const labelSel = nodeSel.append("text")
+  .text((d) => d.data.name)
+  .attr("dy", "0.34em")
+  .attr("text-anchor", (d) => (d.depth === 0 ? "middle" : "start"));
+
+const sim = d3.forceSimulation(nodes)
+  .force("link", d3.forceLink(links).strength(0.9))
+  .force("charge", d3.forceManyBody())
+  .force("collide", d3.forceCollide((d) => (d.depth === 2 ? 14 : radius(d) + 10)))
+  .force("x", d3.forceX(0).strength(0.04))
+  .force("y", d3.forceY(0).strength(0.06))
+  .on("tick", () => { keepInside(); render(); });
+
+// Keep nodes (and most of their labels) inside the visible area.
+function keepInside() {
+  const mx = W / K / 2 - 70, my = H / K / 2 - 50;
+  for (const d of nodes) {
+    d.x = Math.max(-mx, Math.min(mx, d.x));
+    d.y = Math.max(-my + 40, Math.min(my, d.y));
+  }
+}
+
+// Force distances scale with the viewport so small iframes stay readable without shrinking text.
+function setForces() {
+  S = Math.max(0.6, Math.min(1.2, Math.min(W, H) / K / 640));
+  sim.force("link").distance((l) => (l.source.depth === 0 ? 135 * S : 58 * S));
+  sim.force("charge").strength((d) => (d.depth === 0 ? -1000 : d.depth === 1 ? -420 : -120) * S);
+}
+
+function render() {
+  linkSel.attr("x1", (d) => d.source.x).attr("y1", (d) => d.source.y)
+    .attr("x2", (d) => d.target.x).attr("y2", (d) => d.target.y);
+  nodeSel.attr("transform", (d) => `translate(${d.x},${d.y})`);
+  // Leaf labels point away from their parent (force) or from the centre (tree), flipped on the left half.
+  labelSel.filter((d) => d.depth > 0).each(function (d) {
+    const o = d.depth === 1 || mode === "tree" ? { x: 0, y: 0 } : d.parent;
+    const deg = (Math.atan2(d.y - o.y, d.x - o.x) * 180) / Math.PI;
+    const flip = Math.abs(deg) > 90;
+    const off = radius(d) + 5;
+    d3.select(this)
+      .attr("text-anchor", flip ? "end" : "start")
+      .attr("x", flip ? -off : off)
+      .attr("transform", d.depth === 2 ? `rotate(${flip ? deg + 180 : deg})` : null);
+  });
+}
+
+// Radial tree target positions; tree() overwrites d.x/d.y so live positions are restored afterwards.
+function radialTargets() {
+  const live = nodes.map((d) => ({ x: d.x, y: d.y }));
+  const R = Math.max(120, Math.min(W, H) / K / 2 - 80);
+  d3.tree().size([2 * Math.PI, R]).separation((a, b) => (a.parent === b.parent ? 1 : 1.6))(root);
+  const out = nodes.map((d) => {
+    const a = d.x - Math.PI / 2;
+    return { x: d.y * Math.cos(a), y: d.y * Math.sin(a) };
+  });
+  nodes.forEach((d, i) => { d.x = live[i].x; d.y = live[i].y; });
+  return out;
+}
+
+function morphTo(targets) {
+  const from = nodes.map((d) => ({ x: d.x, y: d.y }));
+  d3.transition().duration(1100).ease(d3.easeCubicInOut)
+    .tween("layout", () => (t) => {
+      nodes.forEach((d, i) => {
+        d.x = from[i].x + (targets[i].x - from[i].x) * t;
+        d.y = from[i].y + (targets[i].y - from[i].y) * t;
+      });
+      render();
+    });
+}
+
+const toggleBtn = document.getElementById("toggle");
+toggleBtn.addEventListener("click", () => {
+  if (mode === "force") {
+    mode = "tree";
+    sim.stop();
+    morphTo(radialTargets());
+    toggleBtn.textContent = "切換：力導向";
+  } else {
+    mode = "force";
+    nodes.forEach((d) => { d.fx = d.fy = null; d.vx = d.vy = 0; });
+    sim.alpha(0.9).restart();
+    toggleBtn.textContent = "切換：放射樹";
+  }
+});
+
+document.getElementById("shake").addEventListener("click", () => {
+  if (mode === "tree") toggleBtn.click();
+  nodes.forEach((d) => { d.x += (Math.random() - 0.5) * W * 0.8; d.y += (Math.random() - 0.5) * H * 0.8; });
+  sim.alpha(1).restart();
+});
+
+// Dragging: pins the node in force mode, moves it freely in tree mode.
+nodeSel.call(d3.drag()
+  .on("start", (e, d) => { if (mode === "force") { if (!e.active) sim.alphaTarget(0.25).restart(); d.fx = d.x; d.fy = d.y; } })
+  .on("drag", (e, d) => {
+    if (mode === "force") { d.fx = e.x; d.fy = e.y; } else { d.x = e.x; d.y = e.y; render(); }
+  })
+  .on("end", (e, d) => { if (mode === "force") { if (!e.active) sim.alphaTarget(0); d.fx = d.fy = null; } }));
+
+// Hover highlights the node, its ancestors and its descendants.
+nodeSel.on("mouseenter", (e, d) => {
+  const keep = new Set([...d.ancestors(), ...d.descendants()]);
+  nodeSel.classed("dim", (n) => !keep.has(n));
+  linkSel.classed("dim", (l) => !(keep.has(l.source) && keep.has(l.target)))
+    .classed("hot", (l) => keep.has(l.source) && keep.has(l.target));
+}).on("mouseleave", () => {
+  nodeSel.classed("dim", false);
+  linkSel.classed("dim", false).classed("hot", false);
+});
+
+const zoom = d3.zoom().scaleExtent([0.4, 3]).on("zoom", (e) => zoomLayer.attr("transform", e.transform));
+svg.call(zoom).on("dblclick.zoom", null);
+
+function resize() {
+  W = innerWidth; H = innerHeight;
+  svg.attr("viewBox", [-W / 2, -H / 2 + 14, W, H]);
+  K = Math.min(1, Math.min(W, H) / 470);
+  svg.call(zoom.transform, d3.zoomIdentity.scale(K));
+  setForces();
+  if (mode === "tree") morphTo(radialTargets());
+  else sim.alpha(0.6).restart();
+}
+addEventListener("resize", resize);
+resize();
+</script>
+</body>
+</html>

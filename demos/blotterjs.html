@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blotter.js 示範：會流動的 WebGL 文字</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/noto-sans-tc@5.3.0/900.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"中文字型使用思源黑體（Noto Sans TC）的分段子集，只下載畫面用到的字"}</script>
+<style>
+  body { background: radial-gradient(60% 60% at 50% 45%, #1c1830, var(--bg) 75%); }
+  .wrap { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 64px 16px 56px; }
+  #stage { min-height: 120px; display: grid; place-items: center; cursor: crosshair; }
+  #stage canvas { display: block; }
+  .info { text-align: center; }
+  .info b { display: block; font-size: 15px; }
+  .info span { font-size: 13px; color: var(--muted); }
+  .uni { margin-top: 8px; font: 12px var(--mono); color: var(--c2); min-height: 1.4em; }
+  .controls .sep { width: 1px; background: var(--line); }
+  @media (max-width: 560px) { .wrap { padding-top: 96px; } .controls .sep { display: none; } }
+</style>
+</head>
+<body>
+<div class="controls" id="mats">
+  <button class="btn" data-mat="liquid" aria-pressed="true">液態扭曲</button>
+  <button class="btn" data-mat="split">色版分離</button>
+  <button class="btn" data-mat="roll">滾動撕裂</button>
+  <span class="sep"></span>
+  <button class="btn primary" id="next">換一句</button>
+</div>
+
+<div class="wrap">
+  <div id="stage"></div>
+  <div class="info">
+    <b id="mname">液態扭曲</b>
+    <span id="mdesc">用 3D 雜訊推動每個像素，滑鼠動得越快，字晃得越厲害</span>
+    <div class="uni" id="uni"></div>
+  </div>
+</div>
+<div class="status" id="st">正在載入思源黑體…</div>
+<div class="hint">在字的附近快速移動滑鼠或手指</div>
+
+<script src="https://cdn.jsdelivr.net/gh/bradley/Blotter@0.1.0/build/blotter.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/bradley/Blotter@0.1.0/build/materials/liquidDistortMaterial.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/bradley/Blotter@0.1.0/build/materials/channelSplitMaterial.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/bradley/Blotter@0.1.0/build/materials/rollingDistortMaterial.js"></script>
+<script>
+const WORDS = ["字在流動", "攪動文字", "光的三原色", "像水一樣"];
+const FAMILY = "'Noto Sans TC', 'Microsoft JhengHei', sans-serif";
+const BG = [0.055, 0.063, 0.075, 1]; // page background, so channel split blends onto it
+
+const MATS = {
+  liquid: { name: "液態扭曲", desc: "用 3D 雜訊推動每個像素，滑鼠動得越快，字晃得越厲害", make: () => new Blotter.LiquidDistortMaterial(),
+    tick(u, k) { u.uSpeed.value = 0.6; u.uVolatility.value = 0.02 + k * 0.32; return "uVolatility " + u.uVolatility.value.toFixed(3); } },
+  split: { name: "色版分離", desc: "紅綠藍三個色版各自偏移再加上動態模糊，方向跟著滑鼠轉", make: () => new Blotter.ChannelSplitMaterial(),
+    tick(u, k, ang) { u.uOffset.value = 0.006 + k * 0.1; u.uRotation.value = ang; return "uOffset " + u.uOffset.value.toFixed(3) + "  uRotation " + ang.toFixed(0) + "°"; } },
+  roll: { name: "滾動撕裂", desc: "一道道正弦波帶著雜訊捲過文字，中心點跟著滑鼠移動", make: () => new Blotter.RollingDistortMaterial(),
+    tick(u, k, ang, pos) { u.uSineDistortAmplitude.value = 0.03 + k * 0.28; u.uDistortPosition.value = pos; u.uSpeed.value = 0.12;
+      return "uSineDistortAmplitude " + u.uSineDistortAmplitude.value.toFixed(3); } },
+};
+
+const stage = document.getElementById("stage");
+const uniEl = document.getElementById("uni");
+let blotter, text, scope, matKey = "liquid", material, wordIdx = 0;
+
+function textProps(word) {
+  // Fit the word to the viewport; padding leaves room for the distortion to spill over
+  const size = Math.floor(Math.min((innerWidth - 32) / (word.length + 0.7), innerHeight * 0.3, 170));
+  const pad = Math.round(size * 0.35);
+  return { family: FAMILY, weight: 900, size, fill: "#f4f1ff", paddingLeft: pad, paddingRight: pad, paddingTop: pad * 0.6, paddingBottom: pad * 0.6 };
+}
+
+function useMaterial(key) {
+  matKey = key;
+  material = MATS[key].make();
+  if (!blotter) return;
+  blotter.material = material;
+  blotter.needsUpdate = true;
+  document.querySelectorAll("[data-mat]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.mat === key));
+  document.getElementById("mname").textContent = MATS[key].name;
+  document.getElementById("mdesc").textContent = MATS[key].desc;
+}
+
+function setWord(i) {
+  wordIdx = i % WORDS.length;
+  text.value = WORDS[wordIdx];
+  text.properties = textProps(WORDS[wordIdx]);
+  text.needsUpdate = true;
+}
+
+// Pointer energy: fast movement pumps it up, it decays every frame; when idle it breathes on its own
+let energy = 0.9, lastMove = 0, last = null, angle = 30, pos = [0.5, 0.5];
+addEventListener("pointermove", (e) => {
+  const now = performance.now();
+  if (last) {
+    const dt = Math.max(now - last.t, 8);
+    energy = Math.min(1.2, energy + Math.hypot(e.clientX - last.x, e.clientY - last.y) / dt * 0.05);
+  }
+  last = { x: e.clientX, y: e.clientY, t: now };
+  lastMove = now;
+  const c = scope && scope.domElement.getBoundingClientRect();
+  if (c && c.width) {
+    angle = (Math.atan2(c.top + c.height / 2 - e.clientY, e.clientX - (c.left + c.width / 2)) * 180 / Math.PI + 360) % 360;
+    pos = [Math.min(1, Math.max(0, (e.clientX - c.left) / c.width)), Math.min(1, Math.max(0, 1 - (e.clientY - c.top) / c.height))];
+  }
+});
+
+function loop(t) {
+  energy *= 0.955;
+  if (t - lastMove > 1800) {
+    energy = Math.max(energy, 0.38 + 0.26 * Math.sin(t / 900));
+    angle = (t / 40) % 360;
+    pos = [0.5 + 0.35 * Math.sin(t / 1300), 0.5];
+  }
+  const su = scope.material.uniforms;
+  if (su && su.uBlendColor && su.uBlendColor.value !== BG) su.uBlendColor.value = BG;
+  // After a material swap Blotter rebuilds its shader asynchronously; only write uniforms the current build knows
+  const ui = blotter.mappingMaterial && blotter.mappingMaterial.uniformInterface;
+  const u = material.uniforms;
+  if (ui && Object.keys(u).every((k) => ui[k])) uniEl.textContent = MATS[matKey].tick(u, Math.min(energy, 1), angle, pos);
+  requestAnimationFrame(loop);
+}
+
+async function start() {
+  const st = document.getElementById("st");
+  // Blotter rasterizes text into its own canvas, so the web font must be ready first
+  try {
+    await Promise.race([document.fonts.load("900 100px 'Noto Sans TC'", WORDS.join("")), new Promise((r) => setTimeout(r, 6000))]);
+  } catch (err) {
+    console.warn("字型載入失敗，改用系統字型", err);
+  }
+  st.hidden = true;
+  useMaterial("liquid");
+  text = new Blotter.Text(WORDS[0], textProps(WORDS[0]));
+  blotter = new Blotter(material, { texts: text });
+  scope = blotter.forText(text);
+  scope.appendTo(stage);
+  requestAnimationFrame(loop);
+}
+
+document.getElementById("mats").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-mat]");
+  if (b) useMaterial(b.dataset.mat);
+});
+document.getElementById("next").addEventListener("click", () => { setWord(wordIdx + 1); energy = 1; });
+addEventListener("resize", () => { if (text) { text.properties = textProps(text.value); text.needsUpdate = true; } });
+start();
+</script>
+</body>
+</html>

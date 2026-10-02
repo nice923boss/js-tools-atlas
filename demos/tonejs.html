@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tone.js 示範：步進音序器</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"]}</script>
+<style>
+  body {
+    background:
+      radial-gradient(80% 60% at 50% 0%, rgba(76, 201, 240, 0.10), transparent 70%),
+      radial-gradient(60% 50% at 100% 100%, rgba(247, 37, 133, 0.08), transparent 70%),
+      var(--bg);
+  }
+  .wrap {
+    position: fixed; inset: 0; display: flex; flex-direction: column; justify-content: center;
+    padding: 58px 16px 50px; gap: 12px; max-width: 980px; margin: 0 auto;
+  }
+  .head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .head h1 { margin: 0; font-size: 18px; letter-spacing: .02em; }
+  .head .bpm { font-family: var(--mono); color: var(--accent); font-size: 14px; }
+  .grid {
+    display: grid; grid-template-columns: 54px repeat(16, minmax(0, 1fr));
+    gap: 5px; user-select: none; touch-action: none;
+  }
+  .lab {
+    font-size: 12px; color: var(--muted); display: flex; align-items: center; justify-content: flex-end;
+    padding-right: 6px; white-space: nowrap;
+  }
+  .cell {
+    aspect-ratio: 1.15; max-height: 44px; border-radius: 6px; cursor: pointer;
+    background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.07);
+    transition: background .08s, transform .08s, box-shadow .12s;
+  }
+  .cell.beat { background: rgba(255, 255, 255, 0.09); }
+  .cell.on { background: var(--row); border-color: transparent; box-shadow: 0 0 14px -2px var(--row); }
+  .cell.now { outline: 2px solid rgba(255, 255, 255, 0.55); outline-offset: -2px; }
+  .cell.on.now { transform: scale(1.12); box-shadow: 0 0 22px 2px var(--row); }
+  .steps { display: contents; }
+  .dot { height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.08); }
+  .dot.now { background: var(--accent); }
+  .sliders { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; font-size: 12px; color: var(--muted); }
+  .sliders label { display: flex; align-items: center; gap: 8px; }
+  .sliders input { width: 120px; }
+  @media (max-width: 560px) {
+    .grid { grid-template-columns: 36px repeat(16, minmax(0, 1fr)); gap: 3px; }
+    .lab { font-size: 10px; padding-right: 3px; }
+    .cell { border-radius: 3px; }
+    .head h1 { font-size: 15px; }
+    .sliders input { width: 84px; }
+  }
+</style>
+</head>
+<body>
+<div class="controls">
+  <button class="btn primary" id="play">▶ 播放</button>
+  <button class="btn" id="random">隨機編曲</button>
+  <button class="btn" id="clear">清空</button>
+</div>
+
+<div class="wrap">
+  <div class="head">
+    <h1>步進音序器</h1>
+    <span class="bpm" id="bpmText">110 BPM</span>
+  </div>
+  <div class="grid" id="grid"></div>
+  <div class="sliders">
+    <label>速度 <input type="range" id="bpm" min="70" max="160" value="110"></label>
+    <label>搖擺感 <input type="range" id="swing" min="0" max="60" value="10"></label>
+    <label>延遲回音 <input type="range" id="delay" min="0" max="60" value="25"></label>
+  </div>
+</div>
+<div class="hint">點格子編曲（可拖曳連續塗格），按播放聆聽</div>
+
+<script src="https://cdn.jsdelivr.net/npm/tone@15.1.22/build/Tone.js"></script>
+<script>
+// 16-step sequencer: 5 pentatonic synth rows + 3 drum rows, all voiced by Tone.js.
+const STEPS = 16;
+const ROWS = [
+  { label: "G5", note: "G5", kind: "lead", color: "#9d8cff" },
+  { label: "E5", note: "E5", kind: "lead", color: "#8fa2ff" },
+  { label: "D5", note: "D5", kind: "lead", color: "#6fb8ff" },
+  { label: "C5", note: "C5", kind: "lead", color: "#4cc9f0" },
+  { label: "A4", note: "A4", kind: "lead", color: "#45d6c4" },
+  { label: "腳踏鈸", kind: "hat", color: "#f7df1e" },
+  { label: "小鼓", kind: "snare", color: "#ff8c42" },
+  { label: "大鼓", kind: "kick", color: "#f72585" },
+];
+const DEFAULT = {
+  0: [10], 1: [3, 8, 14], 2: [6, 12], 3: [2, 11], 4: [0, 5, 15],
+  5: [0, 2, 4, 6, 8, 10, 12, 13, 14], 6: [4, 12], 7: [0, 3, 8, 10],
+};
+const pattern = ROWS.map((_, r) => Array.from({ length: STEPS }, (_, s) => (DEFAULT[r] || []).includes(s)));
+
+// Build grid DOM
+const grid = document.getElementById("grid");
+const cells = [];
+const dots = [];
+grid.append(document.createElement("div"));
+for (let s = 0; s < STEPS; s++) {
+  const d = document.createElement("div");
+  d.className = "dot";
+  grid.append(d);
+  dots.push(d);
+}
+ROWS.forEach((row, r) => {
+  const lab = document.createElement("div");
+  lab.className = "lab";
+  lab.textContent = row.label;
+  grid.append(lab);
+  cells[r] = [];
+  for (let s = 0; s < STEPS; s++) {
+    const c = document.createElement("div");
+    c.className = "cell" + (s % 4 === 0 ? " beat" : "");
+    c.style.setProperty("--row", row.color);
+    c.dataset.r = r;
+    c.dataset.s = s;
+    grid.append(c);
+    cells[r][s] = c;
+  }
+});
+
+function paint() {
+  ROWS.forEach((_, r) => cells[r].forEach((c, s) => c.classList.toggle("on", pattern[r][s])));
+}
+paint();
+
+// Click / drag painting
+let painting = null;
+grid.addEventListener("pointerdown", (e) => {
+  const c = e.target.closest(".cell");
+  if (!c) return;
+  const r = +c.dataset.r, s = +c.dataset.s;
+  painting = !pattern[r][s];
+  pattern[r][s] = painting;
+  paint();
+  if (painting) preview(r);
+});
+grid.addEventListener("pointerover", (e) => {
+  if (painting === null) return;
+  const c = e.target.closest(".cell");
+  if (!c) return;
+  pattern[+c.dataset.r][+c.dataset.s] = painting;
+  paint();
+});
+window.addEventListener("pointerup", () => { painting = null; });
+
+// Audio graph is created lazily on first user gesture (autoplay policy).
+let inst = null;
+function buildInstruments() {
+  const reverb = new Tone.Reverb({ decay: 2.4, wet: 0.25 }).toDestination();
+  const delay = new Tone.FeedbackDelay({ delayTime: "8n.", feedback: 0.32, wet: 0.25 }).connect(reverb);
+  const lead = new Tone.PolySynth(Tone.Synth, {
+    oscillator: { type: "fatsawtooth", count: 3, spread: 18 },
+    envelope: { attack: 0.005, decay: 0.18, sustain: 0.15, release: 0.5 },
+    volume: -14,
+  });
+  const filter = new Tone.Filter(2400, "lowpass").connect(delay);
+  lead.connect(filter);
+  const kick = new Tone.MembraneSynth({ pitchDecay: 0.04, octaves: 6, volume: -4 }).toDestination();
+  const snare = new Tone.NoiseSynth({
+    noise: { type: "white" }, envelope: { attack: 0.001, decay: 0.16, sustain: 0 }, volume: -12,
+  }).connect(new Tone.Filter(1800, "highpass").connect(reverb));
+  const hat = new Tone.MetalSynth({
+    envelope: { attack: 0.001, decay: 0.05, release: 0.01 },
+    harmonicity: 5.1, modulationIndex: 32, resonance: 5000, octaves: 1.5, volume: -26,
+  }).toDestination();
+  hat.frequency.value = 300;
+  return { lead, kick, snare, hat, delay };
+}
+
+function trigger(r, time) {
+  const row = ROWS[r];
+  if (row.kind === "lead") inst.lead.triggerAttackRelease(row.note, "16n", time);
+  else if (row.kind === "kick") inst.kick.triggerAttackRelease("C1", "8n", time);
+  else if (row.kind === "snare") inst.snare.triggerAttackRelease("16n", time);
+  else inst.hat.triggerAttackRelease("32n", time, 0.6);
+}
+
+async function ensureAudio() {
+  await Tone.start();
+  if (inst) return;
+  inst = buildInstruments();
+  applySliders();
+  const draw = Tone.getDraw();
+  new Tone.Sequence((time, step) => {
+    for (let r = 0; r < ROWS.length; r++) if (pattern[r][step]) trigger(r, time);
+    draw.schedule(() => showStep(step), time);
+  }, [...Array(STEPS).keys()], "16n").start(0);
+}
+
+async function preview(r) {
+  await ensureAudio();
+  trigger(r, Tone.now());
+}
+
+let lastStep = -1;
+function showStep(step) {
+  if (lastStep >= 0) {
+    dots[lastStep].classList.remove("now");
+    cells.forEach((row) => row[lastStep].classList.remove("now"));
+  }
+  lastStep = step;
+  if (step < 0) return;
+  dots[step].classList.add("now");
+  cells.forEach((row) => row[step].classList.add("now"));
+}
+
+const playBtn = document.getElementById("play");
+playBtn.addEventListener("click", async () => {
+  await ensureAudio();
+  const transport = Tone.getTransport();
+  if (transport.state === "started") {
+    transport.stop();
+    showStep(-1);
+    playBtn.textContent = "▶ 播放";
+  } else {
+    transport.start("+0.05");
+    playBtn.textContent = "■ 停止";
+  }
+});
+
+document.getElementById("clear").addEventListener("click", () => {
+  pattern.forEach((row) => row.fill(false));
+  paint();
+});
+document.getElementById("random").addEventListener("click", () => {
+  const density = [0.12, 0.14, 0.16, 0.16, 0.18, 0.6, 0.12, 0.25];
+  pattern.forEach((row, r) => row.forEach((_, s) => { row[s] = Math.random() < density[r]; }));
+  pattern[7][0] = true;
+  pattern[6][4] = pattern[6][12] = true;
+  paint();
+});
+
+const bpm = document.getElementById("bpm");
+const swing = document.getElementById("swing");
+const delayAmt = document.getElementById("delay");
+function applySliders() {
+  document.getElementById("bpmText").textContent = `${bpm.value} BPM`;
+  const transport = Tone.getTransport();
+  transport.bpm.value = +bpm.value;
+  transport.swing = swing.value / 100;
+  transport.swingSubdivision = "16n";
+  if (inst) inst.delay.wet.value = delayAmt.value / 100;
+}
+[bpm, swing, delayAmt].forEach((el) => el.addEventListener("input", applySliders));
+document.getElementById("bpmText").textContent = `${bpm.value} BPM`;
+</script>
+</body>
+</html>

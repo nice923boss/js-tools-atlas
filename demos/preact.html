@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Preact 示範：hooks 待辦清單與套件大小比較</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"Preact + htm 免建置寫法，現場用 CompressionStream 量測 gzip 大小"}</script>
+<script type="importmap">
+{ "imports": {
+  "preact": "https://cdn.jsdelivr.net/npm/preact@11.0.0/dist/preact.mjs",
+  "preact/hooks": "https://cdn.jsdelivr.net/npm/preact@11.0.0/hooks/dist/hooks.mjs",
+  "htm": "https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.mjs"
+} }
+</script>
+<style>
+  body { background: radial-gradient(60% 70% at 0% 0%, rgba(103,58,184,.22), transparent 60%), var(--bg); }
+  #root { position: fixed; inset: 0; }
+  .app { position: absolute; inset: 0; display: grid; grid-template-columns: 430px minmax(0, 1fr); gap: 12px; padding: 12px 14px 46px; }
+  .todo { min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; border-radius: 18px; background: #f7f5ff; color: #221d33; box-shadow: 0 20px 50px rgba(0,0,0,.45); }
+  .todo header { display: flex; justify-content: space-between; align-items: flex-end; }
+  .todo h1 { margin: 0; font-size: 20px; }
+  .todo .date { font-size: 12px; color: #7a7393; }
+  .ring { --p: 0; width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; font: 700 12px var(--mono); color: #673ab8;
+    background: radial-gradient(closest-side, #f7f5ff 76%, transparent 78%), conic-gradient(#673ab8 calc(var(--p) * 1%), #e2dcf3 0); transition: --p .4s; }
+  .add { display: flex; gap: 6px; }
+  .add input { flex: 1; min-width: 0; padding: 8px 12px; border-radius: 10px; border: 1px solid #d9d2ee; background: #fff; color: #221d33; font: 14px var(--font); }
+  .add button { border: 0; border-radius: 10px; padding: 0 14px; background: #673ab8; color: #fff; font: 700 14px var(--font); cursor: pointer; }
+  .tabs { display: flex; gap: 4px; }
+  .tabs button { border: 1px solid #d9d2ee; background: none; color: #4a4363; border-radius: 999px; padding: 3px 12px; font: 12px var(--font); cursor: pointer; }
+  .tabs button.on { background: #221d33; color: #fff; border-color: transparent; }
+  .tabs .count { margin-left: auto; font-size: 12px; color: #7a7393; align-self: center; }
+  ul { list-style: none; margin: 0; padding: 0; flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 6px; }
+  li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 12px; background: #fff; border: 1px solid #ebe6f7; font-size: 14px; animation: pop .35s ease; }
+  @keyframes pop { from { opacity: 0; transform: translateX(-12px); } to { opacity: 1; transform: none; } }
+  li .chk { flex: none; width: 22px; height: 22px; border-radius: 50%; border: 2px solid #b9addc; background: none; cursor: pointer; display: grid; place-items: center; color: #fff; font-size: 12px; padding: 0; }
+  li.done .chk { background: #4caf7d; border-color: #4caf7d; }
+  li .txt { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  li.done .txt { color: #a49dbb; text-decoration: line-through; }
+  li .tag { font-size: 11px; padding: 1px 8px; border-radius: 999px; background: #efe9fb; color: #673ab8; }
+  li .del { border: 0; background: none; color: #b9addc; font-size: 16px; cursor: pointer; padding: 0 2px; }
+  .renders { font: 11px var(--mono); color: #7a7393; display: flex; justify-content: space-between; }
+  /* side */
+  .side { min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+  .card { padding: 12px 14px; border-radius: 14px; background: var(--bg-2); border: 1px solid var(--line); }
+  .card h2 { margin: 0 0 8px; font-size: 13px; color: var(--muted); font-weight: 600; display: flex; justify-content: space-between; gap: 8px; }
+  .card h2 span { font-weight: 400; font-size: 11px; }
+  .size { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .size .lbl { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; margin-bottom: 4px; }
+  .size .lbl span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .size .lbl b { flex: none; }
+  .size .lbl b { font: 700 14px var(--mono); }
+  .size .track { height: 18px; border-radius: 6px; background: rgba(255,255,255,.05); overflow: hidden; }
+  .size .fill { height: 100%; border-radius: 6px; transition: width .9s cubic-bezier(.2,.8,.2,1); }
+  .size .files { font: 10.5px var(--mono); color: var(--muted); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ratio { font-size: 13px; color: var(--muted); }
+  .ratio b { font-size: 26px; color: var(--c4); margin: 0 4px; }
+  pre.code { flex: 1; min-height: 0; margin: 0; padding: 10px 12px; border-radius: 12px; background: #0b0d10; border: 1px solid var(--line); font: 11.5px/1.6 var(--mono); color: #c8c6bd; overflow: hidden; }
+  pre .k { color: #c792ea; } pre .s { color: var(--c4); } pre .f { color: var(--c2); } pre .c { color: #6b6a63; }
+  @media (max-width: 720px) {
+    /* stacked layout scrolls under the fixed hint; the on-screen controls are self-explanatory */
+    .hint { display: none; }
+    .app { grid-template-columns: minmax(0, 1fr); overflow-y: auto; align-content: start; }
+    .todo { min-height: 470px; }
+    pre.code { flex: none; }
+    .card h2 span { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<template id="code-src"><span class="k">import</span> { h, render } <span class="k">from</span> <span class="s">"preact"</span>;
+<span class="k">import</span> { useState, useMemo } <span class="k">from</span> <span class="s">"preact/hooks"</span>;
+<span class="k">import</span> htm <span class="k">from</span> <span class="s">"htm"</span>;  <span class="c">// no build step</span>
+<span class="k">const</span> html = htm.<span class="f">bind</span>(h);
+
+<span class="k">function</span> <span class="f">App</span>() {
+  <span class="k">const</span> [todos, setTodos] = <span class="f">useState</span>(seed);
+  <span class="k">const</span> done = <span class="f">useMemo</span>(() =&gt;
+    todos.<span class="f">filter</span>(t =&gt; t.done).length, [todos]);
+  <span class="k">return</span> html<span class="s">`&lt;ul&gt;${todos.map(t =&gt;
+    html`&lt;${Item} item=${t} /&gt;`)}&lt;/ul&gt;`</span>;
+}
+<span class="f">render</span>(html<span class="s">`&lt;${App} /&gt;`</span>, root);</template>
+<div class="hint">新增、勾選或刪除待辦，右側是即時量測的 gzip 大小</div>
+
+<script type="module">
+// Preact demo without a build step: htm tagged templates + hooks (useState, useMemo, useEffect, useRef, useCallback).
+import { h, render } from "preact";
+import { useState, useMemo, useEffect, useRef, useCallback } from "preact/hooks";
+import htm from "htm";
+const html = htm.bind(h);
+const CODE = document.getElementById("code-src").innerHTML;
+
+const SEED = [
+  ["買高鐵票", "🚄", true], ["回覆客戶信件", "💼", false], ["整理週報", "📊", true],
+  ["去全聯補貨", "🛒", false], ["晚上慢跑 5 公里", "🏃", false],
+];
+const MORE = [["預約牙醫", "🦷"], ["繳電費", "💡"], ["幫植物澆水", "🪴"], ["讀完一章書", "📖"], ["訂週末民宿", "🏡"]];
+let nextId = 1;
+const make = (text, tag, done = false) => ({ id: nextId++, text, tag, done });
+
+const PREACT_FILES = [
+  "https://cdn.jsdelivr.net/npm/preact@11.0.0/dist/preact.mjs",
+  "https://cdn.jsdelivr.net/npm/preact@11.0.0/hooks/dist/hooks.mjs",
+  "https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.mjs",
+];
+const REACT_FILES = [
+  "https://cdn.jsdelivr.net/npm/react@19.3.0/+esm",
+  "https://cdn.jsdelivr.net/npm/react-dom@19.3.0/client/+esm",
+  "https://cdn.jsdelivr.net/npm/react-dom@19.3.0/+esm",
+  "https://cdn.jsdelivr.net/npm/scheduler@0.28.0/+esm",
+];
+
+// Gzip each file in the browser so both stacks are measured the same way.
+async function gzipSize(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${res.status} ${url}`);
+  const stream = res.body.pipeThrough(new CompressionStream("gzip"));
+  const buf = await new Response(stream).arrayBuffer();
+  return buf.byteLength;
+}
+async function measure(files) {
+  const sizes = await Promise.all(files.map(gzipSize));
+  return sizes.reduce((a, b) => a + b, 0);
+}
+
+function useSizes() {
+  const [sizes, setSizes] = useState({ preact: 0, react: 0, error: "" });
+  useEffect(() => {
+    if (!("CompressionStream" in window)) {
+      setSizes((s) => ({ ...s, error: "此瀏覽器不支援 CompressionStream，無法現場量測" }));
+      return;
+    }
+    Promise.all([measure(PREACT_FILES), measure(REACT_FILES)])
+      .then(([preact, react]) => setSizes({ preact, react, error: "" }))
+      .catch((e) => setSizes((s) => ({ ...s, error: `量測失敗：${e.message}` })));
+  }, []);
+  return sizes;
+}
+
+const kb = (n) => (n / 1024).toFixed(1);
+
+function Item({ item, onToggle, onDelete }) {
+  return html`<li class=${item.done ? "done" : ""}>
+    <button class="chk" onClick=${() => onToggle(item.id)} aria-label="切換完成">${item.done ? "✓" : ""}</button>
+    <span class="txt">${item.text}</span><span class="tag">${item.tag}</span>
+    <button class="del" onClick=${() => onDelete(item.id)} aria-label="刪除">×</button>
+  </li>`;
+}
+
+function SizePanel() {
+  const { preact, react, error } = useSizes();
+  const max = Math.max(preact, react) || 1;
+  const ready = preact && react;
+  return html`<section class="card">
+    <h2>套件大小 <span>gzip，瀏覽器現場壓縮量測</span></h2>
+    <div class="size">
+      <div><div class="lbl"><span>⚛️ Preact 11 + hooks + htm</span><b>${ready ? `${kb(preact)} KB` : "量測中…"}</b></div>
+        <div class="track"><div class="fill" style=${`width:${ready ? (preact / max) * 100 : 0}%;background:linear-gradient(90deg,#673ab8,#9d8cff)`}></div></div>
+        <div class="files">preact.mjs、hooks.mjs、htm.mjs</div></div>
+      <div><div class="lbl"><span>⚛️ React 19 + ReactDOM</span><b>${ready ? `${kb(react)} KB` : "量測中…"}</b></div>
+        <div class="track"><div class="fill" style=${`width:${ready ? 100 : 0}%;background:linear-gradient(90deg,#149eca,#61dafb)`}></div></div>
+        <div class="files">react、react-dom/client、react-dom、scheduler（jsDelivr +esm）</div></div>
+      <div class="ratio">${error ? error : ready ? html`同樣的 hooks API，體積約小<b>${(react / preact).toFixed(1)}</b>倍` : "下載並壓縮中…"}</div>
+    </div>
+  </section>`;
+}
+
+function App() {
+  const [todos, setTodos] = useState(() => SEED.map(([t, g, d]) => make(t, g, d)));
+  const [filter, setFilter] = useState("all");
+  const [text, setText] = useState("");
+  const [auto, setAuto] = useState(true);
+  const renders = useRef(0);
+  const inputRef = useRef(null);
+  renders.current += 1;
+
+  const doneCount = useMemo(() => todos.filter((t) => t.done).length, [todos]);
+  const shown = useMemo(() => todos.filter((t) => (filter === "all" ? true : filter === "done" ? t.done : !t.done)), [todos, filter]);
+  const pct = todos.length ? Math.round((doneCount / todos.length) * 100) : 0;
+
+  const toggle = useCallback((id) => setTodos((list) => list.map((t) => (t.id === id ? { ...t, done: !t.done } : t))), []);
+  const remove = useCallback((id) => setTodos((list) => list.filter((t) => t.id !== id)), []);
+  const add = (e) => {
+    e.preventDefault();
+    setAuto(false);
+    const v = text.trim();
+    if (!v) return inputRef.current.focus();
+    setTodos((list) => [...list, make(v, "✨")]);
+    setText("");
+  };
+
+  // Keep the tab title in sync with remaining tasks.
+  useEffect(() => { document.title = `(${todos.length - doneCount}) Preact 待辦`; }, [todos, doneCount]);
+
+  // Auto tour: add and check off tasks until the viewer interacts.
+  useEffect(() => {
+    if (!auto) return undefined;
+    let i = 0;
+    const timer = setInterval(() => {
+      i += 1;
+      setTodos((list) => {
+        if (i % 2) {
+          const [t, g] = MORE[(i >> 1) % MORE.length];
+          const next = [...list, make(t, g)];
+          return next.length > 7 ? next.slice(next.length - 7) : next;
+        }
+        const open = list.filter((t) => !t.done);
+        const pick = open[0];
+        return pick ? list.map((t) => (t.id === pick.id ? { ...t, done: true } : t)) : list.map((t) => ({ ...t, done: false }));
+      });
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [auto]);
+
+  const stop = () => setAuto(false);
+  const date = new Intl.DateTimeFormat("zh-TW", { month: "long", day: "numeric", weekday: "long" }).format(new Date());
+
+  return html`<div class="app">
+    <section class="todo" onPointerDown=${stop}>
+      <header><div><div class="date">${date}</div><h1>今天要做的事</h1></div>
+        <div class="ring" style=${`--p:${pct}`}>${pct}%</div></header>
+      <form class="add" onSubmit=${add}>
+        <input ref=${inputRef} value=${text} onInput=${(e) => setText(e.currentTarget.value)} placeholder="輸入待辦後按 Enter" />
+        <button>新增</button>
+      </form>
+      <div class="tabs">
+        ${[["all", "全部"], ["open", "未完成"], ["done", "已完成"]].map(([k, label]) =>
+          html`<button class=${filter === k ? "on" : ""} onClick=${() => setFilter(k)}>${label}</button>`)}
+        <span class="count">${doneCount} / ${todos.length} 完成</span>
+      </div>
+      <ul>${shown.map((item) => html`<${Item} key=${item.id} item=${item} onToggle=${toggle} onDelete=${remove} />`)}</ul>
+      <div class="renders"><span>App render 次數：${renders.current}</span><span>${auto ? "自動示範中" : "手動操作中"}</span></div>
+    </section>
+    <aside class="side">
+      <${SizePanel} />
+      <pre class="code" dangerouslySetInnerHTML=${{ __html: CODE }}></pre>
+    </aside>
+  </div>`;
+}
+
+render(html`<${App} />`, document.getElementById("root"));
+</script>
+</body>
+</html>

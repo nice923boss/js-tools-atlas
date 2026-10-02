@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Observable Plot 示範：八城市氣候小多圖</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"各城市月均溫與雨量為約略氣候值，示意資料"}</script>
+<style>
+  body { background: radial-gradient(80% 70% at 80% 0%, #1a1a2a 0%, var(--bg) 70%); }
+  .title { position: fixed; left: 14px; top: 12px; z-index: 40; }
+  .title h1 { margin: 0; font-size: 16px; }
+  .title p { margin: 0; font-size: 12px; color: var(--muted); }
+  #plot { position: fixed; left: 0; right: 0; top: 56px; bottom: 40px; display: grid; place-items: center; }
+  #plot svg { overflow: visible; }
+  #plot figure { margin: 0; }
+  @media (max-width: 640px) { .title { top: 52px; } #plot { top: 98px; } }
+</style>
+</head>
+<body>
+<div class="title"><h1 id="name">台灣八城市 每月雨量（mm）</h1><p>示意資料・每格同一比例尺，一眼比較梅雨與東北季風</p></div>
+<div class="controls">
+  <button class="btn" data-m="rain" aria-pressed="true">雨量</button>
+  <button class="btn" data-m="temp">均溫</button>
+  <button class="btn primary" id="avg" aria-pressed="true">全台平均線</button>
+</div>
+<div id="plot"></div>
+<div class="hint">每個小格是一座城市・滑過長條看數值・切換指標比較型態</div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@observablehq/plot@0.6.17/dist/plot.umd.min.js"></script>
+<script>
+// Small multiples with Observable Plot: one fx/fy facet cell per city, shared scales, average overlay.
+const CITIES = {
+  基隆: { rain: [330, 390, 300, 210, 280, 300, 140, 210, 370, 390, 390, 330], temp: [15.9, 16.0, 17.6, 20.8, 24.2, 27.1, 29.2, 29.0, 27.3, 24.5, 21.6, 17.9] },
+  台北: { rain: [95, 170, 180, 180, 250, 320, 240, 320, 360, 150, 90, 75], temp: [16.1, 16.5, 18.5, 21.9, 25.2, 27.7, 29.6, 29.2, 27.4, 24.5, 21.5, 17.9] },
+  宜蘭: { rain: [160, 180, 150, 140, 220, 200, 140, 250, 450, 480, 350, 230], temp: [16.4, 16.9, 18.6, 21.6, 24.6, 27.2, 29.0, 28.6, 26.8, 23.9, 21.1, 17.9] },
+  台中: { rain: [35, 90, 95, 135, 230, 380, 290, 300, 140, 20, 20, 25], temp: [16.6, 17.3, 19.8, 23.3, 26.3, 27.9, 28.8, 28.5, 27.8, 25.6, 22.3, 18.3] },
+  花蓮: { rain: [70, 100, 90, 100, 220, 210, 170, 250, 370, 340, 160, 70], temp: [18.2, 18.6, 20.3, 22.8, 25.3, 27.4, 28.8, 28.5, 27.2, 25.1, 22.6, 19.6] },
+  台南: { rain: [20, 25, 40, 75, 180, 400, 370, 440, 180, 30, 15, 15], temp: [17.9, 18.9, 21.6, 24.9, 27.6, 28.8, 29.4, 28.9, 28.4, 26.4, 23.2, 19.4] },
+  台東: { rain: [40, 45, 50, 70, 170, 240, 250, 300, 330, 170, 70, 40], temp: [19.4, 19.9, 21.6, 24.0, 26.2, 27.8, 28.9, 28.6, 27.6, 25.8, 23.4, 20.6] },
+  高雄: { rain: [20, 25, 40, 75, 190, 420, 390, 430, 190, 45, 15, 15], temp: [19.3, 20.3, 22.6, 25.4, 27.6, 28.8, 29.4, 28.9, 28.5, 27.0, 24.4, 20.9] },
+};
+const NAMES = Object.keys(CITIES);
+const META = {
+  rain: { title: "每月雨量", unit: "mm" },
+  temp: { title: "每月均溫", unit: "°C" },
+};
+let metric = "rain", showAvg = true;
+
+function rowsFor(m, cols) {
+  return NAMES.flatMap((city, i) => CITIES[city][m].map((v, k) => ({
+    city, month: k + 1, value: v, col: i % cols, row: Math.floor(i / cols),
+    season: k >= 4 && k <= 5 ? "梅雨" : k >= 6 && k <= 8 ? "颱風" : k >= 9 || k <= 1 ? "東北季風" : "其他",
+  })));
+}
+
+function draw() {
+  const box = document.getElementById("plot");
+  const W = box.clientWidth - 16, H = box.clientHeight - 8 - 44; // room for the color legend
+  const cols = W < 640 ? 2 : 4;
+  const data = rowsFor(metric, cols);
+  const avg = d3.range(1, 13).map((month) => ({ month, value: d3.mean(NAMES, (c) => CITIES[c][metric][month - 1]) }));
+  const cells = NAMES.map((city, i) => ({ city, col: i % cols, row: Math.floor(i / cols),
+    total: metric === "rain" ? `${d3.sum(CITIES[city].rain).toLocaleString()} mm` : `${d3.mean(CITIES[city].temp).toFixed(1)} °C` }));
+  const isRain = metric === "rain";
+  const color = isRain
+    ? { domain: ["東北季風", "梅雨", "颱風", "其他"], range: ["#9d8cff", "#4cc9f0", "#f72585", "#5b6070"], legend: true }
+    : { type: "linear", domain: [15, 30], range: ["#4cc9f0", "#f7df1e", "#ff8c42"], interpolate: "hcl", legend: true, label: "均溫（°C）", width: 260 };
+
+  const marks = [
+    Plot.frame({ stroke: "rgba(255,255,255,0.08)", rx: 6 }),
+    Plot.text(cells, { fx: "col", fy: "row", text: "city", frameAnchor: "top-left", dx: 6, dy: 4, fill: "#ecebe6", fontSize: 13, fontWeight: 700 }),
+    Plot.text(cells, { fx: "col", fy: "row", text: "total", frameAnchor: "top-right", dx: -6, dy: 5, fill: "#9b998f", fontSize: 10 }),
+    isRain
+      ? Plot.barY(data, { fx: "col", fy: "row", x: "month", y: "value", fill: "season", rx: 2, inset: 0.8,
+          tip: { fill: "#171a1f", stroke: "#f7df1e" }, title: (d) => `${d.city} ${d.month} 月\n${d.value} mm（${d.season}）` })
+      : Plot.lineY(data, { fx: "col", fy: "row", x: "month", y: "value", z: null, stroke: "value", strokeWidth: 2.5, curve: "natural",
+          tip: { fill: "#171a1f", stroke: "#f7df1e" }, title: (d) => `${d.city} ${d.month} 月\n${d.value} °C` }),
+  ];
+  if (!isRain) marks.push(Plot.dot(data, { fx: "col", fy: "row", x: "month", y: "value", fill: "value", r: 2.2 }));
+  if (showAvg) marks.push(Plot.lineY(avg, { x: "month", y: "value", stroke: "#ecebe6", strokeDasharray: "3,3", strokeOpacity: 0.65, strokeWidth: 1.2, curve: "natural" }));
+
+  const chart = Plot.plot({
+    width: W, height: H,
+    marginTop: 4, marginLeft: 40, marginBottom: 26, marginRight: 6,
+    style: { background: "transparent", color: "#9b998f", fontFamily: getComputedStyle(document.body).fontFamily, fontSize: "10px", overflow: "visible" },
+    fx: { axis: null, padding: 0.08 }, fy: { axis: null, padding: 0.12 },
+    x: { type: isRain ? "band" : "linear", domain: isRain ? d3.range(1, 13) : [1, 12], label: null,
+      ticks: [1, 4, 7, 10], tickFormat: (m) => `${m}月` },
+    y: { label: null, grid: true, domain: isRain ? [0, 580] : [13, 32.5], ticks: isRain ? [0, 100, 200, 300, 400, 500] : [15, 20, 25, 30] },
+    color,
+    marks,
+  });
+  box.replaceChildren(chart);
+  document.getElementById("name").textContent = `台灣八城市 ${META[metric].title}（${META[metric].unit}）`;
+}
+
+draw();
+document.querySelectorAll("[data-m]").forEach((b) => b.addEventListener("click", () => {
+  metric = b.dataset.m;
+  document.querySelectorAll("[data-m]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  draw();
+}));
+const avgBtn = document.getElementById("avg");
+avgBtn.addEventListener("click", () => { showAvg = !showAvg; avgBtn.setAttribute("aria-pressed", String(showAvg)); draw(); });
+let timer;
+addEventListener("resize", () => { clearTimeout(timer); timer = setTimeout(draw, 150); });
+</script>
+</body>
+</html>

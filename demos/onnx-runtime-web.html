@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ONNX Runtime Web 示範：手寫數字辨識</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","size":"約 3 MB","note":"MNIST 模型（26 KB，MIT 授權）以 WebAssembly 在瀏覽器內推論"}</script>
+<style>
+  #app { position: fixed; inset: 0; overflow: auto; padding: 14px 16px 50px; display: grid; grid-template-columns: auto 270px; gap: 16px; justify-content: center; align-content: start; }
+  #pad { display: block; border-radius: 14px; border: 1px solid var(--line); background: #000; cursor: crosshair; touch-action: none; }
+  .padwrap { position: relative; }
+  .padwrap .tip { position: absolute; left: 0; right: 0; top: 46%; text-align: center; color: rgba(255,255,255,.35); font-size: 14px; pointer-events: none; }
+  .side { display: grid; gap: 12px; align-content: start; }
+  .result { display: flex; align-items: center; gap: 14px; }
+  .result b { font: 800 64px/1 var(--mono); color: var(--accent); min-width: 48px; text-align: center; }
+  .result div { font-size: 13px; color: var(--muted); }
+  .result strong { display: block; font: 700 18px var(--mono); color: var(--fg); }
+  #bars { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; align-items: end; height: 110px; padding: 0 2px; }
+  #bars div { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 3px; }
+  #bars i { display: block; width: 100%; border-radius: 4px 4px 2px 2px; background: var(--c2); opacity: .55; height: 2%; transition: height .18s ease-out, opacity .18s, background .18s; }
+  #bars div.top i { background: var(--accent); opacity: 1; }
+  #bars span { font: 12px var(--mono); color: var(--muted); }
+  #bars div.top span { color: var(--fg); font-weight: 700; }
+  .see { display: flex; gap: 12px; align-items: center; font-size: 12px; color: var(--muted); }
+  #small { width: 84px; height: 84px; image-rendering: pixelated; border-radius: 6px; border: 1px solid var(--line); background: #000; flex: none; }
+  .see b { color: var(--fg); font-family: var(--mono); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  @media (max-width: 640px) {
+    /* stacked layout scrolls under the fixed hint: show it briefly, then fade it out */
+    .hint { animation: hint-fade .5s 8s forwards; }
+    #app { grid-template-columns: minmax(0, 1fr); padding: 10px 10px 46px; gap: 10px; justify-items: center; }
+    .side { width: 100%; }
+    .result b { font-size: 46px; }
+    #bars { height: 70px; }
+    #small { width: 56px; height: 56px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="padwrap"><canvas id="pad" width="280" height="280"></canvas><div class="tip" id="padTip">在這裡寫一個 0 到 9 的數字</div></div>
+  <div class="side">
+    <div class="result"><b id="digit">?</b><div>模型判斷<strong id="conf">載入中…</strong></div></div>
+    <div id="bars"></div>
+    <div class="see"><canvas id="small" width="28" height="28"></canvas><div>模型實際看到的 28×28 灰階影像<br>推論 <b id="ms">-</b> ms・<b id="ep">WASM</b><br>模型 <b>26 KB</b>・CNN 卷積網路</div></div>
+    <div class="row">
+      <button class="btn primary" id="clear">清除</button>
+      <button class="btn" id="sample">隨機範例</button>
+    </div>
+  </div>
+</div>
+<div class="hint" id="hint">用滑鼠或手指寫數字，邊寫邊辨識</div>
+
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort.wasm.min.js"></script>
+<script>
+// ONNX Runtime Web: MNIST CNN (onnx/models mnist-12) running on the WebAssembly execution provider.
+const $ = (id) => document.getElementById(id);
+ort.env.wasm.numThreads = 1;
+ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/";
+
+const pad = $("pad");
+const pctx = pad.getContext("2d", { willReadFrequently: true });
+const small = $("small");
+const sctx = small.getContext("2d", { willReadFrequently: true });
+const work = document.createElement("canvas");
+work.width = work.height = 28;
+const wctx = work.getContext("2d", { willReadFrequently: true });
+
+$("bars").innerHTML = Array.from({ length: 10 }, (_, i) => `<div><i></i><span>${i}</span></div>`).join("");
+const bars = [...$("bars").children];
+
+let session, inputName, outputName;
+let dirty = false;
+let busy = false;
+
+function clearPad() {
+  pctx.fillStyle = "#000";
+  pctx.fillRect(0, 0, 280, 280);
+  sctx.clearRect(0, 0, 28, 28);
+  $("digit").textContent = "?";
+  $("conf").textContent = session ? "請寫一個數字" : "載入中…";
+  bars.forEach((b) => { b.classList.remove("top"); b.firstChild.style.height = "2%"; });
+  $("padTip").style.display = "";
+}
+
+// MNIST-style preprocessing: crop the ink, fit it in a 20x20 box, center it in 28x28.
+function toInput() {
+  const { data } = pctx.getImageData(0, 0, 280, 280);
+  let x0 = 280, y0 = 280, x1 = -1, y1 = -1;
+  for (let y = 0; y < 280; y++) {
+    for (let x = 0; x < 280; x++) {
+      if (data[(y * 280 + x) * 4] > 30) {
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+    }
+  }
+  if (x1 < 0) return null;
+  const w = x1 - x0 + 1, h = y1 - y0 + 1;
+  const s = 20 / Math.max(w, h);
+  wctx.fillStyle = "#000";
+  wctx.fillRect(0, 0, 28, 28);
+  wctx.imageSmoothingEnabled = true;
+  wctx.imageSmoothingQuality = "high";
+  wctx.drawImage(pad, x0, y0, w, h, 14 - (w * s) / 2, 14 - (h * s) / 2, w * s, h * s);
+  const px = wctx.getImageData(0, 0, 28, 28);
+  sctx.putImageData(px, 0, 0);
+  const input = new Float32Array(28 * 28);
+  for (let i = 0; i < input.length; i++) input[i] = px.data[i * 4] / 255;
+  return input;
+}
+
+async function predict() {
+  if (!session || busy) { dirty = !!session; return; }
+  busy = true;
+  dirty = false;
+  const input = toInput();
+  if (input) {
+    const t0 = performance.now();
+    const out = await session.run({ [inputName]: new ort.Tensor("float32", input, [1, 1, 28, 28]) });
+    const ms = performance.now() - t0;
+    const logits = out[outputName].data;
+    const max = Math.max(...logits);
+    const exps = Array.from(logits, (v) => Math.exp(v - max));
+    const sum = exps.reduce((a, b) => a + b, 0);
+    const probs = exps.map((v) => v / sum);
+    const best = probs.indexOf(Math.max(...probs));
+    $("digit").textContent = best;
+    $("conf").textContent = `信心 ${(probs[best] * 100).toFixed(1)}%`;
+    $("ms").textContent = ms.toFixed(1);
+    bars.forEach((b, i) => {
+      b.classList.toggle("top", i === best);
+      b.firstChild.style.height = `${Math.max(2, probs[i] * 100)}%`;
+    });
+  }
+  busy = false;
+  if (dirty) requestAnimationFrame(predict);
+}
+
+// Drawing
+let drawing = false;
+let last = null;
+function pos(e) {
+  const r = pad.getBoundingClientRect();
+  return { x: ((e.clientX - r.left) / r.width) * 280, y: ((e.clientY - r.top) / r.height) * 280 };
+}
+function stroke(a, b) {
+  pctx.strokeStyle = "#fff";
+  pctx.lineWidth = 19;
+  pctx.lineCap = pctx.lineJoin = "round";
+  pctx.shadowColor = "rgba(255,255,255,.6)";
+  pctx.shadowBlur = 6;
+  pctx.beginPath();
+  pctx.moveTo(a.x, a.y);
+  pctx.lineTo(b.x, b.y);
+  pctx.stroke();
+  pctx.shadowBlur = 0;
+}
+pad.addEventListener("pointerdown", (e) => {
+  drawing = true;
+  last = pos(e);
+  stroke(last, last);
+  $("padTip").style.display = "none";
+  pad.setPointerCapture(e.pointerId);
+  predict();
+});
+pad.addEventListener("pointermove", (e) => {
+  if (!drawing) return;
+  const p = pos(e);
+  stroke(last, p);
+  last = p;
+  predict();
+});
+const end = () => { if (drawing) { drawing = false; predict(); } };
+pad.addEventListener("pointerup", end);
+pad.addEventListener("pointercancel", end);
+
+// Random sample digit rendered with a handwriting-like font and a small random tilt
+let seed = 9;
+const rand = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+function drawSample(d = Math.floor(rand() * 10)) {
+  clearPad();
+  $("padTip").style.display = "none";
+  pctx.save();
+  pctx.translate(140, 150);
+  pctx.rotate((rand() - 0.5) * 0.35);
+  pctx.fillStyle = "#fff";
+  pctx.strokeStyle = "#fff";
+  pctx.lineWidth = 6;
+  pctx.textAlign = "center";
+  pctx.textBaseline = "middle";
+  pctx.font = `${170 + Math.round(rand() * 40)}px "Segoe Print", "Comic Sans MS", "Bradley Hand", cursive`;
+  pctx.fillText(String(d), 0, 0);
+  pctx.strokeText(String(d), 0, 0);
+  pctx.restore();
+  predict();
+}
+
+$("clear").addEventListener("click", clearPad);
+$("sample").addEventListener("click", () => drawSample());
+
+function layout() {
+  const narrow = innerWidth <= 640;
+  const size = Math.max(180, Math.floor(narrow ? Math.min(innerWidth - 22, innerHeight - 290) : Math.min(innerWidth - 330, innerHeight - 70, 460)));
+  pad.style.width = pad.style.height = `${size}px`;
+}
+addEventListener("resize", layout);
+layout();
+clearPad();
+
+(async () => {
+  try {
+    session = await ort.InferenceSession.create("assets/onnx-runtime-web/mnist-12.onnx", { executionProviders: ["wasm"] });
+    [inputName] = session.inputNames;
+    [outputName] = session.outputNames;
+    $("hint").textContent = `模型輸入 ${inputName} [1,1,28,28]・用滑鼠或手指寫數字，邊寫邊辨識`;
+    drawSample(3);
+  } catch (err) {
+    console.warn(err);
+    $("conf").textContent = `載入失敗：${err.message}`;
+  }
+})();
+</script>
+</body>
+</html>

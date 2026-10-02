@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Filerobot Image Editor 示範：裁切、濾鏡與標註</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  .app { position: fixed; inset: 0; display: flex; flex-direction: column; }
+  .topbar {
+    flex: none; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 12px;
+    border-bottom: 1px solid var(--line); background: var(--bg-2);
+  }
+  .topbar h1 { margin: 0 auto 0 0; font-size: 14px; white-space: nowrap; }
+  .topbar h1 small { margin-left: 8px; color: var(--muted); font-weight: 400; font-size: 12px; }
+  .topbar .btn { padding: 6px 10px; font-size: 12.5px; }
+  .editor-wrap { flex: 1 1 0; min-height: 0; position: relative; }
+  #editor { position: absolute; inset: 0; }
+  /* Keep the editor inside its box; the plugin sizes itself to the container. */
+  #editor .FIE_root { border-radius: 0; }
+  .toast {
+    position: absolute; left: 50%; top: 10px; max-width: calc(100% - 24px); text-align: center; transform: translateX(-50%); z-index: 60; padding: 6px 14px;
+    border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: 12.5px; font-weight: 700;
+    opacity: 0; transition: opacity .3s; pointer-events: none;
+  }
+  .toast.on { opacity: 1; }
+  @media (max-width: 560px) {
+    .topbar h1 small { display: none; }
+    .topbar .btn { padding: 6px 8px; font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <h1>Filerobot 圖片編輯器<small>點按鈕載入不同編輯步驟，或直接在編輯器裡操作</small></h1>
+    <button class="btn" data-recipe="crop">裁切</button>
+    <button class="btn" data-recipe="filter">濾鏡</button>
+    <button class="btn" data-recipe="annotate" aria-pressed="true">標註</button>
+    <button class="btn" data-recipe="original">原圖</button>
+    <button class="btn primary" id="dl">下載成品</button>
+  </div>
+  <div class="editor-wrap"><div id="editor"></div><div class="toast" id="toast"></div></div>
+</div>
+
+<script src="https://scaleflex.cloudimg.io/v7/plugins/filerobot-image-editor/4.9.1/filerobot-image-editor.min.js"></script>
+<script>
+// Filerobot Image Editor (vanilla build): a full React + Konva photo editor mounted into a plain div.
+const { TABS, TOOLS } = FilerobotImageEditor;
+const SRC = "_shared/img/photo-1.jpg";
+
+// UI strings: Filerobot reads overrides from `translations` (keys from its default English dictionary).
+const zh = {
+  name: "名稱", save: "儲存", saveAs: "另存新檔", back: "返回", loading: "載入中", resetOperations: "重設全部操作",
+  changesLoseWarningHint: "按下重設後，目前的修改會消失，確定要繼續嗎？", discardChangesWarningHint: "關閉後，最後一次修改不會保存。",
+  cancel: "取消", apply: "套用", warning: "注意", confirm: "確定", discardChanges: "放棄修改",
+  undoTitle: "復原", redoTitle: "重做", showImageTitle: "按住查看原圖", zoomInTitle: "放大", zoomOutTitle: "縮小", toggleZoomMenuTitle: "縮放選單",
+  adjustTab: "調整", finetuneTab: "微調", filtersTab: "濾鏡", watermarkTab: "浮水印", annotateTabLabel: "標註", resize: "尺寸", resizeTab: "尺寸",
+  imageName: "圖片名稱", invalidImageError: "圖片無效。", cropTool: "裁切", original: "原始比例", custom: "自訂", square: "正方形",
+  landscape: "橫式", portrait: "直式", ellipse: "橢圓", classicTv: "經典電視", cinemascope: "寬銀幕",
+  arrowTool: "箭頭", blurTool: "模糊", brightnessTool: "亮度", contrastTool: "對比", ellipseTool: "橢圓",
+  unFlipX: "取消水平翻轉", flipX: "水平翻轉", unFlipY: "取消垂直翻轉", flipY: "垂直翻轉", hsvTool: "色相飽和", hue: "色相",
+  brightness: "亮度", saturation: "飽和度", value: "明度", imageTool: "圖片", importing: "匯入中", addImage: "＋ 加入圖片",
+  uploadImage: "上傳圖片", fromGallery: "從圖庫", lineTool: "直線", penTool: "畫筆", polygonTool: "多邊形", sides: "邊數",
+  rectangleTool: "矩形", cornerRadius: "圓角", resizeWidthTitle: "寬度（像素）", resizeHeightTitle: "高度（像素）",
+  toggleRatioLockTitle: "鎖定比例", resetSize: "還原原始尺寸", rotateTool: "旋轉", textTool: "文字", textSpacings: "文字間距",
+  textAlignment: "對齊", fontFamily: "字型", size: "大小", letterSpacing: "字距", lineHeight: "行高", warmthTool: "色溫",
+  addWatermark: "＋ 加入浮水印", addTextWatermark: "＋ 文字浮水印", addWatermarkTitle: "選擇浮水印類型", uploadWatermark: "上傳浮水印",
+  addWatermarkAsText: "以文字加入", padding: "內距", paddings: "內距", shadow: "陰影", horizontal: "水平", vertical: "垂直",
+  blur: "模糊", opacity: "不透明度", transparency: "透明度", position: "位置", stroke: "外框", saveAsModalTitle: "另存新檔",
+  extension: "副檔名", format: "格式", nameIsRequired: "請輸入名稱。", quality: "品質", imageDimensionsHoverTitle: "輸出尺寸（寬 x 高）",
+  cropSizeLowerThanResizedWarning: "裁切範圍小於設定的尺寸，畫質可能下降", actualSize: "實際大小（100%）", fitSize: "符合視窗",
+  addImageTitle: "選擇要加入的圖片", mutualizedFailedToLoadImg: "圖片載入失敗。", tabsMenu: "選單", download: "下載",
+  width: "寬", height: "高", cropItemNoEffect: "這個裁切項目沒有預覽",
+};
+
+// Dark palette so the editor matches the atlas; keys come from @scaleflex/ui.
+const palette = {
+  "txt-primary": "#ecebe6", "txt-secondary": "#b9b7ae", "txt-secondary-invert": "#1a1a14", "txt-placeholder": "#7d7b73",
+  "accent-primary": "#f7df1e", "accent-primary-hover": "#ffe94d", "accent-primary-active": "#e9d000", "accent-stateless": "#f7df1e",
+  "bg-primary": "#171a1f", "bg-secondary": "#0e1013", "bg-stateless": "#1f232a", "bg-primary-light": "#1f232a",
+  "bg-primary-hover": "#252a32", "bg-primary-active": "#2c313a", "bg-hover": "#252a32", "bg-active": "#2c313a",
+  "bg-grey": "#2c313a", "bg-base-light": "#1f232a", "bg-base-medium": "#2c313a", "bg-tooltip": "#2c313a",
+  "icon-primary": "#ecebe6", "icons-secondary": "#b9b7ae", "icons-placeholder": "#7d7b73", "icons-muted": "#7d7b73",
+  "icons-primary-hover": "#ffffff", "icons-secondary-hover": "#ffffff", "icons-invert": "#1a1a14",
+  "btn-primary-text": "#1a1a14", "btn-secondary-text": "#ecebe6", "btn-disabled-text": "#7d7b73",
+  "link-primary": "#ecebe6", "link-stateless": "#ecebe6", "link-hover": "#f7df1e", "link-active": "#f7df1e", "link-muted": "#9b998f",
+  "borders-primary": "#3a3f48", "borders-secondary": "#2c313a", "borders-strong": "#4a505a", "borders-button": "#3a3f48",
+  "borders-item": "#2c313a", "border-primary-stateless": "#3a3f48", "borders-base-light": "#2c313a", "borders-base-medium": "#3a3f48",
+  "active-secondary": "#2c313a", "active-secondary-hover": "#343a44",
+};
+
+// Annotations are plain objects in the design state. Filerobot stores them in shown-image (on-canvas) units,
+// so they are authored here in original pixels (1200 x 800) and scaled once the image has been laid out.
+const ANNOTATIONS = {
+  title: { id: "title", name: "Text", x: 48, y: 44, text: "第一天．峽灣晨光", fontSize: 64, fontFamily: "sans-serif",
+    fill: "#ffffff", fontStyle: "bold", align: "left", letterSpacing: 2, lineHeight: 1, width: 640, height: 76,
+    stroke: "#000000", strokeWidth: 0, shadowColor: "#000000", shadowBlur: 12, shadowOffsetX: 0, shadowOffsetY: 2, shadowOpacity: 0.6, opacity: 1 },
+  spot: { id: "spot", name: "Ellipse", x: 420, y: 615, radiusX: 175, radiusY: 70, fill: "rgba(0,0,0,0)",
+    stroke: "#f7df1e", strokeWidth: 6, shadowColor: "#000000", shadowBlur: 0, shadowOffsetX: 0, shadowOffsetY: 0, shadowOpacity: 1, opacity: 1 },
+  arrow: { id: "arrow", name: "Arrow", x: 0, y: 0, points: [760, 470, 580, 570], fill: "#f7df1e", stroke: "#f7df1e",
+    strokeWidth: 8, pointerLength: 26, pointerWidth: 26, lineCap: "round", shadowColor: "#000000", shadowBlur: 0, shadowOffsetX: 0, shadowOffsetY: 0, shadowOpacity: 1, opacity: 1 },
+  note: { id: "note", name: "Text", x: 700, y: 405, text: "觀景台人潮", fontSize: 44, fontFamily: "sans-serif", fill: "#f7df1e",
+    fontStyle: "bold", align: "left", letterSpacing: 0, lineHeight: 1, width: 300, height: 52,
+    stroke: "#000000", strokeWidth: 0, shadowColor: "#000000", shadowBlur: 10, shadowOffsetX: 0, shadowOffsetY: 2, shadowOpacity: 0.7, opacity: 1 },
+};
+
+// `state` is loaded with the image; `late(k)` returns the parts stored in shown-image units, applied once k is known.
+const RECIPES = {
+  crop: { tab: TABS.ADJUST, tool: TOOLS.CROP, state: {}, msg: "已框出 16:9 裁切範圍，拖曳邊角調整",
+    late: (k) => ({ adjustments: { crop: { ratio: 16 / 9, ratioTitleKey: "landscape", x: 120 * k, y: 260 * k, width: 960 * k, height: 540 * k } } }) },
+  filter: { tab: TABS.FILTERS, tool: TOOLS.FILTERS, state: { filter: "Clarendon" }, msg: "已套用 Clarendon 濾鏡，點下方縮圖換一款" },
+  annotate: { tab: TABS.ANNOTATE, tool: TOOLS.TEXT, state: { filter: "Clarendon" }, msg: "文字、圈選、箭頭都能點選後移動或改色",
+    late: (k) => ({ annotations: Object.fromEntries(Object.entries(ANNOTATIONS).map(([id, a]) => [id, scaleAnnotation(a, k)])) }) },
+  original: { tab: TABS.ADJUST, tool: TOOLS.CROP, state: null, msg: "回到原圖，可自由編輯" },
+};
+
+const el = document.getElementById("editor");
+const toast = document.getElementById("toast");
+let editor = null;
+
+function load(key) {
+  const r = RECIPES[key];
+  if (editor) editor.terminate();
+  editor = new FilerobotImageEditor(el, {
+    source: SRC,
+    language: "en",
+    translations: zh,
+    useBackendTranslations: false,
+    theme: { palette, typography: { fontFamily: getComputedStyle(document.body).fontFamily } },
+    tabsIds: [TABS.ADJUST, TABS.FINETUNE, TABS.FILTERS, TABS.ANNOTATE, TABS.RESIZE],
+    defaultTabId: r.tab,
+    defaultToolId: r.tool,
+    annotationsCommon: { fill: "#f7df1e", stroke: "#f7df1e" },
+    Text: { text: "輸入文字", fontSize: 48, fontFamily: "sans-serif", fonts: [{ label: "黑體", value: "sans-serif" }, { label: "明體", value: "serif" }, { label: "等寬", value: "monospace" }] },
+    Rotate: { angle: 90, componentType: "slider" },
+    Crop: {
+      presetsItems: [
+        { titleKey: "landscape", descriptionKey: "16:9", ratio: 16 / 9 },
+        { titleKey: "square", descriptionKey: "1:1", ratio: 1 },
+        { titleKey: "portrait", descriptionKey: "4:5", ratio: 4 / 5 },
+      ],
+    },
+    loadableDesignState: r.state ? { imgSrc: SRC, ...r.state } : null,
+    savingPixelRatio: 1,
+    previewPixelRatio: window.devicePixelRatio || 1,
+    observePluginContainerSize: true,
+    defaultSavedImageName: "filerobot-edit",
+    defaultSavedImageType: "png",
+    onSave: (img) => downloadData(img.imageBase64, img.fullName),
+  });
+  editor.render();
+  if (r.late) applyLate(editor, r.late);
+  document.querySelectorAll("[data-recipe]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.recipe === key));
+  flash(r.msg);
+}
+
+const SCALED_PROPS = ["x", "y", "radiusX", "radiusY", "width", "height", "fontSize", "letterSpacing",
+  "strokeWidth", "pointerLength", "pointerWidth", "shadowBlur", "shadowOffsetX", "shadowOffsetY"];
+function scaleAnnotation(a, k) {
+  const out = { ...a };
+  SCALED_PROPS.forEach((p) => { if (typeof a[p] === "number") out[p] = a[p] * k; });
+  if (a.points) out.points = a.points.map((v) => v * k);
+  return out;
+}
+
+// updateState(fn) receives the editor's internal state: wait until the on-canvas image size is known,
+// then merge the scaled parts (returning null leaves the state untouched).
+// The fitted size can briefly be wrong while the canvas is measured, so require the same reading twice in a row.
+function applyLate(ed, late, tries = 0, flag = { applied: false, last: 0 }) {
+  if (ed !== editor || flag.applied) return;
+  ed.updateState((st) => {
+    const shown = st.shownImageDimensions;
+    if (flag.applied || !shown || !shown.width || st.isLoadingGlobally || !st.canvasWidth || shown.width > st.canvasWidth + 1) return null;
+    const stable = Math.abs(shown.width - flag.last) < 0.5;
+    flag.last = shown.width;
+    if (!stable) return null;
+    flag.applied = true;
+    return late(shown.width / 1200);
+  });
+  if (tries < 60) setTimeout(() => applyLate(ed, late, tries + 1, flag), 150);
+  else if (!flag.applied) flash("圖片載入逾時，無法套用示範設定");
+}
+
+function downloadData(url, name) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name || "filerobot-edit.png";
+  a.click();
+}
+
+let toastTimer = 0;
+function flash(text) {
+  toast.textContent = text;
+  toast.classList.add("on");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove("on"), 2600);
+}
+
+// Filter labels are hard-coded in the library (not in `translations`); rename the generic ones, keep the brand names.
+const FILTER_ZH = { Original: "原圖", Invert: "負片", "Black & White": "黑白", Sepia: "懷舊", Solarize: "曝光反轉" };
+new MutationObserver(() => {
+  el.querySelectorAll(".FIE_filters-item-label").forEach((n) => { const z = FILTER_ZH[n.textContent]; if (z) n.textContent = z; });
+}).observe(el, { childList: true, subtree: true });
+
+document.querySelectorAll("[data-recipe]").forEach((b) => b.addEventListener("click", () => load(b.dataset.recipe)));
+// Export the current design (crop, filter, annotations) without opening the save dialog.
+document.getElementById("dl").addEventListener("click", () => {
+  const { imageData } = editor.getCurrentImgData({ name: "filerobot-edit", extension: "png" }, 1);
+  if (imageData && imageData.imageBase64) { downloadData(imageData.imageBase64, imageData.fullName); flash("已下載編輯後的圖片"); }
+  else flash("圖片尚未載入完成");
+});
+
+load("annotate");
+</script>
+</body>
+</html>

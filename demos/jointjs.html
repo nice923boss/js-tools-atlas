@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JointJS 示範：可拖曳的組織圖</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  /* Dot grid on its own compositor layer: drawing it inside the paper left paint trails
+     behind moving nodes in headless Chrome (SwiftShader GPU raster). */
+  body::before {
+    content: ""; position: fixed; inset: 0; will-change: transform;
+    background-image: radial-gradient(circle, rgba(255, 255, 255, .1) 1.2px, transparent 1.6px);
+    background-size: 12px 12px;
+  }
+  #paper { position: fixed; inset: 0; }
+  #paper .joint-element { cursor: grab; }
+  #paper .joint-element:active { cursor: grabbing; }
+  .head { position: fixed; left: 14px; top: 12px; z-index: 40; pointer-events: none; }
+  .head h1 { margin: 0; font-size: 17px; line-height: 1.3; }
+  .head .meta { font-size: 12px; color: var(--muted); }
+  .head .meta b { color: var(--fg); font-variant-numeric: tabular-nums; }
+  .controls { max-width: calc(100% - 180px); justify-content: flex-end; }
+  .hint { transition: color .2s, border-color .2s; }
+  .hint.on { color: var(--fg); border-color: var(--c2); }
+  @media (max-width: 560px) {
+    .head h1 { font-size: 15px; }
+    .head .meta { display: none; }
+    .controls { max-width: calc(100% - 130px); }
+    .controls .btn { padding: 6px 9px; font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+<div id="paper"></div>
+<div class="head">
+  <h1>AI 學院組織圖</h1>
+  <div class="meta">成員 <b id="count">0</b> 人・連線隨節點自動重繞</div>
+</div>
+<div class="controls">
+  <button class="btn" id="add">新增成員</button>
+  <button class="btn" id="style">連線：直角</button>
+  <button class="btn" id="mode">版面：組織圖</button>
+  <button class="btn" id="relayout">重新排列</button>
+</div>
+<div class="hint">拖曳成員卡片・點卡片看匯報路線</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@joint/core@4.3.3/dist/joint.min.js"></script>
+<script>
+const FONT = getComputedStyle(document.body).fontFamily;
+const DEPT = {
+  exec: "#f7df1e",
+  edu: "#4cc9f0",
+  prod: "#9d8cff",
+  ops: "#ff8c42",
+};
+// Sample organisation (fictional people).
+const PEOPLE = [
+  { id: "ceo", name: "林雅婷", role: "院長", dept: "exec" },
+  { id: "edu", name: "陳柏宇", role: "教學部主任", dept: "edu", boss: "ceo" },
+  { id: "e1", name: "王思涵", role: "AI 應用講師", dept: "edu", boss: "edu" },
+  { id: "e2", name: "張家豪", role: "資料分析講師", dept: "edu", boss: "edu" },
+  { id: "e3", name: "李若晴", role: "課程助教", dept: "edu", boss: "edu" },
+  { id: "prod", name: "黃怡君", role: "產品部主任", dept: "prod", boss: "ceo" },
+  { id: "p1", name: "吳承翰", role: "前端工程師", dept: "prod", boss: "prod" },
+  { id: "p2", name: "蔡佩珊", role: "UI 設計師", dept: "prod", boss: "prod" },
+  { id: "ops", name: "劉冠廷", role: "營運部主任", dept: "ops", boss: "ceo" },
+  { id: "o1", name: "周育誠", role: "行銷企劃", dept: "ops", boss: "ops" },
+  { id: "o2", name: "鄭雅雯", role: "學員服務", dept: "ops", boss: "ops" },
+];
+
+const W = 156, H = 58;
+const CARD = "#171a1f", CARD_ON = "#21252d", EDGE = "#2c313b", LINK = "#4a515e";
+const Member = joint.dia.Element.define("atlas.Member", {
+  size: { width: W, height: H },
+  attrs: {
+    body: { width: "calc(w)", height: "calc(h)", rx: 12, ry: 12, fill: CARD, stroke: EDGE, strokeWidth: 1.5 },
+    stripe: { x: 0, y: 12, width: 4, height: "calc(h-24)", rx: 2 },
+    avatar: { cx: 30, cy: "calc(0.5*h)", r: 17 },
+    initial: { x: 30, y: "calc(0.5*h)", textAnchor: "middle", textVerticalAnchor: "middle", fontSize: 15, fontWeight: 700, fill: "#14161a", fontFamily: FONT },
+    name: { x: 56, y: "calc(0.5*h-9)", textVerticalAnchor: "middle", fontSize: 15, fontWeight: 600, fill: "#ecebe6", fontFamily: FONT },
+    role: { x: 56, y: "calc(0.5*h+11)", textVerticalAnchor: "middle", fontSize: 12, fill: "#9b998f", fontFamily: FONT },
+  },
+}, {
+  markup: [
+    { tagName: "rect", selector: "body" },
+    { tagName: "rect", selector: "stripe" },
+    { tagName: "circle", selector: "avatar" },
+    { tagName: "text", selector: "initial" },
+    { tagName: "text", selector: "name" },
+    { tagName: "text", selector: "role" },
+  ],
+});
+
+const namespace = { ...joint.shapes, atlas: { Member } };
+const graph = new joint.dia.Graph({}, { cellNamespace: namespace });
+const paper = new joint.dia.Paper({
+  el: document.getElementById("paper"),
+  model: graph,
+  width: "100%",
+  height: "100%",
+  gridSize: 10,
+  background: { color: "transparent" },
+  cellViewNamespace: namespace,
+  // Elements can be dragged; links are not editable, they only follow.
+  interactive: (view) => view.model.isElement(),
+  restrictTranslate: true,
+  async: true,
+  sorting: joint.dia.Paper.sorting.APPROX,
+});
+
+// Link shapes. "drop": parent's bottom to child's top. "indent": parent's lower-left corner
+// into the side of a child listed below it. "side": parent's right to child's left.
+// tan holds the curve tangents at both ends (the target one points away from the target).
+const GEOMETRY = {
+  drop: { source: { name: "bottom" }, target: { name: "top" }, from: "bottom", to: "top", tan: [{ x: 0, y: 46 }, { x: 0, y: -46 }] },
+  indent: { source: { name: "bottomLeft", args: { dx: 14 } }, target: { name: "left" }, from: "bottom", to: "left", tan: [{ x: 0, y: 30 }, { x: -30, y: 0 }] },
+  side: { source: { name: "right" }, target: { name: "left" }, from: "right", to: "left", tan: [{ x: 50, y: 0 }, { x: -50, y: 0 }] },
+};
+const STYLES = [
+  { label: "直角", router: (g) => ({ name: "rightAngle", args: { sourceDirection: g.from, targetDirection: g.to, margin: 8 } }), connector: () => ({ name: "rounded", args: { radius: 8 } }) },
+  { label: "曲線", router: () => ({ name: "normal" }), connector: (g) => ({ name: "curve", args: { sourceTangent: g.tan[0], targetTangent: g.tan[1] } }) },
+  { label: "直線", router: () => ({ name: "normal" }), connector: () => ({ name: "straight" }) },
+];
+let styleIdx = 0;
+let mode = "org";
+let kinds = new Map();
+
+const els = new Map();
+const info = (id) => els.get(id).get("data");
+
+function addMember(p) {
+  const color = DEPT[p.dept];
+  const el = new Member({ id: p.id, data: p });
+  el.attr({
+    stripe: { fill: color },
+    avatar: { fill: color },
+    initial: { text: p.name[0] },
+    name: { text: p.name },
+    role: { text: p.role },
+  });
+  graph.addCell(el);
+  els.set(p.id, el);
+  if (p.boss) {
+    const link = new joint.shapes.standard.Link({ id: `${p.boss}-${p.id}`, source: { id: p.boss }, target: { id: p.id }, z: -1 });
+    link.attr("line", { stroke: LINK, strokeWidth: 2, targetMarker: { type: "circle", r: 3.5, fill: color, stroke: "none" } });
+    graph.addCell(link);
+  }
+  return el;
+}
+
+function styleLink(link) {
+  const g = GEOMETRY[kinds.get(link.target().id)];
+  const s = STYLES[styleIdx];
+  link.prop({
+    source: { id: link.source().id, anchor: g.source },
+    target: { id: link.target().id, anchor: g.target },
+    router: s.router(g),
+    connector: s.connector(g),
+  });
+}
+
+// "org": the director on top, department heads side by side, each team listed under its head.
+// "tree": a left-to-right tidy tree; leaves take consecutive rows, parents sit centred on their children.
+const IND = 26, ROW = H + 14, COL_GAP = 24, DROP = 58, LEVEL = W + 64;
+function layout() {
+  const kids = new Map();
+  for (const el of els.values()) {
+    const boss = el.get("data").boss;
+    if (boss) kids.set(boss, [...(kids.get(boss) || []), el.id]);
+  }
+  const pos = new Map();
+  const kind = new Map();
+  if (mode === "tree") {
+    let row = 0;
+    const place = (id, depth) => {
+      const children = kids.get(id) || [];
+      children.forEach((c) => kind.set(c, "side"));
+      const rows = children.map((c) => place(c, depth + 1));
+      const at = rows.length ? (rows[0] + rows[rows.length - 1]) / 2 : row++;
+      pos.set(id, { x: depth * LEVEL, y: at * ROW });
+      return at;
+    };
+    place("ceo", 0);
+  } else {
+    let right = 0;
+    // Pre-order walk that stacks a subtree as an indented list; returns the next free y.
+    const stack = (id, x, y, depth) => {
+      pos.set(id, { x: x + depth * IND, y });
+      right = Math.max(right, x + depth * IND + W);
+      let next = y + ROW;
+      for (const c of kids.get(id) || []) {
+        kind.set(c, "indent");
+        next = stack(c, x, next, depth + 1);
+      }
+      return next;
+    };
+    const heads = kids.get("ceo");
+    let x = 0;
+    for (const h of heads) {
+      kind.set(h, "drop");
+      stack(h, x, H + DROP, 0);
+      x = right + COL_GAP;
+    }
+    const first = pos.get(heads[0]).x, last = pos.get(heads[heads.length - 1]).x;
+    pos.set("ceo", { x: (first + last) / 2, y: 0 });
+  }
+  kinds = kind;
+  return pos;
+}
+
+const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+const DURATION = 650;
+const FIT = { padding: { top: 64, bottom: 54, left: 16, right: 16 }, maxScale: 1.15, horizontalAlign: "middle", verticalAlign: "middle", useModelGeometry: true };
+
+// Fit the paper to an area; with animate, tween scale and translate alongside the nodes.
+function fitTo(area, animate) {
+  const s0 = paper.scale().sx;
+  const t0 = paper.translate();
+  paper.transformToFitContent(area ? { ...FIT, contentArea: area } : FIT);
+  if (!animate) return;
+  const s1 = paper.scale().sx;
+  const t1 = paper.translate();
+  paper.scale(s0);
+  paper.translate(t0.tx, t0.ty);
+  const start = performance.now();
+  requestAnimationFrame(function step(now) {
+    const k = ease(Math.min(1, (now - start) / DURATION));
+    paper.scale(s0 + (s1 - s0) * k);
+    paper.translate(t0.tx + (t1.tx - t0.tx) * k, t0.ty + (t1.ty - t0.ty) * k);
+    if (k < 1) requestAnimationFrame(step);
+  });
+}
+
+function arrange(animate) {
+  const pos = layout();
+  graph.getLinks().forEach(styleLink);
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const [id, p] of pos) {
+    x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
+    x1 = Math.max(x1, p.x + W); y1 = Math.max(y1, p.y + H);
+    const el = els.get(id);
+    if (animate) el.transition("position", p, { duration: DURATION, timingFunction: ease, valueFunction: joint.util.interpolate.object });
+    else el.position(p.x, p.y);
+  }
+  fitTo(new joint.g.Rect(x0, y0, x1 - x0, y1 - y0), animate);
+}
+
+// Highlight the reporting line from the clicked person up to the director.
+let selected = null;
+function highlight(id) {
+  selected = id;
+  const chain = new Set();
+  for (let cur = id; cur; cur = info(cur).boss) chain.add(cur);
+  for (const el of els.values()) {
+    const on = chain.has(el.id);
+    el.attr("body", { fill: el.id === id ? CARD_ON : CARD, stroke: on ? DEPT[el.get("data").dept] : EDGE, strokeWidth: on ? 2.5 : 1.5 });
+  }
+  for (const link of graph.getLinks()) {
+    const on = chain.has(link.target().id);
+    link.attr("line", { stroke: on ? "#ecebe6" : LINK, strokeWidth: on ? 3 : 2 });
+    // Lift the highlighted links above the others, still below the cards.
+    link.set("z", on ? 0 : -1);
+  }
+  if (id) flash(`匯報路線：${[...chain].reverse().map((c) => info(c).name).join(" → ")}`);
+}
+
+const hint = document.querySelector(".hint");
+const HINT_TEXT = hint.textContent;
+let hintTimer;
+function flash(msg) {
+  hint.textContent = msg;
+  hint.classList.add("on");
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => { hint.textContent = HINT_TEXT; hint.classList.remove("on"); }, 3200);
+}
+
+const updateCount = () => { document.getElementById("count").textContent = els.size; };
+
+paper.on("element:pointerdown", (view) => view.model.toFront());
+paper.on("element:pointerclick", (view) => highlight(view.model.id));
+paper.on("blank:pointerclick", () => highlight(null));
+
+let added = 0;
+document.getElementById("add").addEventListener("click", () => {
+  // New members join the selected person's team, or the teaching team by default.
+  const bossId = selected || "edu";
+  const boss = info(bossId);
+  added += 1;
+  const el = addMember({ id: `n${added}`, name: `新成員${added}`, role: "實習生", dept: boss.dept === "exec" ? "edu" : boss.dept, boss: bossId });
+  el.position(els.get(bossId).position().x, els.get(bossId).position().y);
+  updateCount();
+  arrange(true);
+  highlight(selected);
+  flash(`已在「${boss.name}」底下新增 1 位成員`);
+});
+document.getElementById("style").addEventListener("click", (e) => {
+  styleIdx = (styleIdx + 1) % STYLES.length;
+  graph.getLinks().forEach(styleLink);
+  e.currentTarget.textContent = `連線：${STYLES[styleIdx].label}`;
+});
+document.getElementById("mode").addEventListener("click", (e) => {
+  mode = mode === "org" ? "tree" : "org";
+  e.currentTarget.textContent = `版面：${mode === "org" ? "組織圖" : "樹狀圖"}`;
+  arrange(true);
+});
+document.getElementById("relayout").addEventListener("click", () => arrange(true));
+
+PEOPLE.forEach(addMember);
+updateCount();
+arrange(false);
+
+// Keep the user's dragged positions on resize; only refit the view.
+let rz;
+addEventListener("resize", () => {
+  clearTimeout(rz);
+  rz = setTimeout(() => fitTo(null, false), 150);
+});
+</script>
+</body>
+</html>

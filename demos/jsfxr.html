@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jsfxr 示範：8 位元音效機</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"],"note":"產生器、突變與參數都直接呼叫 jsfxr 1.4.1，螢幕上的像素波形、包絡線與頻譜都來自 SoundEffect 算出的樣本；點按鈕才會發出聲音"}</script>
+<script src="https://cdn.jsdelivr.net/npm/jsfxr@1.4.1/riffwave.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsfxr@1.4.1/sfxr.js"></script>
+<style>
+  :root { --ph: #39ff88; --amber: #ffb000; }
+  body {
+    background:
+      radial-gradient(circle at 1px 1px, rgba(255,255,255,0.06) 1px, transparent 1.5px) 0 0 / 14px 14px,
+      linear-gradient(180deg, #120f1d, #0a0c10);
+  }
+  .app { position: fixed; inset: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 10px; padding: 12px 14px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  header h1 { margin: 0; font: 800 22px/1.1 var(--mono); letter-spacing: .08em; color: #fff; }
+  header h1 .logo { text-shadow: 3px 3px 0 #f72585, 6px 6px 0 rgba(76, 201, 240, 0.6); margin-right: 6px; }
+  header p { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+  .px {
+    --pc: var(--ph);
+    appearance: none; cursor: pointer; border: 2px solid #000; border-radius: 0;
+    background: #1f2430; color: #e8f0ff; font: 700 12px/1 var(--mono); padding: 8px 10px; letter-spacing: .04em;
+    box-shadow: inset -3px -3px 0 rgba(0,0,0,0.45), inset 3px 3px 0 rgba(255,255,255,0.14), 3px 3px 0 #000;
+    transition: background .15s, color .15s;
+  }
+  .px:active { transform: translate(2px, 2px); box-shadow: inset -3px -3px 0 rgba(0,0,0,0.45), inset 3px 3px 0 rgba(255,255,255,0.14), 1px 1px 0 #000; }
+  .px.main { background: var(--amber); color: #1b1200; }
+  .px[aria-pressed="true"], .px.on { background: var(--pc); color: #06110a; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  main { display: grid; grid-template-columns: 190px minmax(0, 1fr) 250px; gap: 12px; min-height: 0; }
+  h2 { margin: 0 0 6px; font: 700 11px var(--mono); color: var(--muted); letter-spacing: .12em; }
+  .gen { display: flex; flex-direction: column; min-height: 0; }
+  .gen .grid { flex: 1; display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: minmax(0, 1fr); gap: 8px; max-height: 470px; }
+  .gen .px { padding: 9px 4px; font-size: 14px; position: relative; }
+  .gen .px::after { content: ""; position: absolute; left: 5px; top: 5px; width: 8px; height: 8px; background: var(--pc); }
+  .gen .px.on::after { background: #06110a; }
+  .crt {
+    display: grid; grid-template-rows: minmax(0, 1.25fr) minmax(0, 1fr) auto; gap: 8px; min-height: 0;
+    background: #1a1d25; border: 2px solid #000; border-radius: 14px; padding: 12px;
+    box-shadow: inset 0 0 0 2px #2b3040, 4px 4px 0 #000;
+  }
+  .screen { position: relative; border-radius: 10px; overflow: hidden; background: #03140a; box-shadow: inset 0 0 30px rgba(57,255,136,0.18); min-height: 0; }
+  .screen canvas { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+  .screen::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background: repeating-linear-gradient(0deg, rgba(0,0,0,0.28) 0 1px, transparent 1px 3px),
+      radial-gradient(120% 120% at 50% 50%, transparent 60%, rgba(0,0,0,0.55));
+  }
+  .tag { position: absolute; z-index: 2; font: 700 11px var(--mono); color: var(--ph); background: rgba(3,20,10,0.82); padding: 2px 6px; text-shadow: 0 0 5px rgba(57,255,136,0.6); }
+  .tag.tl { left: 8px; top: 7px; } .tag.tr { right: 8px; top: 7px; color: var(--amber); text-shadow: 0 0 6px rgba(255,176,0,0.6); }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; min-height: 0; }
+  .stats { font: 11px var(--mono); color: #9fb3a6; display: flex; gap: 12px; flex-wrap: wrap; }
+  .stats b { color: var(--ph); font-weight: 700; }
+  .knobs { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: auto; padding-right: 2px; }
+  .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 5px; }
+  .seg .px { padding: 7px 0; font-size: 11px; box-shadow: inset -2px -2px 0 rgba(0,0,0,0.45), inset 2px 2px 0 rgba(255,255,255,0.14), 2px 2px 0 #000; }
+  .sl { display: grid; grid-template-columns: 54px minmax(0, 1fr) 58px; align-items: center; gap: 6px; font-size: 12px; min-height: 23px; }
+  .sl output { font: 11px var(--mono); color: var(--ph); text-align: right; white-space: nowrap; }
+  .sl input { -webkit-appearance: none; appearance: none; width: 100%; height: 8px; background: #05160c; border: 2px solid #000; outline: none; }
+  .sl input::-webkit-slider-thumb { -webkit-appearance: none; width: 10px; height: 16px; background: var(--ph); border: 2px solid #000; cursor: pointer; }
+  .sl input::-moz-range-thumb { width: 8px; height: 14px; background: var(--ph); border: 2px solid #000; border-radius: 0; cursor: pointer; }
+  footer { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+  .hist { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; min-width: 0; align-items: center; }
+  .hist::-webkit-scrollbar { display: none; }
+  .hist .px { flex: none; padding: 6px 8px; font-size: 11px; font-weight: 600; }
+  .hist .px span { color: #9fb3a6; margin-left: 6px; font-weight: 400; }
+  .hist .px.on span { color: #06110a; }
+  .code { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .code code { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px var(--mono); color: var(--amber); }
+  @media (max-width: 760px) {
+    body { overflow: auto; }
+    .app { position: static; min-height: 100%; grid-template-rows: none; padding: 12px; }
+    header h1 { font-size: 19px; }
+    main { grid-template-columns: minmax(0, 1fr); }
+    .gen .grid { grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: auto; gap: 6px; }
+    .gen .px { font-size: 12px; padding: 8px 2px; }
+    .gen { order: 1; }
+    .crt { order: 0; grid-template-rows: 130px 92px auto; padding: 10px; }
+    .knobs { order: 2; overflow: visible; }
+    footer { grid-template-columns: minmax(0, 1fr); }
+    .code code { max-width: none; flex: 1; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div>
+      <h1><span class="logo">8-BIT</span> 音效機</h1>
+      <p>jsfxr 把經典的 sfxr 搬進瀏覽器，按一下產生器就生出一個新的遊戲音效</p>
+    </div>
+    <div class="actions">
+      <button class="px main" id="play">播放</button>
+      <button class="px" id="mutate">突變</button>
+      <button class="px" id="auto" aria-pressed="true">自動</button>
+    </div>
+  </header>
+  <main>
+    <section class="gen">
+      <h2>產生器</h2>
+      <div class="grid" id="gens"></div>
+    </section>
+    <section class="crt">
+      <div class="screen"><canvas id="wave"></canvas><span class="tag tl" id="nowName">金幣</span><span class="tag tr" id="nowLen">0 秒</span></div>
+      <div class="row2">
+        <div class="screen"><canvas id="env"></canvas><span class="tag tl">音量包絡</span></div>
+        <div class="screen"><canvas id="spec"></canvas><span class="tag tl">頻譜</span><span class="tag tr" id="specLbl">22 kHz</span></div>
+      </div>
+      <div class="stats" id="stats"></div>
+    </section>
+    <section class="knobs">
+      <div><h2>波形</h2><div class="seg" id="waves"></div></div>
+      <div><h2>取樣率</h2><div class="seg" id="rates"></div></div>
+      <div id="sliders"></div>
+    </section>
+  </main>
+  <footer>
+    <div class="hist" id="hist"></div>
+    <div class="code"><code id="code"></code><button class="px" id="copy">複製</button></div>
+  </footer>
+</div>
+
+<script type="module">
+const { sfxr, Params, SoundEffect } = window.jsfxr;
+
+const GENS = [
+  ["pickupCoin", "金幣", "#f7df1e"], ["laserShoot", "雷射", "#f72585"], ["explosion", "爆炸", "#ff8c42"],
+  ["powerUp", "升級", "#9d8cff"], ["hitHurt", "受傷", "#ff5d73"], ["jump", "跳躍", "#7bd389"],
+  ["blipSelect", "選取", "#4cc9f0"], ["synth", "合成器", "#c77dff"], ["tone", "純音", "#e8f0ff"],
+  ["click", "點擊", "#a0e8ff"], ["random", "隨機", "#39ff88"],
+];
+const WAVES = ["方波", "鋸齒", "正弦", "雜訊"];
+const RATES = [[44100, "44.1k"], [22050, "22k"], [11025, "11k"]];
+const toSec = (v) => (v * v * 100000 / 44100).toFixed(2) + " 秒";
+const SLIDERS = [
+  ["p_env_attack", "起音", 0, 1, toSec],
+  ["p_env_sustain", "持續", 0, 1, toSec],
+  ["p_env_punch", "衝擊", 0, 1, (v) => "+" + Math.round(v * 100) + "%"],
+  ["p_env_decay", "衰減", 0, 1, toSec],
+  ["p_base_freq", "頻率", 0, 1, (v) => Math.round(3528 * (v * v + 0.001)) + " Hz"],
+  ["p_freq_ramp", "滑音", -1, 1, (v) => v.toFixed(2)],
+  ["p_vib_strength", "顫音", 0, 1, (v) => Math.round(v * 50) + "%"],
+  ["p_arp_mod", "琶音", -1, 1, (v) => v.toFixed(2)],
+  ["p_repeat_speed", "重複", 0, 1, (v) => v.toFixed(2)],
+  ["p_lpf_freq", "低通", 0, 1, (v) => v >= 1 ? "關" : v.toFixed(2)],
+];
+
+const $ = (id) => document.getElementById(id);
+let params = null, current = null, label = "", sampleRate = 44100;
+let samples = [], history = [], ctx = null, userUnlocked = false;
+let playStart = -1, playDur = 0;
+
+// --- UI construction -------------------------------------------------------------------
+GENS.forEach(([algo, name, color]) => {
+  const b = document.createElement("button");
+  b.className = "px";
+  b.textContent = name;
+  b.dataset.algo = algo;
+  b.style.setProperty("--pc", color);
+  b.addEventListener("click", () => { stopAuto(); unlock(); generate(algo); play(); });
+  $("gens").appendChild(b);
+});
+WAVES.forEach((name, k) => {
+  const b = document.createElement("button");
+  b.className = "px";
+  b.textContent = name;
+  b.addEventListener("click", () => { stopAuto(); unlock(); edit({ wave_type: k }); play(); });
+  $("waves").appendChild(b);
+});
+RATES.forEach(([rate, name]) => {
+  const b = document.createElement("button");
+  b.className = "px";
+  b.textContent = name;
+  b.style.setProperty("--pc", "#ffb000");
+  b.addEventListener("click", () => { stopAuto(); unlock(); sampleRate = rate; edit({ sample_rate: rate }); play(); });
+  $("rates").appendChild(b);
+});
+const sliderEls = SLIDERS.map(([key, name, min, max, fmt]) => {
+  const lab = document.createElement("label");
+  lab.className = "sl";
+  const input = Object.assign(document.createElement("input"), { type: "range", min, max, step: 0.01 });
+  const out = document.createElement("output");
+  lab.append(Object.assign(document.createElement("span"), { textContent: name }), input, out);
+  input.addEventListener("input", () => { stopAuto(); edit({ [key]: +input.value }); });
+  input.addEventListener("change", () => { unlock(); play(); });
+  $("sliders").appendChild(lab);
+  return { key, input, out, fmt };
+});
+
+// --- jsfxr calls -----------------------------------------------------------------------
+function cloneParams(p) { return new Params().fromJSON(JSON.parse(JSON.stringify(p))); }
+function generate(algo) {
+  const p = sfxr.generate(algo, { sound_vol: 0.25, sample_rate: sampleRate, sample_size: 8 });
+  label = GENS.find((g) => g[0] === algo)[1];
+  load(p, algo, true);
+}
+function edit(changes) { load(Object.assign(cloneParams(params), changes), null, false); }
+function mutate() {
+  const p = cloneParams(params);
+  p.mutate();
+  label = label.replace(/(・突變)+$/, "") + "・突變";
+  load(p, null, true);
+}
+function load(p, algo, remember) {
+  params = p;
+  sampleRate = p.sample_rate;
+  const fx = new SoundEffect(p);
+  const raw = fx.getRawBuffer();
+  // jsfxr 1.4.1 divides by a zero-length envelope stage (e.g. tone has decay 0) and emits a NaN sample there.
+  samples = raw.normalized.map((v) => (Number.isFinite(v) ? v : 0));
+  current = { fx, clipped: raw.clipped, b58: sfxr.b58encode(p), algo };
+  if (remember) {
+    history = [{ label, params: p, b58: current.b58 }, ...history].slice(0, 8);
+    renderHistory(0);
+  } else {
+    renderHistory(-1);
+  }
+  [...$("gens").children].forEach((b) => b.classList.toggle("on", b.dataset.algo === algo));
+  redraw();
+  syncUI();
+}
+function unlock() {
+  userUnlocked = true;
+  if (!ctx) ctx = new AudioContext();
+  if (ctx.state !== "running") ctx.resume();
+}
+function play() {
+  if (userUnlocked && ctx) {
+    // Same as sfxr.toWebAudio, but from the NaN-free samples above.
+    const buf = ctx.createBuffer(1, Math.max(1, samples.length), current.fx.sampleRate);
+    buf.getChannelData(0).set(samples);
+    const src = new AudioBufferSourceNode(ctx, { buffer: buf });
+    src.connect(ctx.destination);
+    src.start();
+  }
+  playStart = performance.now();
+  playDur = samples.length / params.sample_rate * 1000;
+}
+
+function syncUI() {
+  for (const { key, input, out, fmt } of sliderEls) {
+    const v = params[key];
+    input.value = v;
+    out.textContent = fmt(v);
+  }
+  [...$("waves").children].forEach((b, k) => b.setAttribute("aria-pressed", String(k === params.wave_type)));
+  [...$("rates").children].forEach((b, k) => b.setAttribute("aria-pressed", String(RATES[k][0] === params.sample_rate)));
+  const sec = samples.length / params.sample_rate;
+  $("nowName").textContent = "▶ " + label;
+  $("nowLen").textContent = sec.toFixed(2) + " 秒";
+  $("specLbl").textContent = "上限 " + (params.sample_rate / 2000).toFixed(1) + "k";
+  $("stats").innerHTML = "<span>波形 <b>" + WAVES[params.wave_type] + "</b></span><span>樣本 <b>" + samples.length.toLocaleString("zh-TW") +
+    "</b></span><span>格式 <b>" + params.sample_size + " 位元 " + (params.sample_rate / 1000).toFixed(1) + " kHz</b></span><span>削波 <b>" + current.clipped + "</b></span>";
+  $("code").textContent = 'sfxr.play("' + current.b58 + '")';
+}
+function renderHistory(active) {
+  const box = $("hist");
+  box.replaceChildren(...history.map((h, k) => {
+    const b = document.createElement("button");
+    b.className = "px" + (k === active ? " on" : "");
+    b.innerHTML = "<b></b><span></span>";
+    b.firstChild.textContent = h.label;
+    b.lastChild.textContent = h.b58.slice(0, 7) + "…";
+    b.addEventListener("click", () => { stopAuto(); unlock(); label = h.label; load(cloneParams(h.params), null, false); renderHistory(k); play(); });
+    return b;
+  }));
+  box.scrollLeft = 0;
+}
+
+// --- pixel drawing ---------------------------------------------------------------------
+const PIX = 3;
+function lowRes(c, px) {
+  const w = Math.max(8, Math.floor(c.clientWidth / px)), h = Math.max(8, Math.floor(c.clientHeight / px));
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  const g = c.getContext("2d");
+  g.imageSmoothingEnabled = false;
+  return { g, w, h };
+}
+const waveBase = document.createElement("canvas");
+function drawWave() {
+  const { w, h } = lowRes($("wave"), PIX);
+  waveBase.width = w; waveBase.height = h;
+  const g = waveBase.getContext("2d");
+  const n = samples.length, mid = Math.floor(h / 2);
+  let peak = 1e-6;
+  for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(samples[i]));
+  g.fillStyle = "rgba(57,255,136,0.08)";
+  for (let x = 0; x < w; x += 8) g.fillRect(x, 0, 1, h);
+  for (let y = mid % 6; y < h; y += 6) g.fillRect(0, y, w, 1);
+  for (let x = 0; x < w; x++) {
+    const a = Math.floor(x * n / w), b = Math.max(a + 1, Math.floor((x + 1) * n / w));
+    let lo = 0, hi = 0;
+    for (let i = a; i < b && i < n; i++) { const v = samples[i] / peak; if (v < lo) lo = v; if (v > hi) hi = v; }
+    const top = Math.round(mid - hi * (mid - 2)), bot = Math.round(mid - lo * (mid - 2));
+    g.fillStyle = "#39ff88";
+    g.fillRect(x, top, 1, Math.max(1, bot - top + 1));
+    g.fillStyle = "#d8ffe8";
+    g.fillRect(x, top, 1, 1);
+    g.fillRect(x, bot, 1, 1);
+  }
+}
+function drawEnv() {
+  const { g, w, h } = lowRes($("env"), PIX);
+  g.clearRect(0, 0, w, h);
+  const [a, s, d] = current.fx.envelopeLength, punch = current.fx.envelopePunch;
+  const total = Math.max(1, a + s + d), top = 8, base = h - 4, unit = (base - top) / (1 + 2 * Math.max(punch, 0.0001) + 0.0001);
+  const yOf = (v) => Math.round(base - v * unit);
+  const pts = [];
+  for (let x = 0; x < w; x++) {
+    const t = x / (w - 1) * total;
+    let v;
+    if (t < a) v = t / Math.max(1, a);
+    else if (t < a + s) v = 1 + (1 - (t - a) / Math.max(1, s)) * 2 * punch;
+    else v = 1 - (t - a - s) / Math.max(1, d);
+    pts.push(yOf(Math.max(0, v)));
+  }
+  g.fillStyle = "rgba(255,176,0,0.14)";
+  pts.forEach((y, x) => g.fillRect(x, y, 1, base - y));
+  g.fillStyle = "#ffb000";
+  pts.forEach((y, x) => {
+    const prev = x ? pts[x - 1] : y;
+    g.fillRect(x, Math.min(y, prev), 1, Math.abs(y - prev) + 1);
+  });
+  g.fillStyle = "rgba(255,176,0,0.5)";
+  for (const edge of [a, a + s]) g.fillRect(Math.round(edge / total * (w - 1)), top, 1, base - top);
+  g.fillRect(0, base + 1, w, 1);
+}
+// Radix-2 FFT, in place.
+function fft(re, im) {
+  const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang), half = len / 2;
+    for (let i = 0; i < n; i += len) {
+      let cr = 1, ci = 0;
+      for (let k = 0; k < half; k++) {
+        const ar = re[i + k + half] * cr - im[i + k + half] * ci, ai = re[i + k + half] * ci + im[i + k + half] * cr;
+        re[i + k + half] = re[i + k] - ar; im[i + k + half] = im[i + k] - ai;
+        re[i + k] += ar; im[i + k] += ai;
+        const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
+      }
+    }
+  }
+}
+const PHOSPHOR = [[3, 20, 10], [6, 70, 35], [20, 150, 70], [57, 255, 136], [200, 255, 120], [255, 255, 230]];
+function drawSpec() {
+  const { g, w, h } = lowRes($("spec"), 6);
+  const N = 256, rows = h, n = samples.length, img = g.createImageData(w, h);
+  const re = new Float32Array(N), im = new Float32Array(N), hop = Math.max(1, (n - N) / w);
+  let peak = 1e-6;
+  for (let i = 0; i < n; i++) peak = Math.max(peak, Math.abs(samples[i]));
+  for (let c = 0; c < w; c++) {
+    const start = Math.floor(c * hop);
+    for (let i = 0; i < N; i++) {
+      re[i] = (start + i < n ? samples[start + i] / peak : 0) * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1)));
+      im[i] = 0;
+    }
+    fft(re, im);
+    for (let r = 0; r < rows; r++) {
+      const b0 = Math.floor(r * (N / 2) / rows), b1 = Math.max(b0 + 1, Math.floor((r + 1) * (N / 2) / rows));
+      let m = 0;
+      for (let b = b0; b < b1; b++) m = Math.max(m, Math.hypot(re[b], im[b]));
+      // 8-bit output has a quantization floor near -40 dB relative to the peak, so map -42..0 dB
+      const t = Math.min(0.999, Math.pow(Math.max(0, (20 * Math.log10(m / (N / 4) + 1e-6) + 42) / 42), 1.6));
+      const x = t * (PHOSPHOR.length - 1), k = Math.floor(x), f = x - k;
+      const o = ((rows - 1 - r) * w + c) * 4;
+      for (let j = 0; j < 3; j++) img.data[o + j] = PHOSPHOR[k][j] + (PHOSPHOR[k + 1][j] - PHOSPHOR[k][j]) * f;
+      img.data[o + 3] = 255;
+    }
+  }
+  g.putImageData(img, 0, 0);
+}
+function redraw() { drawWave(); drawEnv(); drawSpec(); }
+
+function frame(now) {
+  tickAuto(now);
+  const c = $("wave");
+  const { g, w, h } = lowRes(c, PIX);
+  if (waveBase.width !== w || waveBase.height !== h) redraw();
+  g.clearRect(0, 0, w, h);
+  g.drawImage(waveBase, 0, 0);
+  if (playStart >= 0) {
+    const t = (now - playStart) / playDur;
+    if (t <= 1) {
+      const x = Math.floor(t * w);
+      g.fillStyle = "rgba(3,20,10,0.55)";
+      g.fillRect(x + 1, 0, w - x - 1, h);
+      g.fillStyle = "#ffb000";
+      g.fillRect(x, 0, 1, h);
+    }
+  }
+  requestAnimationFrame(frame);
+}
+
+// --- auto demo: walks through the generators; silent until the viewer clicks something --------
+let auto = true, nextAuto = 0, autoIdx = 0;
+function stopAuto() { auto = false; $("auto").setAttribute("aria-pressed", "false"); }
+function tickAuto(now) {
+  if (!auto || now < nextAuto) return;
+  generate(GENS[autoIdx++ % GENS.length][0]);
+  play();
+  nextAuto = now + Math.max(1250, playDur + 650);
+}
+$("auto").addEventListener("click", () => {
+  unlock();
+  auto = !auto;
+  $("auto").setAttribute("aria-pressed", String(auto));
+  nextAuto = 0;
+});
+$("play").addEventListener("click", () => { unlock(); play(); });
+$("mutate").addEventListener("click", () => { stopAuto(); unlock(); mutate(); play(); });
+$("copy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText($("code").textContent);
+    $("copy").textContent = "已複製";
+  } catch (err) {
+    $("copy").textContent = "無法複製";
+  }
+  setTimeout(() => { $("copy").textContent = "複製"; }, 1400);
+});
+addEventListener("resize", redraw);
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

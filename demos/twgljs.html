@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TWGL.js 示範：兩千根光柱的漣漪城市</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<style>
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
+  .btn { padding: 7px 10px; font-size: 12px; }
+  .stat { position: fixed; left: 12px; top: 12px; z-index: 50; font: 12px/1.6 var(--mono); color: var(--muted); padding: 8px 10px; }
+  .stat b { color: var(--fg); font-weight: 600; }
+  .stat code { color: var(--accent); }
+  @media (max-width: 520px) { .stat { top: auto; bottom: 48px; } .stat .api { display: none; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="controls">
+  <button class="btn primary" id="drop" type="button">投下漣漪</button>
+  <button class="btn" id="theme" type="button">配色：霓虹</button>
+  <button class="btn" id="spin" type="button" aria-pressed="true">環繞鏡頭</button>
+</div>
+<div class="stat panel" id="stat"></div>
+<div class="hint">點地面任一處，從那裡掀起一圈波浪</div>
+
+<script src="https://cdn.jsdelivr.net/npm/twgl.js@7.0.0/dist/7.x/twgl-full.js"></script>
+<script>
+const GRID = 48;
+const COUNT = GRID * GRID;
+const MAX_RIPPLES = 8;
+const m4 = twgl.m4;
+
+const canvas = document.getElementById("c");
+const gl = canvas.getContext("webgl2", { antialias: true });
+if (!gl) {
+  document.getElementById("stat").textContent = "此瀏覽器不支援 WebGL2";
+  throw new Error("WebGL2 not available");
+}
+
+const vs = `#version 300 es
+in vec4 position;
+in vec3 normal;
+in vec2 offset;
+in float seed;
+uniform mat4 u_viewProjection;
+uniform float u_time;
+uniform vec4 u_ripples[${MAX_RIPPLES}];
+out vec3 v_normal;
+out vec3 v_world;
+out float v_height;
+out float v_seed;
+void main() {
+  // Ambient swell plus expanding ripple rings (x, z, start time, strength)
+  float h = 0.35 + 0.25 * sin(offset.x * 0.32 + u_time * 1.1) * cos(offset.y * 0.27 + u_time * 0.8);
+  for (int i = 0; i < ${MAX_RIPPLES}; i++) {
+    vec4 r = u_ripples[i];
+    float age = u_time - r.z;
+    if (age < 0.0 || age > 7.0) continue;
+    float d = distance(offset, r.xy);
+    float ring = d - age * 8.0;
+    h += r.w * 4.0 * exp(-ring * ring * 0.18) * exp(-age * 0.55);
+  }
+  h = max(h, 0.06) * (0.85 + seed * 0.3);
+  vec3 p = position.xyz;
+  p.y = (p.y + 0.5) * h;
+  p.xz *= 0.78;
+  vec3 world = p + vec3(offset.x, 0.0, offset.y);
+  v_world = world;
+  v_height = h;
+  v_normal = normal;
+  v_seed = seed;
+  gl_Position = u_viewProjection * vec4(world, 1.0);
+}`;
+
+const fs = `#version 300 es
+precision highp float;
+in vec3 v_normal;
+in vec3 v_world;
+in float v_height;
+in float v_seed;
+uniform vec3 u_low;
+uniform vec3 u_high;
+uniform vec3 u_bg;
+uniform vec3 u_eye;
+uniform vec2 u_fog;
+out vec4 outColor;
+void main() {
+  vec3 n = normalize(v_normal);
+  vec3 light = normalize(vec3(0.4, 1.0, 0.3));
+  float diff = 0.35 + 0.65 * max(dot(n, light), 0.0);
+  float t = clamp(v_height / 3.2, 0.0, 1.0);
+  vec3 base = mix(u_low, u_high, smoothstep(0.05, 0.9, t));
+  // Glowing caps on tall pillars
+  float cap = step(0.5, n.y) * smoothstep(0.35, 1.0, t);
+  vec3 col = base * diff + u_high * cap * 0.9 + v_seed * 0.03;
+  float fog = smoothstep(u_fog.x, u_fog.y, distance(v_world, u_eye));
+  outColor = vec4(mix(col, u_bg, fog), 1.0);
+}`;
+
+const programInfo = twgl.createProgramInfo(gl, [vs, fs]);
+
+// Unit cube from twgl.primitives plus per-instance attributes (divisor: 1)
+const cube = twgl.primitives.createCubeVertices(1);
+const offsets = new Float32Array(COUNT * 2);
+const seeds = new Float32Array(COUNT);
+for (let z = 0; z < GRID; z++) for (let x = 0; x < GRID; x++) {
+  const i = z * GRID + x;
+  offsets[i * 2] = x - (GRID - 1) / 2;
+  offsets[i * 2 + 1] = z - (GRID - 1) / 2;
+  seeds[i] = Math.random();
+}
+const bufferInfo = twgl.createBufferInfoFromArrays(gl, {
+  position: cube.position,
+  normal: cube.normal,
+  indices: cube.indices,
+  offset: { numComponents: 2, data: offsets, divisor: 1 },
+  seed: { numComponents: 1, data: seeds, divisor: 1 },
+});
+const vertexArrayInfo = twgl.createVertexArrayInfo(gl, programInfo, bufferInfo);
+
+document.getElementById("stat").innerHTML =
+  `光柱 <b>${COUNT.toLocaleString()}</b>・每幀 <b>1</b> 次 instanced draw<br>` +
+  `<span class="api"><code>createBufferInfoFromArrays</code>・<code>drawBufferInfo</code></span>`;
+
+const THEMES = [
+  { name: "霓虹", low: "#1b1f4a", high: "#4cc9f0", bg: "#0b0d14" },
+  { name: "日落", low: "#3a1238", high: "#ff8c42", bg: "#140b10" },
+  { name: "螢光", low: "#10301f", high: "#c8ff4a", bg: "#08110c" },
+];
+const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+let themeIndex = 0;
+document.getElementById("theme").addEventListener("click", (e) => {
+  themeIndex = (themeIndex + 1) % THEMES.length;
+  e.currentTarget.textContent = `配色：${THEMES[themeIndex].name}`;
+});
+
+// Ripple ring buffer
+const ripples = new Float32Array(MAX_RIPPLES * 4).fill(-100);
+let rippleSlot = 0, now = 0;
+function addRipple(x, z, strength = 1) {
+  ripples.set([x, z, now, strength], rippleSlot * 4);
+  rippleSlot = (rippleSlot + 1) % MAX_RIPPLES;
+}
+
+let spinning = true, angle = 0.7, viewProjection = m4.identity(), eye = [0, 0, 0];
+document.getElementById("spin").addEventListener("click", (e) => {
+  spinning = !spinning;
+  e.currentTarget.setAttribute("aria-pressed", String(spinning));
+});
+let lastAuto = -1;
+document.getElementById("drop").addEventListener("click", () => {
+  addRipple((Math.random() - 0.5) * GRID * 0.6, (Math.random() - 0.5) * GRID * 0.6, 1.2);
+});
+
+// Click: cast a ray through the cursor onto the ground plane y = 0
+canvas.addEventListener("pointerdown", (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const nx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+  const ny = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
+  const inv = m4.inverse(viewProjection);
+  const near = m4.transformPoint(inv, [nx, ny, -1]);
+  const far = m4.transformPoint(inv, [nx, ny, 1]);
+  const dir = twgl.v3.subtract(far, near);
+  if (Math.abs(dir[1]) < 1e-6) return;
+  const t = -near[1] / dir[1];
+  if (t < 0) return;
+  const hit = twgl.v3.add(near, twgl.v3.mulScalar(dir, t));
+  addRipple(hit[0], hit[2], 1.3);
+  lastAuto = now; // pause auto ripples briefly after user input
+});
+
+gl.enable(gl.DEPTH_TEST);
+gl.enable(gl.CULL_FACE);
+
+function render(ms) {
+  now = ms * 0.001;
+  twgl.resizeCanvasToDisplaySize(gl.canvas, Math.min(devicePixelRatio, 2));
+  gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+  const theme = THEMES[themeIndex];
+  const bg = hex(theme.bg);
+  gl.clearColor(bg[0], bg[1], bg[2], 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  if (now - lastAuto > 1.4) {
+    lastAuto = now;
+    addRipple((Math.random() - 0.5) * GRID * 0.7, (Math.random() - 0.5) * GRID * 0.7, 0.8 + Math.random() * 0.5);
+  }
+
+  if (spinning) angle += 0.0025;
+  const aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+  const dist = aspect < 1 ? 52 : 44;
+  eye = [Math.cos(angle) * dist, aspect < 1 ? 30 : 24, Math.sin(angle) * dist];
+  const projection = m4.perspective((aspect < 1 ? 60 : 45) * Math.PI / 180, aspect, 0.5, 200);
+  const view = m4.inverse(m4.lookAt(eye, [0, 0, 0], [0, 1, 0]));
+  viewProjection = m4.multiply(projection, view);
+
+  gl.useProgram(programInfo.program);
+  twgl.setBuffersAndAttributes(gl, programInfo, vertexArrayInfo);
+  twgl.setUniforms(programInfo, {
+    u_viewProjection: viewProjection,
+    u_time: now,
+    u_ripples: ripples,
+    u_low: hex(theme.low),
+    u_high: hex(theme.high),
+    u_bg: bg,
+    u_eye: eye,
+    u_fog: [dist - 14, dist + 30],
+  });
+  twgl.drawBufferInfo(gl, vertexArrayInfo, gl.TRIANGLES, vertexArrayInfo.numElements, 0, COUNT);
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+</script>
+</body>
+</html>

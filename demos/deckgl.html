@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>deck.gl 示範：台灣人口六角柱與通勤弧線</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/dist/maplibre-gl.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"底圖為 MapLibre（OpenFreeMap 向量圖磚），資料為示意資料"}</script>
+<style>
+  #map { position: fixed; inset: 0; background: #0b0d10; }
+  .maplibregl-ctrl-attrib { background: rgba(14,16,19,.75) !important; color: var(--muted); font-size: 10px; }
+  .maplibregl-ctrl-attrib a { color: var(--c2) !important; }
+  .maplibregl-ctrl-attrib-button { filter: invert(1); }
+  #panel { position: fixed; left: 12px; top: 12px; z-index: 50; width: 220px; padding: 12px 14px; }
+  #panel h2 { margin: 0 0 2px; font-size: 14px; }
+  #panel small { color: var(--muted); font-size: 11px; }
+  .slider { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .slider input { flex: 1; min-width: 0; }
+  .slider span { min-width: 44px; text-align: right; color: var(--fg); }
+  .ramp { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 11px; color: var(--muted); }
+  .ramp i { flex: 1; height: 6px; border-radius: 3px; background: linear-gradient(90deg, #1b2a4a, #4cc9f0, #9d8cff, #f72585, #ff8c42, #f7df1e); }
+  .deck-tooltip { font: 12px/1.5 var(--font) !important; background: var(--panel) !important; border: 1px solid var(--line); border-radius: 8px; color: var(--fg) !important; }
+  @media (max-width: 520px) {
+    #panel { top: auto; bottom: 48px; width: 190px; padding: 9px 11px; }
+    #panel small, .ramp { display: none; }
+    /* the hint would cover the map attribution, and hover / right-drag do not apply on touch screens */
+    .hint { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel" class="panel">
+  <h2>人口密度六角柱</h2>
+  <small>示意資料，依都會區人口隨機產生</small>
+  <div class="slider">半徑<input type="range" id="radius" min="2000" max="9000" step="500" value="4500"><span id="rv" class="mono">4.5 km</span></div>
+  <div class="slider">高度<input type="range" id="elev" min="10" max="80" step="5" value="40"><span id="ev" class="mono">×40</span></div>
+  <div class="ramp">少<i></i>多</div>
+</div>
+<div class="controls">
+  <button class="btn" id="hexBtn" aria-pressed="true">六角柱</button>
+  <button class="btn" id="arcBtn" aria-pressed="true">通勤弧線</button>
+  <button class="btn primary" id="viewBtn">切換視角</button>
+</div>
+<div class="hint">滑過柱體或弧線看數值・右鍵拖曳旋轉</div>
+
+<script src="https://cdn.jsdelivr.net/npm/deck.gl@9.4.0/dist.min.js"></script>
+<script type="module">
+// deck.gl HexagonLayer (3D aggregation) + ArcLayer rendered over a MapLibre vector basemap via MapboxOverlay.
+import * as maplibregl from "https://cdn.jsdelivr.net/npm/maplibre-gl@6.11.2/dist/maplibre-gl.mjs";
+
+const { MapboxOverlay, HexagonLayer, ArcLayer, ScatterplotLayer } = window.deck;
+
+// Illustrative city centers and relative population weights
+const CITIES = [
+  ["台北", 121.5654, 25.0330, 1.0], ["新北", 121.4628, 25.0144, 0.9], ["桃園", 121.3010, 24.9936, 0.7], ["新竹", 120.9675, 24.8138, 0.45],
+  ["苗栗", 120.8214, 24.5602, 0.15], ["台中", 120.6736, 24.1477, 0.85], ["彰化", 120.5161, 24.0518, 0.35], ["南投", 120.6848, 23.9096, 0.12],
+  ["雲林", 120.5439, 23.7092, 0.15], ["嘉義", 120.4491, 23.4801, 0.25], ["台南", 120.2270, 22.9997, 0.6], ["高雄", 120.3014, 22.6273, 0.8],
+  ["屏東", 120.4880, 22.6727, 0.25], ["宜蘭", 121.7537, 24.7021, 0.2], ["花蓮", 121.6014, 23.9872, 0.18], ["台東", 121.1442, 22.7583, 0.12],
+  ["基隆", 121.7419, 25.1276, 0.2],
+];
+
+// Seeded RNG so the illustrative data is identical on every load
+let seed = 7;
+const rand = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
+const gauss = () => Math.sqrt(-2 * Math.log(rand() + 1e-9)) * Math.cos(2 * Math.PI * rand());
+const POINTS = [];
+for (const [, lng, lat, w] of CITIES) {
+  const n = Math.round(900 * w + 60);
+  const sigma = 0.025 + w * 0.035;
+  for (let i = 0; i < n; i++) POINTS.push([lng + gauss() * sigma, lat + gauss() * sigma * 0.9]);
+}
+
+// Illustrative commute flows into the three biggest metro areas
+const byName = Object.fromEntries(CITIES.map((c) => [c[0], c]));
+const FLOWS = [
+  ["新北", "台北", 9], ["桃園", "台北", 7], ["基隆", "台北", 4], ["宜蘭", "台北", 3], ["新竹", "台北", 4], ["新竹", "桃園", 3],
+  ["彰化", "台中", 6], ["苗栗", "台中", 3], ["南投", "台中", 3], ["雲林", "台中", 2], ["嘉義", "台南", 3],
+  ["台南", "高雄", 6], ["屏東", "高雄", 6], ["台東", "高雄", 2], ["花蓮", "台北", 2], ["台中", "台北", 5], ["高雄", "台北", 4],
+].map(([a, b, v]) => ({ from: byName[a], to: byName[b], v }));
+
+const COLOR_RANGE = [[27, 42, 74], [76, 201, 240], [157, 140, 255], [247, 37, 133], [255, 140, 66], [247, 223, 30]];
+const state = { hex: true, arc: true, radius: 4500, elev: 40, grow: 0 };
+
+const VIEWS = [
+  { center: [120.95, 23.65], zoom: 6.9, pitch: 52, bearing: -18 },
+  { center: [121.35, 24.92], zoom: 8.1, pitch: 55, bearing: 25 },
+  { center: [120.4, 22.95], zoom: 7.9, pitch: 55, bearing: -35 },
+];
+let viewIndex = 0;
+
+const narrow = innerWidth < 520;
+const map = new maplibregl.Map({
+  container: "map",
+  style: "https://tiles.openfreemap.org/styles/dark",
+  ...VIEWS[0],
+  zoom: VIEWS[0].zoom - (narrow ? 0.9 : 0),
+  maxPitch: 75,
+  attributionControl: { compact: true },
+});
+
+function layers() {
+  return [
+    state.hex && new HexagonLayer({
+      id: "hex",
+      data: POINTS,
+      getPosition: (d) => d,
+      radius: state.radius,
+      coverage: 0.86,
+      extruded: true,
+      elevationScale: state.elev * state.grow,
+      elevationRange: [0, 1000],
+      colorRange: COLOR_RANGE,
+      upperPercentile: 99,
+      pickable: true,
+      autoHighlight: true,
+      highlightColor: [255, 255, 255, 160],
+      material: { ambient: 0.6, diffuse: 0.6, shininess: 40 },
+      transitions: { elevationScale: { duration: 1600 } },
+    }),
+    state.arc && new ArcLayer({
+      id: "arcs",
+      data: FLOWS,
+      getSourcePosition: (d) => [d.from[1], d.from[2]],
+      getTargetPosition: (d) => [d.to[1], d.to[2]],
+      getSourceColor: [76, 201, 240, 220],
+      getTargetColor: [247, 223, 30, 240],
+      getWidth: (d) => 1 + d.v * 0.6,
+      getHeight: 0.6,
+      greatCircle: false,
+      pickable: true,
+      autoHighlight: true,
+    }),
+    new ScatterplotLayer({
+      id: "cities",
+      data: CITIES,
+      getPosition: (d) => [d[1], d[2]],
+      getRadius: (d) => 2500 + d[3] * 3000,
+      getFillColor: [247, 223, 30, 60],
+      getLineColor: [247, 223, 30, 200],
+      stroked: true,
+      lineWidthMinPixels: 1,
+      pickable: true,
+    }),
+  ].filter(Boolean);
+}
+
+function tooltip({ object, layer }) {
+  if (!object) return null;
+  if (layer.id === "hex") {
+    const n = object.count ?? object.points?.length ?? object.elevationValue;
+    return { html: `<b>此格約 ${Math.round(n * 120).toLocaleString()} 人</b><br>（${n} 個樣本點，示意）` };
+  }
+  if (layer.id === "arcs") return { html: `<b>${object.from[0]} → ${object.to[0]}</b><br>每日通勤約 ${(object.v * 1.2).toFixed(1)} 萬人次（示意）` };
+  return { html: `<b>${object[0]}</b>` };
+}
+
+const overlay = new MapboxOverlay({ interleaved: false, layers: layers(), getTooltip: tooltip });
+map.addControl(overlay);
+map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "bottom-right");
+const refresh = () => overlay.setProps({ layers: layers() });
+
+// Columns grow out of the ground once the basemap is ready
+map.once("load", () => { state.grow = 1; refresh(); });
+
+const $ = (id) => document.getElementById(id);
+$("radius").addEventListener("input", (e) => { state.radius = +e.target.value; $("rv").textContent = `${(state.radius / 1000).toFixed(1)} km`; refresh(); });
+$("elev").addEventListener("input", (e) => { state.elev = +e.target.value; $("ev").textContent = `×${state.elev}`; refresh(); });
+for (const [btnId, key] of [["hexBtn", "hex"], ["arcBtn", "arc"]]) {
+  $(btnId).addEventListener("click", (e) => {
+    state[key] = !state[key];
+    e.currentTarget.setAttribute("aria-pressed", state[key]);
+    refresh();
+  });
+}
+$("viewBtn").addEventListener("click", () => {
+  viewIndex = (viewIndex + 1) % VIEWS.length;
+  const v = VIEWS[viewIndex];
+  map.flyTo({ ...v, zoom: v.zoom - (innerWidth < 520 ? 0.9 : 0), duration: 3500, essential: true });
+});
+</script>
+</body>
+</html>

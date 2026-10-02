@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cytoscape.js 示範：台北捷運最短路徑</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"簡化路網示意，站點與位置非精確比例"}</script>
+<style>
+  #cy { position: fixed; inset: 0; }
+  #route {
+    position: fixed; left: 12px; top: 12px; z-index: 40; width: 230px; max-width: calc(100% - 24px);
+    font-size: 13px; padding: 12px 14px;
+  }
+  #route h3 { margin: 0 0 6px; font-size: 14px; color: var(--accent); }
+  #route .row { display: flex; gap: 8px; align-items: center; }
+  #route .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  #route .stat { display: flex; gap: 14px; margin: 6px 0 4px; }
+  #route .stat b { font-size: 18px; color: var(--fg); }
+  #route .legs { margin: 6px 0 0; padding: 0; list-style: none; max-height: 120px; overflow: auto; }
+  #route .legs li { display: flex; gap: 6px; align-items: center; line-height: 1.7; }
+  .controls { top: auto; bottom: 12px; }
+  @media (max-width: 520px) {
+    #route { width: auto; right: 12px; padding: 8px 10px; }
+    #route .legs { display: none; }
+    .hint { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="cy"></div>
+<div id="route" class="panel">
+  <h3>路線規劃</h3>
+  <div class="row"><span class="dot" style="background:var(--c4)"></span><span id="from">起點：</span></div>
+  <div class="row"><span class="dot" style="background:var(--c3)"></span><span id="to">終點：</span></div>
+  <div class="stat"><span><b id="hops">0</b> 站</span><span><b id="xfer">0</b> 次轉乘</span></div>
+  <ul class="legs" id="legs"></ul>
+</div>
+<div class="controls">
+  <button class="btn" id="geo" aria-pressed="true">路網配置</button>
+  <button class="btn" id="cose" aria-pressed="false">力導向排版</button>
+  <button class="btn" id="fit">置中</button>
+</div>
+<div class="hint">點兩個車站，Dijkstra 依軌道距離算最短路徑・車站可拖曳</div>
+
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3.34.3/dist/cytoscape.min.js"></script>
+<script>
+// Simplified Taipei Metro network; coordinates are schematic (1 unit = 70px).
+const LINES = {
+  R: { name: "淡水信義線", color: "#e3002c", stops: [
+    ["淡水", -1.2, -6.6], ["北投", 0.2, -5.4], ["士林", 0.6, -4.3], ["圓山", 0.2, -3.1], ["民權西路", 0, -2],
+    ["中山", 0, -1], ["台北車站", 0, 0], ["台大醫院", 0, 1], ["中正紀念堂", 0, 2], ["東門", 1, 2],
+    ["大安森林公園", 2, 2], ["大安", 3, 2], ["信義安和", 4, 2], ["台北101", 5, 2], ["象山", 6, 2]] },
+  G: { name: "松山新店線", color: "#00a06a", stops: [
+    ["松山", 6.6, -1.5], ["南京三民", 5.6, -1.5], ["台北小巨蛋", 4.4, -1.5], ["南京復興", 3, -1.5],
+    ["松江南京", 2, -1.5], ["中山", 0, -1], ["北門", -1, -0.6], ["西門", -1, 0.8], ["小南門", -0.6, 1.5],
+    ["中正紀念堂", 0, 2], ["古亭", 0.6, 3], ["公館", 1.6, 4], ["七張", 1.2, 5.4], ["新店", 1, 6.4]] },
+  O: { name: "中和新蘆線", color: "#f8b61c", stops: [
+    ["南勢角", -0.5, 5.6], ["頂溪", 0, 4.4], ["古亭", 0.6, 3], ["東門", 1, 2], ["忠孝新生", 2, 0],
+    ["松江南京", 2, -1.5], ["行天宮", 2, -2.4], ["中山國小", 1, -2.4], ["民權西路", 0, -2], ["大橋頭", -1, -2],
+    ["台北橋", -1.8, -1.5], ["三重", -2.6, -1.2], ["頭前庄", -3.4, -0.8], ["迴龍", -4.4, -0.5]] },
+  O2: { name: "中和新蘆線", color: "#f8b61c", stops: [
+    ["大橋頭", -1, -2], ["三重國小", -1.8, -2.8], ["蘆洲", -2.6, -3.6]] },
+  B: { name: "板南線", color: "#0070bd", stops: [
+    ["頂埔", -5, 3.2], ["板橋", -3.8, 1.8], ["江子翠", -3, 1.4], ["龍山寺", -2, 1.1], ["西門", -1, 0.8],
+    ["台北車站", 0, 0], ["善導寺", 1, 0], ["忠孝新生", 2, 0], ["忠孝復興", 3, 0], ["忠孝敦化", 4, 0],
+    ["國父紀念館", 5, 0], ["市政府", 6, 0], ["南港", 7, 0], ["南港展覽館", 7.8, -0.8]] },
+  BR: { name: "文湖線", color: "#c48c31", stops: [
+    ["動物園", 4.8, 5.6], ["萬芳醫院", 4.4, 4.6], ["六張犁", 3.9, 3.5], ["科技大樓", 3, 2.9], ["大安", 3, 2],
+    ["忠孝復興", 3, 0], ["南京復興", 3, -1.5], ["中山國中", 3, -2.4], ["松山機場", 3.4, -3.2], ["大直", 3, -4.1],
+    ["劍南路", 3.8, -4.6], ["西湖", 4.8, -4.4], ["內湖", 5.8, -4], ["東湖", 7, -3.2], ["南港軟體園區", 7.6, -2],
+    ["南港展覽館", 7.8, -0.8]] },
+};
+
+const stations = new Map();
+const edges = [];
+for (const [key, line] of Object.entries(LINES)) {
+  line.stops.forEach(([name, x, y], i) => {
+    const s = stations.get(name) || { name, x: x * 70, y: y * 70, lines: new Set() };
+    s.lines.add(line.name);
+    stations.set(name, s);
+    if (i > 0) {
+      const [prev, px, py] = line.stops[i - 1];
+      const len = Math.hypot(x - px, y - py);
+      edges.push({ data: { id: `${key}-${i}`, source: prev, target: name, color: line.color, line: line.name, len } });
+    }
+  });
+}
+const elements = [
+  ...[...stations.values()].map((s) => ({
+    data: { id: s.name, color: LINES[Object.keys(LINES).find((k) => LINES[k].stops.some((p) => p[0] === s.name))].color },
+    position: { x: s.x, y: s.y },
+    classes: s.lines.size > 1 ? "xfer" : "",
+  })),
+  ...edges,
+];
+const geoPositions = Object.fromEntries([...stations.values()].map((s) => [s.name, { x: s.x, y: s.y }]));
+
+const cy = cytoscape({
+  container: document.getElementById("cy"),
+  elements,
+  layout: { name: "preset", padding: 30 },
+  minZoom: 0.3,
+  maxZoom: 3,
+  style: [
+    { selector: "node", style: {
+      width: 11, height: 11, "background-color": "data(color)", "border-width": 2, "border-color": "#0e1013",
+      label: "data(id)", color: "#ecebe6", "font-size": 10, "font-family": "Noto Sans TC, Microsoft JhengHei, sans-serif",
+      "text-outline-color": "#0e1013", "text-outline-width": 2.5, "text-valign": "top", "text-margin-y": -3,
+      "transition-property": "opacity, width, height", "transition-duration": "0.25s" } },
+    { selector: "node.xfer", style: { width: 15, height: 15, "background-color": "#ffffff", "border-color": "#3a3f47", "border-width": 3, "font-weight": 700 } },
+    { selector: "edge", style: { width: 5, "line-color": "data(color)", "curve-style": "straight", opacity: 0.9,
+      "transition-property": "opacity, width", "transition-duration": "0.25s" } },
+    { selector: ".dim", style: { opacity: 0.16 } },
+    { selector: "edge.path", style: { width: 9, opacity: 1, "z-index": 10 } },
+    { selector: "node.path", style: { "font-size": 12, "z-index": 10 } },
+    { selector: "node.origin", style: { width: 22, height: 22, "border-color": "#7bd389", "border-width": 5, "font-size": 14, color: "#7bd389" } },
+    { selector: "node.dest", style: { width: 22, height: 22, "border-color": "#f72585", "border-width": 5, "font-size": 14, color: "#ff7ab5" } },
+    { selector: "node:active", style: { "overlay-opacity": 0.15, "overlay-color": "#f7df1e" } },
+  ],
+});
+
+let origin = null;
+let dest = null;
+const $ = (id) => document.getElementById(id);
+
+function clearRoute() {
+  cy.elements().removeClass("dim path origin dest");
+}
+
+function showRoute() {
+  clearRoute();
+  $("from").textContent = `起點：${origin ? origin.id() : "點選車站"}`;
+  $("to").textContent = `終點：${dest ? dest.id() : "再點一站"}`;
+  $("legs").innerHTML = "";
+  if (origin) origin.addClass("origin");
+  if (!origin || !dest) {
+    $("hops").textContent = "0";
+    $("xfer").textContent = "0";
+    return;
+  }
+  dest.addClass("dest");
+  // Library graph algorithm: Dijkstra weighted by track length (schematic distance).
+  const dj = cy.elements().dijkstra({ root: origin, weight: (e) => e.data("len") });
+  const path = dj.pathTo(dest);
+  cy.elements().addClass("dim");
+  path.removeClass("dim").addClass("path");
+  $("hops").textContent = path.edges().length;
+
+  // Group consecutive edges by metro line to list legs and count transfers.
+  const legs = [];
+  path.edges().forEach((e) => {
+    const last = legs[legs.length - 1];
+    if (last && last.line === e.data("line")) last.n++;
+    else legs.push({ line: e.data("line"), color: e.data("color"), n: 1 });
+  });
+  $("xfer").textContent = Math.max(0, legs.length - 1);
+  $("legs").innerHTML = legs
+    .map((l) => `<li><span class="dot" style="background:${l.color}"></span>${l.line}　${l.n} 站</li>`)
+    .join("");
+}
+
+cy.on("tap", "node", (evt) => {
+  const n = evt.target;
+  if (!origin || dest) { origin = n; dest = null; }
+  else if (n.id() !== origin.id()) { dest = n; }
+  showRoute();
+});
+cy.on("tap", (evt) => {
+  if (evt.target === cy) { origin = null; dest = null; showRoute(); }
+});
+
+function setMode(btn) {
+  for (const id of ["geo", "cose"]) $(id).setAttribute("aria-pressed", String(id === btn));
+}
+$("geo").addEventListener("click", () => {
+  setMode("geo");
+  cy.layout({ name: "preset", positions: geoPositions, animate: true, animationDuration: 700, fit: true, padding: 30 }).run();
+});
+$("cose").addEventListener("click", () => {
+  setMode("cose");
+  cy.layout({ name: "cose", animate: true, animationDuration: 900, nodeRepulsion: () => 9000, idealEdgeLength: () => 40, padding: 30 }).run();
+});
+$("fit").addEventListener("click", () => cy.animate({ fit: { padding: 30 }, duration: 400 }));
+
+function fitView() {
+  cy.resize();
+  const narrow = innerWidth < 520;
+  cy.fit(undefined, narrow ? 12 : 30);
+  if (narrow) {
+    cy.zoom({ level: cy.zoom() * 0.8, renderedPosition: { x: innerWidth / 2, y: innerHeight / 2 } });
+    cy.panBy({ x: 0, y: 45 });
+  } else {
+    cy.panBy({ x: 100, y: 0 });
+  }
+}
+addEventListener("resize", fitView);
+
+origin = cy.getElementById("淡水");
+dest = cy.getElementById("動物園");
+showRoute();
+fitView();
+</script>
+</body>
+</html>

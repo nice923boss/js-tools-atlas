@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CCapture.js 示範：固定影格率錄下 Canvas 動畫</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":[],"note":"載入後自動錄一段 2 秒 MP4，可切換動態模糊、格式與模擬卡頓"}</script>
+<style>
+  body { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 14px; padding: 14px 14px 46px; height: 100%; }
+  .stage-box { position: relative; min-width: 0; min-height: 0; border-radius: 12px; overflow: hidden; background: #07080b; border: 1px solid var(--line); }
+  .stage-box canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+  .badge { position: absolute; left: 12px; top: 12px; display: flex; gap: 8px; align-items: center; padding: 4px 10px; border-radius: 999px; background: rgba(0, 0, 0, 0.6); font: 12px var(--mono); color: #cfd2d8; }
+  .badge .dot { width: 9px; height: 9px; border-radius: 50%; background: #6b7280; }
+  .badge.rec { color: #fff; background: rgba(190, 20, 40, 0.85); }
+  .badge.rec .dot { background: #fff; animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  .fps { position: absolute; right: 12px; top: 12px; padding: 4px 10px; border-radius: 999px; background: rgba(0, 0, 0, 0.6); font: 12px var(--mono); color: #cfd2d8; }
+
+  aside { display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow: hidden; }
+  .group { display: flex; flex-direction: column; gap: 4px; }
+  .group > span { font-size: 12px; color: var(--muted); }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { flex: 1; border: 0; background: var(--bg-2); color: var(--fg); padding: 6px 0; cursor: pointer; font: 12px var(--font); }
+  .seg button.on { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+  .seg button:disabled { opacity: .4; cursor: not-allowed; }
+  .check { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--fg); cursor: pointer; }
+  .check input { accent-color: var(--accent); }
+  .rec-btn { background: #d61f3c; color: #fff; border-color: transparent; font-weight: 700; }
+  .rec-btn:disabled { opacity: .55; cursor: wait; }
+  .stats { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 12px; }
+  .stats dt { color: var(--muted); }
+  .stats dd { margin: 0; font-family: var(--mono); text-align: right; }
+  .track { height: 5px; border-radius: 5px; background: var(--line); overflow: hidden; }
+  .track i { display: block; height: 100%; width: 0; background: #d61f3c; }
+  .result { flex: 1; min-height: 70px; position: relative; border-radius: 10px; border: 1px dashed var(--line); background: #0a0b0e; overflow: hidden; }
+  .result video, .result img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .result .empty { position: absolute; inset: 0; display: grid; place-items: center; font-size: 12px; color: var(--muted); }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row .info { flex: 1; font: 11px var(--mono); color: var(--muted); }
+
+  @media (max-width: 640px) {
+    body { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; padding: 10px 10px 42px; gap: 8px; }
+    aside { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; overflow: visible; }
+    .group > span, .stats, .hide-narrow { display: none; }
+    .rec-btn { grid-column: 1 / -1; }
+    .result { min-height: 0; height: 56px; }
+    .row { grid-column: 2; }
+    .row .info { display: none; }
+    .row .btn { flex: 1; }
+  }
+</style>
+</head>
+<body>
+<div class="stage-box">
+  <canvas id="cv" width="640" height="360"></canvas>
+  <div class="badge" id="badge"><span class="dot"></span><span id="badgeText">即時預覽</span></div>
+  <div class="fps" id="fps">畫面 60 FPS</div>
+</div>
+<aside>
+  <div class="group"><span>輸出格式</span>
+    <div class="seg" id="fmt"><button data-v="mp4" class="on">MP4</button><button data-v="webm">WebM</button><button data-v="gif">GIF</button></div>
+  </div>
+  <div class="group"><span>動態模糊（每格取樣數）</span>
+    <div class="seg" id="blur"><button data-v="1">關閉</button><button data-v="4" class="on">4</button><button data-v="8">8</button><button data-v="16">16</button></div>
+  </div>
+  <div class="group hide-narrow"><span>影格率與長度</span>
+    <div class="row">
+      <div class="seg" id="rate" style="flex:1"><button data-v="30" class="on">30 fps</button><button data-v="60">60 fps</button></div>
+      <div class="seg" id="len" style="flex:1"><button data-v="2" class="on">2 秒</button><button data-v="4">4 秒</button></div>
+    </div>
+  </div>
+  <label class="check hide-narrow"><input type="checkbox" id="heavy">模擬重度運算（畫面變卡，影片照樣流暢）</label>
+  <button class="btn rec-btn" id="rec">● 開始錄製</button>
+  <dl class="stats">
+    <dt>錄製進度</dt><dd id="sFrames">0 / 0 影格</dd>
+    <dt>實際花費</dt><dd id="sReal">0.0 秒</dd>
+    <dt>影片長度</dt><dd id="sVideo">0.0 秒</dd>
+  </dl>
+  <div class="track hide-narrow"><i id="prog"></i></div>
+  <div class="result" id="result"><div class="empty" id="empty">錄製完成後在這裡播放</div></div>
+  <div class="row"><span class="info" id="info"></span><button class="btn" id="dl" disabled>下載</button></div>
+</aside>
+<div class="hint">按「開始錄製」，比較關閉與開啟動態模糊的差別</div>
+
+<script src="https://cdn.jsdelivr.net/npm/ccapture.js@2.0.0/build/ccapture.umd.min.js"></script>
+<script>
+// CCapture.js: while recording it replaces the page clock (rAF, performance.now, Date, timers)
+// with a virtual one that advances exactly one frame per capture, so a slow page still
+// produces a perfectly smooth fixed-framerate video, with optional sub-frame motion blur.
+const realNow = performance.now.bind(performance); // keep a handle on the real clock for wall-time stats
+const $ = (id) => document.getElementById(id);
+const cv = $("cv");
+const ctx = cv.getContext("2d");
+const W = cv.width;
+const H = cv.height;
+const opts = { fmt: "mp4", blur: 4, rate: 30, len: 2 };
+let capturer = null;
+let lastUrl = null;
+let lastExt = "mp4";
+
+for (const id of ["fmt", "blur", "rate", "len"]) {
+  $(id).addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b || capturer) return;
+    opts[id] = id === "fmt" ? b.dataset.v : Number(b.dataset.v);
+    [...$(id).children].forEach((x) => x.classList.toggle("on", x === b));
+  });
+}
+
+function burn() {
+  // CPU-bound busy work (not time-based: the clock is frozen while recording).
+  let x = 0;
+  for (let i = 0; i < 6e6; i++) x += Math.sqrt(i);
+  return x;
+}
+
+function draw(t) {
+  const bg = ctx.createLinearGradient(0, 0, W, H);
+  bg.addColorStop(0, "#10131c");
+  bg.addColorStop(1, "#1c1030");
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // Fast spinning wheel: strobes without blur, smears smoothly with it.
+  const cx = 190, cy = 185, R = 120;
+  const colors = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42"];
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(t * Math.PI * 2 * 2.6);
+  colors.forEach((c, i) => {
+    ctx.rotate((Math.PI * 2) / colors.length);
+    ctx.fillStyle = c;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.arc(0, 0, R, -0.16, 0.16);
+    ctx.closePath();
+    ctx.fill();
+  });
+  ctx.fillStyle = "#ecebe6";
+  ctx.beginPath();
+  ctx.arc(0, 0, 16, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(cx, cy, R + 8, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Three balls zipping back and forth at different speeds.
+  [[1.9, "#f72585", 110], [3.1, "#4cc9f0", 185], [4.3, "#f7df1e", 260]].forEach(([f, c, y]) => {
+    const x = 470 + Math.sin(t * Math.PI * 2 * f / 2) * 120;
+    ctx.fillStyle = c;
+    ctx.beginPath();
+    ctx.arc(x, y, 18, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  ctx.fillStyle = "rgba(236, 235, 230, 0.9)";
+  ctx.font = `700 20px ${getComputedStyle(document.body).fontFamily}`;
+  ctx.fillText("CCapture.js", 24, H - 52);
+  ctx.font = "14px Consolas, monospace";
+  ctx.fillStyle = "#9b998f";
+  ctx.fillText(`動畫時間 ${t.toFixed(3)} s`, 24, H - 26);
+}
+
+let t0 = performance.now();
+let lastReal = realNow();
+let fps = 60;
+function loop() {
+  requestAnimationFrame(loop); // hooked by CCapture while recording
+  if ($("heavy").checked) burn();
+  draw((performance.now() - t0) / 1000);
+  const r = realNow();
+  fps = fps * 0.9 + (1000 / Math.max(1, r - lastReal)) * 0.1;
+  lastReal = r;
+  $("fps").textContent = `畫面 ${Math.round(fps)} FPS`;
+  if (capturer) capturer.capture(cv);
+}
+requestAnimationFrame(loop);
+
+function setBusy(on) {
+  $("rec").disabled = on;
+  $("rec").textContent = on ? "錄製中…" : "● 開始錄製";
+  $("badge").classList.toggle("rec", on);
+  document.querySelectorAll(".seg button").forEach((b) => { b.disabled = on; });
+}
+
+async function record() {
+  if (capturer) return;
+  const { fmt, blur, rate, len } = opts;
+  const total = rate * len;
+  const startReal = realNow();
+  let finishing = null;
+  const c = new CCapture({ format: fmt, framerate: rate, motionBlurFrames: blur, quality: 90, gifColors: 128, name: "ccapture-demo" });
+  setBusy(true);
+  $("prog").style.width = "0%";
+  $("sVideo").textContent = `${len.toFixed(1)} 秒（${rate} fps）`;
+  c.on("frame", (n) => {
+    const secs = n / rate;
+    $("badgeText").textContent = `REC ${secs.toFixed(2)} / ${len} 秒`;
+    $("sFrames").textContent = `${n} / ${total} 影格`;
+    $("sReal").textContent = `${((realNow() - startReal) / 1000).toFixed(1)} 秒`;
+    $("prog").style.width = `${(n / total) * 100}%`;
+    if (n >= total && !finishing) finishing = finish(c, fmt, startReal);
+  });
+  c.on("progress", (p) => { $("badgeText").textContent = `封裝中 ${Math.round(p * 100)}%`; });
+  c.on("error", (err) => {
+    console.error(err);
+    $("info").textContent = `錄製失敗：${err.message || err}`;
+    capturer = null;
+    setBusy(false);
+  });
+  t0 = performance.now(); // restart the animation so every take begins at 0 s
+  capturer = c;
+  await c.start();
+}
+
+async function finish(c, fmt, startReal) {
+  await c.stop(); // restores the real clock
+  capturer = null;
+  $("badgeText").textContent = "封裝檔案中…";
+  // Passing a callback keeps CCapture from triggering its own download.
+  const blob = await c.save(() => {});
+  await c.dispose();
+  const real = ((realNow() - startReal) / 1000).toFixed(1);
+  $("sReal").textContent = `${real} 秒`;
+  if (lastUrl) URL.revokeObjectURL(lastUrl);
+  lastUrl = URL.createObjectURL(blob);
+  lastExt = fmt;
+  let el;
+  if (fmt === "gif") {
+    el = new Image();
+    el.alt = "CCapture.js 錄出的 GIF";
+  } else {
+    el = document.createElement("video");
+    Object.assign(el, { muted: true, loop: true, autoplay: true, playsInline: true });
+  }
+  el.src = lastUrl;
+  $("result").replaceChildren(el);
+  $("info").textContent = `${fmt.toUpperCase()}・${(blob.size / 1024).toFixed(0)} KB`;
+  $("dl").disabled = false;
+  $("badgeText").textContent = "即時預覽";
+  setBusy(false);
+}
+
+$("rec").onclick = record;
+$("dl").onclick = () => {
+  const a = document.createElement("a");
+  a.href = lastUrl;
+  a.download = `ccapture-demo.${lastExt}`;
+  a.click();
+};
+record();
+</script>
+</body>
+</html>

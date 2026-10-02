@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vega-Lite 示範：台北天氣連動篩選</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"天氣數值為依氣候平均生成的示意資料"}</script>
+<style>
+  body { background: radial-gradient(90% 70% at 20% 0%, #15202a 0%, var(--bg) 70%); }
+  .title { position: fixed; left: 14px; top: 12px; z-index: 40; }
+  .title h1 { margin: 0; font-size: 16px; }
+  .title p { margin: 0; font-size: 12px; color: var(--muted); }
+  #vis { position: fixed; left: 0; right: 0; top: 58px; bottom: 42px; display: grid; place-items: start center; }
+  #vis .vega-embed { display: block; }
+  @media (max-width: 640px) { .title { top: 52px; } #vis { top: 100px; } }
+</style>
+</head>
+<body>
+<div class="title"><h1>2024 台北每日天氣</h1><p>示意資料・一份規格描述三張連動圖</p></div>
+<div class="controls">
+  <button class="btn" data-y="tmax" aria-pressed="true">最高溫</button>
+  <button class="btn" data-y="precip">降雨量</button>
+  <button class="btn primary" id="reset">清除篩選</button>
+</div>
+<div id="vis"></div>
+<div class="hint">上圖拖曳框選日期・點長條篩選天氣・下方兩圖即時連動</div>
+
+<script src="https://cdn.jsdelivr.net/npm/vega@6.4.0/build/vega.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/vega-lite@6.4.3/build/vega-lite.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/vega-embed@7.3.0/build/vega-embed.min.js"></script>
+<script>
+// Declarative Vega-Lite spec: an interval brush on the scatter filters the bar and histogram views,
+// and a click selection on the bars filters everything back.
+
+// Seeded RNG so the illustrative data is stable between reloads.
+let seed = 20240101;
+const rnd = () => ((seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296);
+const TMAX = [19.2, 19.8, 22.0, 25.6, 29.0, 31.8, 34.0, 33.6, 31.4, 27.8, 24.6, 20.9];
+const WET = [0.45, 0.5, 0.5, 0.48, 0.5, 0.55, 0.42, 0.5, 0.45, 0.38, 0.4, 0.42];
+const rows = [];
+for (let d = new Date(2024, 0, 1); d.getFullYear() === 2024; d.setDate(d.getDate() + 1)) {
+  const m = d.getMonth(), f = (d.getDate() - 15) / 30;
+  const n = f < 0 ? (m + 11) % 12 : (m + 1) % 12;
+  const base = TMAX[m] + (TMAX[n] - TMAX[m]) * Math.abs(f);
+  let weather, precip = 0;
+  const r = rnd();
+  if (r < WET[m]) {
+    const storm = m >= 5 && m <= 8 && rnd() < 0.55;
+    weather = storm ? "雷雨" : "雨";
+    precip = Math.round((storm ? 18 : 4) + rnd() ** 2 * (storm ? 90 : 45));
+  } else {
+    weather = r < WET[m] + 0.18 ? "陰" : r < WET[m] + 0.36 ? "多雲" : "晴";
+  }
+  const tmax = +(base + (rnd() - 0.5) * 4 + (weather === "晴" ? 1.2 : weather === "雨" ? -1.5 : 0)).toFixed(1);
+  rows.push({ date: d.toISOString().slice(0, 10), tmax, precip, weather });
+}
+
+const WEATHER = ["晴", "多雲", "陰", "雨", "雷雨"];
+const COLORS = ["#f7df1e", "#ff8c42", "#8b8f99", "#4cc9f0", "#9d8cff"];
+const FONT = getComputedStyle(document.body).fontFamily;
+const Y = { tmax: { title: "最高溫（°C）", zero: false }, precip: { title: "降雨量（mm）", zero: true } };
+let yField = "tmax", preset = true; // start with a summer brush so the linkage is visible
+
+function spec() {
+  const W = Math.min(innerWidth - 32, 1100);
+  const narrow = innerWidth < 640;
+  const avail = innerHeight - (narrow ? 100 : 58) - 42;
+  const topH = Math.max(110, Math.round(avail * (narrow ? 0.45 : 0.5)) - (narrow ? 50 : 40));
+  const botH = Math.max(80, avail - topH - (narrow ? 130 : 150)); // leave room for legend, axes and titles
+  const color = { field: "weather", type: "nominal", title: "天氣", scale: { domain: WEATHER, range: COLORS } };
+  const scatter = {
+    width: W - (narrow ? 50 : 70), height: topH,
+    params: [{ name: "brush", ...(preset ? { value: { x: [{ year: 2024, month: 6, date: 1 }, { year: 2024, month: 9, date: 15 }] } } : {}),
+      select: { type: "interval", encodings: ["x"], mark: { fill: "#f7df1e", fillOpacity: 0.1, stroke: "#f7df1e", strokeOpacity: 0.7 } } }],
+    transform: [{ filter: { param: "pick" } }],
+    mark: { type: "circle", opacity: 0.85, stroke: "#0e1013", strokeWidth: 0.5 },
+    encoding: {
+      x: { field: "date", type: "temporal", title: null, axis: { format: "%-m月", tickCount: 12, grid: false } },
+      y: { field: yField, type: "quantitative", title: Y[yField].title, scale: { zero: Y[yField].zero } },
+      size: { field: "precip", type: "quantitative", legend: null, scale: { range: [16, narrow ? 120 : 260] } },
+      color: { condition: { param: "brush", ...color, legend: { orient: "top", direction: "horizontal", title: null } }, value: "#33373f" },
+      tooltip: [{ field: "date", type: "temporal", title: "日期", format: "%Y/%m/%d" },
+        { field: "weather", title: "天氣" }, { field: "tmax", title: "最高溫 °C" }, { field: "precip", title: "降雨 mm" }],
+    },
+  };
+  const bars = {
+    width: narrow ? W - 70 : Math.round(W * 0.42), height: botH,
+    title: "天氣型態天數",
+    params: [{ name: "pick", select: { type: "point", encodings: ["color"] } }],
+    transform: [{ filter: { param: "brush" } }],
+    mark: { type: "bar", cornerRadiusEnd: 4, cursor: "pointer" },
+    encoding: {
+      y: { field: "weather", type: "nominal", title: null, sort: WEATHER },
+      x: { aggregate: "count", title: "天數" },
+      color: { condition: { param: "pick", ...color, legend: null }, value: "#33373f" },
+      tooltip: [{ field: "weather", title: "天氣" }, { aggregate: "count", title: "天數" }],
+    },
+  };
+  const hist = {
+    width: narrow ? W - 70 : Math.round(W * 0.42), height: botH,
+    title: "最高溫分布（篩選後）",
+    transform: [{ filter: { param: "brush" } }, { filter: { param: "pick" } }],
+    mark: { type: "bar", color: "#4cc9f0", cornerRadiusEnd: 3, opacity: 0.9 },
+    encoding: {
+      x: { field: "tmax", type: "quantitative", bin: { step: 1 }, title: "最高溫（°C）" },
+      y: { aggregate: "count", title: "天數" },
+      tooltip: [{ field: "tmax", bin: { step: 1 }, title: "溫度區間" }, { aggregate: "count", title: "天數" }],
+    },
+  };
+  return {
+    $schema: "https://vega.github.io/schema/vega-lite/v6.json",
+    data: { values: rows },
+    vconcat: narrow ? [scatter, bars] : [scatter, { hconcat: [bars, hist] }],
+    config: {
+      background: null, font: FONT, view: { stroke: null },
+      axis: { labelColor: "#9b998f", titleColor: "#ecebe6", titleFontWeight: 500, gridColor: "rgba(255,255,255,0.07)",
+        domainColor: "rgba(255,255,255,0.2)", tickColor: "rgba(255,255,255,0.2)", labelFontSize: 11, titleFontSize: 11 },
+      legend: { labelColor: "#ecebe6", titleColor: "#9b998f", symbolType: "circle", labelFontSize: 12 },
+      title: { color: "#ecebe6", anchor: "start", fontSize: 13, fontWeight: 600 },
+      concat: { spacing: narrow ? 14 : 22 },
+    },
+  };
+}
+
+let view;
+async function render() {
+  if (view) view.finalize();
+  const res = await vegaEmbed("#vis", spec(), { actions: false, renderer: "svg", tooltip: { theme: "dark" } });
+  view = res.view;
+}
+render().catch((err) => console.error("Vega-Lite render failed", err));
+
+document.querySelectorAll("[data-y]").forEach((b) => b.addEventListener("click", () => {
+  yField = b.dataset.y;
+  document.querySelectorAll("[data-y]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  render();
+}));
+document.getElementById("reset").addEventListener("click", () => { preset = false; render(); });
+let timer;
+addEventListener("resize", () => { clearTimeout(timer); timer = setTimeout(render, 200); });
+</script>
+</body>
+</html>

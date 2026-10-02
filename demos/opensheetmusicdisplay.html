@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenSheetMusicDisplay 示範：MusicXML 樂譜與游標播放</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="_shared/demo.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"]}</script>
+<style>
+  .app {
+    position: fixed; inset: 0; display: grid; grid-template-rows: auto minmax(0, 1fr);
+    gap: 10px; padding: 12px 14px 46px;
+  }
+  .top { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .meta { font-size: 13px; color: var(--muted); display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+  .meta b { font-size: 16px; color: var(--fg); }
+  .meta code { font: 11px var(--mono); padding: 1px 6px; border-radius: 5px; background: rgba(0, 0, 0, 0.06); }
+  .spacer { flex: 1; }
+  .zoom { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+  .zoom .btn { padding: 6px 10px; }
+  .zoom span { min-width: 40px; text-align: center; font-family: var(--mono); color: var(--fg); }
+  #play { min-width: 92px; }
+  .pos { font: 12px var(--mono); color: var(--muted); min-width: 72px; text-align: right; }
+  .sheet {
+    position: relative; min-height: 0; background: #fff; border-radius: 12px; border: 1px solid var(--line);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.06); overflow-x: hidden; overflow-y: auto;
+    scrollbar-width: thin; scroll-behavior: smooth;
+  }
+  #osmd { min-height: 100%; }
+  .sheet .status { position: absolute; }
+  @media (max-width: 620px) {
+    .app { padding: 10px 10px 46px; gap: 8px; }
+    .meta code, .pos { display: none; }
+    .spacer { flex-basis: 100%; height: 0; }
+  }
+</style>
+</head>
+<body class="paper">
+<div class="app">
+  <div class="top">
+    <div class="meta"><b>快樂頌</b><code>ode-to-joy.musicxml</code></div>
+    <div class="spacer"></div>
+    <div class="zoom">
+      <button class="btn" id="zout" aria-label="縮小">−</button><span id="zv">100%</span>
+      <button class="btn" id="zin" aria-label="放大">＋</button>
+    </div>
+    <span class="pos" id="pos">第 1 小節</span>
+    <button class="btn" id="stepBtn">逐拍 ›</button>
+    <button class="btn primary" id="play">▶ 播放</button>
+  </div>
+  <div class="sheet" id="sheet">
+    <div id="osmd"></div>
+    <div class="status" id="status">載入 MusicXML 中…</div>
+  </div>
+</div>
+<div class="hint">游標會跟著音樂前進，鋼琴雙譜表與歌詞都來自 MusicXML</div>
+
+<script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@2.2.0/build/opensheetmusicdisplay.min.js"></script>
+<script>
+// OSMD: load a MusicXML file, engrave it with VexFlow, then walk its cursor and sound each note with Web Audio.
+const sheet = document.getElementById("sheet");
+const statusEl = document.getElementById("status");
+const playBtn = document.getElementById("play");
+const BPM = 108;
+const osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay("osmd", {
+  autoResize: true,
+  backend: "svg",
+  drawTitle: true,
+  drawComposer: true,
+  drawLyricist: true,
+  drawPartNames: false,
+  drawMeasureNumbers: true,
+  followCursor: true,
+  cursorsOptions: [{ type: 0, color: "#d61f69", alpha: 0.35, follow: true }],
+});
+let zoom = innerWidth < 620 ? 0.6 : 0.85;
+
+// Piano-like tone: two detuned partials with a fast decay
+let ac = null;
+function tone(freq, sec) {
+  const t = ac.currentTime;
+  const g = ac.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(0.22, t + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + Math.max(0.35, sec * 1.4));
+  g.connect(ac.destination);
+  [[1, "triangle", 1], [2, "sine", 0.35], [3, "sine", 0.12]].forEach(([mul, type, amp]) => {
+    const o = ac.createOscillator(), og = ac.createGain();
+    o.type = type; o.frequency.value = freq * mul; og.gain.value = amp;
+    o.connect(og); og.connect(g);
+    o.start(t); o.stop(t + Math.max(0.4, sec * 1.5));
+  });
+}
+
+const wholeSec = (4 * 60) / BPM;
+function sounding() {
+  // Notes under the cursor across both staves
+  const out = [];
+  for (const ve of osmd.cursor.iterator.CurrentVoiceEntries || []) {
+    for (const n of ve.Notes) if (!n.isRest() && n.Pitch) out.push(n);
+  }
+  return out;
+}
+function updatePos() {
+  const it = osmd.cursor.iterator;
+  document.getElementById("pos").textContent = it.EndReached ? "結束" : `第 ${it.CurrentMeasureIndex + 1} 小節`;
+}
+
+// Play the notes at the cursor, then advance; returns seconds until the next onset.
+function stepOnce() {
+  const it = osmd.cursor.iterator;
+  if (it.EndReached) { osmd.cursor.reset(); }
+  const t0 = it.currentTimeStamp.RealValue;
+  const ns = sounding();
+  ns.forEach((n) => tone(n.Pitch.Frequency, n.Length.RealValue * wholeSec));
+  const shortest = ns.length ? Math.min(...ns.map((n) => n.Length.RealValue)) : 0.25;
+  osmd.cursor.next();
+  const t1 = it.EndReached ? t0 + shortest : it.currentTimeStamp.RealValue;
+  updatePos();
+  return (t1 - t0) * wholeSec;
+}
+
+let timer = null;
+function stop(reset) {
+  clearTimeout(timer); timer = null;
+  playBtn.textContent = "▶ 播放";
+  if (reset) { osmd.cursor.reset(); sheet.scrollTop = 0; updatePos(); }
+}
+function loop() {
+  if (osmd.cursor.iterator.EndReached) { stop(true); return; }
+  const wait = stepOnce();
+  timer = setTimeout(loop, wait * 1000);
+}
+
+async function ensureAudio() {
+  ac = ac || new AudioContext();
+  await ac.resume();
+}
+playBtn.addEventListener("click", async () => {
+  if (timer) { stop(false); return; }
+  await ensureAudio();
+  if (osmd.cursor.iterator.EndReached) osmd.cursor.reset();
+  playBtn.textContent = "❚❚ 暫停";
+  loop();
+});
+document.getElementById("stepBtn").addEventListener("click", async () => {
+  if (timer) stop(false);
+  await ensureAudio();
+  stepOnce();
+});
+
+function setZoom(z) {
+  zoom = Math.min(1.6, Math.max(0.4, Math.round(z * 100) / 100));
+  document.getElementById("zv").textContent = `${Math.round(zoom * 100)}%`;
+  osmd.zoom = zoom;
+  osmd.render();
+  osmd.cursor.update();
+}
+document.getElementById("zin").addEventListener("click", () => setZoom(zoom + 0.1));
+document.getElementById("zout").addEventListener("click", () => setZoom(zoom - 0.1));
+
+osmd.load("assets/opensheetmusicdisplay/ode-to-joy.musicxml").then(() => {
+  statusEl.hidden = true;
+  setZoom(zoom);
+  osmd.cursor.show();
+  updatePos();
+}).catch((err) => {
+  statusEl.textContent = `樂譜載入失敗：${err.message}`;
+  console.error(err);
+});
+</script>
+</body>
+</html>

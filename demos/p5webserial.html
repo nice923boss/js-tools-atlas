@@ -3,418 +3,1026 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>p5.webserial 示範：序列埠即時波形</title>
+<title>p5.webserial 示範：七個場景看懂序列埠讀寫</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"click","needs":["serial"],"note":"沒有序列埠裝置時自動改用模擬資料，支援 Web Serial 的瀏覽器會經由 p5.webserial 讀取管線"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"click","needs":["serial"],"size":"約 1 MB","note":"沒有序列埠時，各場景改用標明「模擬資料」的虛擬裝置；支援 Web Serial 的瀏覽器會讓模擬串流走 p5.webserial 的讀取管線","scenes":["即時示波器","支援偵測","鮑率與封包框","分段與重組","資料格式","雙向指令","極限測試"]}</script>
 <style>
-  .app { position: fixed; inset: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px 46px; }
-  .top { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .state {
-    flex: 1 1 300px; min-width: 0; padding: 7px 12px; border-radius: 10px; background: var(--panel);
-    border: 1px solid var(--line); font-size: 13px; line-height: 1.45;
+  .pw-board { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); display: grid; gap: 10px; min-height: 0; }
+  .pw-scope { grid-template-columns: minmax(0, 1fr) 250px; }
+  .pw-rows { grid-template-rows: minmax(90px, 1fr) minmax(0, 1.15fr); }
+  .pw-split { grid-template-columns: minmax(0, 1fr) 270px; }
+  .pw-two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; min-height: 0; }
+  .pw-box { position: relative; min-width: 0; min-height: 0; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line); overflow: hidden; }
+  .pw-box canvas { position: absolute; inset: 0; display: block; }
+  .pw-panel {
+    min-width: 0; min-height: 0; border-radius: 12px; background: var(--panel); border: 1px solid var(--line);
+    padding: 9px 12px; font-size: 12.5px; line-height: 1.5; overflow: hidden; display: flex; flex-direction: column; gap: 6px;
   }
-  .state .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #777; margin-right: 6px; vertical-align: 1px; }
-  .state[data-mode="serial"] .dot { background: var(--c4); box-shadow: 0 0 8px var(--c4); }
-  .state[data-mode^="sim"] .dot { background: var(--c6); box-shadow: 0 0 8px var(--c6); }
-  .state[data-mode="wait"] .dot { background: var(--c1); }
-  .state[data-mode="err"] .dot { background: #ff6b6b; }
-  .state small { display: block; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .btns { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-  .btns label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
-  .btns select { padding: 7px 8px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); }
-  .notice {
-    display: flex; gap: 10px; align-items: flex-start; padding: 8px 12px; border-radius: 10px; font-size: 13px; line-height: 1.5;
-    background: rgba(255, 140, 66, 0.12); border: 1px solid rgba(255, 140, 66, 0.5);
-  }
-  .notice[hidden] { display: none; }
-  .notice p { margin: 0; flex: 1; }
-  .notice button { appearance: none; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; padding: 2px; }
-  .main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 256px; gap: 10px; }
-  .scope { position: relative; min-height: 0; border-radius: 12px; overflow: hidden; background: #0b0d10; border: 1px solid var(--line); }
-  .scope canvas { position: absolute; inset: 0; display: block; }
-  .legend { position: absolute; left: 52px; top: 8px; z-index: 2; display: flex; gap: 6px; flex-wrap: wrap; pointer-events: none; }
-  .chip {
-    font: 600 12px/1 var(--mono); padding: 5px 8px; border-radius: 999px; background: rgba(14, 16, 19, 0.8);
-    border: 1px solid var(--line); display: flex; gap: 6px; align-items: center;
-  }
-  .chip i { width: 8px; height: 8px; border-radius: 50%; display: block; }
-  .chip b { min-width: 3.2ch; text-align: right; }
-  .side { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
-  .side .panel { padding: 10px 12px; }
-  .side h4 { margin: 0 0 6px; font-size: 12.5px; display: flex; justify-content: space-between; gap: 8px; }
-  .side h4 span { color: var(--muted); font-weight: 400; font-family: var(--mono); }
-  .mon { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-  #mon {
+  .pw-panel h4 { margin: 0; font-size: 12.5px; display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .pw-panel h4 span { color: var(--muted); font: 400 11px/1.4 var(--mono); white-space: nowrap; }
+  .pw-panel p { margin: 0; color: var(--muted); font-size: 12px; }
+  .pw-log {
     margin: 0; flex: 1; min-height: 0; overflow: hidden; font: 11.5px/1.55 var(--mono); color: var(--muted); white-space: pre;
     display: flex; flex-direction: column; justify-content: flex-end;
-    -webkit-mask-image: linear-gradient(transparent, #000 22px); mask-image: linear-gradient(transparent, #000 22px);
+    -webkit-mask-image: linear-gradient(transparent, #000 20px); mask-image: linear-gradient(transparent, #000 20px);
   }
-  #mon div { flex: none; }
-  #mon b { color: var(--fg); font-weight: 500; }
-  pre.code { margin: 0; font: 11px/1.55 var(--mono); white-space: pre; overflow: hidden; color: #cfd3da; }
-  pre.code .k { color: var(--c2); }
-  pre.code .s { color: var(--c4); }
-  pre.code .c { color: var(--muted); }
-  @media (max-width: 720px) {
-    .app { overflow-y: auto; }
-    .state { flex-basis: 100%; }
-    .btns { width: 100%; display: grid; grid-template-columns: 1fr 1fr; }
-    .btns select { flex: 1; }
-    .main { flex: none; grid-template-columns: minmax(0, 1fr); }
-    .scope { height: 250px; }
-    .mon { height: 170px; flex: none; }
+  .pw-log div { flex: none; overflow: hidden; text-overflow: ellipsis; }
+  .pw-log b { color: var(--fg); font-weight: 500; }
+  .pw-log .tx { color: var(--c2); }
+  .pw-log .rx { color: var(--c4); }
+  .pw-log .bad { color: var(--c3); }
+  .pw-log .cut { box-shadow: inset 2px 0 var(--c5); padding-left: 5px; }
+  .pw-sim {
+    position: absolute; right: 8px; top: 8px; z-index: 3; display: flex; gap: 6px; align-items: center; pointer-events: none;
+    padding: 4px 9px; border-radius: 999px; font-size: 11.5px; background: rgba(255, 140, 66, 0.16); border: 1px solid rgba(255, 140, 66, 0.55);
+    max-width: calc(100% - 16px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .pw-sim::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--c5); }
+  .pw-sim.real { background: rgba(123, 211, 137, 0.16); border-color: rgba(123, 211, 137, 0.55); }
+  .pw-sim.real::before { background: var(--c4); box-shadow: 0 0 8px var(--c4); }
+  .pw-sim.wait::before { background: var(--c1); }
+  .pw-sim.err { background: rgba(247, 37, 133, 0.14); border-color: rgba(247, 37, 133, 0.5); }
+  .pw-sim.err::before { background: var(--c3); }
+  .pw-chips { position: absolute; left: 50px; top: 40px; z-index: 2; display: flex; gap: 6px; flex-wrap: wrap; pointer-events: none; }
+  .pw-chip { font: 600 11.5px/1 var(--mono); padding: 5px 8px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); display: flex; gap: 6px; align-items: center; }
+  .pw-chip i { width: 8px; height: 8px; border-radius: 50%; display: block; }
+  .pw-chip b { min-width: 3.2ch; text-align: right; }
+  .pw-notice {
+    position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 4; padding: 8px 12px; border-radius: 10px; font-size: 12.5px; line-height: 1.5;
+    background: var(--panel); border: 1px solid rgba(255, 140, 66, 0.6); backdrop-filter: blur(8px);
+  }
+  .pw-notice[hidden] { display: none; }
+  .pw-table { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 10px; align-items: center; font-size: 12.5px; }
+  .pw-table code { font: 500 11.5px/1.3 var(--mono); color: var(--muted); display: block; }
+  .pw-yes, .pw-no, .pw-maybe { font: 600 11.5px/1 var(--mono); padding: 4px 8px; border-radius: 999px; white-space: nowrap; text-align: center; }
+  .pw-yes { color: var(--c4); background: rgba(123, 211, 137, 0.14); }
+  .pw-no { color: var(--c3); background: rgba(247, 37, 133, 0.12); }
+  .pw-maybe { color: var(--muted); background: rgba(127, 127, 127, 0.14); }
+  .pw-verdict { padding: 8px 10px; border-radius: 10px; background: rgba(127, 127, 127, 0.1); border-left: 3px solid var(--accent); font-size: 12.5px; }
+  .pw-code { margin: 0; padding: 7px 9px; border-radius: 8px; background: rgba(127, 127, 127, 0.1); font: 11.5px/1.55 var(--mono); white-space: pre-wrap; word-break: break-all; color: var(--fg); }
+  .pw-code .c { color: var(--muted); }
+  .pw-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 6px; }
+  .pw-stats div { padding: 5px 8px; border-radius: 8px; background: rgba(127, 127, 127, 0.1); }
+  .pw-stats small { display: block; color: var(--muted); font-size: 11px; }
+  .pw-stats b { font: 600 13px/1.3 var(--mono); }
+  .pw-stats b.good { color: var(--c4); }
+  .pw-stats b.bad { color: var(--c3); }
+  .pw-stress { position: absolute; inset: 8px 8px 8px 350px; }
+  .pw-stress canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  @media (max-width: 760px) {
+    .pw-stress { display: none; }
+  }
+  @media (max-width: 640px) {
+    .pw-scope, .pw-split { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 104px; }
+    .pw-split .pw-wide { display: none; }
+    .pw-rows { grid-template-rows: minmax(70px, 0.8fr) minmax(0, 1.2fr); }
+    .pw-chips { left: 46px; top: 36px; }
+    .pw-two { gap: 6px; }
+    .pw-two .pw-panel { padding: 7px 8px; }
+    .pw-log { font-size: 10.5px; }
+  }
+  @media (max-height: 460px) {
+    .pw-scope, .pw-split { grid-template-columns: minmax(0, 1fr) 200px; grid-template-rows: minmax(0, 1fr); }
+    .pw-split .pw-wide { display: none; }
   }
 </style>
 </head>
 <body>
-<div class="app">
-  <div class="top">
-    <div class="state" id="state" data-mode="idle"><span class="dot"></span><b id="stateText">準備中</b><small id="stateSub">載入函式庫後開始</small></div>
-    <div class="btns">
-      <label>鮑率
-        <select id="baud"><option>9600</option><option>57600</option><option selected>115200</option></select>
-      </label>
-      <button class="btn primary" id="connect" type="button">🔌 連接序列埠</button>
-      <button class="btn" id="sim" type="button">🧪 模擬資料</button>
-      <button class="btn" id="stop" type="button">⏸ 暫停</button>
-    </div>
-  </div>
-  <div class="notice" id="notice" hidden><p id="noticeText"></p><button type="button" id="noticeClose" aria-label="關閉說明">✕</button></div>
-  <div class="main">
-    <section class="scope" id="scope"><div class="legend" id="legend"></div></section>
-    <aside class="side">
-      <div class="panel mon">
-        <h4>序列監看 <span id="rate">0 行／秒</span></h4>
-        <pre id="mon"></pre>
-      </div>
-      <div class="panel">
-        <h4>p5.webserial 用法</h4>
-<pre class="code"><span class="k">let</span> port = createSerial();
-port.open(<span class="s">115200</span>); <span class="c">// 選擇裝置</span>
-<span class="c">// draw() 裡逐行讀取</span>
-<span class="k">let</span> line = port.readUntil(<span class="s">"\n"</span>);
-<span class="k">let</span> [a0, a1, a2] =
-  line.split(<span class="s">","</span>).map(Number);
-<span class="c">// Arduino 每行印出 512,300,700</span></pre>
-      </div>
-    </aside>
-  </div>
-</div>
-<div class="hint">按「連接序列埠」選擇裝置，無裝置時看模擬資料</div>
-
-<script src="_shared/gate.js"></script>
-<script type="module">
+<script src="_shared/showcase.js"></script>
+<script>
+// p5.webserial showcase: a live scope, environment detection, UART framing, chunk reassembly,
+// data formats, two-way commands and a parser throughput benchmark. Without a serial port every
+// scene runs on a clearly labelled virtual device instead of pretending to talk to hardware.
+(() => {
+const { h, fmt, fmtCompact } = Showcase;
 const P5_URL = "https://cdn.jsdelivr.net/npm/p5@2.3.4/lib/p5.min.js";
-const WEBSERIAL_URL = "https://cdn.jsdelivr.net/npm/@gohai/p5.webserial@1.1.2/libraries/p5.webserial.js";
-const COLORS = ["#4cc9f0", "#f72585", "#7bd389", "#ff8c42"];
-const NAMES = ["A0", "A1", "A2", "A3"];
-const LEN = 600;          // samples kept per channel
-const SIM_HZ = 50;        // simulated lines per second
+const WS_URL = "https://cdn.jsdelivr.net/npm/@gohai/p5.webserial@1.1.2/libraries/p5.webserial.js";
+const SIM_LABEL = "模擬資料";
+let libsReady = false;
 
-const $ = (id) => document.getElementById(id);
-const stateEl = $("state"), stateText = $("stateText"), stateSub = $("stateSub");
-const scope = $("scope"), legend = $("legend"), mon = $("mon"), rateEl = $("rate");
-const baudSel = $("baud");
+const cssv = (k) => getComputedStyle(document.documentElement).getPropertyValue(k).trim();
+const pal = () => Object.fromEntries(["fg", "muted", "bg-2", "accent", "c1", "c2", "c3", "c4", "c5", "c6"].map((k) => [k, cssv(`--${k}`)]));
+const MONO = () => cssv("--mono");
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const concat = (a, b) => { const o = new Uint8Array(a.length + b.length); o.set(a); o.set(b, a.length); return o; };
+const rgba = (hex, a) => {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(hex) || [0, "80", "80", "80"];
+  return `rgba(${parseInt(m[1], 16)},${parseInt(m[2], 16)},${parseInt(m[3], 16)},${a})`;
+};
+const showNL = (s) => s.replace(/\r/g, "␍").replace(/\n/g, "↵");
 
-await demoGate({
-  icon: "🔌",
-  title: "序列埠即時波形",
-  desc: "用 p5.webserial 讀取 Arduino 等序列裝置每行送出的數值（逗號分隔），再用 p5.js 畫成即時示波器。沒有裝置也能用模擬資料觀看。",
-  tags: ["需要 Web Serial（桌機版 Chrome／Edge）", "p5.js 約 1 MB", "可用模擬資料"],
-  button: "開始",
-});
-
-const loadScript = (src) => new Promise((resolve, reject) => {
-  const s = document.createElement("script");
-  s.src = src;
-  s.onload = resolve;
-  s.onerror = () => reject(new Error(`無法載入 ${src}`));
-  document.head.append(s);
-});
-
-const status = demoStatus("載入 p5.js 與 p5.webserial…");
-try {
-  await loadScript(P5_URL);
-  status.progress(0.7);
-  await loadScript(WEBSERIAL_URL);
-  status.progress(1);
-  status.done();
-} catch (err) {
-  console.error(err);
-  status.error("函式庫載入失敗，請確認網路連線後重新整理頁面");
-  throw err;
-}
-
-// ---- feature detection ----
-const hasSerial = "serial" in navigator;
-const hasUsb = "usb" in navigator;
-const supported = hasSerial || hasUsb;              // p5.webserial throws without either
-const canVirtual = typeof window.SerialPort === "function";
-
-// ---- sample buffers ----
-const bufs = COLORS.map(() => new Float32Array(LEN).fill(NaN));
-let head = 0, filled = 0, channels = 0, lineCount = 0;
-const latest = [];
-const recent = [];
-
-function resetBuffers() {
-  bufs.forEach((b) => b.fill(NaN));
-  head = 0; filled = 0; channels = 0; recent.length = 0;
-}
-
-function handleLine(raw) {
-  const line = raw.trim();
-  if (!line) return;
-  lineCount++;
-  recent.push(line);
-  if (recent.length > 40) recent.shift();
-  const vals = line.split(/[,\s;]+/).map(Number).filter(Number.isFinite).slice(0, COLORS.length);
-  if (!vals.length) return;
-  channels = Math.max(channels, vals.length);
-  for (let c = 0; c < COLORS.length; c++) {
-    bufs[c][head] = c < vals.length ? vals[c] : NaN;
-    if (c < vals.length) latest[c] = vals[c];
+async function libs(ctx) {
+  if (!libsReady) {
+    await ctx.gate({
+      icon: "🔌", title: "p5.webserial 序列埠", button: "開始",
+      desc: "載入 p5.js 與 p5.webserial（約 1 MB）。有 Arduino 等裝置時可在第一個場景連線；沒有裝置時，所有場景都以標明「模擬資料」的虛擬裝置示範讀寫與解析。",
+      tags: ["Web Serial：桌機 Chrome／Edge", "約 1 MB", "可用模擬資料"],
+    });
+    const st = ctx.status("載入 p5.js 與 p5.webserial…");
+    try {
+      await ctx.load([P5_URL, WS_URL]);
+    } catch (e) {
+      st.error("函式庫載入失敗，請確認網路連線後重新整理");
+      throw e;
+    }
+    st.done();
+    libsReady = true;
   }
-  head = (head + 1) % LEN;
-  filled = Math.min(filled + 1, LEN);
+  return env();
 }
 
-// ---- simulated sensor: sine, triangle and a heartbeat-like pulse ----
-let simIndex = 0;
-function simLine() {
-  const s = simIndex++ / SIM_HZ;
-  const noise = () => (Math.random() - 0.5) * 16;
+// What this browser can really do. `lib` means createSerial() will not throw; `virtual` means a
+// SerialPort-shaped object can be handed to p5.webserial's open().
+function env() {
+  const hasSerial = "serial" in navigator, hasUsb = "usb" in navigator;
+  return { hasSerial, hasUsb, lib: hasSerial || hasUsb, virtual: typeof window.SerialPort === "function" };
+}
+
+// A stand-in microcontroller. The readable side emits bytes in irregular chunks (as USB serial
+// does); `bytesPerSec` paces it like a real UART instead. The writable side hands each received
+// line to respond() and queues the reply.
+function virtualDevice({ hz = 50, produce, respond, chunky = 0.6, bytesPerSec = 0, onChunk } = {}) {
+  const enc = new TextEncoder(), dec = new TextDecoder();
+  let pending = new Uint8Array(0), ctrl = null, timer = 0, tick = 0, budget = 0, rx = "", readable = null, opened = null;
+  const push = (x) => { pending = concat(pending, typeof x === "string" ? enc.encode(x) : x); };
+  const stop = () => { clearInterval(timer); timer = 0; ctrl = null; };
+  const step = () => {
+    if (produce && (!bytesPerSec || pending.length < 48)) { const out = produce(tick); if (out) push(out); }
+    tick++;
+    if (!ctrl || !pending.length) return;
+    let n = pending.length;
+    if (bytesPerSec) {
+      budget = Math.min(budget + bytesPerSec / hz, bytesPerSec);
+      n = Math.min(n, Math.floor(budget));
+      budget -= n;
+    } else if (chunky) {
+      if (Math.random() > chunky) return;
+      n = 1 + Math.floor(Math.random() * n);
+    }
+    if (!n) return;
+    const piece = pending.slice(0, n);
+    pending = pending.slice(n);
+    ctrl.enqueue(piece);
+    if (onChunk) onChunk(piece);
+  };
+  const writable = new WritableStream({
+    write(chunk) {
+      rx += dec.decode(chunk, { stream: true });
+      for (let k = rx.indexOf("\n"); k >= 0; k = rx.indexOf("\n")) {
+        const cmd = rx.slice(0, k).trim();
+        rx = rx.slice(k + 1);
+        const reply = respond && cmd ? respond(cmd) : null;
+        if (reply) push(reply);
+      }
+    },
+  });
+  const port = Object.create(typeof SerialPort === "function" ? SerialPort.prototype : Object.prototype);
+  Object.defineProperty(port, "readable", { get: () => readable, configurable: true });
+  Object.defineProperty(port, "writable", { get: () => (readable ? writable : null), configurable: true });
+  port.open = async (opts) => {
+    opened = { ...opts };
+    readable = new ReadableStream({ start(c) { ctrl = c; timer = setInterval(step, 1000 / hz); }, cancel() { stop(); } });
+  };
+  port.close = async () => { stop(); readable = null; };
+  port.getInfo = () => ({});
+  return { port, stop, get options() { return opened; } };
+}
+
+// Connect a virtual device through p5.webserial when the browser allows it; otherwise read the
+// same byte stream directly. `via` tells the UI which path is live so labels never overstate it.
+function link(ctx, p, E, dev, opts = { baudRate: 115200 }) {
+  let L;
+  if (E.lib && E.virtual) {
+    const s = p.createSerial();
+    s.open(dev.port, opts);
+    L = {
+      via: "lib", serial: s,
+      line: () => s.readUntil("\n"), text: () => s.read(), bytes: () => s.readBytes(), available: () => s.availableBytes(),
+      write: (t) => s.print(t),
+      close() { s.keepReading = false; if (s.reader) s.close(); dev.stop(); },
+    };
+  } else {
+    const enc = new TextEncoder(), dec = new TextDecoder();
+    let buf = new Uint8Array(0), reader = null, alive = true;
+    (async () => {
+      await dev.port.open(opts);
+      reader = dev.port.readable.getReader();
+      while (alive) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf = concat(buf, value);
+      }
+    })();
+    const take = (n) => { const out = buf.slice(0, n); buf = buf.slice(n); return out; };
+    L = {
+      via: "raw",
+      line() { const k = buf.indexOf(10); return k < 0 ? "" : dec.decode(take(k + 1)); },
+      text: () => dec.decode(take(buf.length)), bytes: () => Array.from(take(buf.length)), available: () => buf.length,
+      write(t) { const w = dev.port.writable.getWriter(); w.write(enc.encode(t)).then(() => w.releaseLock()); },
+      close() { alive = false; if (reader) reader.cancel(); dev.stop(); },
+    };
+  }
+  ctx.onCleanup(() => L.close());
+  return L;
+}
+
+const viaText = (L) => (L.via === "lib" ? `${SIM_LABEL}・虛擬 SerialPort 經 p5.webserial 讀取` : `${SIM_LABEL}・此瀏覽器無 Web Serial，頁面直接讀模擬串流`);
+
+// p5 instance mode inside `host`; init(p) installs draw(). Removed with the scene.
+function sketch(ctx, host, init) {
+  let ready = false;
+  const inst = new p5((p) => {
+    p.setup = () => {
+      p.pixelDensity(Math.min(2, window.devicePixelRatio || 1));
+      p.createCanvas(Math.max(1, host.clientWidth), Math.max(1, host.clientHeight));
+      ready = true;
+      init(p);
+    };
+  }, host);
+  const ro = new ResizeObserver(() => { if (ready && host.clientWidth && host.clientHeight) inst.resizeCanvas(host.clientWidth, host.clientHeight); });
+  ro.observe(host);
+  ctx.onCleanup(() => { ro.disconnect(); inst.remove(); });
+  return inst;
+}
+
+// Text via the 2D context (p5 has no font stacks). save/restore keeps p5's cached fill style valid.
+function label(p, s, x, y, { size = 10.5, color, align = "left", base = "alphabetic", weight = 400, ui = false } = {}) {
+  const g = p.drawingContext;
+  g.save();
+  g.font = `${weight} ${size}px ${ui ? cssv("--font") : MONO()}`;
+  g.fillStyle = color;
+  g.textAlign = align;
+  g.textBaseline = base;
+  g.fillText(s, x, y);
+  g.restore();
+}
+
+function logLines(el, rows, max = 30) {
+  el.replaceChildren(...rows.slice(-max).map((r) => h("div", { class: r.cls || "", text: r.text })));
+}
+
+// Simulated sensor: sine, triangle and a heartbeat-like pulse, 0..1023 like analogRead().
+function scopeLine(i, hz) {
+  const s = i / hz, noise = () => (Math.random() - 0.5) * 16;
   const a = 512 + 330 * Math.sin(s * Math.PI * 2 * 0.35) + noise();
   const ph = (s * 0.5) % 1;
   const b = 170 + 640 * (ph < 0.5 ? ph * 2 : 2 - ph * 2) + noise() * 0.5;
   const beat = (s * 0.9) % 1;
-  const c = 300 + 560 * Math.exp(-beat * 20) - 130 * Math.exp(-((beat - 0.1) ** 2) * 900)
-    + 70 * Math.exp(-((beat - 0.4) ** 2) * 160) + noise() * 0.6;
-  return [a, b, c].map((v) => Math.round(Math.min(1023, Math.max(0, v)))).join(",");
+  const c = 300 + 560 * Math.exp(-beat * 20) - 130 * Math.exp(-((beat - 0.1) ** 2) * 900) + 70 * Math.exp(-((beat - 0.4) ** 2) * 160) + noise() * 0.6;
+  return `${[a, b, c].map((v) => Math.round(clamp(v, 0, 1023))).join(",")}\n`;
 }
 
-// A SerialPort-shaped object whose readable stream emits CSV lines in irregular chunks,
-// so the data still travels through p5.webserial's open() / read loop / readUntil().
-function makeVirtualPort() {
-  const vp = Object.create(SerialPort.prototype);
-  const enc = new TextEncoder();
-  let readable = null, timer = 0, pending = "";
-  Object.defineProperty(vp, "readable", { get: () => readable, configurable: true });
-  Object.defineProperty(vp, "writable", { value: new WritableStream(), configurable: true });
-  vp.open = async () => {
-    readable = new ReadableStream({
-      start(ctrl) {
-        timer = setInterval(() => {
-          pending += simLine() + "\n";
-          if (Math.random() < 0.65) {
-            const cut = 1 + Math.floor(Math.random() * pending.length);
-            ctrl.enqueue(enc.encode(pending.slice(0, cut)));
-            pending = pending.slice(cut);
+Showcase.run({ scenes: [
+  {
+    id: "scope", title: "即時示波器",
+    api: "createSerial()・open(port, { baudRate })・readUntil(\"\\n\")・new p5(sketch, node)",
+    desc: "Arduino 每行印出「512,300,700」，p5 的 draw() 每格用 readUntil(\"\\n\") 取出完整的行，拆欄後推進環形緩衝，畫成三通道示波器。沒有裝置時，模擬串流同樣走 p5.webserial 的讀取管線；按「連接序列埠」可換成實體裝置。",
+    hint: "有 Arduino 就按「連接序列埠」・鮑率要和 Serial.begin() 一致",
+    async mount(ctx) {
+      const E = await libs(ctx);
+      ctx.html(`<div class="pw-board pw-scope">
+        <div class="pw-box" data-r="scope"><div class="pw-chips"></div><div class="pw-sim"></div><div class="pw-notice" hidden></div></div>
+        <div class="pw-panel"><h4>序列監看 <span data-r="rate">0 行／秒</span></h4><div class="pw-log" data-r="mon"></div></div>
+      </div>`);
+      const box = ctx.$("[data-r=scope]"), chips = ctx.$(".pw-chips"), badge = ctx.$(".pw-sim"), notice = ctx.$(".pw-notice");
+      const mon = ctx.$("[data-r=mon]"), rateEl = ctx.$("[data-r=rate]");
+      const LEN = 600, HZ = 50, COLORS = ["c2", "c3", "c4", "c5"];
+      const bufs = COLORS.map(() => new Float32Array(LEN).fill(NaN));
+      let head = 0, filled = 0, channels = 0, lines = 0, lastLines = 0, lo = 0, hi = 1023;
+      const latest = [], recent = [];
+      let L = null, mode = "sim", waitSince = 0;
+      const say = (cls, text) => { badge.className = `pw-sim ${cls}`; badge.textContent = text; };
+      const warn = (text) => { notice.textContent = text; notice.hidden = !text; };
+
+      const handle = (raw) => {
+        const line = raw.trim();
+        if (!line) return;
+        lines++;
+        recent.push(line);
+        if (recent.length > 40) recent.shift();
+        const vals = line.split(/[,\s;]+/).map(Number).filter(Number.isFinite).slice(0, COLORS.length);
+        if (!vals.length) return;
+        channels = Math.max(channels, vals.length);
+        for (let c = 0; c < COLORS.length; c++) { bufs[c][head] = c < vals.length ? vals[c] : NaN; if (c < vals.length) latest[c] = vals[c]; }
+        head = (head + 1) % LEN;
+        filled = Math.min(filled + 1, LEN);
+      };
+      const reset = () => { bufs.forEach((b) => b.fill(NaN)); head = 0; filled = 0; channels = 0; recent.length = 0; };
+      const closeLink = async () => {
+        if (!L) return;
+        const old = L;
+        L = null;
+        old.close();
+        for (let i = 0; i < 60 && old.serial && old.serial.reader; i++) await ctx.sleep(25);
+      };
+
+      const p = sketch(ctx, box, (p) => {
+        p.draw = () => {
+          if (L) for (let guard = 0; guard < 400; guard++) { const s = L.line(); if (!s) break; handle(s); }
+          drawScope(p);
+        };
+      });
+      const startSim = async () => {
+        await closeLink();
+        reset();
+        L = link(ctx, p, E, virtualDevice({ hz: HZ, produce: (i) => scopeLine(i, HZ) }), { baudRate: +baud.value });
+        mode = "sim";
+        say("", viaText(L));
+      };
+      const connect = async () => {
+        if (!E.lib) return warn("這個瀏覽器沒有 Web Serial 也沒有 WebUSB，p5.webserial 無法連接實體裝置。請改用桌機版 Chrome 或 Edge，並透過 https 或 localhost 開啟。畫面維持模擬資料。");
+        let picked = null;
+        if (E.hasSerial) {
+          try {
+            picked = await navigator.serial.requestPort();
+          } catch (err) {
+            if (err.name === "NotFoundError") warn("沒有選到序列埠：請確認裝置已接上電腦，並在跳出的清單中選取。畫面維持目前的資料來源。");
+            else if (err.name === "SecurityError") warn("此頁面沒有序列埠權限：嵌入的 iframe 需要 allow=\"serial\"，或請在新分頁開啟本示範。");
+            else warn(`無法取得序列埠：${err.message}`);
+            return;
           }
-        }, 1000 / SIM_HZ);
-      },
-      cancel() { clearInterval(timer); },
-    });
-  };
-  vp.close = async () => { clearInterval(timer); readable = null; };
-  vp.getInfo = () => ({});
-  return vp;
-}
+        }
+        await closeLink();
+        reset();
+        const s = p.createSerial();
+        if (picked) s.open(picked, { baudRate: +baud.value });
+        else s.open(+baud.value);
+        L = { via: "serial", serial: s, line: () => s.readUntil("\n"), close() { s.keepReading = false; if (s.reader) s.close(); } };
+        mode = "wait";
+        waitSince = performance.now();
+        warn("");
+        say("wait", "等待裝置開啟…");
+      };
+      ctx.onCleanup(() => { if (L) L.close(); });
 
-// ---- UI state ----
-let mode = "idle", rawTimer = 0, waitSince = 0, port = null;
-const MODES = {
-  "sim-lib": ["模擬資料中", "虛擬 SerialPort 每 20 ms 送出一行 CSV，經 p5.webserial 的 readUntil() 解析"],
-  "sim-raw": ["模擬資料中（未使用序列埠）", "此瀏覽器無法建立 p5.webserial 連線，數值由頁面直接產生"],
-  wait: ["等待裝置…", "請在瀏覽器跳出的清單中選擇序列埠"],
-  serial: ["已連線序列埠", ""],
-  idle: ["已暫停", "按「連接序列埠」或「模擬資料」重新開始"],
-  err: ["連線失敗", ""],
-};
-function setMode(m, sub) {
-  mode = m;
-  stateEl.dataset.mode = m;
-  stateText.textContent = MODES[m][0];
-  stateSub.textContent = sub ?? MODES[m][1];
-  $("sim").setAttribute("aria-pressed", String(m.startsWith("sim")));
-}
-function showNotice(text) {
-  $("noticeText").textContent = text;
-  $("notice").hidden = false;
-}
-$("noticeClose").addEventListener("click", () => { $("notice").hidden = true; });
+      ctx.button("🔌 連接序列埠", connect, { primary: true });
+      ctx.button("🧪 模擬資料", () => { warn(""); startSim(); });
+      const baud = ctx.select("鮑率", ["9600", "57600", "115200"], "115200", () => { if (mode === "sim") startSim(); });
+      if (!E.lib) warn("此瀏覽器不支援 Web Serial，無法連接實體裝置；以下為模擬資料。");
+      await startSim();
 
-async function closePort() {
-  if (rawTimer) { clearInterval(rawTimer); rawTimer = 0; }
-  if (!port || !port.reader) return;
-  port.close();
-  // wait until p5.webserial's read loop has released the old port
-  for (let i = 0; i < 60 && port.reader; i++) await new Promise((r) => setTimeout(r, 25));
-}
+      ctx.interval(() => {
+        const rate = lines - lastLines;
+        lastLines = lines;
+        rateEl.textContent = `${rate} 行／秒`;
+        if (mode === "wait" && L && L.serial.opened()) { mode = "serial"; }
+        else if (mode === "wait" && performance.now() - waitSince > 4000) {
+          mode = "err";
+          say("err", "序列埠無法開啟");
+          warn("序列埠開啟失敗：可能正被 Arduino IDE 的序列埠監控視窗或其他分頁占用，關閉後再試一次。");
+        } else if (mode === "serial" && L && !L.serial.opened()) { mode = "err"; say("err", "裝置已中斷連線"); }
+        if (mode === "serial") say("real", `實體序列埠・${baud.value} baud・每秒 ${rate} 行`);
+      }, 1000);
+      ctx.interval(() => {
+        logLines(mon, recent.slice(-24).map((l, i, a) => ({ text: `#${String(lines - a.length + i + 1).padStart(5, "0")}  ${l}`, cls: i === a.length - 1 ? "rx" : "" })));
+        chips.replaceChildren(...latest.slice(0, Math.max(channels, 1)).map((v, i) =>
+          h("span", { class: "pw-chip" }, h("i", { style: `background:var(--${COLORS[i]})` }), `A${i}`, h("b", { text: String(Math.round(v ?? 0)) }))));
+      }, 120);
 
-async function startSim() {
-  await closePort();
-  resetBuffers();
-  if (port && canVirtual) {
-    port.clear();
-    port.open(makeVirtualPort(), Number(baudSel.value));
-    setMode("sim-lib");
-  } else {
-    rawTimer = setInterval(() => handleLine(simLine()), 1000 / SIM_HZ);
-    setMode("sim-raw");
-  }
-}
-
-async function connectSerial() {
-  if (!supported) {
-    showNotice("這個瀏覽器不支援 Web Serial，無法連接實體裝置。請改用桌機版 Chrome 或 Edge（89 版以上），並透過 https 或 localhost 開啟。");
-    return;
-  }
-  let picked = null;
-  if (hasSerial) {
-    try {
-      picked = await navigator.serial.requestPort();
-    } catch (err) {
-      if (err.name === "NotFoundError") {
-        showNotice("沒有選到序列埠：請確認裝置已接上電腦，並在跳出的清單中選取。畫面維持目前的資料來源。");
-      } else if (err.name === "SecurityError") {
-        showNotice("此頁面沒有序列埠權限：嵌入的 iframe 需要 allow=\"serial\"，或請在新分頁開啟本示範。");
-      } else {
-        showNotice(`無法取得序列埠：${err.message}`);
+      function drawScope(p) {
+        const P = pal(), W = p.width, H = p.height;
+        const Lx = 44, R = W - 16, T = 74, B = H - 24;
+        p.clear();
+        let mn = Infinity, mx = -Infinity;
+        for (let c = 0; c < channels; c++) for (let i = 0; i < LEN; i++) { const v = bufs[c][i]; if (v < mn) mn = v; if (v > mx) mx = v; }
+        if (Number.isFinite(mn)) {
+          const pad = Math.max((mx - mn) * 0.12, 5);
+          lo += (mn - pad - lo) * 0.08;
+          hi += (mx + pad - hi) * 0.08;
+        }
+        const y = (v) => p.map(v, lo, hi, B, T);
+        p.strokeWeight(1);
+        for (let k = 0; k <= 10; k++) { const x = p.lerp(Lx, R, k / 10); p.stroke(rgba(P.fg, k % 5 ? 0.05 : 0.1)); p.line(x, T, x, B); }
+        for (let k = 0; k <= 4; k++) {
+          const gy = p.lerp(B, T, k / 4);
+          p.stroke(rgba(P.fg, 0.1));
+          p.line(Lx, gy, R, gy);
+          label(p, String(Math.round(p.lerp(lo, hi, k / 4))), Lx - 6, gy, { color: P.muted, align: "right", base: "middle" });
+        }
+        label(p, `${LEN} samples`, Lx, B + 15, { color: P.muted });
+        const g = p.drawingContext;
+        for (let c = channels - 1; c >= 0; c--) {
+          const col = P[COLORS[c]];
+          p.noFill();
+          p.stroke(col);
+          p.strokeWeight(2);
+          g.shadowColor = col;
+          g.shadowBlur = 8;
+          p.beginShape();
+          for (let i = 0; i < filled; i++) {
+            const v = bufs[c][(head - filled + i + LEN) % LEN];
+            if (Number.isFinite(v)) p.vertex(p.map(i + LEN - filled, 0, LEN - 1, Lx, R), y(v));
+          }
+          p.endShape();
+          g.shadowBlur = 0;
+          const last = bufs[c][(head - 1 + LEN) % LEN];
+          if (Number.isFinite(last)) { p.noStroke(); p.fill(col); p.circle(R, y(last), 7); }
+        }
+        p.strokeWeight(1);
       }
-      return;
-    }
-  }
-  await closePort();
-  resetBuffers();
-  port.clear();
-  // A SerialPort from requestPort() skips the chooser; the WebUSB polyfill path asks for the device itself.
-  if (picked) port.open(picked, Number(baudSel.value));
-  else port.open(Number(baudSel.value));
-  $("notice").hidden = true;
-  waitSince = performance.now();
-  setMode("wait");
-}
+    },
+  },
 
-$("connect").addEventListener("click", connectSerial);
-$("sim").addEventListener("click", startSim);
-$("stop").addEventListener("click", async () => { await closePort(); setMode("idle"); });
+  {
+    id: "detect", title: "支援偵測",
+    api: "\"serial\" in navigator・navigator.serial.getPorts()・requestPort({ filters })・usedSerialPorts()・connect／disconnect 事件",
+    desc: "逐項實測這個瀏覽器能不能連序列埠：Web Serial、WebUSB 備援、安全環境、iframe 權限政策與已授權裝置。右側用 p5.webserial 內建的裝置預設（Arduino、MicroPython…）當 USB 篩選條件呼叫 requestPort()，結果照實顯示。",
+    hint: "選一組篩選條件後按 requestPort()・插拔 USB 裝置會即時記錄",
+    async mount(ctx) {
+      const E = await libs(ctx);
+      ctx.el.classList.add("scroll");
+      ctx.html(`<div class="pw-board pw-two" style="position:relative;min-height:100%;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));align-content:start">
+        <div class="pw-panel"><h4>環境實測 <span>即時偵測</span></h4><div class="pw-table" data-r="tbl"></div><div class="pw-verdict" data-r="verdict"></div></div>
+        <div class="pw-panel"><h4>選擇裝置 <span>requestPort()</span></h4><p>p5.webserial 的 open("Arduino") 會用下列 USB 廠商代碼篩選清單：</p>
+          <pre class="pw-code" data-r="filters"></pre><div class="pw-verdict" data-r="pick">尚未呼叫 requestPort()。</div>
+          <h4>插拔事件 <span>navigator.serial</span></h4><div class="pw-log" data-r="ev" style="min-height:48px;flex:none"></div></div>
+      </div>`);
+      let serial = null, libErr = "";
+      try { serial = new p5.prototype.WebSerial(); } catch (e) { libErr = e.message; }
+      const policy = document.permissionsPolicy || document.featurePolicy;
+      const allowed = policy && policy.allowsFeature ? policy.allowsFeature("serial") : null;
+      const ports = E.hasSerial ? await navigator.serial.getPorts() : null;
+      const yes = (ok, t, f) => h("span", { class: ok == null ? "pw-maybe" : ok ? "pw-yes" : "pw-no", text: ok == null ? "無法判斷" : ok ? t : f });
+      const rows = [
+        ["Web Serial API", "\"serial\" in navigator", yes(E.hasSerial, "支援", "不支援")],
+        ["WebUSB（p5.webserial 內建 polyfill 備援）", "\"usb\" in navigator", yes(E.hasUsb, "支援", "不支援")],
+        ["安全環境（https 或 localhost）", "isSecureContext", yes(window.isSecureContext, "是", "否")],
+        ["權限政策允許 serial", window.top === window ? "頂層頁面" : "iframe 需 allow=\"serial\"", yes(allowed, "允許", "封鎖")],
+        ["已授權裝置", "navigator.serial.getPorts()", ports ? h("span", { class: "pw-maybe", text: `${ports.length} 個` }) : yes(false, "", "無法查詢")],
+        ["p5.webserial 可建立連線物件", "createSerial()", yes(!!serial, "可以", "丟出錯誤")],
+      ];
+      ctx.$("[data-r=tbl]").replaceChildren(...rows.flatMap(([name, code, badge]) => [h("div", {}, name, h("code", { text: code })), badge]));
+      const can = E.lib && window.isSecureContext && allowed !== false;
+      ctx.$("[data-r=verdict]").textContent = can
+        ? `此環境可以連接實體序列埠${E.hasSerial ? "" : "（經 WebUSB polyfill）"}。${ports && ports.length ? "已有授權過的裝置，usedSerialPorts() 可免點選直接重連。" : "首次連線需使用者點選裝置。"}`
+        : `此環境無法連接實體序列埠${libErr ? `（${libErr}）` : ""}。其他場景改用標明「${SIM_LABEL}」的虛擬裝置。`;
 
-// connection watchdog + rate meter + monitor refresh
-let lastCount = 0;
-setInterval(() => {
-  const rate = lineCount - lastCount;
-  lastCount = lineCount;
-  rateEl.textContent = `${rate} 行／秒`;
-  if (mode === "wait" && port.opened()) setMode("serial");
-  else if (mode === "wait" && performance.now() - waitSince > 4000) {
-    setMode("err", "序列埠無法開啟，可能被其他程式占用");
-    showNotice("序列埠開啟失敗：可能正被 Arduino IDE 的序列埠監控視窗或其他分頁占用，關閉後再試一次。");
-  } else if (mode === "serial" && !port.opened()) {
-    setMode("err", "裝置已中斷連線");
-  }
-  if (mode === "serial") stateSub.textContent = `${baudSel.value} baud，每秒 ${rate} 行，透過 readUntil("\\n") 逐行解析`;
-}, 1000);
-// device output is untrusted text, escape before rendering
-const esc = (s) => s.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
-setInterval(() => {
-  // newest line stays at the bottom; older lines overflow off the top
-  mon.innerHTML = recent.slice(-24).map((l, i, a) =>
-    `<div>#${String(lineCount - a.length + i + 1).padStart(5, "0")}  ${i === a.length - 1 ? `<b>${esc(l)}</b>` : esc(l)}</div>`).join("");
-  legend.innerHTML = latest.slice(0, Math.max(channels, 1)).map((v, i) =>
-    `<span class="chip"><i style="background:${COLORS[i]}"></i>${NAMES[i]} <b>${Math.round(v ?? 0)}</b></span>`).join("");
-}, 120);
-
-// ---- p5 sketch (instance mode) ----
-let lo = 0, hi = 1023;
-new p5((p) => {
-  p.setup = () => {
-    p.createCanvas(scope.clientWidth, scope.clientHeight);
-    p.textFont("monospace");
-    if (supported) port = p.createSerial();
-    new ResizeObserver(() => p.resizeCanvas(scope.clientWidth, scope.clientHeight)).observe(scope);
-    if (!supported) {
-      showNotice("這個瀏覽器不支援 Web Serial，p5.webserial 無法連接實體裝置。請改用桌機版 Chrome 或 Edge（89 版以上），並透過 https 或 localhost 開啟；嵌入時 iframe 需加上 allow=\"serial\"。下方先以模擬資料展示。");
-    }
-    startSim();
-  };
-
-  p.draw = () => {
-    if (port) {
-      for (let guard = 0; guard < 400; guard++) {
-        const line = port.readUntil("\n");
-        if (!line) break;
-        handleLine(line);
+      const presets = serial ? serial.presets : {};
+      const names = ["全部裝置", ...Object.keys(presets)];
+      const hex = (n) => `0x${n.toString(16).padStart(4, "0")}`;
+      const showFilters = (name) => {
+        const list = presets[name] || [];
+        ctx.$("[data-r=filters]").textContent = list.length
+          ? list.map((f) => `{ usbVendorId: ${hex(f.usbVendorId)}${f.usbProductId != null ? `, usbProductId: ${hex(f.usbProductId)}` : ""} }`).join("\n")
+          : serial ? "[]  // 不篩選，列出所有序列埠" : "（createSerial() 無法建立，讀不到預設清單）";
+      };
+      let current = "全部裝置";
+      ctx.select("篩選", names, current, (n) => { current = n; showFilters(n); });
+      showFilters(current);
+      const pick = ctx.$("[data-r=pick]");
+      ctx.button("requestPort()", async () => {
+        if (!E.hasSerial) { pick.textContent = "此瀏覽器沒有 navigator.serial，無法跳出裝置清單。"; return; }
+        try {
+          const port = await navigator.serial.requestPort({ filters: presets[current] || [] });
+          const info = port.getInfo();
+          pick.textContent = `已授權：${info.usbVendorId != null ? `廠商 ${hex(info.usbVendorId)}・產品 ${hex(info.usbProductId)}` : "非 USB 序列埠"}。到「即時示波器」按連接即可開啟。`;
+        } catch (err) {
+          pick.textContent = err.name === "NotFoundError" ? "已取消，或沒有符合篩選條件的裝置（NotFoundError）。"
+            : err.name === "SecurityError" ? "被權限政策擋下（SecurityError）：iframe 需 allow=\"serial\"。" : `失敗：${err.message}`;
+        }
+      }, { primary: true });
+      const ev = ctx.$("[data-r=ev]");
+      const events = [{ text: E.hasSerial ? "等待插拔事件…" : "此瀏覽器沒有 navigator.serial，收不到插拔事件", cls: "" }];
+      logLines(ev, events);
+      if (E.hasSerial) {
+        const onEv = (kind) => (e) => {
+          const info = e.target && e.target.getInfo ? e.target.getInfo() : {};
+          events.push({ text: `${new Date().toLocaleTimeString("zh-TW")}  ${kind}  ${info.usbVendorId != null ? hex(info.usbVendorId) : ""}`, cls: kind === "插入" ? "rx" : "bad" });
+          logLines(ev, events, 4);
+        };
+        ctx.on(navigator.serial, "connect", onEv("插入"));
+        ctx.on(navigator.serial, "disconnect", onEv("拔除"));
       }
-    }
-    drawScope(p);
-  };
-}, scope);
+    },
+  },
 
-function drawScope(p) {
-  const W = p.width, H = p.height;
-  const L = 46, R = W - 34, T = 40, B = H - 22;
-  p.background(11, 13, 16);
+  {
+    id: "uart", title: "鮑率與封包框",
+    api: "open(port, { baudRate, dataBits, parity, stopBits })・availableBytes()",
+    desc: "序列埠每個位元組都包成一個框：起始位元、資料位元（低位在前）、可選的同位位元、停止位元。鮑率決定每個位元多長，也決定每秒最多傳幾個位元組。p5.webserial 會把第二個參數原封不動交給 SerialPort.open()，右側顯示虛擬裝置實際收到的設定，並依鮑率限速送資料。",
+    hint: "把鮑率調到 300 看資料變慢・改同位位元看框變長",
+    async mount(ctx) {
+      const E = await libs(ctx);
+      ctx.html(`<div class="pw-board pw-split">
+        <div class="pw-box" data-r="wave"><div class="pw-sim"></div></div>
+        <div class="pw-panel"><h4>這組設定 <span>計算值</span></h4><div class="pw-stats" data-r="stats"></div>
+          <div class="pw-wide"><h4>虛擬裝置收到的 open() 參數</h4><pre class="pw-code" data-r="opts"></pre></div>
+          <h4>實際收到 <span data-r="meas"></span></h4><div class="pw-log" data-r="rx"></div></div>
+      </div>`);
+      const cfg = { baud: 9600, data: 8, parity: "none", stop: 1 };
+      const PAYLOAD = "T=25.3,H=61\n";
+      const sample = new TextEncoder().encode("T=2");
+      const box = ctx.$("[data-r=wave]"), badge = ctx.$(".pw-sim");
+      let L = null, dev = null, got = [], bytes = 0, lastBytes = 0, rate = 0, partial = "";
+      const frameBits = () => 1 + cfg.data + (cfg.parity === "none" ? 0 : 1) + cfg.stop;
+      const reopen = () => {
+        if (L) L.close();
+        got = []; partial = ""; bytes = 0; lastBytes = 0; rate = 0;
+        dev = virtualDevice({ hz: 50, bytesPerSec: cfg.baud / frameBits(), produce: () => PAYLOAD });
+        L = link(ctx, p, E, dev, { baudRate: cfg.baud, dataBits: cfg.data, parity: cfg.parity, stopBits: cfg.stop });
+        badge.textContent = viaText(L);
+        paint();
+      };
+      const paint = () => {
+        const fb = frameBits(), Bps = cfg.baud / fb;
+        const stats = [["每位元", cfg.baud >= 1e5 ? `${(1e6 / cfg.baud).toFixed(2)} µs` : `${(1e3 / cfg.baud).toFixed(3)} ms`], ["每框", `${fb} bits`],
+          ["每秒位元組", fmt(Bps, 0)], ["每秒行數", fmt(Bps / PAYLOAD.length, Bps / PAYLOAD.length < 10 ? 1 : 0)]];
+        ctx.$("[data-r=stats]").replaceChildren(...stats.map(([k, v]) => h("div", {}, h("small", { text: k }), h("b", { text: v }))));
+        ctx.$("[data-r=opts]").textContent = dev && dev.options ? JSON.stringify(dev.options, null, 1).replace(/\n\s*/g, " ") : "（等待 open）";
+      };
+      const p = sketch(ctx, box, (p) => {
+        p.draw = () => {
+          if (L) { const t = L.text(); if (t) { bytes += new TextEncoder().encode(t).length; partial += t; const parts = partial.split("\n"); partial = parts.pop(); for (const s of parts) got.push(s); if (got.length > 40) got = got.slice(-40); } }
+          drawWave(p);
+        };
+      });
+      ctx.group(["300", "1200", "9600", "115200"], 2, (i, v) => { cfg.baud = +v; reopen(); });
+      // "8N1" = 8 data bits, no parity, 1 stop bit
+      const FRAMES = { "8N1": [8, "none", 1], "8E1": [8, "even", 1], "8O1": [8, "odd", 1], "8N2": [8, "none", 2], "7E1": [7, "even", 1], "7N2": [7, "none", 2] };
+      ctx.select("框格式", Object.keys(FRAMES).map((k) => ({ value: k, label: `${k}（${FRAMES[k][0]} 位元・${{ none: "無同位", even: "偶同位", odd: "奇同位" }[FRAMES[k][1]]}・${FRAMES[k][2]} 停止）` })), "8N1", (k) => {
+        [cfg.data, cfg.parity, cfg.stop] = FRAMES[k];
+        reopen();
+      });
+      reopen();
+      ctx.interval(() => {
+        rate = bytes - lastBytes; lastBytes = bytes;
+        ctx.$("[data-r=meas]").textContent = `${fmt(rate)} B/s`;
+        logLines(ctx.$("[data-r=rx]"), [...got.slice(-8).map((t) => ({ text: t })), { text: `${partial}▌`, cls: "rx" }]);
+        paint();
+      }, 1000);
 
-  // auto range over visible samples, eased for a calm display
-  let mn = Infinity, mx = -Infinity;
-  for (let c = 0; c < channels; c++) for (let i = 0; i < LEN; i++) {
-    const v = bufs[c][i];
-    if (v < mn) mn = v;
-    if (v > mx) mx = v;
-  }
-  if (Number.isFinite(mn)) {
-    const pad = Math.max((mx - mn) * 0.12, 5);
-    lo += (mn - pad - lo) * 0.08;
-    hi += (mx + pad - hi) * 0.08;
-  }
-  const y = (v) => p.map(v, lo, hi, B, T);
+      function drawWave(p) {
+        const P = pal(), W = p.width, H = p.height, g = p.drawingContext;
+        p.clear();
+        const bits = [];
+        for (const b of sample) {
+          bits.push({ v: 0, k: "S", col: P.c3 });
+          let ones = 0;
+          for (let i = 0; i < cfg.data; i++) { const v = (b >> i) & 1; ones += v; bits.push({ v, k: `d${i}`, col: P.c2 }); }
+          if (cfg.parity !== "none") bits.push({ v: cfg.parity === "even" ? ones & 1 : 1 - (ones & 1), k: "P", col: P.c6 });
+          for (let i = 0; i < cfg.stop; i++) bits.push({ v: 1, k: "T", col: P.c4 });
+          bits.push({ gap: true, ch: String.fromCharCode(b), hex: b });
+        }
+        const cells = bits.filter((b) => !b.gap).length;
+        const x0 = 24, x1 = W - 16, cw = (x1 - x0) / (cells + 2), hiY = Math.max(98, H * 0.34), loY = Math.min(H - 64, hiY + Math.max(50, H * 0.26));
+        label(p, `${cfg.data}${cfg.parity[0].toUpperCase()}${cfg.stop} 格式下 "T=2" 的前三個位元組`, x0, 52, { color: P.muted, size: 11, ui: true });
+        p.strokeWeight(2.5);
+        let x = x0 + cw, prev = 1, frame = 0, fStart = x;
+        p.stroke(P.muted);
+        p.line(x0, hiY, x, hiY);
+        for (const b of bits) {
+          if (b.gap) {
+            p.noStroke(); p.fill(rgba(P.fg, 0.06)); p.rect(fStart, hiY - 34, x - fStart, loY - hiY + 76, 6);
+            label(p, `'${b.ch}' 0x${b.hex.toString(16).toUpperCase()}`, (fStart + x) / 2, hiY - 18, { color: P.fg, align: "center", weight: 600, size: 11.5 });
+            fStart = x; frame++;
+            continue;
+          }
+          const yy = b.v ? hiY : loY;
+          p.stroke(b.col);
+          p.strokeWeight(2.5);
+          if (prev !== b.v) p.line(x, hiY, x, loY);
+          p.line(x, yy, x + cw, yy);
+          if (cw > 9) {
+            label(p, String(b.v), x + cw / 2, loY + 18, { color: b.col, align: "center", size: cw > 16 ? 11 : 9 });
+            if (cw > 14) label(p, b.k, x + cw / 2, loY + 34, { color: P.muted, align: "center", size: cw > 20 ? 10 : 8 });
+          }
+          prev = b.v; x += cw;
+        }
+        p.stroke(P.muted);
+        if (prev !== 1) p.line(x, hiY, x, loY);
+        p.line(x, hiY, x1, hiY);
+        // playhead sweeps once per 2.5 s regardless of baud, so the label carries the real time scale
+        const t = (p.millis() / 2500) % 1, px = p.lerp(x0 + cw, x, t);
+        p.stroke(rgba(P.accent, 0.8)); p.strokeWeight(1); p.line(px, hiY - 40, px, loY + 40);
+        const us = (cells * 1e6) / cfg.baud;
+        label(p, `${cells} bits = ${us >= 1000 ? `${(us / 1000).toFixed(2)} ms` : `${us.toFixed(1)} µs`} @ ${cfg.baud} baud`, x0, H - 12, { color: P.muted, size: 11 });
+        g.shadowBlur = 0;
+      }
+    },
+  },
 
-  // grid
-  p.textSize(10);
-  for (let k = 0; k <= 10; k++) {
-    const x = p.lerp(L, R, k / 10);
-    p.stroke(255, k % 5 ? 10 : 22);
-    p.line(x, T, x, B);
-  }
-  for (let k = 0; k <= 4; k++) {
-    const gy = p.lerp(B, T, k / 4);
-    p.stroke(255, 22);
-    p.line(L, gy, R, gy);
-    p.noStroke();
-    p.fill(155, 153, 143);
-    p.textAlign(p.RIGHT, p.CENTER);
-    p.text(Math.round(p.lerp(lo, hi, k / 4)), L - 6, gy);
-  }
-  p.textAlign(p.LEFT, p.TOP);
-  p.text(`最近 ${LEN} 筆`, L, B + 6);
+  {
+    id: "chunks", title: "分段與重組",
+    api: "readUntil(\"\\n\")・read()・availableBytes()・clear()",
+    desc: "USB 序列埠不會照「行」送資料：一行可能被切成好幾塊，也可能好幾行擠在同一塊。p5.webserial 把收到的位元組累積在 1 MB 緩衝區，readUntil(\"\\n\") 只在看到換行時才交出一整行；read() 則有什麼給什麼，會把行切斷，連中文字都可能被切開。暫停讀取可看緩衝區堆積。",
+    hint: "切到 read() 看行被切斷・暫停讀取看緩衝區堆高",
+    async mount(ctx) {
+      const E = await libs(ctx);
+      ctx.html(`<div class="pw-board pw-rows">
+        <div class="pw-box" data-r="plot"><div class="pw-sim"></div></div>
+        <div class="pw-two">
+          <div class="pw-panel"><h4>到達的位元組塊 <span data-r="cn"></span></h4><div class="pw-log" data-r="chunks"></div></div>
+          <div class="pw-panel"><h4>程式讀到的內容 <span data-r="ln"></span></h4><div class="pw-log" data-r="out"></div></div>
+        </div></div>`);
+      const CITIES = ["台北", "台中", "高雄", "花蓮"];
+      const dec = new TextDecoder();
+      const chunks = [], outs = [], level = [];
+      let mode = 0, nChunk = 0, nOut = 0, seq = 0;
+      const dev = virtualDevice({
+        hz: 20, chunky: 0.55,
+        produce: (i) => (i % 2 ? null : `${CITIES[seq++ % 4]},${(24 + Math.sin(seq / 5) * 3 + Math.random()).toFixed(1)}\n`),
+        onChunk: (b) => {
+          nChunk++;
+          chunks.push({ text: `#${String(nChunk).padStart(4, "0")} ${String(b.length).padStart(2)}B ${showNL(dec.decode(b))}`, cls: "" });
+          if (chunks.length > 30) chunks.shift();
+          level.push({ chunk: b.length, t: performance.now() });
+        },
+      });
+      const box = ctx.$("[data-r=plot]");
+      const hist = [];
+      const p = sketch(ctx, box, (p) => {
+        p.draw = () => {
+          if (L) {
+            if (mode === 0) {
+              for (let g = 0; g < 50; g++) { const s = L.line(); if (!s) break; push(s, true); }
+            } else if (mode === 1 && p.frameCount % 6 === 0) {
+              const s = L.text();
+              if (s) push(s, s.endsWith("\n") && !s.slice(0, -1).includes("\n"));
+            }
+            hist.push(L.available());
+            if (hist.length > 400) hist.shift();
+          }
+          drawPlot(p);
+        };
+      });
+      const L = link(ctx, p, E, dev);
+      ctx.$(".pw-sim").textContent = viaText(L);
+      function push(s, whole) {
+        nOut++;
+        outs.push({ text: `"${showNL(s)}"${whole ? "" : "  ✂ 不完整"}`, cls: whole ? "rx" : "bad" });
+        if (outs.length > 30) outs.shift();
+      }
+      ctx.group(["readUntil(\"\\n\")", "read()", "暫停讀取"], 0, (i) => { mode = i; });
+      ctx.button("clear()", () => { if (L.serial) L.serial.clear(); else L.bytes(); outs.push({ text: "（緩衝區已清空）", cls: "tx" }); });
+      ctx.interval(() => {
+        logLines(ctx.$("[data-r=chunks]"), chunks, 14);
+        logLines(ctx.$("[data-r=out]"), outs, 14);
+        ctx.$("[data-r=cn]").textContent = `${nChunk} 塊`;
+        ctx.$("[data-r=ln]").textContent = `${nOut} 次`;
+      }, 150);
 
-  // traces, newest sample at the right edge
-  const ctx = p.drawingContext;
-  for (let c = channels - 1; c >= 0; c--) {
-    p.noFill();
-    p.stroke(COLORS[c]);
-    p.strokeWeight(2);
-    ctx.shadowColor = COLORS[c];
-    ctx.shadowBlur = 10;
-    p.beginShape();
-    for (let i = 0; i < filled; i++) {
-      const v = bufs[c][(head - filled + i + LEN) % LEN];
-      if (!Number.isFinite(v)) continue;
-      p.vertex(p.map(i + LEN - filled, 0, LEN - 1, L, R), y(v));
-    }
-    p.endShape();
-    ctx.shadowBlur = 0;
-    const last = bufs[c][(head - 1 + LEN) % LEN];
-    if (Number.isFinite(last)) {
-      p.noStroke();
-      p.fill(COLORS[c]);
-      p.circle(R, y(last), 8);
-    }
-  }
-  p.strokeWeight(1);
-}
+      function drawPlot(p) {
+        const P = pal(), W = p.width, H = p.height;
+        p.clear();
+        const L0 = 40, R = W - 12, T = 58, B = H - 14;
+        const max = Math.max(64, ...hist) * 1.15;
+        p.stroke(rgba(P.fg, 0.1)); p.strokeWeight(1);
+        for (let k = 0; k <= 2; k++) { const y = p.lerp(B, T, k / 2); p.line(L0, y, R, y); label(p, String(Math.round((max * k) / 2)), L0 - 5, y, { color: P.muted, align: "right", base: "middle" }); }
+        label(p, "availableBytes()", L0, T - 10, { color: P.c1, size: 11 });
+        p.noStroke(); p.fill(rgba(P.c1, 0.22));
+        p.beginShape();
+        p.vertex(R, B);
+        hist.forEach((v, i) => p.vertex(p.map(i, 0, 399, R - (hist.length - 1) * ((R - L0) / 399), R) , p.map(v, 0, max, B, T)));
+        p.vertex(p.map(0, 0, 399, R - (hist.length - 1) * ((R - L0) / 399), R), B);
+        p.endShape(p.CLOSE);
+        p.noFill(); p.stroke(P.c1); p.strokeWeight(2);
+        p.beginShape();
+        hist.forEach((v, i) => p.vertex(R - (hist.length - 1 - i) * ((R - L0) / 399), p.map(v, 0, max, B, T)));
+        p.endShape();
+        const now = performance.now();
+        while (level.length && now - level[0].t > 6700) level.shift();
+        p.strokeWeight(3);
+        for (const c of level) {
+          const x = R - ((now - c.t) / 6650) * (R - L0);
+          p.stroke(rgba(P.c2, 0.75));
+          p.line(x, B, x, B - Math.min(c.chunk, 24) * 1.4);
+        }
+        if (W > 380) label(p, "短線：每個 chunk 的位元組數", L0 + 130, T - 10, { color: P.c2, size: 11, ui: true });
+      }
+    },
+  },
+
+  {
+    id: "formats", title: "資料格式",
+    api: "readUntil(\"\\n\") + split／JSON.parse・readBytes() + DataView",
+    desc: "同一個（模擬）環境感測站，用四種常見格式送出溫度、濕度、PM2.5 與照度：CSV 最省、鍵值對好讀、JSON 可擴充、二進位封包最小但要自己找標頭與檢查碼。開啟雜訊會混入壞資料，看各格式的解析器怎麼擋下來。",
+    hint: "切換格式看原始資料長相・開雜訊看錯誤計數",
+    async mount(ctx) {
+      const E = await libs(ctx);
+      ctx.html(`<div class="pw-board pw-split">
+        <div class="pw-box" data-r="g"><div class="pw-sim"></div></div>
+        <div class="pw-panel"><h4>解析結果 <span data-r="fmt"></span></h4><div class="pw-stats" data-r="stats"></div>
+          <h4>原始資料 <span data-r="size"></span></h4><div class="pw-log" data-r="raw"></div></div>
+      </div>`);
+      const FMT = ["CSV", "鍵值對", "JSON", "二進位"];
+      let fmtI = 0, noise = false, ok = 0, bad = 0, okLast = 0, okRate = 0, byteSum = 0, frames = [], acc = [];
+      const v = { t: 26.4, h: 70, pm: 18, lux: 520 };
+      const hist = { t: [], h: [], pm: [], lux: [] };
+      const raw = [];
+      const sense = (i) => ({
+        t: 26 + 3 * Math.sin(i / 90) + Math.random() * 0.3, h: 68 + 10 * Math.sin(i / 130 + 1) + Math.random(),
+        pm: Math.max(2, 20 + 14 * Math.sin(i / 60 + 2) + Math.random() * 3), lux: 480 + 300 * Math.max(0, Math.sin(i / 70)) + Math.random() * 20,
+      });
+      const encode = (s) => {
+        if (fmtI === 0) return `${s.t.toFixed(1)},${Math.round(s.h)},${Math.round(s.pm)},${Math.round(s.lux)}\n`;
+        if (fmtI === 1) return `T:${s.t.toFixed(1)} H:${Math.round(s.h)} PM:${Math.round(s.pm)} LUX:${Math.round(s.lux)}\n`;
+        if (fmtI === 2) return `${JSON.stringify({ t: +s.t.toFixed(1), h: Math.round(s.h), pm25: Math.round(s.pm), lux: Math.round(s.lux) })}\n`;
+        const b = new Uint8Array(12), dv = new DataView(b.buffer);
+        b[0] = 0xaa; b[1] = 0x55; b[2] = 8;
+        dv.setInt16(3, Math.round(s.t * 100), true); dv.setUint16(5, Math.round(s.h * 100), true);
+        dv.setUint16(7, Math.round(s.pm), true); dv.setUint16(9, Math.round(s.lux), true);
+        let x = 0; for (let i = 3; i < 11; i++) x ^= b[i];
+        b[11] = x;
+        return b;
+      };
+      const corrupt = (out) => {
+        if (typeof out !== "string") { const b = out.slice(); b[3 + ((Math.random() * 8) | 0)] ^= 0x5a; return b; }
+        const k = 1 + ((Math.random() * (out.length - 3)) | 0);
+        return Math.random() < 0.5 ? `${out.slice(0, k)}#${out.slice(k + 1)}` : `${out.slice(0, k)}\n`;
+      };
+      const dev = virtualDevice({ hz: 20, chunky: 0.7, produce: (i) => { const out = encode(sense(i)); return noise && Math.random() < 0.12 ? corrupt(out) : out; } });
+      const accept = (s, text, good) => {
+        raw.push({ text, cls: good ? "" : "bad" });
+        if (raw.length > 30) raw.shift();
+        if (!good) { bad++; return; }
+        ok++;
+        Object.assign(v, s);
+        for (const k of Object.keys(hist)) { hist[k].push(s[k]); if (hist[k].length > 120) hist[k].shift(); }
+      };
+      const parseLine = (line) => {
+        const t = line.trim();
+        if (!t) return;
+        byteSum += line.length;
+        if (fmtI === 0) {
+          const n = t.split(",").map(Number);
+          return accept({ t: n[0], h: n[1], pm: n[2], lux: n[3] }, t, n.length === 4 && n.every(Number.isFinite));
+        }
+        if (fmtI === 1) {
+          const m = Object.fromEntries([...t.matchAll(/([A-Z0-9]+):(-?\d+(?:\.\d+)?)(?=\s|$)/g)].map((x) => [x[1], +x[2]]));
+          return accept({ t: m.T, h: m.H, pm: m.PM, lux: m.LUX }, t, ["T", "H", "PM", "LUX"].every((k) => k in m));
+        }
+        let o = null;
+        try { o = JSON.parse(t); } catch { o = null; }
+        const good = !!o && ["t", "h", "pm25", "lux"].every((k) => typeof o[k] === "number");
+        return accept(good ? { t: o.t, h: o.h, pm: o.pm25, lux: o.lux } : {}, t, good);
+      };
+      // Binary frames: AA 55 len | int16 t*100, u16 h*100, u16 pm, u16 lux | xor
+      const parseBytes = (arr) => {
+        acc = acc.concat(arr);
+        byteSum += arr.length;
+        while (acc.length >= 12) {
+          if (acc[0] !== 0xaa || acc[1] !== 0x55) { acc.shift(); continue; }
+          const b = Uint8Array.from(acc.slice(0, 12)), dv = new DataView(b.buffer);
+          let x = 0; for (let i = 3; i < 11; i++) x ^= b[i];
+          const hexs = Array.from(b, (n) => n.toString(16).padStart(2, "0")).join(" ");
+          if (x !== b[11]) { accept({}, `${hexs}  檢查碼不符`, false); acc = acc.slice(2); continue; }
+          accept({ t: dv.getInt16(3, true) / 100, h: dv.getUint16(5, true) / 100, pm: dv.getUint16(7, true), lux: dv.getUint16(9, true) }, hexs, true);
+          acc = acc.slice(12);
+        }
+      };
+      const box = ctx.$("[data-r=g]");
+      const p = sketch(ctx, box, (p) => {
+        p.draw = () => {
+          if (fmtI === 3) { const arr = L.bytes(); if (arr.length) parseBytes(arr); }
+          else for (let g = 0; g < 100; g++) { const s = L.line(); if (!s) break; parseLine(s); }
+          drawGauges(p);
+        };
+      });
+      const L = link(ctx, p, E, dev);
+      ctx.$(".pw-sim").textContent = viaText(L);
+      ctx.group(FMT, 0, (i) => {
+        fmtI = i; ok = 0; bad = 0; byteSum = 0; acc = []; raw.length = 0;
+        if (L.serial) L.serial.clear(); else L.bytes();
+      });
+      ctx.toggle("加入雜訊", false, (on) => { noise = on; });
+      let lastBytes = 0, bRate = 0;
+      ctx.interval(() => {
+        okRate = ok - okLast; okLast = ok; bRate = byteSum - lastBytes; lastBytes = byteSum;
+        ctx.$("[data-r=fmt]").textContent = FMT[fmtI];
+        ctx.$("[data-r=size]").textContent = okRate ? `每筆約 ${Math.round(bRate / Math.max(1, okRate))} B` : "";
+        const st = [["成功", ok, "good"], ["失敗", bad, bad ? "bad" : ""], ["每秒", okRate, ""], ["位元組／秒", bRate, ""]];
+        ctx.$("[data-r=stats]").replaceChildren(...st.map(([k, n, c]) => h("div", {}, h("small", { text: k }), h("b", { class: c, text: fmt(n) }))));
+        logLines(ctx.$("[data-r=raw]"), raw, 12);
+      }, 500);
+
+      function drawGauges(p) {
+        const P = pal(), W = p.width, H = p.height;
+        p.clear();
+        const items = [["溫度", "t", 15, 40, "°C", P.c5, 1], ["濕度", "h", 0, 100, "%", P.c2, 0], ["PM2.5", "pm", 0, 80, "µg", P.c6, 0], ["照度", "lux", 0, 1000, "lx", P.c1, 0]];
+        const cols = W > 420 || (W > 280 && H < 360) ? 2 : 1, rows = Math.ceil(items.length / cols);
+        const top = 54, cw = (W - 20) / cols, ch = (H - top - 10) / rows;
+        label(p, "環境感測站（模擬資料）", 12, 50, { color: P.muted, size: 11, ui: true });
+        items.forEach(([name, k, lo, hi, unit, col, dp], i) => {
+          const cx = 10 + (i % cols) * cw, cy = top + Math.floor(i / cols) * ch;
+          const r = Math.max(14, Math.min(cw * 0.22, ch * 0.36));
+          const gx = cx + r + 12, gy = cy + ch / 2 + r * 0.25;
+          p.noFill(); p.strokeCap(p.ROUND); p.strokeWeight(Math.max(4, r * 0.18));
+          p.stroke(rgba(P.fg, 0.1)); p.arc(gx, gy, r * 2, r * 2, Math.PI * 0.8, Math.PI * 2.2);
+          const f = clamp(((v[k] ?? lo) - lo) / (hi - lo), 0, 1);
+          p.stroke(col); p.arc(gx, gy, r * 2, r * 2, Math.PI * 0.8, Math.PI * (0.8 + 1.4 * Math.max(0.01, f)));
+          label(p, fmt(v[k] ?? 0, dp), gx, gy + 2, { color: P.fg, align: "center", base: "middle", size: Math.max(11, r * 0.42), weight: 600 });
+          label(p, unit, gx, gy + r * 0.62, { color: P.muted, align: "center", size: 10 });
+          const sx = gx + r + 14, sw = cx + cw - sx - 8, s = hist[k];
+          if (sw > 30 && s.length > 1) {
+            p.noFill(); p.stroke(col); p.strokeWeight(1.5);
+            p.beginShape();
+            s.forEach((val, j) => p.vertex(sx + (j / 119) * sw, gy + r * 0.5 - clamp((val - lo) / (hi - lo), 0, 1) * r * 1.3));
+            p.endShape();
+          }
+          label(p, name, sw > 30 ? sx : gx - r, gy - r * 0.95, { color: P.muted, size: 11.5, weight: 500, ui: true });
+        });
+      }
+    },
+  },
+
+  {
+    id: "cmd", title: "雙向指令",
+    api: "println(\"LED 1\")・print()・write()・readUntil(\"\\n\")",
+    desc: "仿照 p5.webserial 官方 led 與 servo_motor 範例：頁面用 println() 送出文字指令，（模擬的）微控制器回覆 OK 或 ERR。右邊的 LED 與伺服臂只依「收到的回覆」更新，不是按鈕直接改畫面；PING 量的是指令來回一趟的時間。",
+    hint: "點 LED、拉 PWM 或伺服角度・送出錯誤指令看 ERR 回覆",
+    async mount(ctx) {
+      const E = await libs(ctx);
+      ctx.html(`<div class="pw-board pw-split">
+        <div class="pw-box" data-r="dev"><div class="pw-sim"></div></div>
+        <div class="pw-panel"><h4>收發紀錄 <span data-r="rtt"></span></h4><div class="pw-log" data-r="log"></div>
+          <pre class="pw-code pw-wide"><span class="c">// Arduino 端（模擬）</span>
+line = Serial.readStringUntil('\\n');
+if (line.startsWith("LED")) ...
+Serial.println("OK LED=1");</pre></div>
+      </div>`);
+      const dev = { led: 0, pwm: 0, servo: 90 };
+      const shown = { led: 0, pwm: 0, servo: 90 };
+      const log = [];
+      const pings = new Map();
+      let rtt = null, txFlash = 0, rxFlash = 0, sweep = true, sweepT = 0;
+      const vdev = virtualDevice({
+        hz: 50, chunky: 0.8,
+        respond(cmd) {
+          const [op, arg] = cmd.split(/\s+/);
+          const n = Number(arg);
+          switch ((op || "").toUpperCase()) {
+            case "LED": dev.led = n ? 1 : 0; return `OK LED=${dev.led}\n`;
+            case "PWM": if (!Number.isFinite(n)) return "ERR PWM 需要 0~255\n"; dev.pwm = clamp(Math.round(n), 0, 255); return `OK PWM=${dev.pwm}\n`;
+            case "SERVO": if (!Number.isFinite(n)) return "ERR SERVO 需要角度\n"; dev.servo = clamp(Math.round(n), 0, 180); return `OK SERVO=${dev.servo}\n`;
+            case "PING": return `PONG ${arg || ""}\n`;
+            default: return `ERR 未知指令 ${op}\n`;
+          }
+        },
+      });
+      const add = (text, cls) => { log.push({ text, cls }); if (log.length > 40) log.shift(); };
+      const send = (cmd, quiet) => {
+        L.write(`${cmd}\n`);
+        txFlash = 1;
+        if (!quiet) add(`→ ${cmd}`, "tx");
+      };
+      const box = ctx.$("[data-r=dev]");
+      const p = sketch(ctx, box, (p) => {
+        p.draw = () => {
+          for (let g = 0; g < 50; g++) {
+            const s = L.line().trim();
+            if (!s) break;
+            rxFlash = 1;
+            const m = /^OK (\w+)=(\d+)/.exec(s);
+            if (m) shown[m[1].toLowerCase()] = +m[2];
+            if (s.startsWith("PONG")) { const t0 = pings.get(s.slice(5)); if (t0) { rtt = performance.now() - t0; pings.delete(s.slice(5)); } }
+            if (!(m && m[1] === "SERVO" && sweep)) add(`← ${s}`, s.startsWith("ERR") ? "bad" : "rx");
+          }
+          if (sweep && p.frameCount % 5 === 0) { sweepT += 0.12; send(`SERVO ${Math.round(90 + 80 * Math.sin(sweepT))}`, true); }
+          drawDevice(p);
+        };
+      });
+      const L = link(ctx, p, E, vdev, { baudRate: 57600 });
+      ctx.$(".pw-sim").textContent = viaText(L).replace(SIM_LABEL, "模擬裝置");
+      ctx.button("💡 LED", () => send(`LED ${shown.led ? 0 : 1}`), { primary: true });
+      ctx.slider("PWM", { min: 0, max: 255, step: 1, value: 0 }, (n) => send(`PWM ${n}`));
+      const ang = ctx.slider("伺服", { min: 0, max: 180, step: 1, value: 90, format: (n) => `${n}°` }, (n) => { sweep = false; sw.setAttribute("aria-pressed", "false"); send(`SERVO ${n}`); });
+      const sw = ctx.toggle("自動掃動", true, (on) => { sweep = on; if (!on) send(`SERVO ${ang.value}`); });
+      ctx.button("PING", () => { const id = String(Math.round(performance.now())); pings.set(id, performance.now()); send(`PING ${id}`); });
+      ctx.button("錯誤指令", () => send("BLINK fast"));
+      ctx.timeout(() => { send("LED 1"); send("PWM 180"); }, 400);
+      ctx.interval(() => {
+        logLines(ctx.$("[data-r=log]"), log, 18);
+        ctx.$("[data-r=rtt]").textContent = rtt != null ? `來回 ${rtt.toFixed(0)} ms` : "";
+      }, 150);
+
+      function drawDevice(p) {
+        const P = pal(), W = p.width, H = p.height, g = p.drawingContext;
+        p.clear();
+        const s = Math.min(W / 2.3, H / 1.5);
+        const cx = W / 2, cy = H / 2 + 16;
+        const lx = cx - s * 0.55, sx = cx + s * 0.5;
+        // LED: brightness = PWM when on
+        const on = shown.led, b = on ? 0.25 + 0.75 * (shown.pwm / 255) : 0;
+        g.shadowColor = P.c3; g.shadowBlur = on ? 40 * b : 0;
+        p.noStroke(); p.fill(on ? rgba(P.c3, 0.25 + 0.75 * b) : rgba(P.fg, 0.08));
+        p.circle(lx, cy - s * 0.1, s * 0.42);
+        g.shadowBlur = 0;
+        p.stroke(rgba(P.fg, 0.35)); p.strokeWeight(3);
+        p.line(lx - s * 0.06, cy + s * 0.11, lx - s * 0.06, cy + s * 0.36);
+        p.line(lx + s * 0.06, cy + s * 0.11, lx + s * 0.06, cy + s * 0.3);
+        label(p, `LED ${on ? "ON" : "OFF"}・PWM ${shown.pwm}`, lx, cy + s * 0.5, { color: P.muted, align: "center", size: 11.5 });
+        // servo: horn angle follows the reported SERVO value
+        p.noStroke(); p.fill(rgba(P.fg, 0.1)); p.rect(sx - s * 0.26, cy - s * 0.16, s * 0.52, s * 0.36, 8);
+        p.noFill(); p.stroke(rgba(P.fg, 0.15)); p.strokeWeight(1);
+        p.arc(sx, cy, s * 0.82, s * 0.82, Math.PI, Math.PI * 2);
+        const a = Math.PI + (shown.servo / 180) * Math.PI;
+        p.stroke(P.c2); p.strokeWeight(Math.max(5, s * 0.05)); p.strokeCap(p.ROUND);
+        p.line(sx, cy, sx + Math.cos(a) * s * 0.38, cy + Math.sin(a) * s * 0.38);
+        p.noStroke(); p.fill(P.c2); p.circle(sx, cy, s * 0.1);
+        label(p, `SERVO ${shown.servo}°`, sx, cy + s * 0.5, { color: P.muted, align: "center", size: 11.5 });
+        // TX / RX activity lights, like the ones on an Arduino board
+        txFlash *= 0.85; rxFlash *= 0.85;
+        [["TX", txFlash, P.c5], ["RX", rxFlash, P.c4]].forEach(([n, f, c], i) => {
+          const x = 18 + i * 52, y = 50;
+          p.noStroke(); p.fill(f > 0.1 ? c : rgba(P.fg, 0.12)); p.circle(x, y, 10);
+          label(p, n, x + 10, y, { color: P.muted, base: "middle", size: 11 });
+        });
+      }
+    },
+  },
+
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "readUntil(\"\\n\") 逐行解析・bufferSize()・TextDecoder 整批 split 對照",
+    desc: "把 N 行 CSV 一次塞進 p5.webserial 的接收緩衝區，再用 readUntil(\"\\n\") 逐行取出並拆欄，量每秒能解析幾行。readUntil 每取一行都會把剩下的緩衝區往前搬，所以堆積越多越慢；對照組是一次解碼後整批 split。結論：draw() 每格都要讀，不要讓資料堆在緩衝區。",
+    hint: "按「開始測試」・行數逐級加倍，單級超過 2 秒就停",
+    async mount(ctx) {
+      await libs(ctx);
+      ctx.html(`<div class="pw-stress"><canvas></canvas></div>`);
+      ctx.controls.classList.add("bottom");
+      const cv = ctx.$("canvas"), g = cv.getContext("2d");
+      const enc = new TextEncoder(), dec = new TextDecoder();
+      const pts = [];
+      let byConstructor = true;
+      const parser = () => {
+        try { return new p5.prototype.WebSerial(); } catch {
+          // No Web Serial: the class refuses to construct, but its buffer methods do not touch the port.
+          byConstructor = false;
+          const s = Object.create(p5.prototype.WebSerial.prototype);
+          return Object.assign(s, { inBuf: new ArrayBuffer(1 << 20), inLen: 0, textEncoder: new TextEncoder(), textDecoder: new TextDecoder() });
+        }
+      };
+      const draw = () => {
+        const r = cv.getBoundingClientRect(), dpr = Math.min(2, devicePixelRatio || 1);
+        if (!r.width) return;
+        cv.width = r.width * dpr; cv.height = r.height * dpr;
+        g.setTransform(dpr, 0, 0, dpr, 0, 0);
+        const P = pal(), W = r.width, H = r.height, l = 56, rr = W - 16, t = 46, b = H - 42;
+        g.clearRect(0, 0, W, H);
+        g.font = `600 13px ${cssv("--font")}`; g.fillStyle = P.fg; g.textAlign = "left";
+        g.fillText("解析速度（行／秒，對數座標）", l, 22);
+        g.font = `400 11.5px ${cssv("--font")}`; g.fillStyle = P.muted;
+        g.fillText(byConstructor ? "readUntil 逐行 vs 整批 split" : "無 Web Serial：直接呼叫函式庫的緩衝區方法", l, 38);
+        const ys = [1e3, 1e9];
+        const X = (n) => l + ((Math.log10(n) - 3) / 2) * (rr - l), Y = (v) => b - ((Math.log10(clamp(v, ys[0], ys[1])) - 3) / 6) * (b - t);
+        g.strokeStyle = rgba(P.fg, 0.1); g.lineWidth = 1; g.font = `400 10.5px ${MONO()}`; g.fillStyle = P.muted;
+        for (let e = 3; e <= 9; e++) { g.beginPath(); g.moveTo(l, Y(10 ** e)); g.lineTo(rr, Y(10 ** e)); g.stroke(); g.textAlign = "right"; g.fillText(fmtCompact(10 ** e), l - 6, Y(10 ** e) + 4); }
+        g.textAlign = "center";
+        for (let e = 3; e <= 5; e++) { g.textAlign = e === 3 ? "left" : e === 5 ? "right" : "center"; g.fillText(`${fmtCompact(10 ** e)} 行`, X(10 ** e), b + 16); }
+        [["readUntil", P.c3], ["split", P.c4]].forEach(([k, c], i) => {
+          const s = pts.filter((q) => q[k]);
+          g.strokeStyle = c; g.fillStyle = c; g.lineWidth = 2.5;
+          g.beginPath();
+          s.forEach((q, j) => (j ? g.lineTo(X(q.n), Y(q[k])) : g.moveTo(X(q.n), Y(q[k]))));
+          g.stroke();
+          s.forEach((q) => { g.beginPath(); g.arc(X(q.n), Y(q[k]), 4, 0, Math.PI * 2); g.fill(); });
+          g.font = `500 11.5px ${MONO()}`; g.textAlign = "left";
+          g.fillText(k === "readUntil" ? "● readUntil(\"\\n\")" : "● decode + split", l + i * 170, b + 34);
+        });
+        if (!pts.length) { g.fillStyle = P.muted; g.textAlign = "center"; g.font = `400 13px ${cssv("--font")}`; g.fillText("按「開始測試」", (l + rr) / 2, (t + b) / 2); }
+      };
+      ctx.onResize(draw);
+      draw();
+      ctx.bench({
+        label: "緩衝區行數", unit: "行", sizes: [1000, 2000, 4000, 8000, 16000, 32000, 64000], target: 1000, budget: 2000,
+        note: "每行像「512,300,700」約 12 位元組。即時串流時每格只堆幾行，readUntil 很快；問題出在讓資料堆積。",
+        prepare(n) {
+          let s = "";
+          for (let i = 0; i < n; i++) s += `${(i * 7) % 1024},${(i * 13) % 1024},${(i * 29) % 1024}\n`;
+          const bytes = enc.encode(s);
+          const t0 = performance.now();
+          let sum = 0;
+          for (const line of dec.decode(bytes).split("\n")) if (line) sum += +line.split(",")[0];
+          const splitMs = performance.now() - t0;
+          const ser = parser();
+          ser.bufferSize(Math.max(1 << 20, bytes.length + 64));
+          new Uint8Array(ser.inBuf).set(bytes);
+          ser.inLen = bytes.length;
+          return { ser, splitMs, sum };
+        },
+        run(n, d) {
+          if (n === 1000) pts.length = 0;
+          const t0 = performance.now();
+          let count = 0, sum = 0;
+          for (;;) {
+            const line = d.ser.readUntil("\n");
+            if (!line) break;
+            sum += +line.split(",")[0];
+            count++;
+          }
+          const ms = Math.max(performance.now() - t0, 0.05);
+          if (count !== n || sum !== d.sum) throw new Error(`解析結果不一致（${count} 行）`);
+          pts.push({ n, readUntil: (n / ms) * 1000, split: (n / Math.max(d.splitMs, 0.05)) * 1000 });
+          draw();
+          return "";
+        },
+      });
+    },
+  },
+] });
+})();
 </script>
 </body>
 </html>

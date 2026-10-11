@@ -3,193 +3,815 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Three.js 示範：機器人材質展示間</title>
+<title>Three.js 示範：八個場景看懂 WebGL 3D 函式庫與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["機器人展示間","PBR 材質","燈光與陰影","全景環境","射線點選","後製光暈","自訂著色器","極限測試"]}</script>
 <style>
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
-  .controls { flex-direction: column; align-items: flex-end; }
-  .row { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
-  .row .label { font-size: 12px; color: var(--fg); align-self: center; padding: 6px 8px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); }
-  .btn { padding: 7px 10px; font-size: 12px; }
+  .sc-scene canvas.gl { position: absolute; left: 0; top: 0; display: block; touch-action: none; }
+  .labels { position: absolute; left: 0; top: 0; pointer-events: none; }
+  .lab { font: 600 11px/1.35 var(--mono); color: var(--fg); text-align: center; padding: 3px 7px; border-radius: 7px;
+    background: var(--panel); border: 1px solid var(--line); white-space: nowrap; }
+  .lab small { display: block; color: var(--muted); font-weight: 500; font-size: 10.5px; }
+  .pbr-compact .lab.ms .t { display: none; }
+  .pbr-compact .lab.ms small { color: var(--fg); }
+  .chip { position: absolute; left: 10px; top: calc(var(--sc-ctl-h, 0px) + 10px); z-index: 105; max-width: min(440px, calc(100% - 20px));
+    padding: 6px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(6px);
+    font: 500 12px/1.5 var(--font); color: var(--fg); pointer-events: none; }
+  .chip b { color: var(--accent); font: 600 12px/1.5 var(--mono); }
+  .split { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px; z-index: 104; pointer-events: none;
+    background: rgba(255, 255, 255, 0.5); }
+  .split span { position: absolute; bottom: 12px; padding: 3px 8px; border-radius: 6px; background: var(--panel); border: 1px solid var(--line);
+    font: 600 11px/1.4 var(--mono); color: var(--fg); white-space: nowrap; }
+  .split span:first-child { right: 10px; } .split span:last-child { left: 10px; color: var(--accent); }
+  .stress-view { position: absolute; inset: 8px; border-radius: 10px; overflow: hidden; background: #07080b; }
+  @media (min-width: 761px) { .stress-view { inset: 8px 8px 8px 350px; } }
 </style>
-</head>
-<body>
-<canvas id="c"></canvas>
-<div class="controls">
-  <div class="row" id="anims"><span class="label">動作</span></div>
-  <div class="row" id="mats"><span class="label">材質</span></div>
-</div>
-<div class="hint">拖曳旋轉視角・滾輪縮放・點機器人讓它跳一下</div>
-
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
   "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
 } }
 </script>
+</head>
+<body>
+<script src="_shared/showcase.js"></script>
 <script type="module">
+// Three.js showcase: eight scenes from the original robot showroom to an InstancedMesh stress ramp.
+// Every scene owns its WebGLRenderer and releases the GL context on unmount (dispose + forceContextLoss).
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import { GroundedSkybox } from "three/addons/objects/GroundedSkybox.js";
+import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
+import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 
-const canvas = document.getElementById("c");
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+const { h, fmt } = Showcase;
+const PANO = "_shared/img/panorama.jpg";
+const ROBOT = "_shared/models/robot.glb";
+const PALETTE = [0xf7df1e, 0x4cc9f0, 0xf72585, 0x7bd389, 0xff8c42, 0x9d8cff];
 
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0e1013);
-const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 200);
-camera.position.set(-7.5, 4.2, 12.5);
+// Free geometries, materials, textures and render targets reachable from a scene graph.
+function disposeAll(root, extra) {
+  const seen = new Set();
+  const free = (x) => { if (x && !seen.has(x) && typeof x.dispose === "function") { seen.add(x); x.dispose(); } };
+  const freeMat = (m) => { if (!m) return; for (const v of Object.values(m)) if (v && v.isTexture) free(v); free(m); };
+  root.traverse((o) => {
+    free(o.geometry);
+    [].concat(o.material || []).forEach(freeMat);
+    if (o.isSkinnedMesh) free(o.skeleton);
+    if (o.isInstancedMesh) free(o);
+  });
+  for (const t of [root.background, root.environment]) if (t && t.isTexture) free(t);
+  for (const x of extra) (x && x.isMaterial ? freeMat : free)(x);
+}
 
-const controls = new OrbitControls(camera, canvas);
-controls.target.set(0, 2.1, 0);
-controls.enableDamping = true;
-controls.autoRotate = true;
-controls.autoRotateSpeed = 0.6;
-controls.minDistance = 5;
-controls.maxDistance = 24;
-controls.maxPolarAngle = Math.PI * 0.49;
-controls.enablePan = false;
+// One renderer + scene + camera per showcase scene. The camera view is shifted so the
+// subject stays centred in the area not covered by the control cluster.
+function stage(ctx, o = {}) {
+  const host = o.host || ctx.el;
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = o.exposure ?? 1;
+  if (o.shadows) { renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; }
+  const canvas = renderer.domElement;
+  canvas.className = "gl";
+  host.append(canvas);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(o.bg ?? 0x0e1013);
+  const fov = o.fov ?? 45;
+  const camera = new THREE.PerspectiveCamera(fov, 1, 0.1, o.far ?? 300);
+  camera.position.set(...(o.pos || [0, 2, 8]));
+  let controls = null;
+  if (o.orbit !== false) {
+    controls = new OrbitControls(camera, canvas);
+    controls.target.set(...(o.target || [0, 0, 0]));
+    controls.enableDamping = true;
+    controls.enablePan = false;
+    Object.assign(controls, o.orbit || {});
+  }
+  let labels = null;
+  if (o.labels) {
+    labels = new CSS2DRenderer();
+    labels.domElement.className = "labels";
+    host.append(labels.domElement);
+  }
+  const frameFns = [], sizeFns = [], extra = [];
+  const S = {
+    renderer, scene, camera, controls, canvas, host, width: 1, height: 1, availH: 1, full: 1,
+    render: () => renderer.render(scene, camera),
+    onFrame(fn) { frameFns.push(fn); },
+    onSize(fn) { sizeFns.push(fn); fn(S.width, S.height); },
+    own(...xs) { extra.push(...xs); return xs[0]; },
+  };
+  let lastKey = "";
+  const fit = () => {
+    const w = Math.max(1, host.clientWidth), hh = Math.max(1, host.clientHeight);
+    const top = parseFloat(ctx.el.style.getPropertyValue("--sc-ctl-h")) || 0;
+    const bot = parseFloat(ctx.el.style.getPropertyValue("--sc-ctl-b")) || 0;
+    const key = `${w}x${hh}:${top}:${bot}`;
+    if (key === lastKey) return;
+    lastKey = key;
+    const d = Math.max(-hh * 0.4, Math.min(hh * 0.4, top - bot));
+    S.width = w; S.height = hh; S.full = hh + Math.abs(d); S.availH = hh - Math.abs(d);
+    renderer.setSize(w, hh);
+    if (labels) labels.setSize(w, hh);
+    camera.aspect = w / S.full;
+    camera.fov = o.portraitFov && w < hh ? o.portraitFov : fov;
+    if (d) camera.setViewOffset(w, S.full, 0, d < 0 ? -d : 0, w, hh); else camera.clearViewOffset();
+    camera.updateProjectionMatrix();
+    for (const fn of sizeFns) fn(w, hh);
+  };
+  fit();
+  const timer = new THREE.Timer();
+  ctx.raf((t) => {
+    fit();
+    timer.update(t);
+    const dt = Math.max(0, Math.min(timer.getDelta(), 0.1)), time = timer.getElapsed();
+    for (const fn of frameFns) fn(dt, time);
+    if (controls) controls.update(dt);
+    S.render();
+    if (labels) labels.render(scene, camera);
+  });
+  ctx.onCleanup(() => {
+    if (controls) controls.dispose();
+    timer.dispose();
+    disposeAll(scene, extra);
+    renderer.dispose();
+    renderer.forceContextLoss();
+    canvas.remove();
+    if (labels) labels.domElement.remove();
+  });
+  return S;
+}
 
-// Equirectangular panorama as both background (blurred) and image-based lighting
-new THREE.TextureLoader().load("_shared/img/panorama.jpg", (tex) => {
+// Camera distance that fits a halfW x halfH box into the visible (uncovered) part of the view.
+function fitDistance(S, halfW, halfH, margin = 1.12) {
+  const tanV = Math.tan(THREE.MathUtils.degToRad(S.camera.fov) / 2);
+  const dv = (halfH * S.full) / (S.availH * tanV);
+  const dh = halfW / (tanV * S.camera.aspect);
+  return Math.max(dv, dh) * margin;
+}
+const setNdc = (S, e, v) => {
+  const r = S.canvas.getBoundingClientRect();
+  return v.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+};
+// Click/tap that is not the end of an orbit drag.
+function onTap(ctx, el, fn) {
+  let d = null;
+  ctx.on(el, "pointerdown", (e) => { d = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+  ctx.on(el, "pointerup", (e) => {
+    if (d && performance.now() - d.t < 300 && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6) fn(e);
+    d = null;
+  });
+}
+function label(title, sub, y) {
+  const el = h("div", { class: "lab" }, h("span", { class: "t", text: title }), sub ? h("small", { text: sub }) : null);
+  const obj = new CSS2DObject(el);
+  obj.position.y = y;
+  return obj;
+}
+function chip(ctx, html) {
+  const el = h("div", { class: "chip" });
+  el.innerHTML = html;
+  ctx.el.append(el);
+  let last = html;
+  return (next) => { if (next !== last) { last = next; el.innerHTML = next; } };
+}
+async function loadPano() {
+  const tex = await new THREE.TextureLoader().loadAsync(PANO);
   tex.mapping = THREE.EquirectangularReflectionMapping;
   tex.colorSpace = THREE.SRGBColorSpace;
-  scene.environment = tex;
-  scene.background = tex;
-  scene.backgroundBlurriness = 0.06;
-  scene.backgroundIntensity = 0.7;
-  scene.environmentIntensity = 0.9;
-});
-
-// Lights: warm key with soft shadows, cool rim, sky/ground fill
-const key = new THREE.DirectionalLight(0xffe2b8, 2.4);
-key.position.set(5, 9, 6);
-key.castShadow = true;
-key.shadow.mapSize.set(1024, 1024);
-key.shadow.camera.left = -6; key.shadow.camera.right = 6;
-key.shadow.camera.top = 6; key.shadow.camera.bottom = -6;
-key.shadow.radius = 4;
-scene.add(key);
-const rim = new THREE.SpotLight(0x4cc9f0, 60, 30, Math.PI / 6, 0.6);
-rim.position.set(-6, 6, -6);
-scene.add(rim);
-scene.add(new THREE.HemisphereLight(0xbfd8ff, 0x332211, 0.4));
-
-// Glossy pedestal with a glowing ring
-const pedestal = new THREE.Mesh(
-  new THREE.CylinderGeometry(3.2, 3.4, 0.5, 96),
-  new THREE.MeshPhysicalMaterial({ color: 0x15171c, metalness: 0.6, roughness: 0.45, clearcoat: 0.6, clearcoatRoughness: 0.3, envMapIntensity: 0.35 })
-);
-pedestal.position.y = -0.25;
-pedestal.receiveShadow = true;
-scene.add(pedestal);
-const ring = new THREE.Mesh(
-  new THREE.TorusGeometry(3.25, 0.035, 12, 160),
-  new THREE.MeshBasicMaterial({ color: 0xf7df1e })
-);
-ring.rotation.x = Math.PI / 2;
-ring.position.y = 0.01;
-scene.add(ring);
-
-// Robot model with animation mixer
-let mixer, model, actions = {}, current, originalMats = new Map();
-const ANIMS = [["Idle", "待機"], ["Walking", "走路"], ["Running", "跑步"], ["Dance", "跳舞"], ["Wave", "揮手"]];
-const MATS = [["orig", "原色"], ["chrome", "鍍鉻"], ["glass", "玻璃"], ["gold", "霧金"]];
-const matLib = {
-  chrome: new THREE.MeshPhysicalMaterial({ color: 0xe8e8ea, metalness: 1, roughness: 0.08 }),
-  glass: new THREE.MeshPhysicalMaterial({ color: 0xbfe9ff, metalness: 0, roughness: 0.04, transmission: 1, thickness: 0.8, ior: 1.45 }),
-  gold: new THREE.MeshPhysicalMaterial({ color: 0xf7c95a, metalness: 1, roughness: 0.38, clearcoat: 0.6 }),
-};
-
-new GLTFLoader().load("_shared/models/robot.glb", (gltf) => {
-  model = gltf.scene;
-  model.traverse((o) => {
-    if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; originalMats.set(o, o.material); }
-  });
-  scene.add(model);
-  mixer = new THREE.AnimationMixer(model);
-  for (const clip of gltf.animations) actions[clip.name] = mixer.clipAction(clip);
-  for (const name of ["Jump", "Wave"]) {
-    actions[name].setLoop(THREE.LoopOnce);
-    actions[name].clampWhenFinished = true;
-  }
-  mixer.addEventListener("finished", () => play(lastLoop));
-  play("Idle");
-});
-
-let lastLoop = "Idle";
-function play(name) {
-  const next = actions[name];
-  if (!next || next === current) return;
-  next.reset().setEffectiveWeight(1).fadeIn(0.35).play();
-  if (current) current.fadeOut(0.35);
-  current = next;
-  if (next.loop !== THREE.LoopOnce) lastLoop = name;
-  const shown = name === "Jump" ? lastLoop : name;
-  document.querySelectorAll("#anims .btn").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.k === shown)));
+  return tex;
 }
-
-function setMaterial(kind) {
-  if (!model) return;
-  model.traverse((o) => {
-    if (o.isMesh) o.material = kind === "orig" ? originalMats.get(o) : matLib[kind];
-  });
-  document.querySelectorAll("#mats .btn").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.k === kind)));
+function checkerTexture() {
+  const c = document.createElement("canvas");
+  c.width = c.height = 256;
+  const g = c.getContext("2d");
+  for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) { g.fillStyle = (x + y) % 2 ? "#1a1e26" : "#262c38"; g.fillRect(x * 32, y * 32, 32, 32); }
+  g.strokeStyle = "rgba(247,223,30,.55)"; g.lineWidth = 3; g.strokeRect(0, 0, 256, 256);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = 4;
+  return t;
 }
+const std = (color, extra) => new THREE.MeshStandardMaterial({ color, roughness: 0.5, ...extra });
 
-function addButtons(rowId, list, onClick, first) {
-  const row = document.getElementById(rowId);
-  for (const [k, label] of list) {
-    const b = document.createElement("button");
-    b.className = "btn";
-    b.dataset.k = k;
-    b.textContent = label;
-    b.setAttribute("aria-pressed", String(k === first));
-    b.addEventListener("click", () => onClick(k));
-    row.append(b);
-  }
-}
-addButtons("anims", ANIMS, play, "Idle");
-addButtons("mats", MATS, setMaterial, "orig");
+Showcase.run({ scenes: [
+  {
+    id: "robot", title: "機器人展示間",
+    api: "new GLTFLoader().loadAsync(url)・mixer.clipAction(clip).fadeIn()",
+    desc: "載入 glTF 機器人，AnimationMixer 交叉淡入切換動作、一鍵替換整身材質；背景與反射都來自同一張全景圖，點機器人用 Raycaster 判定命中。",
+    hint: "拖曳旋轉・滾輪縮放・點機器人讓它跳一下",
+    async mount(ctx) {
+      const S = stage(ctx, { shadows: true, fov: 40, portraitFov: 55, exposure: 1.05, pos: [-7.5, 4.2, 12.5], target: [0, 2.1, 0],
+        orbit: { autoRotate: true, autoRotateSpeed: 0.6, minDistance: 5, maxDistance: 24, maxPolarAngle: Math.PI * 0.49 } });
+      const { scene, camera } = S;
+      const key = new THREE.DirectionalLight(0xffe2b8, 2.4);
+      key.position.set(5, 9, 6);
+      key.castShadow = true;
+      key.shadow.mapSize.set(1024, 1024);
+      Object.assign(key.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6 });
+      key.shadow.camera.updateProjectionMatrix();
+      scene.add(key);
+      const rim = new THREE.SpotLight(0x4cc9f0, 60, 30, Math.PI / 6, 0.6);
+      rim.position.set(-6, 6, -6);
+      scene.add(rim, new THREE.HemisphereLight(0xbfd8ff, 0x332211, 0.4));
+      const pedestal = new THREE.Mesh(new THREE.CylinderGeometry(3.2, 3.4, 0.5, 96),
+        new THREE.MeshPhysicalMaterial({ color: 0x15171c, metalness: 0.6, roughness: 0.45, clearcoat: 0.6, clearcoatRoughness: 0.3, envMapIntensity: 0.35 }));
+      pedestal.position.y = -0.25;
+      pedestal.receiveShadow = true;
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(3.25, 0.035, 12, 160), new THREE.MeshBasicMaterial({ color: 0xf7df1e }));
+      ring.rotation.x = Math.PI / 2;
+      ring.position.y = 0.01;
+      scene.add(pedestal, ring);
 
-// Click the robot to make it jump
-const ray = new THREE.Raycaster();
-const ndc = new THREE.Vector2();
-let downAt = 0;
-canvas.addEventListener("pointerdown", () => { downAt = performance.now(); });
-canvas.addEventListener("pointerup", (e) => {
-  if (!model || performance.now() - downAt > 250) return;
-  ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
-  ray.setFromCamera(ndc, camera);
-  if (ray.intersectObject(model, true).length) play("Jump");
-});
+      const ANIMS = [["Idle", "待機"], ["Walking", "走路"], ["Running", "跑步"], ["Dance", "跳舞"], ["Wave", "揮手"]];
+      const MATS = [["orig", "原色"], ["chrome", "鍍鉻"], ["glass", "玻璃"], ["gold", "霧金"]];
+      const matLib = {
+        chrome: new THREE.MeshPhysicalMaterial({ color: 0xe8e8ea, metalness: 1, roughness: 0.08 }),
+        glass: new THREE.MeshPhysicalMaterial({ color: 0xbfe9ff, metalness: 0, roughness: 0.04, transmission: 1, thickness: 0.8, ior: 1.45 }),
+        gold: new THREE.MeshPhysicalMaterial({ color: 0xf7c95a, metalness: 1, roughness: 0.38, clearcoat: 0.6 }),
+      };
+      S.own(...Object.values(matLib));
+      let mixer = null, model = null, current = null, lastLoop = "Idle";
+      const actions = {}, originalMats = new Map();
+      const animSeg = ctx.group(ANIMS.map((a) => a[1]), 0, (i) => play(ANIMS[i][0]));
+      ctx.group(MATS.map((m) => m[1]), 0, (i) => setMaterial(MATS[i][0]));
+      const mark = (name) => animSeg.querySelectorAll("button").forEach((b, i) => b.setAttribute("aria-pressed", String(ANIMS[i][0] === name)));
+      function play(name) {
+        const next = actions[name];
+        if (!next || next === current) return;
+        next.reset().setEffectiveWeight(1).fadeIn(0.35).play();
+        if (current) current.fadeOut(0.35);
+        current = next;
+        if (next.loop !== THREE.LoopOnce) lastLoop = name;
+        if (name !== "Jump") mark(name);
+      }
+      function setMaterial(kind) {
+        if (!model) return;
+        model.traverse((m) => { if (m.isMesh) m.material = kind === "orig" ? originalMats.get(m) : matLib[kind]; });
+      }
+      S.onFrame((dt, t) => {
+        if (mixer) mixer.update(dt);
+        ring.material.color.setHSL(0.15, 0.95, 0.5 + Math.sin(t * 2) * 0.08);
+      });
+      const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+      onTap(ctx, S.canvas, (e) => {
+        if (!model) return;
+        ray.setFromCamera(setNdc(S, e, ndc), camera);
+        if (ray.intersectObject(model, true).length) play("Jump");
+      });
 
-function resize() {
-  const w = innerWidth, h = innerHeight;
-  renderer.setSize(w, h, false);
-  camera.aspect = w / h;
-  // Pull the camera back on narrow screens so the robot stays in frame
-  camera.fov = w < h ? 55 : 40;
-  camera.updateProjectionMatrix();
-}
-addEventListener("resize", resize);
-resize();
+      const st = ctx.status("載入全景圖與 glTF 模型…");
+      const [tex, gltf] = await Promise.all([loadPano(), new GLTFLoader().loadAsync(ROBOT)]);
+      st.done();
+      if (!ctx.active) { tex.dispose(); return; }
+      Object.assign(scene, { environment: tex, background: tex, backgroundBlurriness: 0.06, backgroundIntensity: 0.7, environmentIntensity: 0.9 });
+      model = gltf.scene;
+      model.traverse((m) => { if (m.isMesh) { m.castShadow = true; m.receiveShadow = true; originalMats.set(m, m.material); } });
+      scene.add(model);
+      mixer = new THREE.AnimationMixer(model);
+      for (const clip of gltf.animations) actions[clip.name] = mixer.clipAction(clip);
+      for (const name of ["Jump", "Wave"]) {
+        if (!actions[name]) continue;
+        actions[name].setLoop(THREE.LoopOnce);
+        actions[name].clampWhenFinished = true;
+      }
+      mixer.addEventListener("finished", () => { play(lastLoop); mark(lastLoop); });
+      play("Idle");
+    },
+  },
+  {
+    id: "pbr", title: "PBR 材質",
+    api: "new MeshStandardMaterial({ metalness, roughness })・new MeshPhysicalMaterial({ transmission, sheen… })",
+    desc: "「金屬×粗糙」以 5×2 對照金屬度與粗糙度；「進階特性」看 MeshPhysicalMaterial 的透光、色散、清漆、絨布與薄膜干涉。環境光由 RoomEnvironment 經 PMREM 預先濾波。",
+    hint: "拖曳旋轉，觀察反射隨粗糙度變模糊",
+    mount(ctx) {
+      const S = stage(ctx, { labels: true, fov: 35, pos: [0, 0.6, 12], target: [0, 0, 0], orbit: { minDistance: 3, maxDistance: 40 } });
+      const { scene, renderer, camera, controls } = S;
+      const pmrem = new THREE.PMREMGenerator(renderer);
+      const room = new RoomEnvironment();
+      const envRT = pmrem.fromScene(room, 0.04);
+      room.dispose();
+      pmrem.dispose();
+      S.own(envRT);
+      scene.environment = envRT.texture;
+      const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+      sun.position.set(3, 6, 6);
+      scene.add(sun);
+      const floorTex = S.own(checkerTexture());
+      floorTex.repeat.set(10, 10);
+      const floor = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.85 }));
+      floor.rotation.x = -Math.PI / 2;
+      scene.add(floor);
 
-const clock = new THREE.Clock();
-renderer.setAnimationLoop(() => {
-  const dt = clock.getDelta();
-  if (mixer) mixer.update(dt);
-  ring.material.color.setHSL(0.15, 0.95, 0.5 + Math.sin(clock.elapsedTime * 2) * 0.08);
-  controls.update();
-  renderer.render(scene, camera);
-});
+      const setA = new THREE.Group(), setB = new THREE.Group();
+      const ball = new THREE.SphereGeometry(0.72, 64, 32);
+      const itemsA = [];
+      for (const metal of [1, 0]) for (const r of [0, 0.25, 0.5, 0.75, 1]) {
+        const m = new THREE.Mesh(ball, std(metal ? 0xf2c14e : 0xf72585, { metalness: metal, roughness: r }));
+        const tag = label(`金屬度 ${metal}`, `粗糙度 ${r.toFixed(2)}`, -1.05);
+        tag.element.classList.add("ms");
+        m.add(tag);
+        itemsA.push({ m, metal, r });
+        setA.add(m);
+      }
+      // Column headers replace the per-ball title when the grid is stacked for portrait screens.
+      const heads = [label("金屬度 1", "", 0), label("金屬度 0", "", 0)];
+      setA.add(...heads);
+      const knot = new THREE.TorusKnotGeometry(0.5, 0.19, 220, 32);
+      const PHYS = [
+        ["透光", "transmission 1", { color: 0xffffff, roughness: 0.05, transmission: 1, thickness: 1.2, ior: 1.5 }],
+        ["色散", "dispersion 5", { color: 0xffffff, roughness: 0, transmission: 1, thickness: 1.5, ior: 1.7, dispersion: 5 }],
+        ["清漆", "clearcoat 1", { color: 0xc0182a, metalness: 0.6, roughness: 0.5, clearcoat: 1, clearcoatRoughness: 0.03 }],
+        ["絨布", "sheen 1", { color: 0x2a1d6b, roughness: 0.9, sheen: 1, sheenRoughness: 0.35, sheenColor: new THREE.Color(0xb9a7ff) }],
+        ["薄膜干涉", "iridescence 1", { color: 0x222222, metalness: 1, roughness: 0.15, iridescence: 1, iridescenceIOR: 1.6, iridescenceThicknessRange: [200, 800] }],
+      ];
+      const itemsB = PHYS.map(([t, sub, p]) => {
+        const m = new THREE.Mesh(knot, new THREE.MeshPhysicalMaterial(p));
+        m.add(label(t, sub, -1.05));
+        setB.add(m);
+        return m;
+      });
+      // Striped backdrop: refraction bends the stripes, dispersion splits their edges into colour fringes.
+      const sc = document.createElement("canvas");
+      sc.width = 512; sc.height = 8;
+      const sg = sc.getContext("2d");
+      for (let x = 0; x < 16; x++) { sg.fillStyle = x % 2 ? "#f4f4f0" : "#15171c"; sg.fillRect(x * 32, 0, 32, 8); }
+      const stripeTex = S.own(new THREE.CanvasTexture(sc));
+      stripeTex.colorSpace = THREE.SRGBColorSpace;
+      stripeTex.wrapS = THREE.RepeatWrapping;
+      stripeTex.repeat.set(2, 1);
+      const backdrop = new THREE.Mesh(new THREE.PlaneGeometry(16, 12), new THREE.MeshBasicMaterial({ map: stripeTex }));
+      backdrop.position.set(0, 1.3, -2.6);
+      setB.add(backdrop);
+      setB.visible = false;
+      scene.add(setA, setB);
+
+      let mode = 0;
+      // Lay the grid out landscape (5 columns) or portrait (2 or 3 columns) and refit the camera.
+      const layout = () => {
+        const portrait = S.width / S.availH < 0.95;
+        let halfW, halfH;
+        if (mode === 0) {
+          for (const { m, metal, r } of itemsA) {
+            const i = r * 4, j = metal ? 0 : 1;
+            if (portrait) m.position.set((j - 0.5) * 3.6, (2 - i) * 2.3 + 1.3, 0);
+            else m.position.set((i - 2) * 2.1, (0.5 - j) * 2.5 + 1.3, 0);
+          }
+          heads.forEach((hd, j) => { hd.visible = portrait; hd.position.set((j - 0.5) * 3.6, 7, 0); });
+          halfW = portrait ? 2.7 : 5.3; halfH = portrait ? 6 : 2.85;
+        } else {
+          const cols = portrait ? 2 : 5, rows = Math.ceil(5 / cols), gap = portrait ? 2.9 : 2.5;
+          itemsB.forEach((m, k) => {
+            const c = k % cols, rr = Math.floor(k / cols), inRow = Math.min(cols, 5 - rr * cols);
+            m.position.set((c - (inRow - 1) / 2) * 2.1, ((rows - 1) / 2 - rr) * gap + 1.3, 0);
+          });
+          halfW = cols * 1.05 + 0.15; halfH = (rows * gap) / 2 + 0.1;
+        }
+        ctx.el.classList.toggle("pbr-compact", portrait && mode === 0);
+        floor.position.y = 1.3 - halfH - 0.3;
+        const dist = fitDistance(S, halfW, halfH);
+        camera.position.set(0, 1.9, dist);
+        controls.target.set(0, 1.3, 0);
+        controls.update();
+      };
+      S.onSize(layout);
+      ctx.group(["金屬×粗糙", "進階特性"], 0, (i) => { mode = i; setA.visible = i === 0; setB.visible = i === 1; layout(); });
+      ctx.slider("環境光", { min: 0, max: 2, step: 0.05, value: 1, format: (v) => v.toFixed(2) }, (v) => { scene.environmentIntensity = v; });
+      S.onFrame((dt) => { for (const m of itemsB) m.rotation.y += dt * 0.35; });
+    },
+  },
+  {
+    id: "lights", title: "燈光與陰影",
+    api: "new SpotLight(color, intensity, 0, angle, penumbra)・light.castShadow・shadow.mapSize",
+    desc: "四種光源輪流打在同一組物件上，光源繞場景移動讓陰影即時變化；陰影貼圖解析度從 256 拉到 2048，邊緣鋸齒差異一目了然。",
+    hint: "切換光源類型與陰影解析度，拖曳換角度",
+    mount(ctx) {
+      const S = stage(ctx, { shadows: true, fov: 45, portraitFov: 60, pos: [7, 6.5, 9], target: [0, 0.8, 0],
+        orbit: { maxPolarAngle: Math.PI * 0.48, minDistance: 5, maxDistance: 25 } });
+      const { scene } = S;
+      scene.add(new THREE.AmbientLight(0xffffff, 0.08));
+      const ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), std(0x8a93a6, { roughness: 0.9 }));
+      ground.rotation.x = -Math.PI / 2;
+      ground.receiveShadow = true;
+      const knot = new THREE.Mesh(new THREE.TorusKnotGeometry(0.7, 0.24, 160, 24), std(0xf7df1e, { roughness: 0.35, metalness: 0.2 }));
+      knot.position.y = 1.6;
+      const at = (mesh, x, y, z) => { mesh.position.set(x, y, z); return mesh; };
+      const props = [knot,
+        ...[[-2.6, -2.6], [2.6, -2.6], [-2.6, 2.6], [2.6, 2.6]].map(([x, z], i) => at(new THREE.Mesh(new THREE.BoxGeometry(0.6, 2.4, 0.6), std(PALETTE[i + 1])), x, 1.2, z)),
+        at(new THREE.Mesh(new THREE.SphereGeometry(0.6, 48, 24), std(0xff8c42, { roughness: 0.3 })), 1.6, 0.6, -1.1),
+        at(new THREE.Mesh(new THREE.ConeGeometry(0.6, 1.4, 48), std(0x7bd389)), -1.7, 0.7, 1.3),
+      ];
+      for (const p of props) { p.castShadow = true; p.receiveShadow = true; }
+      scene.add(ground, ...props);
+
+      const L = [
+        new THREE.DirectionalLight(0xfff1d6, 2.6),
+        new THREE.PointLight(0xffc27a, 40, 0, 2),
+        new THREE.SpotLight(0x9dd9ff, 160, 0, Math.PI / 7, 0.45, 2),
+        new THREE.HemisphereLight(0xd6e6ff, 0x8a5a2b, 1.3),
+      ];
+      Object.assign(L[0].shadow.camera, { left: -7, right: 7, top: 7, bottom: -7 });
+      L[0].shadow.camera.updateProjectionMatrix();
+      for (const l of L.slice(0, 3)) { l.castShadow = true; l.shadow.bias = -0.0005; l.shadow.normalBias = 0.02; l.shadow.mapSize.set(1024, 1024); }
+      const helpers = [new THREE.DirectionalLightHelper(L[0], 0.8), new THREE.PointLightHelper(L[1], 0.25), new THREE.SpotLightHelper(L[2]), new THREE.HemisphereLightHelper(L[3], 0.6)];
+      L[3].position.set(0, 5, 0);
+      scene.add(...L, ...helpers);
+      const NOTES = [
+        "<b>DirectionalLight</b> 平行光線，模擬太陽；陰影用正交相機",
+        "<b>PointLight</b> 向四周發光，陰影要算 6 個方向",
+        "<b>SpotLight</b> 錐形光束，penumbra 0.45 柔化邊緣",
+        "<b>HemisphereLight</b> 天空色＋地面色，不產生陰影",
+      ];
+      let type = 0, showHelpers = true;
+      const pick = () => {
+        L.forEach((l, i) => { l.visible = i === type; helpers[i].visible = showHelpers && i === type; });
+        setChip(NOTES[type]);
+      };
+      ctx.group(["平行光", "點光源", "聚光燈", "半球光"], 0, (i) => { type = i; pick(); });
+      ctx.select("陰影貼圖", ["256", "512", "1024", "2048"], "1024", (v) => {
+        for (const l of L.slice(0, 3)) {
+          l.shadow.mapSize.set(+v, +v);
+          if (l.shadow.map) { l.shadow.map.dispose(); l.shadow.map = null; }
+        }
+      });
+      ctx.toggle("輔助線", true, (v) => { showHelpers = v; pick(); });
+      const setChip = chip(ctx, NOTES[0]);
+      pick();
+      S.onFrame((dt, t) => {
+        const a = t * 0.5;
+        L[0].position.set(Math.cos(a) * 6, 7, Math.sin(a) * 6);
+        L[1].position.set(Math.cos(a) * 3.2, 2.6 + Math.sin(t * 1.3) * 0.6, Math.sin(a) * 3.2);
+        L[2].position.set(Math.cos(a) * 5, 6.5, Math.sin(a) * 5);
+        for (const hp of helpers) hp.update();
+        knot.rotation.y += dt * 0.4;
+      });
+    },
+  },
+  {
+    id: "env", title: "全景環境",
+    api: "new GroundedSkybox(tex, height, radius)・scene.environment・renderer.toneMapping",
+    desc: "同一張等距長方全景圖同時當背景與 IBL 光源：GroundedSkybox 把地面投影成可站立的平面，ShadowMaterial 只接收陰影讓物件落地；可比較五種色調映射與曝光。",
+    hint: "切換背景模式、色調映射與曝光",
+    async mount(ctx) {
+      const S = stage(ctx, { shadows: true, fov: 45, portraitFov: 62, pos: [5.2, 2.1, 6.8], target: [0, 1, 0],
+        orbit: { autoRotate: true, autoRotateSpeed: 0.4, maxPolarAngle: Math.PI * 0.49, minDistance: 3.5, maxDistance: 14 } });
+      const { scene, renderer } = S;
+      const sun = new THREE.DirectionalLight(0xffe7c4, 1.2);
+      sun.position.set(3, 10, 4);
+      sun.castShadow = true;
+      Object.assign(sun.shadow.camera, { left: -5, right: 5, top: 5, bottom: -5 });
+      sun.shadow.camera.updateProjectionMatrix();
+      sun.shadow.mapSize.set(1024, 1024);
+      scene.add(sun, new THREE.HemisphereLight(0xbfd8ff, 0x40362a, 0.6));
+      const catcher = new THREE.Mesh(new THREE.PlaneGeometry(14, 14), new THREE.ShadowMaterial({ opacity: 0.4 }));
+      catcher.rotation.x = -Math.PI / 2;
+      catcher.receiveShadow = true;
+      const items = [
+        [new THREE.SphereGeometry(0.9, 64, 32), new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 1, roughness: 0.03 }), [-2.1, 0.9, 0]],
+        [new THREE.TorusKnotGeometry(0.62, 0.22, 200, 32), new THREE.MeshPhysicalMaterial({ color: 0xe8f6ff, roughness: 0.02, transmission: 1, thickness: 1, ior: 1.5 }), [0, 1.4, -0.3]],
+        [new RoundedBoxGeometry(1.3, 1.3, 1.3, 4, 0.16), new THREE.MeshStandardMaterial({ color: 0xf7c95a, metalness: 1, roughness: 0.32 }), [2.2, 0.65, 0.2]],
+        [new THREE.SphereGeometry(0.5, 48, 24), new THREE.MeshPhysicalMaterial({ color: 0xf72585, roughness: 0.4, clearcoat: 1, clearcoatRoughness: 0.05 }), [0.8, 0.5, 1.7]],
+      ].map(([g, m, p]) => { const o = new THREE.Mesh(g, m); o.position.set(...p); o.castShadow = true; return o; });
+      scene.add(catcher, ...items);
+      S.onFrame((dt) => { items[1].rotation.y += dt * 0.5; items[2].rotation.y -= dt * 0.25; });
+
+      const TONES = { aces: THREE.ACESFilmicToneMapping, agx: THREE.AgXToneMapping, neutral: THREE.NeutralToneMapping, reinhard: THREE.ReinhardToneMapping, none: THREE.NoToneMapping };
+      let tex = null, sky = null, bgMode = 0;
+      const applyBg = () => {
+        if (!tex) return;
+        sky.visible = bgMode === 0;
+        scene.background = bgMode === 1 ? tex : bgMode === 2 ? new THREE.Color(0x0e1013) : null;
+      };
+      ctx.group(["落地天空盒", "球面背景", "純色"], 0, (i) => { bgMode = i; applyBg(); });
+      ctx.select("色調", [{ value: "aces", label: "ACES Filmic" }, { value: "agx", label: "AgX" }, { value: "neutral", label: "Neutral" },
+        { value: "reinhard", label: "Reinhard" }, { value: "none", label: "不映射" }], "aces", (v) => { renderer.toneMapping = TONES[v]; });
+      ctx.slider("曝光", { min: 0.2, max: 2.5, step: 0.05, value: 1, format: (v) => v.toFixed(2) }, (v) => { renderer.toneMappingExposure = v; });
+
+      const st = ctx.status("載入 4096×2048 全景圖…");
+      tex = await loadPano();
+      st.done();
+      if (!ctx.active) { tex.dispose(); return; }
+      sky = new GroundedSkybox(tex, 3, 60);
+      sky.position.y = 3 - 0.01;
+      scene.add(sky);
+      scene.environment = tex;
+      S.own(tex);
+      applyBg();
+    },
+  },
+  {
+    id: "raycast", title: "射線點選",
+    api: "raycaster.setFromCamera(ndc, camera)・intersectObject(mesh)[0].instanceId",
+    desc: "196 根柱子是同一個 InstancedMesh；Raycaster 每格從游標射出，回傳命中的 instanceId、交點與面法線，箭頭即法線方向。點一下可選取或取消。",
+    hint: "移動游標掃過柱子，點擊選取",
+    mount(ctx) {
+      const S = stage(ctx, { shadows: true, fov: 42, portraitFov: 58, pos: [8, 9, 10], target: [0, 0.6, 0],
+        orbit: { maxPolarAngle: Math.PI * 0.45, minDistance: 6, maxDistance: 28 } });
+      const { scene, camera } = S;
+      const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+      sun.position.set(6, 12, 4);
+      sun.castShadow = true;
+      sun.shadow.mapSize.set(1024, 1024);
+      Object.assign(sun.shadow.camera, { left: -7, right: 7, top: 7, bottom: -7 });
+      sun.shadow.camera.updateProjectionMatrix();
+      scene.add(sun, new THREE.HemisphereLight(0xbfd8ff, 0x1a1410, 0.7));
+      const ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), std(0x161a21, { roughness: 1 }));
+      ground.rotation.x = -Math.PI / 2;
+      ground.receiveShadow = true;
+      scene.add(ground);
+
+      const N = 14, STEP = 0.62, half = ((N - 1) * STEP) / 2, COUNT = N * N;
+      const geo = new RoundedBoxGeometry(0.54, 1, 0.54, 2, 0.07);
+      geo.translate(0, 0.5, 0);
+      const mesh = new THREE.InstancedMesh(geo, std(0xffffff, { roughness: 0.42, metalness: 0.15 }), COUNT);
+      mesh.castShadow = mesh.receiveShadow = true;
+      scene.add(mesh);
+      const base = new Float32Array(COUNT), cur = new Float32Array(COUNT), sel = new Uint8Array(COUNT);
+      for (let i = 0; i < COUNT; i++) {
+        const x = i % N, z = Math.floor(i / N);
+        base[i] = cur[i] = 0.35 + 1.4 * (0.5 + 0.5 * Math.sin(x * 0.55) * Math.cos(z * 0.45 + 0.6));
+      }
+      const LOW = new THREE.Color(0x24324a), HIGH = new THREE.Color(0x4cc9f0), HOVER = new THREE.Color(0xf72585), PICK = new THREE.Color(0xf7df1e);
+      const tmpC = new THREE.Color(), m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), pos = new THREE.Vector3(), scl = new THREE.Vector3();
+      let hover = -1, dirty = true;
+      const paint = () => {
+        for (let i = 0; i < COUNT; i++) mesh.setColorAt(i, sel[i] ? PICK : i === hover ? HOVER : tmpC.copy(LOW).lerp(HIGH, (base[i] - 0.35) / 1.4));
+        mesh.instanceColor.needsUpdate = true;
+      };
+      const place = (dt) => {
+        let moved = dirty;
+        for (let i = 0; i < COUNT; i++) {
+          const goal = base[i] + (sel[i] ? 0.6 : 0) + (i === hover ? 0.9 : 0), d = goal - cur[i];
+          if (Math.abs(d) > 1e-3) { cur[i] += d * Math.min(1, dt * 10); moved = true; }
+        }
+        if (!moved) return;
+        for (let i = 0; i < COUNT; i++) {
+          mesh.setMatrixAt(i, m4.compose(pos.set((i % N) * STEP - half, 0, Math.floor(i / N) * STEP - half), q, scl.set(1, cur[i], 1)));
+        }
+        mesh.instanceMatrix.needsUpdate = true;
+        mesh.computeBoundingSphere();
+        dirty = false;
+      };
+      paint();
+      place(0);
+
+      const marker = new THREE.Mesh(new THREE.SphereGeometry(0.07, 16, 8), new THREE.MeshBasicMaterial({ color: 0xf7df1e }));
+      const arrow = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(), 0.9, 0xf7df1e, 0.25, 0.14);
+      marker.visible = arrow.visible = false;
+      scene.add(marker, arrow);
+      const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), nrm = new THREE.Vector3(), nm = new THREE.Matrix3(), im = new THREE.Matrix4();
+      let inside = false;
+      const IDLE = "游標移到柱子上：Raycaster 會回傳 <b>instanceId</b>、交點與法線";
+      const setChip = chip(ctx, IDLE);
+      const selected = () => sel.reduce((a, b) => a + b, 0);
+      ctx.on(S.canvas, "pointermove", (e) => { if (e.pointerType === "mouse") { setNdc(S, e, ndc); inside = true; } });
+      ctx.on(S.canvas, "pointerleave", () => { inside = false; });
+      onTap(ctx, S.canvas, (e) => {
+        ray.setFromCamera(setNdc(S, e, ndc), camera);
+        const hit = ray.intersectObject(mesh)[0];
+        if (!hit) return;
+        sel[hit.instanceId] ^= 1;
+        paint();
+      });
+      ctx.button("清除選取", () => { sel.fill(0); paint(); });
+      S.onFrame((dt) => {
+        let hit = null;
+        if (inside) { ray.setFromCamera(ndc, camera); hit = ray.intersectObject(mesh)[0] || null; }
+        const id = hit ? hit.instanceId : -1;
+        if (id !== hover) { hover = id; paint(); }
+        place(dt);
+        marker.visible = arrow.visible = !!hit;
+        if (!hit) { setChip(`${IDLE}　已選 <b>${selected()}</b>`); return; }
+        mesh.getMatrixAt(hit.instanceId, im);
+        nrm.copy(hit.face.normal).applyMatrix3(nm.getNormalMatrix(im)).normalize();
+        marker.position.copy(hit.point);
+        arrow.position.copy(hit.point);
+        arrow.setDirection(nrm);
+        const v = (n) => n.toFixed(2).replace("-0.00", "0.00");
+        setChip(`instanceId <b>${hit.instanceId}</b>　距離 <b>${hit.distance.toFixed(2)}</b>　法線 <b>(${v(nrm.x)}, ${v(nrm.y)}, ${v(nrm.z)})</b>　已選 <b>${selected()}</b>`);
+      });
+    },
+  },
+  {
+    id: "bloom", title: "後製光暈",
+    api: "new EffectComposer(renderer)・addPass(new UnrealBloomPass(size, strength, radius, threshold))",
+    desc: "EffectComposer 串接 RenderPass、UnrealBloomPass 與 OutputPass：亮度超過門檻的像素向外擴散成光暈。左右對照模式左半是同一場景直接輸出。",
+    hint: "調整強度、門檻與半徑，切換對照模式",
+    mount(ctx) {
+      const S = stage(ctx, { fov: 50, portraitFov: 70, pos: [0, 2.4, 9.5], target: [0, 0, 0], bg: 0x07080b,
+        orbit: { autoRotate: true, autoRotateSpeed: 0.8, minDistance: 4, maxDistance: 20 } });
+      const { scene, camera, renderer } = S;
+      const composer = new EffectComposer(renderer);
+      const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.9, 0.35, 0.25);
+      const output = new OutputPass();
+      composer.addPass(new RenderPass(scene, camera));
+      composer.addPass(bloom);
+      composer.addPass(output);
+      S.own(composer, bloom, output);
+      S.onSize((w, hh) => composer.setSize(w, hh));
+
+      scene.add(new THREE.HemisphereLight(0x8899ff, 0x111111, 0.4));
+      const core = new THREE.Mesh(new THREE.IcosahedronGeometry(1, 1),
+        std(0x111111, { emissive: 0xf7df1e, emissiveIntensity: 1.6, flatShading: true, roughness: 0.4 }));
+      scene.add(core);
+      const rings = PALETTE.map((c, i) => {
+        const m = new THREE.Mesh(new THREE.TorusGeometry(1.8 + i * 0.34, 0.035, 8, 220),
+          new THREE.MeshBasicMaterial({ color: new THREE.Color(c).multiplyScalar(2.2) }));
+        m.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, 0);
+        m.userData.spin = new THREE.Vector3(0.2 + i * 0.05, 0.3 - i * 0.04, 0.1 * (i % 2 ? 1 : -1));
+        scene.add(m);
+        return m;
+      });
+      const P = 900, pts = new Float32Array(P * 3), cols = new Float32Array(P * 3), c = new THREE.Color();
+      for (let i = 0; i < P; i++) {
+        const v = new THREE.Vector3().randomDirection().multiplyScalar(3.8 + Math.random() * 2.2);
+        pts.set([v.x, v.y, v.z], i * 3);
+        c.setHex(PALETTE[i % 6]).multiplyScalar(1.5).toArray(cols, i * 3);
+      }
+      const pg = new THREE.BufferGeometry();
+      pg.setAttribute("position", new THREE.BufferAttribute(pts, 3));
+      pg.setAttribute("color", new THREE.BufferAttribute(cols, 3));
+      const sparks = new THREE.Points(pg, new THREE.PointsMaterial({ size: 0.07, vertexColors: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+      const grid = new THREE.GridHelper(30, 30, 0x2a2f3a, 0x171a20);
+      grid.position.y = -3;
+      scene.add(sparks, grid);
+      S.onFrame((dt, t) => {
+        core.rotation.x += dt * 0.3; core.rotation.y += dt * 0.5;
+        core.material.emissiveIntensity = 1.5 + Math.sin(t * 2.2) * 0.5;
+        for (const r of rings) { r.rotation.x += r.userData.spin.x * dt; r.rotation.y += r.userData.spin.y * dt; r.rotation.z += r.userData.spin.z * dt; }
+        sparks.rotation.y -= dt * 0.05;
+      });
+
+      const split = h("div", { class: "split" }, h("span", { text: "原始輸出" }), h("span", { text: "UnrealBloomPass" }));
+      ctx.el.append(split);
+      let mode = 0;
+      S.render = () => {
+        if (mode === 2) { renderer.render(scene, camera); return; }
+        composer.render();
+        if (mode === 0) {
+          renderer.setScissorTest(true);
+          renderer.setScissor(0, 0, S.width / 2, S.height);
+          renderer.render(scene, camera);
+          renderer.setScissorTest(false);
+        }
+      };
+      ctx.group(["左右對照", "全畫面", "關閉"], 0, (i) => { mode = i; split.hidden = i !== 0; });
+      ctx.slider("強度", { min: 0, max: 3, step: 0.05, value: 0.9, format: (v) => v.toFixed(2) }, (v) => { bloom.strength = v; });
+      ctx.slider("門檻", { min: 0, max: 1, step: 0.01, value: 0.25, format: (v) => v.toFixed(2) }, (v) => { bloom.threshold = v; });
+      ctx.slider("半徑", { min: 0, max: 1, step: 0.01, value: 0.35, format: (v) => v.toFixed(2) }, (v) => { bloom.radius = v; });
+    },
+  },
+  {
+    id: "shader", title: "自訂著色器",
+    api: "new ShaderMaterial({ uniforms, vertexShader, fragmentShader })",
+    desc: "頂點著色器用三組正弦波沿法線推動 33,620 個三角形，片段著色器依位移量上色並加邊緣光；同一個材質可掛在 Mesh 或 Points 上。",
+    hint: "拖曳旋轉，調整振幅與頻率",
+    mount(ctx) {
+      const S = stage(ctx, { fov: 40, portraitFov: 58, pos: [0, 0.4, 7.5], orbit: { autoRotate: true, autoRotateSpeed: 1, minDistance: 3.5, maxDistance: 14 } });
+      const uniforms = {
+        uTime: { value: 0 }, uAmp: { value: 0.3 }, uFreq: { value: 3 },
+        uA: { value: new THREE.Color(0x2b0a6b) }, uB: { value: new THREE.Color(0x1f9fd0) }, uC: { value: new THREE.Color(0xf7df1e) },
+      };
+      const mat = new THREE.ShaderMaterial({
+        uniforms,
+        toneMapped: false,
+        vertexShader: `
+          uniform float uTime, uAmp, uFreq;
+          varying float vDisp;
+          varying vec3 vNormal, vView;
+          void main() {
+            vec3 n = normalize(normal);
+            float d = sin(position.x * uFreq + uTime) * sin(position.y * uFreq * 1.3 + uTime * 1.1) * sin(position.z * uFreq * 0.7 + uTime * 0.8);
+            vDisp = d;
+            vec4 mv = modelViewMatrix * vec4(position + n * d * uAmp, 1.0);
+            vNormal = normalize(normalMatrix * n);
+            vView = -mv.xyz;
+            gl_PointSize = 18.0 / -mv.z;
+            gl_Position = projectionMatrix * mv;
+          }`,
+        fragmentShader: `
+          uniform vec3 uA, uB, uC;
+          varying float vDisp;
+          varying vec3 vNormal, vView;
+          void main() {
+            float t = clamp(vDisp * 1.4 + 0.5, 0.0, 1.0);
+            vec3 col = mix(uA, uB, smoothstep(0.1, 0.55, t));
+            col = mix(col, uC, smoothstep(0.6, 0.95, t));
+            float rim = pow(1.0 - abs(dot(normalize(vNormal), normalize(vView))), 3.0);
+            gl_FragColor = vec4(col + rim * 0.35, 1.0);
+            #include <tonemapping_fragment>
+            #include <colorspace_fragment>
+          }`,
+      });
+      const geo = new THREE.IcosahedronGeometry(1.5, 40);
+      const blob = new THREE.Mesh(geo, mat), dots = new THREE.Points(geo, mat);
+      dots.visible = false;
+      S.scene.add(blob, dots);
+      S.onFrame((dt, t) => { uniforms.uTime.value = t; });
+      ctx.group(["實體", "線框", "點雲"], 0, (i) => { mat.wireframe = i === 1; blob.visible = i !== 2; dots.visible = i === 2; });
+      ctx.slider("振幅", { min: 0, max: 0.8, step: 0.01, value: 0.3, format: (v) => v.toFixed(2) }, (v) => { uniforms.uAmp.value = v; });
+      ctx.slider("頻率", { min: 0.5, max: 8, step: 0.1, value: 3, format: (v) => v.toFixed(1) }, (v) => { uniforms.uFreq.value = v; });
+      chip(ctx, `IcosahedronGeometry(1.5, 40)：<b>${fmt(geo.attributes.position.count / 3)}</b> 個三角形，位移全在 GPU 計算`);
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "new InstancedMesh(geo, mat, n)・instanceMatrix.needsUpdate = true",
+    desc: "一個 InstancedMesh 畫出整片星系，所有實例共用一次 draw call；逐級加量，量測每格重算矩陣與 GPU 繪製的負荷。",
+    hint: "按「自動加壓」開始，可切換是否逐格更新矩陣",
+    mount(ctx) {
+      ctx.html(`<div class="stress-view"></div>`);
+      const host = ctx.$(".stress-view");
+      ctx.controls.classList.add("bottom");
+      const S = stage(ctx, { host, fov: 50, pos: [0, 10, 17], target: [0, -0.5, 0], bg: 0x07080b,
+        orbit: { autoRotate: true, autoRotateSpeed: 0.5, minDistance: 5, maxDistance: 45 } });
+      const { scene, renderer } = S;
+      const sun = new THREE.DirectionalLight(0xffffff, 2);
+      sun.position.set(4, 10, 6);
+      scene.add(sun, new THREE.HemisphereLight(0xbfd8ff, 0x222233, 1));
+      const shapes = [S.own(new THREE.BoxGeometry(1, 1, 1)), S.own(new THREE.SphereGeometry(0.62, 12, 8))];
+      const mat = S.own(new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.25 }));
+      let mesh = null, cap = 0, count = 0, shape = 0, animate = true, updMs = 0, frozenT = 0;
+      // Deterministic per-instance params so the first k instances never move between steps.
+      const P = { r: new Float32Array(0), a: null, w: null, y: null, s: null, arm: null, n: 0 };
+      const ensure = (n) => {
+        if (P.n >= n) return;
+        const grow = (a) => { const b = new Float32Array(n); if (a) b.set(a); return b; };
+        for (const k of ["r", "a", "w", "y", "s", "arm"]) P[k] = grow(P[k]);
+        let seed = 1234 + P.n * 7919;
+        const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+        for (let i = P.n; i < n; i++) {
+          const arm = i % 5, r = 0.6 + 11 * Math.pow(rnd(), 0.7);
+          P.arm[i] = arm; P.r[i] = r;
+          P.a[i] = arm * (Math.PI * 2 / 5) + r * 0.45 + (rnd() - 0.5) * 0.7;
+          P.w[i] = 0.55 / (0.6 + r * 0.35);
+          P.y[i] = (rnd() - 0.5) * (1.6 - r * 0.08);
+          P.s[i] = 0.6 + rnd() * 0.8;
+        }
+        P.n = n;
+      };
+      const sizeFor = (n) => Math.min(0.32, Math.max(0.045, 0.32 * Math.cbrt(1000 / n)));
+      const write = (t) => {
+        const t0 = performance.now(), arr = mesh.instanceMatrix.array, base = sizeFor(count);
+        for (let i = 0, k = 0; i < count; i++, k += 16) {
+          const ang = P.a[i] + t * P.w[i], r = P.r[i], s = base * P.s[i];
+          const rc = Math.cos(ang * 3) * s, rs = Math.sin(ang * 3) * s;
+          arr[k] = rc; arr[k + 1] = 0; arr[k + 2] = -rs; arr[k + 3] = 0;
+          arr[k + 4] = 0; arr[k + 5] = s; arr[k + 6] = 0; arr[k + 7] = 0;
+          arr[k + 8] = rs; arr[k + 9] = 0; arr[k + 10] = rc; arr[k + 11] = 0;
+          arr[k + 12] = Math.cos(ang) * r; arr[k + 13] = P.y[i] + Math.sin(t * 1.5 + r) * 0.15; arr[k + 14] = Math.sin(ang) * r; arr[k + 15] = 1;
+        }
+        const im = mesh.instanceMatrix;
+        im.clearUpdateRanges();
+        im.addUpdateRange(0, count * 16);
+        im.needsUpdate = true;
+        updMs = performance.now() - t0;
+      };
+      const rebuild = (n) => {
+        if (mesh) { scene.remove(mesh); mesh.dispose(); }
+        cap = Math.max(1, n);
+        ensure(cap);
+        mesh = new THREE.InstancedMesh(shapes[shape], mat, cap);
+        mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        mesh.frustumCulled = false;
+        const c = new THREE.Color();
+        for (let i = 0; i < cap; i++) mesh.setColorAt(i, c.setHex(PALETTE[P.arm[i]]).multiplyScalar(0.7 + (P.s[i] - 0.6) * 0.5));
+        mesh.count = count;
+        write(frozenT);
+        scene.add(mesh);
+      };
+      S.onFrame((dt, t) => {
+        if (!mesh) return;
+        if (animate) { frozenT = t; write(t); } else { mesh.rotation.y += dt * 0.1; updMs = 0; }
+      });
+      ctx.toggle("逐格更新矩陣", true, (v) => { animate = v; });
+      ctx.group(["方塊 12 面", "球體 168 面"], 0, (i) => { shape = i; rebuild(cap); });
+      ctx.ramp({
+        label: "實例數", unit: "個",
+        steps: [1000, 5000, 20000, 50000, 100000, 200000, 350000, 500000],
+        minFps: 30,
+        apply(n) {
+          count = n;
+          if (!mesh || n > cap) rebuild(n);
+          else { mesh.count = n; write(frozenT); }
+        },
+        metrics: () => ({ 三角形: renderer.info.render.triangles, "Draw calls": renderer.info.render.calls, 矩陣更新: animate ? `${updMs.toFixed(1)} ms` : "暫停" }),
+        note: "所有實例都屬於同一個 InstancedMesh，整批只有 1 次 draw call。開啟「逐格更新矩陣」時，JS 每格重算全部 4×4 矩陣並整批上傳 GPU，瓶頸在 CPU 與傳輸頻寬；關閉後只剩 GPU 繪製，改用球體（三角形約多 14 倍）可觀察頂點處理上限。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

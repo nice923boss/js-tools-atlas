@@ -3,225 +3,1085 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pizzicato.js 示範：效果器踏板</title>
+<title>Pizzicato.js 示範：7 個場景看懂音效函式庫與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"]}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio","mic"],"scenes":["效果器踏板","波形合成器","程式產生音訊","麥克風輸入","更多效果與完整參數","群組混音","極限測試"],"note":"所有聲音都由 Pizzicato.Sound、Effects 與 Group 產生；頁面載入時 Pizzicato 會建立 AudioContext，但要按下播放或琴鍵才會出聲，麥克風場景預設不監聽；頁面在 masterGainNode 之後另加一個保護聽力用的限幅器（非 Pizzicato 功能）"}</script>
 <style>
-  body {
-    background:
-      radial-gradient(70% 50% at 50% 0%, rgba(255, 140, 66, 0.10), transparent 70%),
-      var(--bg);
+  .pz-board { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: auto; }
+  .pz-board > * { flex: none; min-width: 0; }
+  .pz-cv { position: relative; min-height: 0; min-width: 0; border-radius: 10px; background: #0a0c0f; border: 1px solid var(--line); overflow: hidden; }
+  .pz-cv > canvas { position: absolute; inset: 0; display: block; }
+  .pz-api { font: 11.5px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pz-cap { font-size: 12px; color: var(--muted); line-height: 1.45; }
+  .pz-m { font-family: var(--mono); }
+
+  /* 1. pedalboard */
+  .pz-top { display: flex; gap: 12px; align-items: center; }
+  .pz-play { width: 52px; height: 52px; flex: none; border-radius: 50%; border: 0; cursor: pointer; background: var(--accent); color: var(--accent-ink); font: 700 18px var(--font); box-shadow: 0 0 0 6px rgba(247, 223, 30, .12); }
+  .pz-play:disabled { opacity: .45; cursor: wait; }
+  .pz-top > .pz-cv { flex: 1; height: 92px; }
+  .pz-chain { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 22px; }
+  .pz-chain b { color: var(--fg); font-weight: 600; padding: 1px 7px; border-radius: 6px; background: rgba(255, 255, 255, .08); }
+  .pz-chain b.fx { background: var(--pc); color: #111; }
+  .pz-pedals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding: 12px; border-radius: 14px; background: linear-gradient(180deg, #23262d, #17191e); border: 1px solid var(--line); }
+  .pz-pedal { position: relative; border-radius: 10px; padding: 9px 10px 8px; display: grid; gap: 5px; min-width: 0; color: #121212;
+    background: linear-gradient(170deg, var(--pc), color-mix(in srgb, var(--pc) 55%, #000)); box-shadow: 0 6px 14px rgba(0, 0, 0, .4), inset 0 1px 0 rgba(255, 255, 255, .35); }
+  .pz-pedal:not(.on) { filter: saturate(.6) brightness(.8); }
+  .pz-pr1 { display: flex; justify-content: space-between; align-items: center; gap: 4px; }
+  .pz-pedal h3 { margin: 0; font: 700 14px/1.2 var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pz-pedal small { font: 10px var(--mono); opacity: .72; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pz-led { width: 10px; height: 10px; border-radius: 50%; background: #3b0d0d; box-shadow: inset 0 0 2px #000; flex: none; }
+  .pz-pedal.on .pz-led { background: #ff2a2a; box-shadow: 0 0 10px 2px rgba(255, 42, 42, .8); }
+  .pz-knob { font-size: 11px; display: flex; justify-content: space-between; gap: 4px; }
+  .pz-knob output { font: 600 11px var(--mono); }
+  .pz-pedal input[type=range] { width: 100%; accent-color: #1a1a1a; margin: 0; }
+  .pz-stomp { justify-self: center; width: 32px; height: 32px; border-radius: 50%; cursor: pointer; border: 3px solid #2a2a2a; background: radial-gradient(circle at 35% 35%, #eee, #8d8d8d 60%, #555); box-shadow: 0 3px 0 #222; }
+  .pz-pedal.on .pz-stomp { box-shadow: 0 1px 0 #222; transform: translateY(2px); }
+
+  /* 2. wave synth */
+  .pz-duo { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; height: 132px; }
+  .pz-kb { position: relative; display: flex; user-select: none; touch-action: none; height: 120px; }
+  .pz-w { flex: 1; border: 1px solid #2b2e35; border-top: 0; border-radius: 0 0 6px 6px; background: linear-gradient(#f4f2ea, #e2dfd5); display: flex; align-items: flex-end; justify-content: center; padding-bottom: 5px; color: #333; font: 600 10px var(--mono); min-width: 0; cursor: pointer; }
+  .pz-b { position: absolute; top: 0; height: 60%; border-radius: 0 0 5px 5px; z-index: 2; background: linear-gradient(#2d3038, #121418); border: 1px solid #000; cursor: pointer; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 4px; color: #aaa; font: 600 9px var(--mono); }
+  .pz-w.on { background: linear-gradient(#ffe9a8, #f7a21e); }
+  .pz-b.on { background: linear-gradient(#f7a21e, #9c5d06); color: #fff; }
+
+  /* 3. script */
+  .pz-sc3 { flex: 1 1 auto !important; min-height: 170px; max-height: 300px; }
+  .pz-facts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+  .pz-facts > div { padding: 5px 8px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); min-width: 0; }
+  .pz-facts small { display: block; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pz-facts b { display: block; font: 700 15px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pz-facts b.bad { color: #ff6b6b; }
+
+  /* 4. mic */
+  .pz-mic { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+  .pz-micst { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); min-width: 0; }
+  .pz-micst b { font-size: 17px; }
+  .pz-micst.err b { color: #ff6b6b; }
+  .pz-micst.live b { color: #7bd389; }
+  .pz-lvl { min-height: 120px; }
+  .pz-mic + .pz-cv { height: 120px; }
+
+  /* 5. fx lab */
+  .pz-lab { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 8px; flex: 1 0 auto; min-height: 230px; }
+  .pz-params { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); min-width: 0; overflow: auto; }
+  .pz-params h4 { margin: 0; font: 700 15px var(--font); }
+  .pz-params h4 small { font: 400 11px var(--mono); color: var(--muted); margin-left: 6px; }
+  .pz-prow { display: grid; grid-template-columns: 6.6em minmax(0, 1fr) 4.6em; gap: 6px; align-items: center; font-size: 12px; }
+  .pz-prow span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pz-prow span i { font: normal 10px var(--mono); color: var(--muted); display: block; }
+  .pz-prow input { width: 100%; margin: 0; min-width: 0; }
+  .pz-prow output { font: 600 11.5px var(--mono); text-align: right; }
+  .pz-chips { display: flex; gap: 5px; flex-wrap: wrap; }
+  .pz-chip { border: 1px solid var(--line); background: rgba(255, 255, 255, .05); color: var(--fg); border-radius: 8px; padding: 4px 8px; font: 500 12px var(--font); cursor: pointer; }
+  .pz-chip[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+  .pz-oor { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+  .pz-oor b { color: #f7a21e; font-family: var(--mono); font-weight: 600; }
+
+  /* 6. group mixer */
+  .pz-gscope { height: 96px; }
+  .pz-mix { display: flex; flex-direction: column; gap: 6px; }
+  .pz-ch { display: grid; grid-template-columns: 7.4em minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 5.4em; grid-template-areas: "name meter vol pan mute"; gap: 8px; align-items: center; padding: 6px 10px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); font-size: 12px; }
+  .pz-ch.grp { border-color: rgba(247, 223, 30, .45); }
+  .pz-ch.muted { opacity: .55; }
+  .pz-ch > .nm { grid-area: name; min-width: 0; }
+  .pz-ch > .nm b { display: block; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pz-ch > .nm i { display: block; font: normal 10px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pz-ch > .mt { grid-area: meter; height: 10px; border-radius: 5px; background: rgba(255, 255, 255, .07); overflow: hidden; }
+  .pz-ch > .mt i { display: block; height: 100%; width: 0; border-radius: 5px; background: linear-gradient(90deg, #7bd389, #f7df1e 75%, #ff6b6b); }
+  .pz-ch > label { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px; align-items: center; min-width: 0; color: var(--muted); }
+  .pz-ch > label input { width: 100%; margin: 0; min-width: 0; }
+  .pz-ch > .v { grid-area: vol; } .pz-ch > .p { grid-area: pan; }
+  .pz-ch > button { grid-area: mute; }
+
+  /* 7. stress */
+  .pz-sv { position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px); border-radius: 10px; background: #050608; overflow: hidden; border: 1px solid var(--line); }
+  @media (min-width: 761px) { .pz-sv { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 350px; } }
+
+  @media (max-height: 480px) {
+    .pz-top > .pz-cv { height: 64px; }
+    .pz-play { width: 44px; height: 44px; font-size: 16px; }
+    .pz-pedals { padding: 8px; gap: 8px; }
+    .pz-duo { height: 104px; }
+    .pz-kb { height: 96px; }
+    .pz-sc3 { min-height: 130px; max-height: 130px; }
   }
-  .wrap {
-    position: fixed; inset: 0; display: flex; flex-direction: column; justify-content: center;
-    gap: 12px; padding: 16px 16px 48px; max-width: 980px; margin: 0 auto;
-  }
-  .top { display: flex; gap: 14px; align-items: center; }
-  .play {
-    width: 56px; height: 56px; flex: none; border-radius: 50%; border: 0; cursor: pointer;
-    background: var(--accent); color: var(--accent-ink); font-size: 20px; font-weight: 700;
-    box-shadow: 0 0 0 6px rgba(247, 223, 30, 0.12);
-  }
-  .scope {
-    flex: 1; min-width: 0; height: 96px; border-radius: 12px; border: 1px solid var(--line);
-    background: #0a0c0f; position: relative; overflow: hidden;
-  }
-  .scope canvas { width: 100%; height: 100%; display: block; }
-  .chain {
-    font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
-    min-height: 22px;
-  }
-  .chain b { color: var(--fg); font-weight: 600; padding: 1px 7px; border-radius: 6px; background: rgba(255,255,255,0.08); }
-  .chain b.fx { background: var(--pc); color: #111; }
-  .board {
-    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px;
-    padding: 12px; border-radius: 14px; background: linear-gradient(180deg, #23262d, #17191e);
-    border: 1px solid var(--line); box-shadow: inset 0 2px 0 rgba(255,255,255,0.04);
-  }
-  .pedal {
-    position: relative; border-radius: 10px; padding: 10px 10px 8px; display: grid; gap: 6px;
-    background: linear-gradient(170deg, color-mix(in srgb, var(--pc) 70%, #fff 0%), color-mix(in srgb, var(--pc) 55%, #000));
-    color: #121212; box-shadow: 0 6px 14px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.35);
-    min-width: 0;
-  }
-  .pedal .row1 { display: flex; justify-content: space-between; align-items: center; gap: 4px; }
-  .pedal h3 { margin: 0; font-size: 14px; line-height: 1.2; }
-  .pedal small { font: 10px var(--mono); opacity: .7; display: block; }
-  .led { width: 10px; height: 10px; border-radius: 50%; background: #3b0d0d; box-shadow: inset 0 0 2px #000; flex: none; }
-  .pedal:not(.on) { filter: saturate(0.6) brightness(0.82); }
-  .pedal.on .led { background: #ff2a2a; box-shadow: 0 0 10px 2px rgba(255, 42, 42, 0.8); }
-  .pedal label { font-size: 11px; display: grid; gap: 2px; }
-  .pedal input[type=range] { width: 100%; accent-color: #1a1a1a; margin: 0; }
-  .stomp {
-    justify-self: center; width: 34px; height: 34px; border-radius: 50%; cursor: pointer;
-    border: 3px solid #2a2a2a; background: radial-gradient(circle at 35% 35%, #eee, #8d8d8d 60%, #555);
-    box-shadow: 0 3px 0 #222;
-  }
-  .stomp:active { transform: translateY(2px); box-shadow: 0 1px 0 #222; }
-  .pedal.on .stomp { box-shadow: 0 1px 0 #222; transform: translateY(2px); }
-  @media (max-width: 620px) {
-    .wrap { gap: 8px; padding: 10px 10px 46px; }
-    .play { width: 44px; height: 44px; font-size: 16px; }
-    .scope { height: 64px; }
-    .board { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding: 8px; }
-    .pedal { padding: 6px 5px 6px; gap: 3px; }
-    .pedal h3 { font-size: 11px; }
-    .pedal small { display: none; }
-    .pedal label span { display: none; }
-    .stomp { width: 26px; height: 26px; border-width: 2px; }
-    .led { width: 8px; height: 8px; }
+  @media (max-width: 560px) {
+    .pz-board { gap: 6px; }
+    .pz-top > .pz-cv { height: 64px; }
+    .pz-play { width: 44px; height: 44px; font-size: 16px; }
+    .pz-pedals { gap: 6px; padding: 8px; }
+    .pz-pedal { padding: 6px 5px; gap: 3px; }
+    .pz-pedal h3 { font-size: 11.5px; }
+    .pz-pedal small, .pz-knob span { display: none; }
+    .pz-knob { justify-content: center; }
+    .pz-stomp { width: 26px; height: 26px; border-width: 2px; }
+    .pz-duo { grid-template-columns: minmax(0, 1fr); height: auto; }
+    .pz-duo > .pz-cv { height: 96px; }
+    .pz-w { font-size: 8px; }
+    .pz-b { font-size: 0; }
+    .pz-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .pz-facts > div:last-child { grid-column: 1 / -1; }
+    .pz-mic { grid-template-columns: minmax(0, 1fr); }
+    .pz-lab { grid-template-columns: minmax(0, 1fr); }
+    .pz-lab > .pz-cv { min-height: 170px; }
+    .pz-prow { grid-template-columns: 5.6em minmax(0, 1fr) 4.2em; }
+    .pz-ch { grid-template-columns: 5.6em minmax(0, 1fr) minmax(0, 1fr) 4.4em; grid-template-areas: "name meter meter mute" "name vol pan mute"; gap: 4px 6px; padding: 6px 8px; }
+    .pz-ch > label { grid-template-columns: minmax(0, 1fr); gap: 0; font-size: 10.5px; }
   }
 </style>
+<script>
+  // Pizzicato 0.6.4 replaces AudioNode.prototype.connect with a shim that drops the
+  // output / input index arguments. Keep the native method for the channel splitter.
+  window.PZ_NATIVE_CONNECT = AudioNode.prototype.connect;
+</script>
+<script src="https://cdn.jsdelivr.net/npm/pizzicato@0.6.4/distr/Pizzicato.min.js"></script>
 </head>
 <body>
-<div class="wrap">
-  <div class="top">
-    <button class="play" id="play" aria-label="播放">▶</button>
-    <div class="scope"><canvas id="scope"></canvas></div>
-  </div>
-  <div class="chain" id="chain"></div>
-  <div class="board" id="board"></div>
-</div>
-<div class="hint">按播放後踩下踏板開關效果，旋鈕即時調整</div>
-
-<script src="https://cdn.jsdelivr.net/npm/pizzicato@0.6.4/distr/Pizzicato.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Pizzicato.js: one looping Sound, effects added / removed with addEffect / removeEffect.
-const FX = [
-  { key: "delay", name: "延遲", en: "Delay", color: "#4cc9f0",
-    make: () => new Pizzicato.Effects.Delay({ feedback: 0.45, time: 0.36, mix: 0.4 }),
-    knob: { label: "回授", min: 0, max: 0.9, val: 0.45, set: (e, v) => { e.feedback = v; } } },
-  { key: "reverb", name: "殘響", en: "Reverb", color: "#9d8cff",
-    make: () => new Pizzicato.Effects.Reverb({ time: 2.2, decay: 2, mix: 0.45 }),
-    knob: { label: "比例", min: 0, max: 1, val: 0.45, set: (e, v) => { e.mix = v; } } },
-  { key: "dist", name: "失真", en: "Distortion", color: "#ff8c42",
-    make: () => new Pizzicato.Effects.Distortion({ gain: 0.45 }),
-    knob: { label: "增益", min: 0, max: 1, val: 0.45, set: (e, v) => { e.gain = v; } } },
-  { key: "flanger", name: "法蘭", en: "Flanger", color: "#7bd389",
-    make: () => new Pizzicato.Effects.Flanger({ time: 0.45, speed: 0.4, depth: 0.25, feedback: 0.4, mix: 0.6 }),
-    knob: { label: "速度", min: 0.05, max: 2, val: 0.4, set: (e, v) => { e.speed = v; } } },
-  { key: "tremolo", name: "顫音", en: "Tremolo", color: "#f7df1e",
-    make: () => new Pizzicato.Effects.Tremolo({ speed: 6, depth: 0.8, mix: 0.9 }),
-    knob: { label: "速度", min: 1, max: 16, val: 6, set: (e, v) => { e.speed = v; } } },
-  { key: "lowpass", name: "低通", en: "LowPass", color: "#f72585",
-    make: () => new Pizzicato.Effects.LowPassFilter({ frequency: 700, peak: 8 }),
-    knob: { label: "頻率", min: 150, max: 5000, val: 700, set: (e, v) => { e.frequency = v; } } },
-  { key: "ring", name: "環形調變", en: "RingMod", color: "#5ee0d0",
-    make: () => new Pizzicato.Effects.RingModulator({ speed: 30, distortion: 1, mix: 0.5 }),
-    knob: { label: "頻率", min: 5, max: 400, val: 30, set: (e, v) => { e.speed = v; } } },
-  { key: "pingpong", name: "乒乓延遲", en: "PingPong", color: "#ffb4d6",
-    make: () => new Pizzicato.Effects.PingPongDelay({ feedback: 0.5, time: 0.3, mix: 0.45 }),
-    knob: { label: "時間", min: 0.05, max: 0.8, val: 0.3, set: (e, v) => { e.time = v; } } },
-];
+const { h, fmtCompact } = Showcase;
+const AC = Pizzicato.context;
+const FX = Pizzicato.Effects;
+const LOOP = "_shared/audio/loop.mp3";
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+const CJK = '"Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif';
+const MONO = '"JetBrains Mono", ui-monospace, Consolas, monospace';
+const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
+const NOTE = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const noteName = (m) => NOTE[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1);
 
-const sound = new Pizzicato.Sound({
-  source: "file",
-  options: { path: "_shared/audio/loop.mp3", loop: true, volume: 0.85 },
-});
-const active = new Map();   // key -> effect instance currently in the chain
+// One analyser on Pizzicato's master gain feeds every oscilloscope on the page.
+const MASTER_TAP = AC.createAnalyser();
+MASTER_TAP.fftSize = 2048;
+// Page-level safety limiter after Pizzicato's master gain: stacking distortion, feedback and
+// ring modulation can push the sum well above 0 dBFS. Not part of Pizzicato itself.
+const LIMITER = AC.createDynamicsCompressor();
+LIMITER.threshold.value = -6; LIMITER.knee.value = 0; LIMITER.ratio.value = 20;
+LIMITER.attack.value = 0.002; LIMITER.release.value = 0.15;
+Pizzicato.masterGainNode.disconnect();
+Pizzicato.masterGainNode.connect(LIMITER);
+LIMITER.connect(AC.destination);
+Pizzicato.masterGainNode.connect(MASTER_TAP);
 
-// Tap Pizzicato's master gain with an analyser for the oscilloscope.
-const ctx = Pizzicato.context;
-const analyser = ctx.createAnalyser();
-analyser.fftSize = 2048;
-Pizzicato.masterGainNode.connect(analyser);
-const buf = new Uint8Array(analyser.fftSize);
-const spec = new Uint8Array(analyser.frequencyBinCount);
+// Browsers keep the context suspended until a user gesture; every play button calls this first.
+function wake() { return AC.state === "running" ? Promise.resolve() : AC.resume(); }
 
-const board = document.getElementById("board");
-FX.forEach((fx) => {
-  const el = document.createElement("div");
-  el.className = "pedal";
-  el.style.setProperty("--pc", fx.color);
-  el.innerHTML = `
-    <div class="row1"><div><h3>${fx.name}</h3><small>${fx.en}</small></div><i class="led"></i></div>
-    <label><span>${fx.knob.label}</span><input type="range" min="${fx.knob.min}" max="${fx.knob.max}"
-      step="${(fx.knob.max - fx.knob.min) / 100}" value="${fx.knob.val}" aria-label="${fx.name}${fx.knob.label}"></label>
-    <button class="stomp" aria-label="${fx.name}開關"></button>`;
-  const knob = el.querySelector("input");
-  fx.inst = fx.make();
-  knob.addEventListener("input", () => fx.knob.set(fx.inst, +knob.value));
-  el.querySelector(".stomp").addEventListener("click", () => toggle(fx, el));
-  board.append(el);
-});
-
-function toggle(fx, el) {
-  if (active.has(fx.key)) {
-    sound.removeEffect(fx.inst);
-    active.delete(fx.key);
-    el.classList.remove("on");
-  } else {
-    sound.addEffect(fx.inst);
-    active.set(fx.key, fx);
-    el.classList.add("on");
-  }
-  renderChain();
+// Flanger, Tremolo and RingModulator start internal LFO oscillators that never stop on their own.
+function killFx(e) {
+  for (const k of ["oscillatorNode", "lfoNode", "vIn"]) if (e[k] && !e[k].pzStopped) { e[k].stop(); e[k].pzStopped = true; }
+  e.outputNode.disconnect();
 }
 
-function renderChain() {
-  const parts = ["<b>音源</b>"];
-  for (const fx of active.values()) parts.push(`→ <b class="fx" style="--pc:${fx.color}">${fx.name}</b>`);
-  parts.push("→ <b>輸出</b>");
-  document.getElementById("chain").innerHTML = `訊號鏈：${parts.join(" ")}`;
+// Per-scene registry: unmounting stops every Sound, silences it at once and tears effects down.
+function rig(ctx) {
+  const sounds = new Set(), effects = new Set(), nodes = new Set();
+  const end = (s) => { s.off(); s.stop(); s.disconnect(); };
+  ctx.onCleanup(() => {
+    sounds.forEach(end);
+    effects.forEach(killFx);
+    nodes.forEach((n) => n.disconnect());
+    sounds.clear(); effects.clear(); nodes.clear();
+  });
+  return {
+    sound(desc, cb) { const s = new Pizzicato.Sound(desc, cb); sounds.add(s); return s; },
+    drop(s) { if (sounds.delete(s)) end(s); },
+    effect(e) { effects.add(e); return e; },
+    dropFx(e) { if (effects.delete(e)) killFx(e); },
+    node(n) { nodes.add(n); return n; },
+    get count() { return sounds.size; },
+  };
 }
-renderChain();
 
-// Default rig so the board looks alive before playing
-[0, 1].forEach((i) => toggle(FX[i], board.children[i]));
-
-const playBtn = document.getElementById("play");
-playBtn.addEventListener("click", async () => {
-  await ctx.resume();
-  if (sound.playing) sound.pause();
-  else sound.play();
-  playBtn.textContent = sound.playing ? "❚❚" : "▶";
-});
-
-// Oscilloscope + faint spectrum
-const cv = document.getElementById("scope");
-const g = cv.getContext("2d");
-function fit() {
-  const d = Math.min(devicePixelRatio || 1, 2);
-  cv.width = cv.clientWidth * d;
-  cv.height = cv.clientHeight * d;
+// ---------- canvas helpers ----------
+function view(ctx, host, draw) {
+  const cv = h("canvas");
+  host.append(cv);
+  const g = cv.getContext("2d");
+  const v = { cv, g, w: 0, h: 0, draw: () => draw(v) };
+  const fit = () => {
+    const r = host.getBoundingClientRect();
+    v.w = Math.max(1, r.width); v.h = Math.max(1, r.height);
+    cv.width = Math.round(v.w * DPR); cv.height = Math.round(v.h * DPR);
+    cv.style.width = v.w + "px"; cv.style.height = v.h + "px";
+    g.setTransform(DPR, 0, 0, DPR, 0, 0);
+    draw(v);
+  };
+  const ro = new ResizeObserver(fit);
+  ro.observe(host);
+  ctx.onCleanup(() => ro.disconnect());
+  fit();
+  return v;
 }
-fit();
-addEventListener("resize", fit);
-(function draw(t) {
-  const W = cv.width, H = cv.height;
-  g.clearRect(0, 0, W, H);
-  g.strokeStyle = "rgba(255,255,255,0.06)";
-  g.lineWidth = 1;
-  for (let x = 0; x < W; x += W / 16) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
-  g.beginPath(); g.moveTo(0, H / 2); g.lineTo(W, H / 2); g.stroke();
-  const live = sound.playing;
-  if (live) {
-    analyser.getByteFrequencyData(spec);
-    const n = 160;
+function txt(g, s, x, y, color = "#e8e6e3", size = 12, align = "left", mono = false, weight = 500) {
+  g.font = `${weight} ${size}px ${mono ? MONO : CJK}`;
+  g.fillStyle = color; g.textAlign = align; g.textBaseline = "middle";
+  g.fillText(s, x, y);
+}
+const BUFS = new WeakMap();
+function bufs(an) {
+  let b = BUFS.get(an);
+  if (!b) { b = { t: new Float32Array(an.fftSize), f: new Uint8Array(an.frequencyBinCount) }; BUFS.set(an, b); }
+  return b;
+}
+function level(an) {
+  const { t } = bufs(an);
+  an.getFloatTimeDomainData(t);
+  let s = 0, p = 0;
+  for (let i = 0; i < t.length; i++) { const v = t[i]; s += v * v; if (Math.abs(v) > p) p = Math.abs(v); }
+  return { rms: Math.sqrt(s / t.length), peak: p };
+}
+const dB = (x) => (x > 1e-5 ? 20 * Math.log10(x) : -100);
+function grid(g, w, hh) {
+  g.strokeStyle = "rgba(255,255,255,.06)"; g.lineWidth = 1; g.beginPath();
+  for (let i = 1; i < 8; i++) { const x = Math.round((i * w) / 8) + 0.5; g.moveTo(x, 0); g.lineTo(x, hh); }
+  g.moveTo(0, Math.round(hh / 2) + 0.5); g.lineTo(w, Math.round(hh / 2) + 0.5); g.stroke();
+}
+// Oscilloscope with a faint spectrum behind it; triggers on a rising zero crossing for a steady trace.
+function scope(g, x0, y0, w, hh, an, { color = "#f7df1e", live = true, spec = true, idle = "" } = {}) {
+  g.save(); g.translate(x0, y0);
+  g.fillStyle = "#0a0c0f"; g.fillRect(0, 0, w, hh);
+  grid(g, w, hh);
+  const { t, f } = bufs(an);
+  if (live && spec) {
+    an.getByteFrequencyData(f);
+    const n = Math.max(16, Math.min(160, Math.floor(w / 3)));
     for (let i = 0; i < n; i++) {
-      const v = spec[Math.floor(Math.pow(i / n, 2) * spec.length)] / 255;
-      g.fillStyle = `hsla(${20 + i * 1.6}, 90%, 60%, 0.35)`;
-      g.fillRect((i / n) * W, H - v * H, W / n - 1, v * H);
+      const v = f[Math.floor(Math.pow(i / n, 2) * f.length)] / 255;
+      g.fillStyle = `hsla(${20 + i * 1.6}, 90%, 60%, 0.32)`;
+      g.fillRect((i / n) * w, hh - v * hh, w / n - 1, v * hh);
     }
-    analyser.getByteTimeDomainData(buf);
   }
-  g.lineWidth = Math.max(2, H / 40);
-  g.strokeStyle = "#f7df1e";
-  g.shadowColor = "#f7df1e";
-  g.shadowBlur = 10;
-  g.beginPath();
-  for (let x = 0; x <= W; x += 2) {
-    const v = live
-      ? (buf[Math.floor((x / W) * 1024)] - 128) / 128
-      : 0.18 * Math.sin(x / W * Math.PI * 6 + (t || 0) / 400) * Math.sin(x / W * Math.PI);
-    const y = H / 2 + v * H * 0.45;
+  if (live) an.getFloatTimeDomainData(t);
+  let s0 = 0;
+  if (live) for (let i = 1; i < t.length / 2; i++) if (t[i - 1] < 0 && t[i] >= 0) { s0 = i; break; }
+  const span = Math.min(t.length - s0, 1024);
+  g.lineWidth = 2; g.strokeStyle = color; g.beginPath();
+  for (let x = 0; x <= w; x += 2) {
+    const v = live ? t[s0 + Math.floor((x / w) * (span - 1))] : 0;
+    const y = hh / 2 - Math.max(-1, Math.min(1, v)) * hh * 0.45;
     x ? g.lineTo(x, y) : g.moveTo(x, y);
   }
   g.stroke();
-  g.shadowBlur = 0;
-  requestAnimationFrame(draw);
-})();
+  if (!live && idle) txt(g, idle, w / 2, hh / 2 - 14, "#7d8490", 12, "center");
+  g.restore();
+}
+// Log-frequency spectrum outline (30 Hz to 16 kHz).
+function spectrum(g, x0, y0, w, hh, an, color, fill) {
+  const { f } = bufs(an);
+  an.getByteFrequencyData(f);
+  const ny = AC.sampleRate / 2;
+  g.beginPath(); g.moveTo(x0, y0 + hh);
+  for (let px = 0; px <= w; px += 2) {
+    const fr = 30 * Math.pow(16000 / 30, px / w);
+    const v = f[Math.min(f.length - 1, Math.round((fr / ny) * f.length))] / 255;
+    g.lineTo(x0 + px, y0 + hh - v * hh);
+  }
+  g.lineTo(x0 + w, y0 + hh);
+  if (fill) { g.fillStyle = fill; g.fill(); }
+  if (color) { g.strokeStyle = color; g.lineWidth = 1.6; g.stroke(); }
+}
+const fv = (v) => {
+  if (typeof v === "boolean") return String(v);
+  if (typeof v !== "number" || !isFinite(v)) return String(v);
+  const a = Math.abs(v);
+  return a >= 100 ? v.toFixed(0) : a >= 10 ? v.toFixed(1) : String(+v.toFixed(3));
+};
+
+// ---------- impulse response encoded as a real WAV file, so Convolver can load it by URL ----------
+function impulseWav(seconds, decay, reverse) {
+  const sr = AC.sampleRate, n = Math.floor(sr * seconds), ch = 2;
+  const data = [new Float32Array(n), new Float32Array(n)];
+  for (let c = 0; c < ch; c++) for (let i = 0; i < n; i++) {
+    const k = reverse ? n - 1 - i : i;
+    data[c][i] = (Math.random() * 2 - 1) * Math.pow(1 - k / n, decay);
+  }
+  const buf = new ArrayBuffer(44 + n * ch * 2), v = new DataView(buf);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, "RIFF"); v.setUint32(4, 36 + n * ch * 2, true); w(8, "WAVE"); w(12, "fmt ");
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, ch, true); v.setUint32(24, sr, true);
+  v.setUint32(28, sr * ch * 2, true); v.setUint16(32, ch * 2, true); v.setUint16(34, 16, true);
+  w(36, "data"); v.setUint32(40, n * ch * 2, true);
+  let o = 44;
+  for (let i = 0; i < n; i++) for (let c = 0; c < ch; c++) { v.setInt16(o, Math.max(-1, Math.min(1, data[c][i])) * 32767, true); o += 2; }
+  return { url: URL.createObjectURL(new Blob([buf], { type: "audio/wav" })), env: data[0], seconds, bytes: buf.byteLength };
+}
+
+Showcase.run({
+  scenes: [
+    // 1 --------------------------------------------------------------------------------------
+    {
+      id: "pedal", title: "效果器踏板",
+      api: "new Pizzicato.Sound({ source: 'file' })・addEffect・removeEffect",
+      desc: "一個循環播放的音檔，八種內建效果器用 addEffect／removeEffect 依序串進訊號鏈，旋鈕直接寫入效果器屬性，數值是從屬性讀回來的；示波器接在 Pizzicato.masterGainNode。",
+      hint: "按黃色播放鈕後踩圓形開關加入或移除效果，旋鈕即時調整；訊號鏈依踩下順序串接。",
+      mount(ctx) {
+        ctx.html(`<div class="pz-board"><div class="pz-top"><button class="pz-play" type="button" aria-label="播放" disabled>▶</button><div class="pz-cv"></div></div>
+          <div class="pz-chain"></div><div class="pz-api"></div><div class="pz-pedals"></div></div>`);
+        const r = rig(ctx);
+        const playBtn = ctx.$(".pz-play");
+        const st = ctx.status("載入 loop.mp3…");
+        let ready = false;
+        const sound = r.sound({ source: "file", options: { path: LOOP, loop: true, volume: 0.85 } }, (err) => {
+          if (!ctx.active) return;
+          if (err) { st.error(`音檔解碼失敗：${err.message || err}`); return; }
+          ready = true; playBtn.disabled = false; st.done();
+        });
+        const PEDALS = [
+          { key: "Delay", cn: "延遲", color: "#4cc9f0", opts: { feedback: 0.45, time: 0.36, mix: 0.4 }, knob: ["feedback", "回授", 0, 0.9, 0.01] },
+          { key: "Reverb", cn: "殘響", color: "#9d8cff", opts: { time: 2.2, decay: 2, mix: 0.45 }, knob: ["mix", "比例", 0, 1, 0.01] },
+          { key: "Distortion", cn: "失真", color: "#ff8c42", opts: { gain: 0.45 }, knob: ["gain", "增益", 0, 1, 0.01] },
+          { key: "Flanger", cn: "法蘭", color: "#7bd389", opts: { time: 0.45, speed: 0.4, depth: 0.25, feedback: 0.4, mix: 0.6 }, knob: ["speed", "速度", 0.02, 1, 0.01] },
+          { key: "Tremolo", cn: "顫音", color: "#f7df1e", opts: { speed: 6, depth: 0.8, mix: 0.9 }, knob: ["speed", "速度", 1, 20, 0.1] },
+          { key: "LowPassFilter", cn: "低通", color: "#f72585", opts: { frequency: 700, peak: 8 }, knob: ["frequency", "頻率", 150, 5000, 10] },
+          { key: "RingModulator", cn: "環形調變", color: "#5ee0d0", opts: { speed: 30, distortion: 1, mix: 0.5 }, knob: ["speed", "頻率", 5, 400, 1] },
+          { key: "PingPongDelay", cn: "乒乓延遲", color: "#ffb4d6", opts: { feedback: 0.5, time: 0.3, mix: 0.45 }, knob: ["time", "時間", 0.05, 1, 0.01] },
+        ];
+        const byInst = new Map();
+        const board = ctx.$(".pz-pedals");
+        for (const p of PEDALS) {
+          p.inst = r.effect(new FX[p.key](p.opts));
+          byInst.set(p.inst, p);
+          const [prop, label, min, max, step] = p.knob;
+          p.el = h("div", { class: "pz-pedal" });
+          p.el.style.setProperty("--pc", p.color);
+          p.el.innerHTML = `<div class="pz-pr1"><div style="min-width:0"><h3>${p.cn}</h3><small>${p.key}</small></div><i class="pz-led"></i></div>
+            <div class="pz-knob"><span>${label}</span><output></output></div>
+            <input type="range" min="${min}" max="${max}" step="${step}" value="${p.opts[prop]}" aria-label="${p.cn}${label}">
+            <button class="pz-stomp" type="button" aria-label="${p.cn}開關"></button>`;
+          const out = p.el.querySelector("output"), knob = p.el.querySelector("input");
+          out.textContent = fv(p.inst[prop]);
+          knob.addEventListener("input", () => {
+            p.inst[prop] = +knob.value;
+            out.textContent = fv(p.inst[prop]);
+            ctx.$(".pz-api").textContent = `${p.key.charAt(0).toLowerCase() + p.key.slice(1)}.${prop} = ${knob.value}  → 讀回 ${fv(p.inst[prop])}`;
+          });
+          p.el.querySelector(".pz-stomp").addEventListener("click", () => stomp(p));
+          board.append(p.el);
+        }
+        const varName = (p) => p.key.charAt(0).toLowerCase() + p.key.slice(1);
+        function stomp(p) {
+          const on = sound.effects.includes(p.inst);
+          if (on) sound.removeEffect(p.inst); else sound.addEffect(p.inst);
+          ctx.$(".pz-api").textContent = `sound.${on ? "removeEffect" : "addEffect"}(${varName(p)})  → sound.effects.length = ${sound.effects.length}`;
+          chain();
+        }
+        function chain() {
+          const parts = ["<b>音源</b>"];
+          for (const e of sound.effects) { const p = byInst.get(e); parts.push(`→ <b class="fx" style="--pc:${p.color}">${p.cn}</b>`); }
+          parts.push("→ <b>輸出</b>");
+          ctx.$(".pz-chain").innerHTML = `訊號鏈：${parts.join(" ")}`;
+          PEDALS.forEach((p) => p.el.classList.toggle("on", sound.effects.includes(p.inst)));
+        }
+        stomp(PEDALS[0]); stomp(PEDALS[1]);
+        ctx.$(".pz-api").textContent = "new Pizzicato.Sound({ source: 'file', options: { path, loop: true } })・預設踩下延遲與殘響";
+        const sync = () => { playBtn.textContent = sound.playing ? "❚❚" : "▶"; playBtn.setAttribute("aria-label", sound.playing ? "暫停" : "播放"); };
+        sound.on("play", sync); sound.on("pause", sync); sound.on("stop", sync);
+        playBtn.addEventListener("click", async () => {
+          await wake();
+          if (!ready || !ctx.active) return;
+          if (sound.playing) sound.pause(); else sound.play();
+        });
+        ctx.slider("音量", { min: 0, max: 1, step: 0.01, value: 0.85 }, (v) => { sound.volume = v; });
+        ctx.button("全部關閉", () => { [...sound.effects].forEach((e) => sound.removeEffect(e)); ctx.$(".pz-api").textContent = "sound.effects.length = 0（直通）"; chain(); });
+        const sc = view(ctx, ctx.$(".pz-top > .pz-cv"), (v) => scope(v.g, 0, 0, v.w, v.h, MASTER_TAP, { live: sound.playing, idle: ready ? "按 ▶ 播放" : "音檔載入中…" }));
+        ctx.raf(() => sc.draw());
+      },
+    },
+    // 2 --------------------------------------------------------------------------------------
+    {
+      id: "wave", title: "波形合成器",
+      api: "Sound({ source: 'wave', options: { type, frequency, attack, release } })・sound.frequency",
+      desc: "每按一個鍵就建立一個 wave 來源的 Sound；放開時 stop() 會依 release 淡出。單音模式只用一個 Sound，按住拖曳時直接改 sound.frequency 做滑音。左圖畫出 Pizzicato 實際的包絡曲線。",
+      hint: "按住琴鍵或電腦鍵盤 A W S E D F T G Y H U J K 演奏；切到「單音滑音」後按住拖過琴鍵聽頻率滑動。",
+      mount(ctx) {
+        ctx.html(`<div class="pz-board"><div class="pz-duo"><div class="pz-cv pz-env"></div><div class="pz-cv pz-sco"></div></div>
+          <div class="pz-api">按下琴鍵後顯示呼叫內容</div><div class="pz-kb"></div></div>`);
+        const r = rig(ctx);
+        const TYPES = [["sine", "正弦"], ["square", "方波"], ["triangle", "三角"], ["sawtooth", "鋸齒"]];
+        const st = { type: "sawtooth", mono: false, attack: 0.05, release: 0.5, volume: 0.35 };
+        const held = new Map();
+        const alive = new Set();
+        let mono = null, last = null;
+        ctx.group(TYPES.map((t) => t[1]), 3, (i) => { st.type = TYPES[i][0]; if (mono) { retire(mono); mono = null; } });
+        ctx.group(["複音", "單音滑音"], 0, (i) => { releaseAll(); st.mono = !!i; });
+        ctx.slider("起音", { min: 0, max: 1, step: 0.01, value: st.attack, format: (v) => `${v.toFixed(2)} s` }, (v) => { st.attack = v; alive.forEach((s) => { s.attack = v; }); env.draw(); });
+        ctx.slider("釋放", { min: 0, max: 2, step: 0.01, value: st.release, format: (v) => `${v.toFixed(2)} s` }, (v) => { st.release = v; alive.forEach((s) => { s.release = v; }); env.draw(); });
+        ctx.slider("音量", { min: 0, max: 1, step: 0.01, value: st.volume }, (v) => { st.volume = v; alive.forEach((s) => { s.volume = v; }); });
+        const make = (m) => {
+          const s = r.sound({ source: "wave", options: { type: st.type, frequency: mtof(m), attack: st.attack, release: st.release, volume: st.volume } });
+          alive.add(s); last = s;
+          ctx.$(".pz-api").textContent = `new Pizzicato.Sound({ source: 'wave', options: { type: '${st.type}', frequency: ${mtof(m).toFixed(2)}, attack: ${st.attack}, release: ${st.release} } }).play()`;
+          return s;
+        };
+        // stop() schedules the release; the Sound is dropped once the tail has finished.
+        const retire = (s) => {
+          s.stop();
+          ctx.timeout(() => { alive.delete(s); r.drop(s); }, s.release * 1000 + 300);
+        };
+        function down(id, m) {
+          wake();
+          if (st.mono) {
+            if (!mono) mono = make(m);
+            mono.frequency = mtof(m);
+            if (!mono.playing) mono.play();
+            held.set(id, { s: mono, m });
+          } else {
+            const s = make(m); s.play(); held.set(id, { s, m });
+          }
+          paint();
+        }
+        function move(id, m) {
+          const v = held.get(id);
+          if (!v || v.m === m) return;
+          if (st.mono) { mono.frequency = mtof(m); ctx.$(".pz-api").textContent = `sound.frequency = ${mtof(m).toFixed(2)}  // ${noteName(m)}，同一個 Sound 不重新觸發`; }
+          else { retire(v.s); v.s = make(m); v.s.play(); }
+          v.m = m; paint();
+        }
+        function up(id) {
+          const v = held.get(id);
+          if (!v) return;
+          held.delete(id);
+          if (st.mono) { if (![...held.values()].some((x) => x.s === mono)) mono.stop(); } else retire(v.s);
+          paint();
+        }
+        function releaseAll() { [...held.keys()].forEach(up); if (mono) { retire(mono); mono = null; } }
+        // keyboard
+        const kb = ctx.$(".pz-kb"), LO = 48, HI = 72, keys = new Map();
+        const isBlack = (m) => [1, 3, 6, 8, 10].includes(m % 12);
+        const whites = [];
+        for (let m = LO; m <= HI; m++) if (!isBlack(m)) whites.push(m);
+        for (let m = LO; m <= HI; m++) {
+          const el = h("div", { class: isBlack(m) ? "pz-b" : "pz-w", "data-m": m, text: m % 12 === 0 ? noteName(m) : "" });
+          if (isBlack(m)) {
+            const wi = whites.filter((w) => w < m).length;
+            el.style.left = `calc(${(wi / whites.length) * 100}% - ${(0.3 / whites.length) * 100}%)`;
+            el.style.width = `${(0.6 / whites.length) * 100}%`;
+          }
+          kb.append(el); keys.set(m, el);
+        }
+        const keyAt = (e) => { const el = document.elementFromPoint(e.clientX, e.clientY); const k = el && el.closest("[data-m]"); return k && kb.contains(k) ? +k.dataset.m : null; };
+        function paint() { const on = new Set([...held.values()].map((v) => v.m)); keys.forEach((el, m) => el.classList.toggle("on", on.has(m))); }
+        ctx.on(kb, "pointerdown", (e) => { const m = keyAt(e); if (m == null) return; e.preventDefault(); kb.setPointerCapture(e.pointerId); down("p" + e.pointerId, m); });
+        ctx.on(kb, "pointermove", (e) => { if (!held.has("p" + e.pointerId)) return; const m = keyAt(e); if (m != null) move("p" + e.pointerId, m); });
+        ctx.on(kb, "pointerup", (e) => up("p" + e.pointerId));
+        ctx.on(kb, "pointercancel", (e) => up("p" + e.pointerId));
+        const KEYMAP = "awsedftgyhujk";
+        ctx.on(window, "keydown", (e) => { const i = KEYMAP.indexOf(e.key.toLowerCase()); if (i < 0 || e.repeat || e.ctrlKey || e.metaKey) return; down("k" + e.key.toLowerCase(), 60 + i); });
+        ctx.on(window, "keyup", (e) => up("k" + e.key.toLowerCase()));
+        // envelope: Pizzicato uses setTargetAtTime(1, t, 2 * attack) and setTargetAtTime(0, t, release / 5), then a hard stop after release seconds.
+        const env = view(ctx, ctx.$(".pz-env"), (v) => {
+          const { g, w, h: hh } = v;
+          g.fillStyle = "#0a0c0f"; g.fillRect(0, 0, w, hh);
+          const A = st.attack, R = st.release, hold = Math.max(0.3, A * 3), total = hold + R + 0.15;
+          const X = (t) => 10 + (t / total) * (w - 20), Y = (gv) => hh - 22 - gv * (hh - 48);
+          g.strokeStyle = "rgba(255,255,255,.08)"; g.beginPath(); g.moveTo(X(hold), 26); g.lineTo(X(hold), hh - 22); g.moveTo(X(hold + R), 26); g.lineTo(X(hold + R), hh - 22); g.stroke();
+          const atk = (t) => (A ? 1 - Math.exp(-t / (2 * A)) : 1);
+          const g0 = atk(hold);
+          g.strokeStyle = "#f7a21e"; g.lineWidth = 2; g.beginPath();
+          for (let i = 0; i <= 200; i++) {
+            const t = (i / 200) * total;
+            const gv = t < hold ? atk(t) : t < hold + R ? g0 * Math.exp(-(t - hold) / Math.max(1e-4, R / 5)) : 0;
+            i ? g.lineTo(X(t), Y(gv)) : g.moveTo(X(t), Y(gv));
+          }
+          g.stroke();
+          txt(g, "Pizzicato 包絡（fadeNode 增益）", 10, 12, "#e8e6e3", 11.5, "left", false, 600);
+          txt(g, `起音 ${A.toFixed(2)} s 時只到 ${(atk(A) * 100).toFixed(0)}%`, 10, hh - 10, "#7d8490", 10.5);
+          txt(g, "放開", X(hold) + 4, 30, "#7d8490", 10);
+          txt(g, "硬停", X(hold + R) + 4, 30, "#7d8490", 10);
+          if (last && last.fadeNode) {
+            const gv = last.fadeNode.gain.value; // internal node, read only for display
+            g.fillStyle = "#4cc9f0"; g.fillRect(w - 16, Y(gv), 8, hh - 22 - Y(gv));
+            txt(g, gv.toFixed(2), w - 20, Y(gv), "#4cc9f0", 10, "right", true);
+          }
+        });
+        const sco = view(ctx, ctx.$(".pz-sco"), (v) => {
+          scope(v.g, 0, 0, v.w, v.h, MASTER_TAP, { color: "#f7a21e", live: alive.size > 0, idle: "按住琴鍵" });
+          txt(v.g, `存活 Sound ${alive.size}・按住 ${held.size}`, 8, 12, "#e8e6e3", 11, "left", false, 600);
+        });
+        ctx.raf(() => { sco.draw(); env.draw(); });
+      },
+    },
+    // 3 --------------------------------------------------------------------------------------
+    {
+      id: "script", title: "程式產生音訊",
+      api: "Sound({ source: 'script', options: { audioFunction, bufferSize } })",
+      desc: "script 來源把你寫的函式掛在 ScriptProcessorNode 的 onaudioprocess 上，每次回呼自己填滿一個緩衝區。下方量測回呼頻率與耗時；「模擬主執行緒卡頓」會讓回呼來不及送達而斷音。",
+      hint: "選一種產生器按「▶ 播放」；把緩衝調小延遲會降低，但再開啟卡頓模擬就會更容易斷音。",
+      mount(ctx) {
+        ctx.html(`<div class="pz-board"><div class="pz-cv pz-sc3"></div><div class="pz-facts"></div>
+          <div class="pz-cap">ScriptProcessorNode 已被 Web Audio 標準棄用（建議改用 AudioWorklet）；Pizzicato 0.6.4 的 script 來源仍使用它，回呼在主執行緒執行，主執行緒一忙就會斷音。</div></div>`);
+        const r = rig(ctx);
+        const GENS = ["撥弦合成", "粉紅噪音", "白噪音", "Bytebeat"];
+        const SR = AC.sampleRate;
+        let gen = 0, bufSize = 2048, vol = 0.6, sound = null, on = false, jank = false;
+        const stats = { calls: 0, lastT: 0, glitches: 0, cost: [], gaps: [], wave: new Float32Array(2048), cps: 0 };
+        // generator state
+        let b0 = 0, b1 = 0, b2 = 0, bt = 0, ksPos = 0, ksLen = 1, ksNext = 0, ksI = 0;
+        const ks = new Float32Array(4096);
+        const MEL = [57, 60, 64, 67, 69, 67, 64, 62, 60, 64, 69, 72];
+        function audioFunction(e) {
+          const t0 = performance.now();
+          const out = e.outputBuffer.getChannelData(0), n = out.length;
+          if (gen === 0) {
+            for (let i = 0; i < n; i++) {
+              if (ksNext-- <= 0) {
+                ksLen = Math.round(SR / mtof(MEL[ksI++ % MEL.length]));
+                for (let k = 0; k < ksLen; k++) ks[k] = Math.random() * 2 - 1;
+                ksPos = 0; ksNext = Math.round(SR * 0.28);
+              }
+              const nx = (ksPos + 1) % ksLen, y = ks[ksPos];
+              ks[ksPos] = 0.996 * 0.5 * (ks[ksPos] + ks[nx]);
+              ksPos = nx; out[i] = y * 0.55;
+            }
+          } else if (gen === 1) {
+            for (let i = 0; i < n; i++) {
+              const wv = Math.random() * 2 - 1;
+              b0 = 0.99765 * b0 + wv * 0.099046; b1 = 0.963 * b1 + wv * 0.2965164; b2 = 0.57 * b2 + wv * 1.0526913;
+              out[i] = (b0 + b1 + b2 + wv * 0.1848) * 0.08;
+            }
+          } else if (gen === 2) {
+            for (let i = 0; i < n; i++) out[i] = (Math.random() * 2 - 1) * 0.22;
+          } else {
+            for (let i = 0; i < n; i++) {
+              const t = Math.floor((bt++ * 8000) / SR);
+              out[i] = ((((t * ((t >> 12 | t >> 8) & 63 & t >> 4)) & 255) / 127.5) - 1) * 0.22;
+            }
+          }
+          const now = performance.now();
+          if (stats.lastT) {
+            const gap = now - stats.lastT;
+            stats.gaps.push(gap); if (stats.gaps.length > 160) stats.gaps.shift();
+            if (gap > (n / SR) * 1000 * 1.8) stats.glitches++;
+          }
+          stats.lastT = now; stats.calls++;
+          stats.cost.push(now - t0); if (stats.cost.length > 160) stats.cost.shift();
+          if (stats.wave.length !== n) stats.wave = new Float32Array(n);
+          stats.wave.set(out);
+        }
+        function build() {
+          if (sound) r.drop(sound);
+          sound = r.sound({ source: "script", options: { audioFunction, bufferSize: bufSize, volume: vol } });
+          stats.lastT = 0; stats.gaps.length = 0; stats.cost.length = 0;
+          if (on) sound.play();
+        }
+        build();
+        const playBtn = ctx.button("▶ 播放", async () => {
+          await wake();
+          if (!ctx.active) return;
+          on = !on;
+          if (on) { stats.lastT = 0; sound.play(); } else sound.stop();
+          playBtn.textContent = on ? "■ 停止" : "▶ 播放";
+        }, { primary: true });
+        ctx.group(GENS, 0, (i) => { gen = i; });
+        ctx.select("緩衝", [256, 512, 1024, 2048, 4096, 8192, 16384].map((n) => ({ value: n, label: `${n} 樣本` })), bufSize, (v) => { bufSize = +v; stats.glitches = 0; build(); });
+        ctx.slider("音量", { min: 0, max: 1, step: 0.01, value: vol }, (v) => { vol = v; sound.volume = v; });
+        ctx.toggle("模擬主執行緒卡頓", false, (v) => { jank = v; stats.glitches = 0; });
+        // Busy-wait 120 ms once per second to imitate a heavy main thread.
+        ctx.interval(() => { if (!jank) return; const t = performance.now(); while (performance.now() - t < 120); }, 1000);
+        let prevCalls = 0, prevT = performance.now();
+        const facts = ctx.$(".pz-facts");
+        function renderFacts() {
+          const now = performance.now();
+          stats.cps = ((stats.calls - prevCalls) * 1000) / (now - prevT); prevCalls = stats.calls; prevT = now;
+          const avg = stats.cost.length ? stats.cost.reduce((a, b) => a + b, 0) / stats.cost.length : 0;
+          const bufMs = (bufSize / SR) * 1000;
+          const cells = [
+            ["緩衝長度", `${(bufMs).toFixed(1)} ms`], ["每秒回呼", on ? stats.cps.toFixed(1) : "0"],
+            ["每次耗時", on ? `${avg.toFixed(3)} ms` : "…"], ["佔用緩衝時間", on ? `${((avg / bufMs) * 100).toFixed(2)}%` : "…"],
+            ["偵測到斷音", String(stats.glitches)],
+          ];
+          facts.replaceChildren(...cells.map(([k, v], i) => h("div", {}, h("small", { text: k }), h("b", { class: i === 4 && stats.glitches ? "bad" : "", text: v }))));
+        }
+        renderFacts();
+        ctx.interval(renderFacts, 500);
+        const cv = view(ctx, ctx.$(".pz-sc3"), (v) => {
+          const { g, w, h: hh } = v;
+          g.fillStyle = "#0a0c0f"; g.fillRect(0, 0, w, hh);
+          const top = hh * 0.62;
+          grid(g, w, top);
+          const wv = stats.wave, n = wv.length;
+          g.strokeStyle = "#5ee0d0"; g.lineWidth = 1;
+          g.beginPath();
+          for (let x = 0; x < w; x++) {
+            let lo = 1, hi = -1;
+            const a = Math.floor((x / w) * n), b = Math.max(a + 1, Math.floor(((x + 1) / w) * n));
+            for (let i = a; i < b; i++) { if (wv[i] < lo) lo = wv[i]; if (wv[i] > hi) hi = wv[i]; }
+            g.moveTo(x + 0.5, top / 2 - hi * top * 0.45); g.lineTo(x + 0.5, top / 2 - lo * top * 0.45 + 1);
+          }
+          g.stroke();
+          txt(g, on ? `最近一次 audioFunction 填入的 ${n} 個樣本（${GENS[gen]}）` : "按「▶ 播放」後，這裡顯示最近一次回呼填入的緩衝區", 8, 12, "#e8e6e3", 11, "left", false, 600);
+          // callback interval strip
+          const bufMs = (bufSize / SR) * 1000, gs = stats.gaps, bh = hh - top - 22;
+          g.fillStyle = "rgba(255,255,255,.04)"; g.fillRect(0, top + 16, w, bh);
+          const scale = bh / Math.max(bufMs * 3, 1);
+          g.strokeStyle = "rgba(255,255,255,.25)"; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(0, top + 16 + bh - bufMs * scale); g.lineTo(w, top + 16 + bh - bufMs * scale); g.stroke(); g.setLineDash([]);
+          const bw = w / 160;
+          gs.forEach((gap, i) => {
+            const bad = gap > bufMs * 1.8;
+            g.fillStyle = bad ? "#ff6b6b" : "#4cc9f0";
+            const hgt = Math.min(bh, gap * scale);
+            g.fillRect(i * bw, top + 16 + bh - hgt, Math.max(1, bw - 1), hgt);
+          });
+          txt(g, `回呼間隔（虛線 = 緩衝長度 ${bufMs.toFixed(1)} ms，紅色 = 超過 1.8 倍，可能斷音）`, 8, top + 8, "#7d8490", 10.5);
+        });
+        ctx.raf(() => cv.draw());
+      },
+    },
+    // 4 --------------------------------------------------------------------------------------
+    {
+      id: "mic", title: "麥克風輸入",
+      api: "Sound({ source: 'input', options: { detached: true } })・connect・disconnect",
+      desc: "input 來源由 Pizzicato 自己呼叫 getUserMedia({ audio: true })。這裡用 detached 選項讓聲音先不接到喇叭，只接到分析器；勾選監聽才 connect 到 Pizzicato.masterGainNode。效果預設可即時切換。",
+      hint: "按「啟用麥克風」並允許權限；要聽效果請先戴耳機再開「監聽」，避免喇叭回授嘯叫。",
+      mount(ctx) {
+        ctx.html(`<div class="pz-board"><div class="pz-mic"><div class="pz-micst"><b>尚未啟用麥克風</b><span class="pz-cap">按「啟用麥克風」後瀏覽器會詢問權限；預設不監聽，只顯示電平與波形。Pizzicato 的 input 來源不提供裝置選擇，也不回傳 MediaStream。</span></div><div class="pz-cv pz-lvl"></div></div>
+          <div class="pz-cv"></div><div class="pz-api">尚未建立 Sound</div></div>`);
+        const r = rig(ctx);
+        const an = r.node(AC.createAnalyser());
+        an.fftSize = 2048;
+        let mic = null, stream = null, monitor = false, fxIdx = 0, peakHold = -100;
+        const PRESETS = [
+          ["原音", () => []],
+          ["機器人", () => [new FX.RingModulator({ speed: 50, distortion: 1, mix: 0.85 })]],
+          ["電話", () => [new FX.HighPassFilter({ frequency: 500, peak: 1 }), new FX.LowPassFilter({ frequency: 2600, peak: 4 }), new FX.Distortion({ gain: 0.25 })]],
+          ["大廳殘響", () => [new FX.Reverb({ time: 3, decay: 2.5, mix: 0.6 })]],
+          ["回聲", () => [new FX.DubDelay({ feedback: 0.55, time: 0.35, mix: 0.5, cutoff: 1800 })]],
+          ["顫音", () => [new FX.Tremolo({ speed: 7, depth: 0.9, mix: 1 })]],
+        ];
+        const stEl = ctx.$(".pz-micst");
+        const state = (cls, title) => { stEl.className = `pz-micst ${cls}`; stEl.querySelector("b").textContent = title; };
+        function applyFx() {
+          if (!mic) return;
+          [...mic.effects].forEach((e) => { mic.removeEffect(e); r.dropFx(e); });
+          const list = PRESETS[fxIdx][1]().map((e) => r.effect(e));
+          list.forEach((e) => mic.addEffect(e));
+          ctx.$(".pz-api").textContent = list.length ? `mic.addEffect(${list.map((e) => `new ${Object.keys(FX).find((k) => e instanceof FX[k])}(…)`).join(")・addEffect(")})` : "mic.effects.length = 0（原音）";
+        }
+        const startBtn = ctx.button("啟用麥克風", async () => {
+          if (mic || startBtn.disabled) return;
+          await wake();
+          const md = navigator.mediaDevices;
+          if (!md || !md.getUserMedia) { state("err", "此瀏覽器不支援 getUserMedia"); return; }
+          startBtn.disabled = true;
+          state("", "等待麥克風權限…");
+          // Pizzicato never exposes the MediaStream; wrap getUserMedia for this one call so cleanup can stop the tracks.
+          md.getUserMedia = (c) => MediaDevices.prototype.getUserMedia.call(md, c).then((s) => { stream = s; return s; });
+          const s = r.sound({ source: "input", options: { detached: true, volume: 0.9 } }, (err) => {
+            if (!ctx.active) return;
+            if (err) {
+              startBtn.disabled = false; r.drop(s);
+              state("err", `無法取得麥克風：${err.name || "錯誤"}`);
+              stEl.querySelector("span").textContent = `${err.message || err}。請確認瀏覽器已允許麥克風，且有可用的輸入裝置。`;
+              return;
+            }
+            mic = s;
+            mic.connect(an);
+            if (monitor) mic.connect(Pizzicato.masterGainNode);
+            applyFx();
+            mic.play();
+            const tr = stream && stream.getAudioTracks()[0];
+            state("live", "麥克風收音中");
+            stEl.querySelector("span").textContent = `輸入裝置：${tr ? tr.label || "（未提供名稱）" : "未知"}・取樣率 ${AC.sampleRate} Hz`;
+            startBtn.textContent = "已啟用";
+          });
+          delete md.getUserMedia;
+        }, { primary: true });
+        ctx.onCleanup(() => { if (stream) stream.getTracks().forEach((t) => t.stop()); });
+        ctx.toggle("監聽（請戴耳機）", false, (v) => {
+          monitor = v;
+          if (!mic) return;
+          if (v) mic.connect(Pizzicato.masterGainNode); else mic.disconnect(Pizzicato.masterGainNode);
+          ctx.$(".pz-api").textContent = v ? "mic.connect(Pizzicato.masterGainNode)" : "mic.disconnect(Pizzicato.masterGainNode)";
+        });
+        ctx.group(PRESETS.map((p) => p[0]), 0, (i) => { fxIdx = i; applyFx(); });
+        const lv = view(ctx, ctx.$(".pz-lvl"), (v) => {
+          const { g, w, h: hh } = v;
+          g.fillStyle = "#0a0c0f"; g.fillRect(0, 0, w, hh);
+          const { rms, peak } = mic ? level(an) : { rms: 0, peak: 0 };
+          const d = Math.max(-60, dB(rms)), p = Math.max(-60, dB(peak));
+          peakHold = Math.max(p, peakHold - 0.4);
+          const X = (x) => 12 + ((x + 60) / 60) * (w - 24);
+          const y = hh / 2 + 4;
+          g.fillStyle = "rgba(255,255,255,.07)"; g.fillRect(12, y, w - 24, 16);
+          const grd = g.createLinearGradient(12, 0, w - 12, 0);
+          grd.addColorStop(0, "#7bd389"); grd.addColorStop(0.75, "#f7df1e"); grd.addColorStop(1, "#ff6b6b");
+          g.fillStyle = grd; g.fillRect(12, y, Math.max(0, X(d) - 12), 16);
+          g.fillStyle = "#fff"; g.fillRect(X(peakHold) - 1, y - 3, 2, 22);
+          for (const t of [-60, -40, -20, -10, 0]) txt(g, String(t), X(t), y + 28, "#7d8490", 10, "center", true);
+          txt(g, mic ? `${d.toFixed(1)} dBFS` : "未啟用", 12, 22, "#e8e6e3", 20, "left", !!mic, 700);
+          txt(g, "效果之後的 RMS 電平（白線 = 峰值）", 12, hh - 10, "#7d8490", 10.5);
+        });
+        const sc = view(ctx, ctx.$(".pz-mic + .pz-cv"), (v) => scope(v.g, 0, 0, v.w, v.h, an, { color: "#7bd389", live: !!mic, idle: "啟用後顯示波形與頻譜" }));
+        ctx.raf(() => { lv.draw(); sc.draw(); });
+      },
+    },
+    // 5 --------------------------------------------------------------------------------------
+    {
+      id: "fxlab", title: "更多效果與完整參數",
+      api: "Effects.Compressor・Quadrafuzz・DubDelay・StereoPanner・HighPassFilter・Convolver・Reverb",
+      desc: "踏板沒用到的效果器，每個參數都做成滑桿，數值一律從效果器屬性讀回。右圖疊出效果前（灰）與效果後（彩色）的頻譜，以及左右聲道電平；Convolver 的衝擊響應是頁面即時產生的 WAV 檔。",
+      hint: "選效果器後按「▶ 播放」，拖動左側滑桿；「旁通」切換 A/B 比較，「寫入超出範圍的值」可看 setter 如何靜默忽略。",
+      mount(ctx) {
+        ctx.html(`<div class="pz-board"><div class="pz-lab"><div class="pz-params"></div><div class="pz-cv"></div></div><div class="pz-api">選擇效果器</div></div>`);
+        const r = rig(ctx);
+        const mk = (n) => { const a = r.node(AC.createAnalyser()); a.fftSize = n; return a; };
+        const pre = mk(2048), post = mk(2048), anL = mk(1024), anR = mk(1024);
+        const split = r.node(AC.createChannelSplitter(2));
+        window.PZ_NATIVE_CONNECT.call(split, anL, 0);
+        window.PZ_NATIVE_CONNECT.call(split, anR, 1);
+        const IRS = [["小房間", 0.6, 3, false], ["大廳", 2.8, 2.2, false], ["反轉", 1.6, 2.5, true]];
+        const irCache = new Map();
+        const ir = (i) => { if (!irCache.has(i)) irCache.set(i, impulseWav(IRS[i][1], IRS[i][2], IRS[i][3])); return irCache.get(i); };
+        ctx.onCleanup(() => irCache.forEach((x) => URL.revokeObjectURL(x.url)));
+        let irIdx = 1, irState = "";
+        const LAB = [
+          { key: "Compressor", cn: "壓縮器", color: "#4cc9f0", opts: { threshold: -36, knee: 10, ratio: 12, attack: 0.003, release: 0.25 },
+            params: [["threshold", "門檻 dB", -100, 0, 1], ["knee", "膝部 dB", 0, 40, 1], ["ratio", "比率", 1, 20, 0.5], ["attack", "起音 s", 0, 1, 0.001], ["release", "釋放 s", 0, 1, 0.01]] },
+          { key: "Quadrafuzz", cn: "四頻段失真", color: "#ff8c42", opts: { lowGain: 0.6, midLowGain: 0.8, midHighGain: 0.5, highGain: 0.6 },
+            params: [["lowGain", "低頻 147Hz", 0, 1, 0.01], ["midLowGain", "中低 587Hz", 0, 1, 0.01], ["midHighGain", "中高 2.5k", 0, 1, 0.01], ["highGain", "高頻 5k", 0, 1, 0.01]] },
+          { key: "DubDelay", cn: "Dub 延遲", color: "#9d8cff", opts: { feedback: 0.6, time: 0.42, mix: 0.5, cutoff: 900 },
+            params: [["feedback", "回授", 0, 1, 0.01], ["time", "時間 s", 0, 1, 0.01], ["mix", "乾濕比", 0, 1, 0.01], ["cutoff", "回授濾波 Hz", 0, 4000, 10]] },
+          { key: "StereoPanner", cn: "立體聲像", color: "#7bd389", opts: { pan: -0.6 }, params: [["pan", "左右 pan", -1, 1, 0.01]] },
+          { key: "HighPassFilter", cn: "高通濾波", color: "#f72585", opts: { frequency: 1200, peak: 6 },
+            params: [["frequency", "頻率 Hz", 10, 22050, 0, true], ["peak", "共振 Q", 0.0001, 30, 0.1]] },
+          { key: "Convolver", cn: "卷積殘響", color: "#5ee0d0", opts: { mix: 0.6 }, params: [["mix", "乾濕比", 0, 1, 0.01]] },
+          { key: "Reverb", cn: "演算殘響", color: "#f7df1e", opts: { time: 1.6, decay: 2, mix: 0.55, reverse: false },
+            params: [["time", "長度 s", 0.0001, 10, 0.01], ["decay", "衰減", 0.0001, 10, 0.01], ["mix", "乾濕比", 0, 1, 0.01], ["reverse", "反轉", 0, 1, 1, false, true]] },
+        ];
+        let cur = 0, eff = null, bypass = false, src = 0, sound = null, loaded = false, playing = false;
+        const tap = () => { sound.fadeNode.connect(pre); }; // addEffect / removeEffect disconnect fadeNode, so tap again afterwards
+        function makeSound() {
+          if (src === 0) {
+            loaded = false;
+            return r.sound({ source: "file", options: { path: LOOP, loop: true, volume: 0.8 } }, (err) => {
+              if (!ctx.active) return;
+              if (err) { ctx.$(".pz-api").textContent = `音檔解碼失敗：${err.message || err}`; return; }
+              loaded = true; if (playing) sound.play();
+            });
+          }
+          loaded = true;
+          return r.sound({ source: "wave", options: { type: "sawtooth", frequency: 110, volume: 0.3 } });
+        }
+        function setSource(i) {
+          const was = playing;
+          if (sound) { if (sound.effects.includes(eff)) sound.removeEffect(eff); r.drop(sound); }
+          src = i; sound = makeSound();
+          sound.connect(post); sound.connect(split);
+          if (!bypass) sound.addEffect(eff);
+          tap();
+          if (was && loaded) sound.play();
+        }
+        function makeEffect(d) {
+          if (d.key !== "Convolver") return new FX[d.key](d.opts);
+          const x = ir(irIdx);
+          irState = "解碼中…";
+          return new FX.Convolver({ impulse: x.url, mix: d.opts.mix }, (err) => { if (ctx.active) { irState = err ? `解碼失敗：${err.message || err}` : "已載入"; } });
+        }
+        function setEffect(i) {
+          if (eff) { if (sound && sound.effects.includes(eff)) sound.removeEffect(eff); r.dropFx(eff); }
+          cur = i; eff = r.effect(makeEffect(LAB[i]));
+          if (sound && !bypass) { sound.addEffect(eff); tap(); }
+          params();
+          ctx.$(".pz-api").textContent = `sound.addEffect(new Pizzicato.Effects.${LAB[i].key}(${JSON.stringify(LAB[i].key === "Convolver" ? { impulse: "blob:…wav", mix: LAB[i].opts.mix } : LAB[i].opts)}))`;
+        }
+        const box = ctx.$(".pz-params");
+        function params() {
+          const d = LAB[cur];
+          box.replaceChildren(h("h4", {}, d.cn, h("small", { text: d.key })));
+          for (const [k, label, min, max, step, log, bool] of d.params) {
+            const out = h("output", { text: fv(eff[k]) });
+            const toVal = (x) => (log ? min * Math.pow(max / min, x / 1000) : x);
+            const toPos = (v) => (log ? (Math.log(v / min) / Math.log(max / min)) * 1000 : v);
+            const inp = h("input", { type: "range", min: log ? 0 : min, max: log ? 1000 : max, step: log ? 1 : step, value: bool ? +eff[k] : toPos(eff[k]), "aria-label": label });
+            inp.addEventListener("input", () => {
+              const val = bool ? inp.value === "1" : +toVal(+inp.value).toFixed(4);
+              eff[k] = val;
+              out.textContent = fv(eff[k]);
+              ctx.$(".pz-api").textContent = `effect.${k} = ${val}  → 讀回 ${fv(eff[k])}`;
+            });
+            box.append(h("div", { class: "pz-prow" }, h("span", {}, label.split(" ")[0], h("i", { text: k })), inp, out));
+          }
+          if (d.key === "Convolver") {
+            const chips = h("div", { class: "pz-chips" });
+            IRS.forEach(([name, sec], i) => {
+              const b = h("button", { class: "pz-chip", type: "button", "aria-pressed": String(i === irIdx), text: `${name} ${sec}s` });
+              b.addEventListener("click", () => { irIdx = i; setEffect(cur); });
+              chips.append(b);
+            });
+            box.append(h("span", { class: "pz-cap", text: "衝擊響應（impulse）：頁面產生雙聲道 16 位元 WAV，以 blob URL 交給 Convolver 載入" }), chips);
+          }
+          const oor = h("div", { class: "pz-oor", text: "Pizzicato 的 setter 會檢查範圍，超出就直接忽略，不丟錯誤。" });
+          const tb = h("button", { class: "btn", type: "button", text: "寫入超出範圍的值" });
+          tb.addEventListener("click", () => {
+            const [k, , min, max, , , bool] = d.params[0];
+            if (bool) return;
+            const before = eff[k], bad = max + (max - min);
+            eff[k] = bad;
+            oor.innerHTML = `effect.${k} = <b>${fv(bad)}</b>（允許 ${fv(min)} 到 ${fv(max)}）→ 讀回 <b>${fv(eff[k])}</b>，${eff[k] === before ? "寫入被忽略，沒有任何錯誤或警告" : "寫入成功"}`;
+          });
+          box.append(h("div", { class: "pz-chips" }, tb), oor);
+        }
+        setEffect(0);
+        setSource(0);
+        const playBtn = ctx.button("▶ 播放", async () => {
+          await wake();
+          if (!ctx.active) return;
+          playing = !playing;
+          if (playing) { if (loaded) sound.play(); } else sound.pause();
+          playBtn.textContent = playing ? "❚❚ 暫停" : "▶ 播放";
+        }, { primary: true });
+        ctx.select("效果器", LAB.map((d, i) => ({ value: i, label: `${d.cn} ${d.key}` })), 0, (v) => setEffect(+v));
+        ctx.group(["取樣迴圈", "鋸齒波"], 0, (i) => setSource(i));
+        ctx.toggle("旁通", false, (v) => {
+          bypass = v;
+          if (v) sound.removeEffect(eff); else sound.addEffect(eff);
+          tap();
+          ctx.$(".pz-api").textContent = v ? "sound.removeEffect(effect)  // 旁通：直通原音" : "sound.addEffect(effect)";
+        });
+        const cv = view(ctx, ctx.$(".pz-lab > .pz-cv"), (v) => {
+          const { g, w, h: hh } = v, d = LAB[cur];
+          g.fillStyle = "#0a0c0f"; g.fillRect(0, 0, w, hh);
+          const mw = 46, sw = w - mw - 16, sh = hh - 72;
+          g.strokeStyle = "rgba(255,255,255,.06)"; g.beginPath();
+          for (const f of [100, 1000, 10000]) { const x = 8 + (Math.log(f / 30) / Math.log(16000 / 30)) * sw; g.moveTo(x, 24); g.lineTo(x, 24 + sh); }
+          g.stroke();
+          for (const [f, l] of [[100, "100"], [1000, "1k"], [10000, "10k"]]) txt(g, l, 8 + (Math.log(f / 30) / Math.log(16000 / 30)) * sw, 32 + sh, "#7d8490", 10, "center", true);
+          if (playing) {
+            spectrum(g, 8, 24, sw, sh, pre, null, "rgba(160,170,185,.28)");
+            spectrum(g, 8, 24, sw, sh, post, d.color, null);
+          } else txt(g, "按「▶ 播放」後顯示效果前後的頻譜", 8 + sw / 2, 24 + sh / 2, "#7d8490", 12, "center");
+          txt(g, "效果前", 10, 12, "#a0aab9", 11); txt(g, `效果後${bypass ? "（旁通中）" : ""}`, 62, 12, d.color, 11, "left", false, 600);
+          // L / R meters through the channel splitter
+          const L = playing ? Math.max(-60, dB(level(anL).rms)) : -60, R = playing ? Math.max(-60, dB(level(anR).rms)) : -60;
+          [["L", L], ["R", R]].forEach(([n, val], i) => {
+            const x = w - mw + i * 20, hgt = ((val + 60) / 60) * sh;
+            g.fillStyle = "rgba(255,255,255,.07)"; g.fillRect(x, 24, 14, sh);
+            g.fillStyle = d.color; g.fillRect(x, 24 + sh - hgt, 14, hgt);
+            txt(g, n, x + 7, 32 + sh, "#e8e6e3", 10, "center", true);
+          });
+          let foot = "";
+          if (d.key === "Compressor" && eff.compressorNode) {
+            const red = eff.compressorNode.reduction; // native DynamicsCompressorNode reading
+            foot = `增益衰減 ${(+red).toFixed(1)} dB`;
+            const bw = Math.min(sw, Math.max(0, -red) * 6);
+            g.fillStyle = "#ff6b6b"; g.fillRect(8, hh - 7, bw, 4);
+          } else if (d.key === "Convolver") {
+            const x = ir(irIdx), n = x.env.length, ww = Math.min(sw * 0.45, 180);
+            g.strokeStyle = "rgba(94,224,208,.7)"; g.beginPath();
+            for (let px = 0; px < ww; px++) { const a = Math.abs(x.env[Math.floor((px / ww) * n)]); g.moveTo(sw - ww + px, hh - 6); g.lineTo(sw - ww + px, hh - 6 - a * 14); }
+            g.stroke();
+            foot = `衝擊響應 ${x.seconds}s・${fmtCompact(x.bytes)} bytes・${irState}`;
+          } else if (d.key === "StereoPanner") foot = `pan = ${fv(eff.pan)}・左右差 ${(L - R).toFixed(1)} dB`;
+          if (foot) txt(g, foot, 8, hh - 18, "#e8e6e3", 11, "left", true);
+        });
+        ctx.raf(() => cv.draw());
+      },
+    },
+    // 6 --------------------------------------------------------------------------------------
+    {
+      id: "group", title: "群組混音",
+      api: "new Pizzicato.Group([sounds])・addSound・removeSound・group.addEffect",
+      desc: "四個 Sound（取樣迴圈、低音、和聲墊、主旋律）放進同一個 Group：每軌有自己的音量與 StereoPanner，群組統一播放、停止、調總音量並共用一個 Reverb。旋律由計時器改寫 wave 來源的 frequency。",
+      hint: "按「▶ 群組播放」；單軌「靜音」實際上是 removeSound 再斷開，恢復時 addSound 放回群組。",
+      mount(ctx) {
+        ctx.html(`<div class="pz-board"><div class="pz-cv pz-gscope"></div><div class="pz-mix"></div><div class="pz-api">group.sounds.length = 4</div></div>`);
+        const r = rig(ctx);
+        let loaded = false, playing = false, step = 0;
+        const CH = [
+          { cn: "取樣迴圈", code: "file・loop.mp3", vol: 0.55, pan: 0,
+            make: () => r.sound({ source: "file", options: { path: LOOP, loop: true, volume: 0.55 } }, (err) => {
+              if (!ctx.active) return;
+              if (err) { ctx.$(".pz-api").textContent = `音檔解碼失敗：${err.message || err}`; return; }
+              loaded = true; playBtn.disabled = false;
+            }) },
+          { cn: "低音", code: "wave・triangle", vol: 0.5, pan: 0, make: () => r.sound({ source: "wave", options: { type: "triangle", frequency: 55, volume: 0.5, attack: 0.01, release: 0.1 } }) },
+          { cn: "和聲墊", code: "wave・sawtooth＋LowPass", vol: 0.22, pan: -0.5,
+            make: () => { const s = r.sound({ source: "wave", options: { type: "sawtooth", frequency: 220, volume: 0.22, attack: 0.8, release: 0.6 } }); s.addEffect(r.effect(new FX.LowPassFilter({ frequency: 900, peak: 2 }))); return s; } },
+          { cn: "主旋律", code: "wave・square＋Delay", vol: 0.12, pan: 0.45,
+            make: () => { const s = r.sound({ source: "wave", options: { type: "square", frequency: 440, volume: 0.12, attack: 0.01, release: 0.2 } }); s.addEffect(r.effect(new FX.PingPongDelay({ feedback: 0.35, time: 0.3, mix: 0.3 }))); return s; } },
+        ];
+        CH.forEach((c) => {
+          c.s = c.make();
+          c.panFx = r.effect(new FX.StereoPanner({ pan: c.pan }));
+          c.s.addEffect(c.panFx);
+          c.an = r.node(AC.createAnalyser()); c.an.fftSize = 1024;
+          c.s.connect(c.an);
+          c.muted = false;
+        });
+        const group = new Pizzicato.Group(CH.map((c) => c.s));
+        const reverb = r.effect(new FX.Reverb({ time: 2.4, decay: 2, mix: 0.35 }));
+        group.addEffect(reverb);
+        group.volume = 0.6;
+        const gAn = r.node(AC.createAnalyser()); gAn.fftSize = 2048;
+        group.connect(gAn);
+        ctx.onCleanup(() => { group.stop(); group.disconnect(); });
+        const api = (s) => { ctx.$(".pz-api").textContent = s; };
+        const mix = ctx.$(".pz-mix");
+        const strip = (name, code, vol, onVol, pan, onPan, muteLabel, onMute, grp) => {
+          const row = h("div", { class: `pz-ch${grp ? " grp" : ""}` });
+          const meter = h("i");
+          const v = h("input", { type: "range", min: 0, max: 1, step: 0.01, value: vol, "aria-label": `${name}音量` });
+          v.addEventListener("input", () => onVol(+v.value));
+          row.append(h("div", { class: "nm" }, h("b", { text: name }), h("i", { text: code })), h("div", { class: "mt" }, meter), h("label", { class: "v" }, "音量", v));
+          if (onPan) {
+            const p = h("input", { type: "range", min: -1, max: 1, step: 0.01, value: pan, "aria-label": `${name}聲像` });
+            p.addEventListener("input", () => onPan(+p.value));
+            row.append(h("label", { class: "p" }, "聲像", p));
+          } else row.append(h("span", { class: "p" }));
+          const b = h("button", { class: "btn", type: "button", "aria-pressed": "false", text: muteLabel });
+          b.addEventListener("click", () => { const on = b.getAttribute("aria-pressed") !== "true"; b.setAttribute("aria-pressed", String(on)); row.classList.toggle("muted", on && !grp); onMute(on); });
+          row.append(b);
+          mix.append(row);
+          return meter;
+        };
+        CH.forEach((c, i) => {
+          c.meter = strip(c.cn, c.code, c.vol,
+            (val) => { c.s.volume = val; api(`group.sounds[${i}].volume = ${val}`); },
+            c.pan, (val) => { c.panFx.pan = val; api(`panner.pan = ${val}  // 第 ${i + 1} 軌的 StereoPanner 效果`); },
+            "靜音", (on) => {
+              if (on) { group.removeSound(c.s); c.s.disconnect(Pizzicato.masterGainNode); }
+              else { c.s.connect(Pizzicato.masterGainNode); group.addSound(c.s); } // addSound first disconnects from the master gain
+              api(`group.${on ? "removeSound" : "addSound"}(sound)  → group.sounds.length = ${group.sounds.length}`);
+            });
+        });
+        const gMeter = strip("群組總線", "Group＋Reverb", 0.6, (val) => { group.volume = val; api(`group.volume = ${val}`); }, 0, null, "移除殘響", (on) => {
+          if (on) group.removeEffect(reverb); else group.addEffect(reverb);
+          api(on ? "group.removeEffect(reverb)" : "group.addEffect(reverb)");
+        }, true);
+        const CHORDS = [["Am", [57, 60, 64]], ["F", [53, 57, 60]], ["C", [48, 52, 55]], ["G", [55, 59, 62]]];
+        const LEAD = [0, 1, 2, 1, 2, 3, 2, 1];
+        function tick() {
+          if (!playing) return;
+          const [, ch] = CHORDS[Math.floor(step / 8) % 4];
+          CH[1].s.frequency = mtof(ch[0] - 24 + (step % 4 === 2 ? 7 : 0));
+          if (step % 8 === 0) CH[2].s.frequency = mtof(ch[1] - 12);
+          const k = LEAD[step % 8];
+          CH[3].s.frequency = mtof((k === 3 ? ch[0] + 12 : ch[k]) + 12);
+          step++;
+        }
+        ctx.interval(tick, 300);
+        const playBtn = ctx.button("▶ 群組播放", async () => {
+          await wake();
+          if (!ctx.active || !loaded) return;
+          playing = !playing;
+          if (playing) { step = 0; tick(); group.play(); } else group.stop();
+          playBtn.textContent = playing ? "■ 群組停止" : "▶ 群組播放";
+          api(playing ? `group.play()  // 依序呼叫 ${group.sounds.length} 個 Sound 的 play()` : "group.stop()");
+        }, { primary: true });
+        playBtn.disabled = true;
+        const sc = view(ctx, ctx.$(".pz-gscope"), (v) => {
+          scope(v.g, 0, 0, v.w, v.h, gAn, { color: "#f7df1e", live: playing, idle: loaded ? "按「▶ 群組播放」" : "音檔載入中…" });
+          if (playing) txt(v.g, `和弦 ${CHORDS[Math.floor(Math.max(0, step - 1) / 8) % 4][0]}・群組輸出（含殘響）`, 8, 12, "#e8e6e3", 11, "left", false, 600);
+        });
+        ctx.raf(() => {
+          sc.draw();
+          CH.forEach((c) => { c.meter.style.width = playing ? `${Math.max(0, Math.min(100, ((dB(level(c.an).rms) + 50) / 50) * 100))}%` : "0"; });
+          gMeter.style.width = playing ? `${Math.max(0, Math.min(100, ((dB(level(gAn).rms) + 50) / 50) * 100))}%` : "0";
+        });
+      },
+    },
+    // 7 --------------------------------------------------------------------------------------
+    {
+      id: "stress", title: "極限測試", kind: "stress",
+      api: "N × (Sound wave＋StereoPanner) → Group＋LowPassFilter",
+      desc: "同時發聲的 Sound 數量逐級加倍：每個聲部是一個 wave Sound 加自己的 StereoPanner，全部放進同一個 Group，群組再掛一個 LowPassFilter。同時量主執行緒 FPS 與音訊時鐘速率。",
+      hint: "按「自動加壓」才會建立聲部並出聲（音量已依聲部數自動降低）；離開此場景會立即停止並釋放所有節點。",
+      mount(ctx) {
+        ctx.html(`<div class="pz-sv"><div class="pz-cv" style="position:absolute;inset:0;border:0"></div></div>`);
+        ctx.controls.classList.add("bottom");
+        const r = rig(ctx);
+        const lp = r.effect(new FX.LowPassFilter({ frequency: 2600, peak: 1 }));
+        const group = new Pizzicato.Group();
+        group.addEffect(lp);
+        group.volume = 0.8;
+        ctx.onCleanup(() => { group.disconnect(); });
+        const voices = [];
+        const SCALE = [45, 48, 50, 52, 55, 57, 60, 62, 64, 67, 69, 72, 74, 76, 79, 81];
+        let armed = false, target = 0;
+        const clock = { samples: [], rate: 1, armT: 0, armCt: 0 };
+        const volFor = (n) => Math.min(0.25, 0.3 / Math.sqrt(Math.max(1, n)));
+        function addVoice(n) {
+          const m = SCALE[Math.floor(Math.random() * SCALE.length)];
+          const s = r.sound({ source: "wave", options: { type: voices.length % 3 ? "sine" : "triangle", frequency: mtof(m) * (1 + (Math.random() - 0.5) * 0.006), volume: volFor(n), attack: 0.25, release: 0.1 } });
+          const pan = new FX.StereoPanner({ pan: Math.random() * 1.6 - 0.8 });
+          s.addEffect(pan);
+          group.addSound(s);
+          s.play();
+          voices.push({ s, m, p: pan.pan, ph: Math.random() * 6.28 });
+        }
+        function sync() {
+          while (voices.length < target) addVoice(target);
+          while (voices.length > target) { const v = voices.pop(); group.removeSound(v.s); r.drop(v.s); }
+          const vol = volFor(voices.length);
+          voices.forEach((v) => { v.s.volume = vol; });
+        }
+        function release() { armed = false; target = 0; sync(); }
+        const arm = (e) => {
+          if (armed || !e.target.closest("[data-sc-run], .sc-lab input[type=range]")) return;
+          armed = true; wake();
+          clock.armT = performance.now(); clock.armCt = AC.currentTime; clock.samples.length = 0;
+        };
+        ctx.on(ctx.el, "click", arm, true);
+        ctx.on(ctx.el, "input", arm, true);
+        ctx.button("釋放所有聲部", release);
+        // Audio clock rate: currentTime advance divided by wall-clock advance over a sliding ~2 s window.
+        ctx.interval(() => {
+          const s = clock.samples;
+          s.push([performance.now(), AC.currentTime]);
+          if (s.length > 9) s.shift();
+          if (s.length > 2) { const [w0, c0] = s[0], [w1, c1] = s[s.length - 1]; clock.rate = (c1 - c0) / ((w1 - w0) / 1000); }
+        }, 250);
+        const lag = () => (armed ? Math.max(0, (performance.now() - clock.armT) / 1000 - (AC.currentTime - clock.armCt)) * 1000 : 0);
+        const hist = [];
+        ctx.interval(() => { if (armed) { hist.push(clock.rate); if (hist.length > 120) hist.shift(); } }, 250);
+        const v = view(ctx, ctx.$(".pz-sv > .pz-cv"), (vv) => {
+          const { g, w, h: hh } = vv;
+          g.fillStyle = "#050608"; g.fillRect(0, 0, w, hh);
+          const sh = Math.min(90, hh * 0.24);
+          scope(g, 0, 0, w, sh, MASTER_TAP, { color: "#7bd389", live: armed && voices.length > 0, spec: false, idle: "尚未發聲：按「自動加壓」才會建立聲部" });
+          const y0 = sh + 10, y1 = hh - 70;
+          const lo = Math.log(mtof(44)), hi = Math.log(mtof(82));
+          const t = performance.now() / 1000;
+          for (const vo of voices) {
+            const x = 12 + ((vo.p + 0.8) / 1.6) * (w - 24);
+            const y = y1 - ((Math.log(mtof(vo.m)) - lo) / (hi - lo)) * (y1 - y0);
+            const a = 0.35 + 0.35 * Math.sin(t * 3 + vo.ph);
+            g.fillStyle = `hsla(${(vo.m * 23) % 360}, 80%, 62%, ${a})`;
+            g.beginPath(); g.arc(x, y, voices.length > 300 ? 2 : 4, 0, 6.283); g.fill();
+          }
+          txt(g, "左", 10, y0 + 8, "#7d8490", 10); txt(g, "右", w - 10, y0 + 8, "#7d8490", 10, "right");
+          txt(g, armed ? `發聲中 ${voices.length} 個 Sound・每個 volume ${volFor(voices.length).toFixed(3)}` : `目標 ${target} 個聲部（尚未發聲）`, 10, y1 + 14, "#e8e6e3", 12, "left", false, 600);
+          // clock-rate history
+          const cy = hh - 44, ch = 34;
+          g.fillStyle = "rgba(255,255,255,.04)"; g.fillRect(10, cy, w - 20, ch);
+          const Y = (rt) => cy + ch - Math.max(0, Math.min(1, (rt - 0.9) / 0.15)) * ch;
+          g.strokeStyle = "rgba(255,255,255,.25)"; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(10, Y(1)); g.lineTo(w - 10, Y(1)); g.stroke(); g.setLineDash([]);
+          g.strokeStyle = "#4cc9f0"; g.lineWidth = 1.5; g.beginPath();
+          hist.forEach((rt, i) => { const x = 10 + (i / 119) * (w - 20); i ? g.lineTo(x, Y(rt)) : g.moveTo(x, Y(rt)); });
+          g.stroke();
+          txt(g, `音訊時鐘速率（虛線 = 100%）目前 ${(clock.rate * 100).toFixed(1)}%`, 10, hh - 4 - 2, "#7d8490", 10.5);
+        });
+        ctx.raf(() => v.draw());
+        ctx.ramp({
+          label: "同時發聲", unit: "聲部", steps: [8, 32, 64, 128, 256, 512, 1024], minFps: 30, warmup: 900, sample: 1500,
+          title: "極限測試：同時發聲的 Sound 數",
+          note: "FPS 只代表主執行緒（建立節點、畫面）。Web Audio 在獨立的音訊執行緒合成，所以也看「音訊時鐘」：currentTime 增量除以實際經過時間，持續低於約 98% 代表音訊執行緒算不完、開始爆音或斷續；「時鐘落後」是開始加壓後累積的差距。",
+          apply: (n) => { target = n; if (armed) sync(); },
+          metrics: () => ({
+            "發聲中": armed ? voices.length : "未發聲",
+            "音訊時鐘": `${(clock.rate * 100).toFixed(1)}%`,
+            "時鐘落後": `${lag().toFixed(0)} ms`,
+            "輸出延遲": `${(((AC.baseLatency || 0) + (AC.outputLatency || 0)) * 1000).toFixed(1)} ms`,
+          }),
+        });
+      },
+    },
+  ],
+});
 </script>
 </body>
 </html>

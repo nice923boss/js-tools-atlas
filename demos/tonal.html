@@ -3,354 +3,800 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tonal 示範：和弦與音階查詢器</title>
+<title>Tonal 示範：7 個場景看懂樂理函式庫與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"]}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"],"scenes":["和弦音階查詢","和弦辨識","調性與五度圈","七種調式","和弦進行與聲部","音程計算","極限測試"],"note":"所有樂理（拼字、音程、辨識、調性、聲部進行）都由 Tonal 計算；Tonal 本身不發聲，試聽用 Web Audio 振盪器，按播放或琴鍵才會出聲"}</script>
 <style>
-  .app {
-    position: fixed; inset: 0; display: flex; flex-direction: column; gap: 10px;
-    padding: 14px 16px 46px; max-width: 980px; margin: 0 auto;
+  .tl-board { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: auto; }
+  .tl-board > * { flex: none; min-width: 0; }
+  .tl-chip { border: 1px solid var(--line); background: var(--panel); color: var(--fg); border-radius: 8px; padding: 5px 8px; font: 500 12.5px var(--font); cursor: pointer; white-space: nowrap; min-width: 0; }
+  .tl-chip[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .tl-chip i { font-style: normal; color: var(--muted); margin-right: 4px; font-size: 11px; }
+  .tl-chip[aria-pressed="true"] i { color: inherit; opacity: .7; }
+  .tl-m { font-family: var(--mono); }
+  .tl-api { font: 11.5px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tl-cap { font-size: 12px; color: var(--muted); }
+  .tl-cv { position: relative; min-height: 0; min-width: 0; border-radius: 10px; background: #0b0d11; border: 1px solid var(--line); overflow: hidden; }
+  .tl-cv > canvas { position: absolute; inset: 0; display: block; }
+
+  /* piano */
+  .tl-kb { position: relative; display: flex; user-select: none; touch-action: none; min-height: 70px; }
+  .tl-w { flex: 1; position: relative; border: 1px solid #2b2e35; border-top: 0; border-radius: 0 0 6px 6px; background: linear-gradient(#f4f2ea, #e2dfd5); cursor: pointer; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; padding-bottom: 5px; color: #222; font: 600 11px var(--font); min-width: 0; overflow: hidden; }
+  .tl-b { position: absolute; top: 0; height: 60%; border-radius: 0 0 5px 5px; z-index: 2; cursor: pointer; background: linear-gradient(#2d3038, #121418); border: 1px solid #000; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; padding-bottom: 4px; color: #fff; font: 600 10px var(--font); overflow: hidden; }
+  .tl-w.on { background: linear-gradient(#bfe9ff, #4cc9f0); }
+  .tl-b.on { background: linear-gradient(#4cc9f0, #1f7fa3); }
+  .tl-w.root { background: linear-gradient(#fff7b0, #f7df1e); }
+  .tl-b.root { background: linear-gradient(#f7df1e, #b8a50f); color: #111; }
+  .tl-w.alt { background: linear-gradient(#ffd0e6, #f72585); }
+  .tl-b.alt { background: linear-gradient(#f72585, #a3115a); }
+  .tl-w.hit, .tl-b.hit { box-shadow: 0 0 18px 4px rgba(247, 37, 133, .85); filter: brightness(1.15); }
+  .tl-w em, .tl-b em { font-style: normal; font-size: 9px; opacity: .75; font-weight: 500; }
+
+  /* 1. lookup */
+  .tl-roots { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 5px; }
+  .tl-roots .tl-chip { padding: 5px 2px; font-weight: 600; }
+  .tl-types { display: flex; flex-wrap: wrap; gap: 5px; }
+  .tl-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: 5px; padding: 10px 12px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); }
+  .tl-sym { font: 700 30px/1.05 var(--font); }
+  .tl-sym small { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 10px; }
+  .tl-notes { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tl-pill { display: grid; justify-items: center; min-width: 50px; padding: 4px 8px; border-radius: 10px; background: rgba(255, 255, 255, .06); border: 1px solid var(--line); }
+  .tl-pill b { font-size: 16px; }
+  .tl-pill span { font-size: 11px; color: var(--muted); }
+  .tl-pill.root { background: rgba(247, 223, 30, .16); border-color: rgba(247, 223, 30, .5); }
+  .tl-rel { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .tl-rel > .tl-cap { flex: none; }
+  .tl-look > .tl-kb { flex: 1 1 auto; max-height: 180px; }
+
+  /* 2. detect */
+  .tl-det { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; flex: 1 1 auto; min-height: 150px; }
+  .tl-box { padding: 10px 12px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); min-width: 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+  .tl-big { font: 700 34px/1.05 var(--font); }
+  .tl-big small { display: block; font-size: 13px; font-weight: 500; color: var(--muted); margin-top: 4px; }
+  .tl-list { display: flex; flex-wrap: wrap; gap: 5px; }
+  .tl-det2 > .tl-kb { flex: 1 1 auto; max-height: 170px; }
+
+  /* 3. key */
+  .tl-key { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: 10px; flex: 1 1 auto; min-height: 220px; }
+  .tl-ktab { display: grid; grid-template-columns: 4.6em repeat(7, minmax(0, 1fr)); gap: 3px; font-size: 12px; }
+  .tl-ktab > * { min-width: 0; padding: 4px 2px; text-align: center; border-radius: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tl-ktab > .l { text-align: left; color: var(--muted); padding-left: 0; }
+  .tl-ktab > button { border: 1px solid var(--line); background: rgba(255, 255, 255, .05); color: var(--fg); font: 600 12px var(--font); cursor: pointer; }
+  .tl-ktab > .fT { background: rgba(6, 214, 160, .2); border-color: rgba(6, 214, 160, .55); }
+  .tl-ktab > .fSD { background: rgba(76, 201, 240, .18); border-color: rgba(76, 201, 240, .5); }
+  .tl-ktab > .fD { background: rgba(247, 37, 133, .2); border-color: rgba(247, 37, 133, .55); }
+  .tl-khead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .tl-khead b { font-size: 24px; }
+  .tl-leg { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); }
+  .tl-leg i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+
+  /* 4. modes */
+  .tl-modes { display: grid; grid-template-columns: 7.2em repeat(12, minmax(0, 1fr)); gap: 3px; align-items: stretch; }
+  .tl-modes > .hd { font: 11px var(--mono); color: var(--muted); text-align: center; }
+  .tl-mname { display: flex; flex-direction: column; justify-content: center; padding: 2px 6px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); text-align: left; cursor: pointer; font: 600 13px var(--font); line-height: 1.2; min-width: 0; overflow: hidden; }
+  .tl-mname small { font: 400 10.5px var(--mono); color: var(--muted); white-space: nowrap; }
+  .tl-mname[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+  .tl-cell { display: grid; place-items: center; min-height: 30px; border-radius: 6px; background: rgba(255, 255, 255, .03); font: 600 12px var(--font); color: var(--muted); min-width: 0; overflow: hidden; }
+  .tl-cell.in { background: rgba(76, 201, 240, .22); color: var(--fg); }
+  .tl-cell.tonic { background: rgba(247, 223, 30, .3); }
+  .tl-cell.alt { background: rgba(247, 37, 133, .35); color: #fff; }
+  .tl-mrow-on { outline: 1px solid rgba(255, 255, 255, .35); }
+
+  /* 5. progression */
+  .tl-prog { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tl-pc { flex: 1 1 0; min-width: 62px; padding: 6px 8px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); cursor: pointer; text-align: left; color: var(--fg); font: inherit; }
+  .tl-pc b { display: block; font-size: 16px; }
+  .tl-pc span { display: block; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tl-pc.now { border-color: var(--accent); box-shadow: 0 0 14px -4px var(--accent); }
+  .tl-pc i { font: 600 12px var(--mono); font-style: normal; color: var(--accent); }
+
+  /* 6. interval */
+  .tl-iv { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, .8fr); gap: 8px; flex: 1 1 auto; min-height: 120px; }
+  .tl-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .tl-facts > div { padding: 5px 8px; border-radius: 8px; background: rgba(255, 255, 255, .04); min-width: 0; }
+  .tl-facts small { display: block; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tl-facts b { display: block; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tl-ivwrap > .tl-kb { flex: 0 0 auto; height: 96px; }
+
+  /* 7. stress */
+  .tl-bv { position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px); border-radius: 10px; background: #050608; overflow: hidden; border: 1px solid var(--line); }
+  @media (min-width: 761px) { .tl-bv { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 350px; } }
+
+  @media (max-height: 480px) {
+    .tl-sym, .tl-big { font-size: 22px; }
+    .tl-card, .tl-box { padding: 6px 10px; }
+    .tl-cell { min-height: 24px; }
+    .tl-khead b { font-size: 19px; }
   }
-  .app > * { flex: none; }
-  .topbar { display: flex; align-items: center; gap: 10px; }
-  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; flex: none; }
-  .seg button {
-    border: 0; background: transparent; color: var(--muted); padding: 7px 16px; font: 600 14px var(--font); cursor: pointer;
-  }
-  .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
-  .topbar .lbl { font-size: 12px; color: var(--muted); }
-  .roots { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 5px; }
-  .chip {
-    border: 1px solid var(--line); background: var(--panel); color: var(--fg); border-radius: 8px;
-    padding: 6px 4px; font: 600 13px var(--font); cursor: pointer; white-space: nowrap; min-width: 0;
-  }
-  .chip[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
-  .types { display: flex; flex-wrap: wrap; gap: 5px; }
-  .types .chip { padding: 5px 10px; font-weight: 500; }
-  .card {
-    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 14px; align-items: center;
-    padding: 12px 14px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line);
-  }
-  .sym { font: 700 34px/1 var(--font); letter-spacing: 0.5px; }
-  .sym small { font-size: 15px; font-weight: 500; color: var(--muted); margin-left: 10px; letter-spacing: 0; }
-  .eng {
-    font: 12px var(--mono); color: var(--muted); grid-column: 1 / -1; margin-top: -2px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  .notes { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
-  .pill {
-    display: grid; justify-items: center; min-width: 52px; padding: 5px 8px; border-radius: 10px;
-    background: rgba(255, 255, 255, 0.06); border: 1px solid var(--line);
-  }
-  .pill b { font-size: 17px; }
-  .pill span { font-size: 11px; color: var(--muted); }
-  .pill.root { background: rgba(247, 223, 30, 0.16); border-color: rgba(247, 223, 30, 0.5); }
-  .rel { display: flex; align-items: center; gap: 6px; min-height: 30px; flex-wrap: wrap; }
-  .rel .t { font-size: 12px; color: var(--muted); margin-right: 2px; flex: none; white-space: nowrap; }
-  .rel .chip { padding: 4px 9px; font-weight: 500; font-size: 12px; }
-  .rel .chip i { font-style: normal; color: var(--muted); margin-right: 4px; font-size: 11px; }
-  .app > .kb { position: relative; flex: 1 1 auto; min-height: 80px; max-height: 190px; display: flex; user-select: none; }
-  .w {
-    flex: 1; position: relative; border: 1px solid #2b2e35; border-top: 0; border-radius: 0 0 7px 7px;
-    background: linear-gradient(#f4f2ea, #e2dfd5); cursor: pointer; display: flex; flex-direction: column;
-    justify-content: flex-end; align-items: center; padding-bottom: 6px; color: #222; font: 600 11px var(--font);
-  }
-  .b {
-    position: absolute; top: 0; height: 60%; border-radius: 0 0 5px 5px; z-index: 2; cursor: pointer;
-    background: linear-gradient(#2d3038, #121418); border: 1px solid #000; display: flex; flex-direction: column;
-    justify-content: flex-end; align-items: center; padding-bottom: 4px; color: #fff; font: 600 10px var(--font);
-  }
-  .w.on { background: linear-gradient(#bfe9ff, #4cc9f0); }
-  .b.on { background: linear-gradient(#4cc9f0, #1f7fa3); }
-  .w.on.root { background: linear-gradient(#fff7b0, #f7df1e); }
-  .b.on.root { background: linear-gradient(#f7df1e, #b8a50f); color: #111; }
-  .w.hit, .b.hit { box-shadow: 0 0 18px 4px rgba(247, 37, 133, 0.85); filter: brightness(1.15); }
-  .w em, .b em { font-style: normal; font-size: 9px; opacity: 0.75; font-weight: 500; }
-  @media (max-width: 620px) {
-    .app { gap: 7px; padding: 10px 10px 46px; }
-    .roots { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; }
-    .chip { padding: 4px 2px; font-size: 12px; }
-    .types { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
-    .types .chip { flex: none; padding: 4px 8px; }
-    .sym { font-size: 26px; }
-    .sym small { font-size: 13px; margin-left: 6px; }
-    .card { padding: 9px 10px; gap: 5px 8px; }
-    .pill { min-width: 40px; padding: 3px 5px; }
-    .pill b { font-size: 14px; }
-    .pill span { font-size: 10px; }
-    .rel { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; min-height: 28px; }
-    .rel .chip { flex: none; }
-    .topbar .lbl { display: none; }
-    .w { font-size: 9px; padding-bottom: 3px; }
-    .b { font-size: 8px; }
-    .w em, .b em { display: none; }
+  @media (max-width: 560px) {
+    .tl-board { gap: 6px; }
+    .tl-roots { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; }
+    .tl-chip { padding: 4px 6px; font-size: 12px; }
+    .tl-types, .tl-rel { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+    .tl-types .tl-chip, .tl-rel .tl-chip { flex: none; }
+    .tl-sym { font-size: 24px; }
+    .tl-card { padding: 8px 10px; }
+    .tl-pill { min-width: 40px; padding: 3px 5px; }
+    .tl-pill b { font-size: 14px; }
+    .tl-w { font-size: 9px; padding-bottom: 3px; }
+    .tl-b { font-size: 8px; }
+    .tl-w em, .tl-b em { display: none; }
+    .tl-det, .tl-key, .tl-iv { grid-template-columns: minmax(0, 1fr); }
+    .tl-key { grid-template-rows: 190px auto; }
+    .tl-big { font-size: 26px; }
+    .tl-modes { grid-template-columns: 5.4em repeat(12, minmax(0, 1fr)); gap: 2px; }
+    .tl-mname { font-size: 11.5px; padding: 2px 4px; }
+    .tl-mname small { display: none; }
+    .tl-cell { font-size: 9.5px; min-height: 26px; }
+    .tl-ktab { grid-template-columns: 3.4em repeat(7, minmax(0, 1fr)); font-size: 10.5px; gap: 2px; }
+    .tl-ktab > button { font-size: 10.5px; }
+    .tl-pc { min-width: 54px; padding: 4px 6px; }
+    .tl-pc b { font-size: 14px; }
+    .tl-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .tl-iv { min-height: 260px; }
   }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/tonal@6.5.0/browser/tonal.min.js"></script>
 </head>
 <body>
-<div class="app">
-  <div class="topbar">
-    <div class="seg" role="group" aria-label="查詢模式">
-      <button id="mChord" aria-pressed="true">和弦</button>
-      <button id="mScale" aria-pressed="false">音階</button>
-    </div>
-    <span class="lbl">選根音與類型，Tonal 即時算出組成音與相關和弦</span>
-  </div>
-  <div class="roots" id="roots"></div>
-  <div class="types" id="types"></div>
-  <div class="card">
-    <div class="sym" id="sym"></div>
-    <button class="btn primary" id="play">▶ 播放</button>
-    <div class="eng" id="eng"></div>
-    <div class="notes" id="notes"></div>
-  </div>
-  <div class="rel" id="rel"></div>
-  <div class="kb" id="kb"></div>
-</div>
-<div class="hint">點琴鍵試聽單音，點下方相關和弦或音階可直接切換</div>
-
-<script src="https://cdn.jsdelivr.net/npm/tonal@6.5.0/browser/tonal.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Tonal does all the music theory: chord / scale spelling, intervals, chord-scale relations, detection.
-const { Chord, Scale, Note } = Tonal;
+const { h, fmtCompact, fmtMs } = Showcase;
+const { Note, Interval, Chord, ChordType, Scale, Key, Mode, Progression, RomanNumeral, Range, Voicing } = Tonal;
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+const CJK = '"Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif';
+const MONO = '"JetBrains Mono", ui-monospace, Consolas, monospace';
 
+// ---------- music vocabulary (Chinese labels only; all spelling comes from Tonal) ----------
 const ROOTS = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
 const CHORDS = [
   ["M", "", "大三和弦"], ["m", "m", "小三和弦"], ["7", "7", "屬七和弦"], ["maj7", "maj7", "大七和弦"],
   ["m7", "m7", "小七和弦"], ["dim", "dim", "減三和弦"], ["aug", "aug", "增三和弦"], ["sus4", "sus4", "掛四和弦"],
-  ["m7b5", "m7b5", "半減七和弦"], ["dim7", "dim7", "減七和弦"], ["9", "9", "屬九和弦"], ["add9", "add9", "加九和弦"],
-  ["6", "6", "大六和弦"],
+  ["m7b5", "m7b5", "半減七和弦"], ["dim7", "dim7", "減七和弦"], ["9", "9", "屬九和弦"], ["add9", "add9", "加九和弦"], ["6", "6", "大六和弦"],
 ];
 const SCALES = [
   ["major", "大調"], ["minor", "自然小調"], ["harmonic minor", "和聲小調"], ["melodic minor", "旋律小調"],
   ["major pentatonic", "大調五聲"], ["minor pentatonic", "小調五聲"], ["blues", "藍調"], ["dorian", "多利安"],
   ["mixolydian", "米索利地安"], ["lydian", "利地安"], ["phrygian", "弗里吉安"], ["whole tone", "全音階"],
 ];
-// Extra Chinese names for scales Tonal suggests in chordScales()
 const SCALE_CN = Object.fromEntries([...SCALES,
-  ["aeolian", "自然小調"], ["ionian", "大調"], ["minor blues", "藍調"], ["locrian", "洛克利安"],
-  ["altered", "變化音階"], ["bebop", "比波普"], ["harmonic major", "和聲大調"], ["lydian dominant", "利地安屬音"],
-  ["half-whole diminished", "半全減音階"], ["whole-half diminished", "全半減音階"], ["phrygian dominant", "弗里吉安屬音"],
-  ["locrian #2", "洛克利安升二"], ["dorian b2", "多利安降二"], ["lydian augmented", "利地安增音"],
-  ["mixolydian b6", "米索利地安降六"], ["bebop major", "比波普大調"], ["bebop minor", "比波普小調"],
-  ["bebop dominant", "比波普屬音"], ["major blues", "大調藍調"], ["ionian pentatonic", "大調五聲變體"],
+  ["aeolian", "自然小調"], ["ionian", "大調"], ["minor blues", "藍調"], ["locrian", "洛克利安"], ["altered", "變化音階"],
+  ["bebop", "比波普"], ["harmonic major", "和聲大調"], ["lydian dominant", "利地安屬音"], ["half-whole diminished", "半全減音階"],
+  ["whole-half diminished", "全半減音階"], ["phrygian dominant", "弗里吉安屬音"], ["major blues", "大調藍調"],
+  ["mixolydian b6", "米索利地安降六"], ["lydian augmented", "利地安增音"], ["bebop major", "比波普大調"], ["bebop dominant", "比波普屬音"],
 ]);
 const IV_CN = {
-  "1P": "根音", "2m": "小二度", "2M": "大二度", "2A": "增二度", "3m": "小三度", "3M": "大三度", "4P": "完全四度",
-  "4A": "增四度", "5d": "減五度", "5P": "完全五度", "5A": "增五度", "6m": "小六度", "6M": "大六度", "6A": "增六度",
-  "7d": "減七度", "7m": "小七度", "7M": "大七度", "9M": "大九度", "8P": "八度",
+  "1P": "根音", "2m": "小二度", "2M": "大二度", "2A": "增二度", "3m": "小三度", "3M": "大三度", "4P": "完全四度", "4A": "增四度",
+  "5d": "減五度", "5P": "完全五度", "5A": "增五度", "6m": "小六度", "6M": "大六度", "7d": "減七度", "7m": "小七度", "7M": "大七度",
+  "8P": "八度", "9m": "小九度", "9M": "大九度", "9A": "增九度", "11P": "完全十一度", "11A": "增十一度", "13M": "大十三度", "13m": "小十三度",
 };
-const pretty = (n) => n.replace(/#/g, "♯").replace(/(?!^)b/g, "♭");
-const sameScale = (a, b) => Scale.get("C " + a).type === Scale.get("C " + b).type;
-
-const state = { mode: "chord", root: "C", chord: "maj7", scale: "major" };
-
-// ---------- piano (C3..E5) ----------
-const LOW = 48, HIGH = 76;
-const kb = document.getElementById("kb");
-const keys = new Map();
-const isBlack = (m) => [1, 3, 6, 8, 10].includes(m % 12);
-const whites = [];
-for (let m = LOW; m <= HIGH; m++) if (!isBlack(m)) whites.push(m);
-for (let m = LOW; m <= HIGH; m++) {
-  const el = document.createElement("div");
-  if (isBlack(m)) {
-    const wi = whites.filter((w) => w < m).length;
-    el.className = "b";
-    el.style.left = `calc(${(wi / whites.length) * 100}% - ${(0.6 / whites.length) * 50}%)`;
-    el.style.width = `${(0.6 / whites.length) * 100}%`;
-  } else el.className = "w";
-  el.addEventListener("pointerdown", () => { tone(m, 0, 0.9); flash(m, 0); });
-  kb.append(el);
-  keys.set(m, el);
+const Q_CN = { P: "完全", M: "大", m: "小", A: "增", d: "減", AA: "倍增", dd: "倍減" };
+const TYPE_CN = Object.fromEntries(CHORDS.map(([k, , cn]) => [Chord.getChord(k, "C").type, cn]));
+const pretty = (n) => String(n).replace(/#/g, "♯").replace(/(?!^)b/g, "♭");
+const ivCn = (iv) => {
+  if (IV_CN[iv]) return IV_CN[iv];
+  const i = Interval.get(iv);
+  return i.empty ? iv : `${Q_CN[i.q] || i.q}${i.num}度`;
+};
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim() || "#888";
+const chips = (host, items) => { host.replaceChildren(...items); };
+function chip(label, sub, onClick, pressed) {
+  const b = h("button", { class: "tl-chip", type: "button" });
+  b.innerHTML = (sub ? `<i>${sub}</i>` : "") + label;
+  if (pressed != null) b.setAttribute("aria-pressed", String(!!pressed));
+  if (onClick) b.addEventListener("click", onClick);
+  return b;
 }
-
-// ---------- audio (plain Web Audio voice) ----------
-let ac = null, out = null;
-function audio() {
-  if (ac) return ac;
-  ac = new AudioContext();
-  const comp = ac.createDynamicsCompressor();
-  const lp = ac.createBiquadFilter();
-  lp.frequency.value = 3200;
-  lp.connect(comp); comp.connect(ac.destination);
-  out = lp;
-  return ac;
-}
-function tone(midi, when, dur) {
-  audio();
-  ac.resume();
-  const t = ac.currentTime + when + 0.02, f = 440 * Math.pow(2, (midi - 69) / 12);
-  const g = ac.createGain();
-  g.gain.setValueAtTime(0, t);
-  g.gain.linearRampToValueAtTime(0.22, t + 0.012);
-  g.gain.exponentialRampToValueAtTime(0.08, t + 0.35);
-  g.gain.setValueAtTime(0.08, t + dur);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.5);
-  g.connect(out);
-  for (const [type, mul, vol] of [["triangle", 1, 1], ["sine", 2, 0.35]]) {
-    const o = ac.createOscillator(), v = ac.createGain();
-    o.type = type; o.frequency.value = f * mul; v.gain.value = vol;
-    o.connect(v); v.connect(g);
-    o.start(t); o.stop(t + dur + 0.6);
-  }
-}
-function flash(m, when, len = 320) {
-  const el = keys.get(m);
-  if (!el) return;
-  setTimeout(() => { el.classList.add("hit"); setTimeout(() => el.classList.remove("hit"), len); }, when * 1000);
-}
-
-// Ascending voicing starting from the root in octave 3
-function voice(notes) {
+// Pitch classes -> ascending MIDI numbers starting in the given octave.
+function stack(notes, oct = 3) {
   const out = [];
   for (const n of notes) {
-    let m = Note.midi(n + "3");
+    let m = Note.midi(Note.pitchClass(n) + oct);
     while (out.length && m <= out[out.length - 1]) m += 12;
     out.push(m);
   }
   return out;
 }
 
-// ---------- UI ----------
-const rootsEl = document.getElementById("roots"), typesEl = document.getElementById("types");
-ROOTS.forEach((r) => {
-  const b = document.createElement("button");
-  b.className = "chip"; b.textContent = pretty(r); b.dataset.r = r;
-  b.addEventListener("click", () => { state.root = r; render(); });
-  rootsEl.append(b);
-});
-document.getElementById("mChord").addEventListener("click", () => { state.mode = "chord"; render(); });
-document.getElementById("mScale").addEventListener("click", () => { state.mode = "scale"; render(); });
-
-function current() {
-  if (state.mode === "chord") {
-    const c = Chord.getChord(state.chord, state.root);
-    const def = CHORDS.find((d) => d[0] === state.chord);
-    return {
-      title: pretty(state.root) + (def ? def[1] : state.chord), cn: `${pretty(state.root)} ${def ? def[2] : ""}`,
-      eng: `Chord.getChord("${state.chord}", "${state.root}")  →  ${c.name || c.symbol}`,
-      notes: c.notes, intervals: c.intervals,
-    };
+// ---------- audio: plain Web Audio voices (Tonal itself has no sound) ----------
+let AC = null, master = null;
+function audio() {
+  if (!AC) {
+    AC = new AudioContext();
+    const lp = AC.createBiquadFilter(); lp.frequency.value = 3600;
+    const comp = AC.createDynamicsCompressor();
+    const an = AC.createAnalyser(); an.fftSize = 1024;
+    lp.connect(comp); comp.connect(an); an.connect(AC.destination);
+    master = lp;
   }
-  const s = Scale.get(`${state.root} ${state.scale}`);
+  if (AC.state !== "running") AC.resume();
+  return AC;
+}
+// Every scene plays through its own bus; unmounting silences and disconnects it.
+function sceneBus(ctx) {
+  let bus = null;
+  ctx.onCleanup(() => { if (bus) { bus.gain.value = 0; bus.disconnect(); bus = null; } });
+  return () => { audio(); if (!bus) { bus = AC.createGain(); bus.connect(master); } return bus; };
+}
+function tone(dest, midi, when = 0, dur = 0.4, vel = 0.2) {
+  const t = AC.currentTime + when + 0.02, f = 440 * Math.pow(2, (midi - 69) / 12);
+  const g = AC.createGain();
+  g.gain.setValueAtTime(0, t);
+  g.gain.linearRampToValueAtTime(vel, t + 0.012);
+  g.gain.exponentialRampToValueAtTime(vel * 0.4, t + 0.35);
+  g.gain.setValueAtTime(vel * 0.4, t + Math.max(dur, 0.36));
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur + 0.5);
+  g.connect(dest);
+  for (const [type, mul, vol] of [["triangle", 1, 1], ["sine", 2, 0.35]]) {
+    const o = AC.createOscillator(), v = AC.createGain();
+    o.type = type; o.frequency.value = f * mul; v.gain.value = vol;
+    o.connect(v); v.connect(g);
+    o.start(t); o.stop(t + dur + 0.6);
+  }
+}
+
+// ---------- DOM piano ----------
+const isBlack = (m) => [1, 3, 6, 8, 10].includes(((m % 12) + 12) % 12);
+function piano(ctx, host, lo, hi, onDown) {
+  host.classList.add("tl-kb");
+  const whites = [];
+  for (let m = lo; m <= hi; m++) if (!isBlack(m)) whites.push(m);
+  const keys = new Map();
+  for (let m = lo; m <= hi; m++) {
+    const el = h("div", { class: isBlack(m) ? "tl-b" : "tl-w" });
+    if (isBlack(m)) {
+      const wi = whites.filter((w) => w < m).length;
+      el.style.left = `calc(${(wi / whites.length) * 100}% - ${(0.3 / whites.length) * 100}%)`;
+      el.style.width = `${(0.6 / whites.length) * 100}%`;
+    }
+    el.addEventListener("pointerdown", (e) => { e.preventDefault(); onDown && onDown(m); });
+    host.append(el);
+    keys.set(m, el);
+  }
   return {
-    title: pretty(state.root), cn: SCALE_CN[state.scale] || state.scale,
-    eng: `Scale.get("${state.root} ${state.scale}")  →  ${s.name}`,
-    notes: s.notes, intervals: s.intervals,
+    paint(marks) {
+      keys.forEach((el, m) => {
+        const k = marks.get(m);
+        el.className = (isBlack(m) ? "tl-b" : "tl-w") + (k ? ` ${k.cls}` : "");
+        el.innerHTML = (k && k.html) || "";
+      });
+    },
+    flash(m, delay = 0, len = 300) {
+      const el = keys.get(m);
+      if (!el) return;
+      ctx.timeout(() => { el.classList.add("hit"); ctx.timeout(() => el.classList.remove("hit"), len); }, delay * 1000);
+    },
   };
 }
 
-let midis = [];
-function render() {
-  const { mode } = state;
-  document.getElementById("mChord").setAttribute("aria-pressed", mode === "chord");
-  document.getElementById("mScale").setAttribute("aria-pressed", mode === "scale");
-  const rc = Note.chroma(state.root);
-  [...rootsEl.children].forEach((b) => b.setAttribute("aria-pressed", Note.chroma(b.dataset.r) === rc));
-
-  typesEl.innerHTML = "";
-  const list = mode === "chord" ? CHORDS.map((d) => [d[0], d[2]]) : SCALES;
-  for (const [key, label] of list) {
-    const b = document.createElement("button");
-    b.className = "chip"; b.textContent = label;
-    const on = mode === "chord" ? key === state.chord : sameScale(key, state.scale);
-    b.setAttribute("aria-pressed", on);
-    b.addEventListener("click", () => { state[mode] = key; render(); });
-    typesEl.append(b);
-  }
-
-  const cur = current();
-  document.getElementById("sym").innerHTML = `${cur.title}<small>${cur.cn}</small>`;
-  document.getElementById("eng").textContent = cur.eng;
-  document.getElementById("notes").innerHTML = cur.notes.map((n, i) =>
-    `<div class="pill${i ? "" : " root"}"><b>${pretty(n)}</b><span>${IV_CN[cur.intervals[i]] || cur.intervals[i]}</span></div>`).join("");
-
-  midis = voice(cur.notes);
-  if (mode === "scale") midis.push(midis[0] + 12);
-  keys.forEach((el, m) => { el.className = isBlack(m) ? "b" : "w"; el.innerHTML = ""; });
-  midis.forEach((m, i) => {
-    const el = keys.get(m);
-    if (!el) return;
-    el.classList.add("on");
-    if (m % 12 === midis[0] % 12) el.classList.add("root");
-    const iv = cur.intervals[i % cur.intervals.length];
-    el.innerHTML = `${pretty(cur.notes[i % cur.notes.length])}<em>${iv === "1P" ? "R" : iv.replace(/[PMmdA]/, "")}</em>`;
-  });
-  renderRelated(cur);
+// ---------- canvas helper ----------
+function view(ctx, host, draw) {
+  const cv = h("canvas");
+  host.append(cv);
+  const g = cv.getContext("2d");
+  const v = { cv, g, w: 0, h: 0, draw: () => draw(v) };
+  const fit = () => {
+    const r = host.getBoundingClientRect();
+    v.w = Math.max(1, r.width); v.h = Math.max(1, r.height);
+    cv.width = Math.round(v.w * DPR); cv.height = Math.round(v.h * DPR);
+    cv.style.width = v.w + "px"; cv.style.height = v.h + "px";
+    g.setTransform(DPR, 0, 0, DPR, 0, 0);
+    draw(v);
+  };
+  const ro = new ResizeObserver(fit);
+  ro.observe(host);
+  ctx.onCleanup(() => ro.disconnect());
+  fit();
+  return v;
+}
+function txt(g, s, x, y, color = "#e8e6e3", size = 12, align = "left", mono = false, weight = 500) {
+  g.font = `${weight} ${size}px ${mono ? MONO : CJK}`;
+  g.fillStyle = color; g.textAlign = align; g.textBaseline = "middle";
+  g.fillText(s, x, y);
 }
 
-function relChip(label, sub, onClick) {
-  const b = document.createElement("button");
-  b.className = "chip";
-  b.innerHTML = (sub ? `<i>${sub}</i>` : "") + label;
-  b.addEventListener("click", onClick);
-  return b;
-}
-
-const ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII"];
-function renderRelated(cur) {
-  const rel = document.getElementById("rel");
-  rel.innerHTML = "";
-  const t = document.createElement("span");
-  t.className = "t";
-  rel.append(t);
-  if (state.mode === "chord") {
-    t.textContent = "可搭配音階";
-    const sym = Chord.getChord(state.chord, state.root).symbol;
-    const names = Chord.chordScales(sym).filter((n) => SCALE_CN[n]).slice(0, 6);
-    for (const n of names) {
-      rel.append(relChip(SCALE_CN[n], pretty(state.root), () => { state.mode = "scale"; state.scale = n; render(); }));
-    }
-    return;
-  }
-  const sc = cur.notes;
-  if (sc.length === 7) {
-    t.textContent = "順階和弦";
-    sc.forEach((n, i) => {
-      const tri = [sc[i], sc[(i + 2) % 7], sc[(i + 4) % 7]];
-      const sym = Chord.detect(tri)[0];
-      if (!sym) return;
-      const c = Chord.get(sym), type = c.aliases[0];
-      let rn = ROMAN[i];
-      if (c.quality === "Minor" || c.quality === "Diminished") rn = rn.toLowerCase();
-      if (c.quality === "Diminished") rn += "°";
-      if (c.quality === "Augmented") rn += "+";
-      const def = CHORDS.find((d) => d[0] === type);
-      rel.append(relChip(pretty(c.tonic) + (def ? def[1] : type), rn, () => {
-        state.mode = "chord"; state.root = c.tonic; state.chord = type; render();
-      }));
-    });
-  } else {
-    t.textContent = "音階內的和弦";
-    const set = new Set(sc.map(Note.chroma));
-    let count = 0;
-    for (const n of sc) {
-      for (const [key, suffix] of CHORDS.slice(0, 8)) {
-        const c = Chord.getChord(key, n);
-        if (count < 9 && c.notes.every((x) => set.has(Note.chroma(x)))) {
-          count++;
-          rel.append(relChip(pretty(n) + suffix, "", () => {
-            state.mode = "chord"; state.root = n; state.chord = key; render();
-          }));
+Showcase.run({
+  scenes: [
+    // 1 --------------------------------------------------------------------------------------
+    {
+      id: "lookup", title: "和弦音階查詢",
+      api: "Chord.getChord・Scale.get・Chord.chordScales・Chord.detect",
+      desc: "選根音與類型，Tonal 拼出組成音與音程；和弦模式列出可搭配的音階，音階模式列出順階和弦。",
+      hint: "點琴鍵試聽單音；點下方相關和弦或音階可直接切換；按「▶ 播放」聽琶音與柱式和弦。",
+      mount(ctx) {
+        ctx.html(`<div class="tl-board tl-look"><div class="tl-roots"></div><div class="tl-types"></div>
+          <div class="tl-card"><div class="tl-sym"></div><div class="tl-api"></div><div class="tl-notes"></div></div>
+          <div class="tl-rel"></div><div class="kb"></div></div>`);
+        const out = sceneBus(ctx);
+        const st = { mode: "chord", root: "C", chord: "maj7", scale: "major" };
+        let midis = [];
+        const kb = piano(ctx, ctx.$(".kb"), 48, 76, (m) => { tone(out(), m, 0, 0.8); kb.flash(m); });
+        const seg = ctx.group(["和弦", "音階"], 0, (i) => { st.mode = i ? "scale" : "chord"; render(); });
+        ctx.button("▶ 播放", () => {
+          const b = out();
+          if (st.mode === "chord") {
+            midis.forEach((m, i) => { tone(b, m, i * 0.16, 0.3); kb.flash(m, i * 0.16, 220); });
+            const at = midis.length * 0.16 + 0.12;
+            midis.forEach((m) => { tone(b, m, at, 1.3, 0.16); kb.flash(m, at, 1200); });
+          } else midis.forEach((m, i) => { tone(b, m, i * 0.22, 0.28); kb.flash(m, i * 0.22, 220); });
+        }, { primary: true });
+        const sameScale = (a, b) => Scale.get("C " + a).type === Scale.get("C " + b).type;
+        function current() {
+          if (st.mode === "chord") {
+            const c = Chord.getChord(st.chord, st.root), def = CHORDS.find((d) => d[0] === st.chord);
+            return { title: pretty(st.root) + (def ? def[1] : st.chord), cn: def ? def[2] : c.type, api: `Chord.getChord("${st.chord}", "${st.root}") → ${c.name}`, notes: c.notes, intervals: c.intervals };
+          }
+          const s = Scale.get(`${st.root} ${st.scale}`);
+          return { title: pretty(st.root), cn: SCALE_CN[st.scale] || st.scale, api: `Scale.get("${st.root} ${st.scale}") → ${s.name}`, notes: s.notes, intervals: s.intervals };
         }
-      }
-    }
-  }
-}
-
-document.getElementById("play").addEventListener("click", () => {
-  if (state.mode === "chord") {
-    midis.forEach((m, i) => { tone(m, i * 0.16, 0.35); flash(m, i * 0.16, 220); });
-    const blockAt = midis.length * 0.16 + 0.12;
-    midis.forEach((m) => { tone(m, blockAt, 1.3); flash(m, blockAt, 1200); });
-  } else {
-    midis.forEach((m, i) => { tone(m, i * 0.22, 0.3); flash(m, i * 0.22, 220); });
-  }
+        function render() {
+          [...seg.children].forEach((b, i) => b.setAttribute("aria-pressed", String(i === (st.mode === "scale" ? 1 : 0))));
+          const rc = Note.chroma(st.root);
+          chips(ctx.$(".tl-roots"), ROOTS.map((r) => chip(pretty(r), "", () => { st.root = r; render(); }, Note.chroma(r) === rc)));
+          const list = st.mode === "chord" ? CHORDS.map((d) => [d[0], d[2]]) : SCALES;
+          chips(ctx.$(".tl-types"), list.map(([k, label]) => chip(label, "", () => { st[st.mode] = k; render(); }, st.mode === "chord" ? k === st.chord : sameScale(k, st.scale))));
+          const cur = current();
+          ctx.$(".tl-sym").innerHTML = `${cur.title}<small>${cur.cn}</small>`;
+          ctx.$(".tl-api").textContent = cur.api;
+          ctx.$(".tl-notes").innerHTML = cur.notes.map((n, i) => `<div class="tl-pill${i ? "" : " root"}"><b>${pretty(n)}</b><span>${ivCn(cur.intervals[i])}</span></div>`).join("");
+          midis = stack(cur.notes);
+          if (st.mode === "scale") midis.push(midis[0] + 12);
+          const marks = new Map();
+          midis.forEach((m, i) => {
+            const iv = cur.intervals[i % cur.intervals.length];
+            marks.set(m, { cls: m % 12 === midis[0] % 12 ? "on root" : "on", html: `${pretty(cur.notes[i % cur.notes.length])}<em>${iv === "1P" ? "R" : iv.replace(/[PMmdA]/, "")}</em>` });
+          });
+          kb.paint(marks);
+          related(cur);
+        }
+        function related(cur) {
+          const rel = ctx.$(".tl-rel"), items = [];
+          if (st.mode === "chord") {
+            items.push(h("span", { class: "tl-cap", text: "可搭配音階" }));
+            const sym = Chord.getChord(st.chord, st.root).symbol;
+            Chord.chordScales(sym).filter((n) => SCALE_CN[n]).slice(0, 6)
+              .forEach((n) => items.push(chip(SCALE_CN[n], pretty(st.root), () => { st.mode = "scale"; st.scale = n; render(); })));
+          } else if (cur.notes.length === 7) {
+            items.push(h("span", { class: "tl-cap", text: "順階和弦" }));
+            const sc = cur.notes, ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII"];
+            sc.forEach((n, i) => {
+              const sym = Chord.detect([sc[i], sc[(i + 2) % 7], sc[(i + 4) % 7]])[0];
+              if (!sym) return;
+              const c = Chord.get(sym), type = c.aliases[0];
+              let rn = ROMAN[i];
+              if (c.quality === "Minor" || c.quality === "Diminished") rn = rn.toLowerCase();
+              if (c.quality === "Diminished") rn += "°";
+              if (c.quality === "Augmented") rn += "+";
+              const def = CHORDS.find((d) => d[0] === type);
+              items.push(chip(pretty(c.tonic) + (def ? def[1] : type), rn, () => { st.mode = "chord"; st.root = c.tonic; st.chord = def ? type : "M"; render(); }));
+            });
+          } else {
+            items.push(h("span", { class: "tl-cap", text: "音階內的和弦" }));
+            const set = new Set(cur.notes.map(Note.chroma));
+            for (const n of cur.notes) for (const [k, suffix] of CHORDS.slice(0, 8)) {
+              const c = Chord.getChord(k, n);
+              if (items.length < 10 && c.notes.every((x) => set.has(Note.chroma(x)))) items.push(chip(pretty(n) + suffix, "", () => { st.mode = "chord"; st.root = n; st.chord = k; render(); }));
+            }
+          }
+          chips(rel, items);
+        }
+        render();
+      },
+    },
+    // 2 --------------------------------------------------------------------------------------
+    {
+      id: "detect", title: "和弦辨識",
+      api: "Chord.detect・Chord.get・Scale.detect・Note.fromMidi",
+      desc: "在琴鍵上任意按出一組音，Chord.detect 反推和弦名稱（含轉位與斜線和弦），Scale.detect 找出包含這些音的音階。",
+      hint: "點琴鍵加入或移除音；「隨機和弦」會隨機選和弦並做轉位，看辨識結果是否還原；最低音決定斜線和弦的低音。",
+      mount(ctx) {
+        ctx.html(`<div class="tl-board tl-det2"><div class="tl-det">
+          <div class="tl-box"><div class="tl-cap">Chord.detect(音名) 第一候選</div><div class="tl-big"></div><div class="tl-api tl-dapi"></div><div class="tl-cap">所有候選</div><div class="tl-list tl-cands"></div></div>
+          <div class="tl-box"><div class="tl-cap">Scale.detect：包含這些音的音階</div><div class="tl-list tl-scales"></div><div class="tl-cap">組成音（由低到高）</div><div class="tl-list tl-pcs"></div></div>
+          </div><div class="kb"></div></div>`);
+        const out = sceneBus(ctx);
+        let sel = new Set([52, 55, 59, 62]);
+        const kb = piano(ctx, ctx.$(".kb"), 48, 71, (m) => {
+          const next = new Set(sel);
+          if (next.has(m)) next.delete(m); else { next.add(m); tone(out(), m, 0, 0.6); }
+          sel = next; kb.flash(m); render();
+        });
+        ctx.button("▶ 播放", () => { [...sel].sort((a, b) => a - b).forEach((m, i) => { tone(out(), m, i * 0.12, 1.2, 0.16); kb.flash(m, i * 0.12, 900); }); }, { primary: true });
+        ctx.button("隨機和弦", () => {
+          const [type] = CHORDS[Math.floor(Math.random() * CHORDS.length)];
+          const root = ROOTS[Math.floor(Math.random() * 12)];
+          const notes = Chord.getChord(type, root).notes;
+          const inv = Math.floor(Math.random() * Math.min(3, notes.length));
+          let ms = stack([...notes.slice(inv), ...notes.slice(0, inv)], 3);
+          while (ms[ms.length - 1] > 71) ms = ms.map((m) => m - 12);
+          while (ms[0] < 48) ms = ms.map((m) => m + 12);
+          sel = new Set(ms.filter((m) => m <= 71)); render();
+          ms.forEach((m, i) => { tone(out(), m, i * 0.05, 1, 0.15); kb.flash(m, i * 0.05, 700); });
+        });
+        ctx.button("清除", () => { sel = new Set(); render(); });
+        function render() {
+          const ms = [...sel].sort((a, b) => a - b);
+          const pcs = [...new Set(ms.map((m) => Note.pitchClass(Note.fromMidi(m))))];
+          const found = pcs.length ? Chord.detect(pcs) : [];
+          const loose = pcs.length ? Chord.detect(pcs, { assumePerfectFifth: true }).filter((x) => !found.includes(x)) : [];
+          const best = found[0] || loose[0];
+          const c = best ? Chord.get(best) : null;
+          ctx.$(".tl-big").innerHTML = best ? `${pretty(best)}<small>${TYPE_CN[c.type] || c.type || ""}${c.bass ? `・低音 ${pretty(c.bass)}（轉位）` : ""}</small>` : `<span class="tl-cap">${pcs.length < 2 ? "至少按兩個音" : "沒有對應的和弦名稱"}</span>`;
+          ctx.$(".tl-dapi").textContent = `Chord.detect(${JSON.stringify(pcs)}) → ${JSON.stringify(found)}`;
+          chips(ctx.$(".tl-cands"), [...found.map((s) => chip(pretty(s), "", null)), ...loose.map((s) => chip(pretty(s), "省五音", null))]);
+          if (!found.length && !loose.length) ctx.$(".tl-cands").append(h("span", { class: "tl-cap", text: "無" }));
+          const scales = pcs.length ? Scale.detect(pcs).slice(0, 8) : [];
+          chips(ctx.$(".tl-scales"), scales.length ? scales.map((s) => { const sc = Scale.get(s); return chip(SCALE_CN[sc.type] || sc.type, pretty(sc.tonic), null); }) : [h("span", { class: "tl-cap", text: "無" })]);
+          const ivs = ms.map((m) => Interval.distance(Note.fromMidi(ms[0]), Note.fromMidi(m)));
+          chips(ctx.$(".tl-pcs"), ms.map((m, i) => chip(pretty(Note.fromMidi(m)), i ? Interval.simplify(ivs[i]) : "低音", null)));
+          const marks = new Map(ms.map((m, i) => [m, { cls: i ? "on" : "on root", html: pretty(Note.pitchClass(Note.fromMidi(m))) }]));
+          kb.paint(marks);
+        }
+        render();
+      },
+    },
+    // 3 --------------------------------------------------------------------------------------
+    {
+      id: "key", title: "調性與五度圈",
+      api: "Key.majorKey・Key.minorKey・chordsHarmonicFunction・secondaryDominants",
+      desc: "點五度圈選調，Key 模組給出調號、順階三和弦與七和弦、和聲功能（主 T、下屬 SD、屬 D）與副屬和弦。",
+      hint: "外圈是大調、內圈是關係小調；點表格裡的和弦可試聽；小調可切換自然、和聲、旋律三種。",
+      mount(ctx) {
+        ctx.html(`<div class="tl-board"><div class="tl-key"><div class="tl-cv tl-circ"></div>
+          <div class="tl-box"><div class="tl-khead"><b></b><span class="tl-cap tl-ksig"></span></div><div class="tl-api tl-kapi"></div>
+          <div class="tl-ktab"></div><div class="tl-leg"><span><i style="background:rgba(6,214,160,.6)"></i>主功能 T</span><span><i style="background:rgba(76,201,240,.6)"></i>下屬 SD</span><span><i style="background:rgba(247,37,133,.6)"></i>屬功能 D</span></div></div></div></div>`);
+        const out = sceneBus(ctx);
+        const MAJ = ["C", "G", "D", "A", "E", "B", "F#", "Db", "Ab", "Eb", "Bb", "F"];
+        const MIN = ["A", "E", "B", "F#", "C#", "G#", "Eb", "Bb", "F", "C", "G", "D"];
+        const st = { idx: 1, minor: false, variant: "natural" };
+        const seg = ctx.group(["大調", "小調"], 0, (i) => { st.minor = !!i; render(); });
+        ctx.select("小調音階", [{ value: "natural", label: "自然小調" }, { value: "harmonic", label: "和聲小調" }, { value: "melodic", label: "旋律小調" }], "natural", (v) => { st.variant = v; render(); });
+        const playChord = (sym) => {
+          const c = Chord.get(sym);
+          if (c.empty) return;
+          const ms = stack(c.notes, 3), b = out();
+          tone(b, Note.midi(Note.pitchClass(c.tonic) + "2"), 0, 1.2, 0.18);
+          ms.forEach((m, i) => tone(b, m, i * 0.03, 1.2, 0.14));
+        };
+        const v = view(ctx, ctx.$(".tl-circ"), (v) => {
+          const { g, w, h: hh } = v;
+          g.clearRect(0, 0, w, hh);
+          const cx = w / 2, cy = hh / 2, R = Math.min(w, hh) / 2 - 8, r1 = R * 0.66, r0 = R * 0.38;
+          const accent = css("--accent");
+          for (let i = 0; i < 12; i++) {
+            const a0 = ((i - 0.5) / 12) * Math.PI * 2 - Math.PI / 2, a1 = a0 + Math.PI / 6;
+            const near = Math.min((i - st.idx + 12) % 12, (st.idx - i + 12) % 12) === 1;
+            for (const [ri, ro, minor] of [[r1, R, false], [r0, r1, true]]) {
+              const on = i === st.idx && minor === st.minor;
+              g.beginPath(); g.arc(cx, cy, ro, a0, a1); g.arc(cx, cy, ri, a1, a0, true); g.closePath();
+              g.fillStyle = on ? accent : i === st.idx ? "rgba(247,223,30,.22)" : near ? "rgba(76,201,240,.16)" : minor ? "#14171d" : "#1a1e26";
+              g.fill(); g.strokeStyle = "#050608"; g.lineWidth = 2; g.stroke();
+              const am = (a0 + a1) / 2, rr = (ri + ro) / 2;
+              txt(g, minor ? pretty(MIN[i]).toLowerCase() + "m" : pretty(MAJ[i]), cx + Math.cos(am) * rr, cy + Math.sin(am) * rr, on ? "#111" : minor ? "#a8b0bd" : "#e8e6e3", Math.max(10, R * (minor ? 0.085 : 0.11)), "center", false, 700);
+            }
+          }
+          const k = Key.majorKey(MAJ[st.idx]);
+          const sig = k.alteration === 0 ? "無升降" : `${Math.abs(k.alteration)} 個${k.alteration > 0 ? "♯" : "♭"}`;
+          txt(g, sig, cx, cy - 8, "#e8e6e3", Math.max(11, R * 0.1), "center", false, 700);
+          txt(g, "調號", cx, cy + 12, "#7d8490", 11, "center");
+        });
+        v.cv.style.cursor = "pointer";
+        ctx.on(v.cv, "pointerdown", (e) => {
+          const r = v.cv.getBoundingClientRect(), x = e.clientX - r.left - v.w / 2, y = e.clientY - r.top - v.h / 2;
+          const R = Math.min(v.w, v.h) / 2 - 8, d = Math.hypot(x, y);
+          if (d < R * 0.38 || d > R) return;
+          st.idx = (Math.round(((Math.atan2(y, x) + Math.PI / 2) / (Math.PI * 2)) * 12) + 12) % 12;
+          st.minor = d < R * 0.66;
+          [...seg.children].forEach((b, i) => b.setAttribute("aria-pressed", String(i === (st.minor ? 1 : 0))));
+          render();
+          const k = st.minor ? Key.minorKey(MIN[st.idx])[st.variant] : Key.majorKey(MAJ[st.idx]);
+          playChord(k.chords[0]);
+        });
+        function render() {
+          const tab = ctx.$(".tl-ktab"), cells = [];
+          let k, title, sig, api;
+          if (st.minor) {
+            const mk = Key.minorKey(MIN[st.idx]);
+            k = mk[st.variant];
+            title = `${pretty(mk.tonic)} ${{ natural: "自然小調", harmonic: "和聲小調", melodic: "旋律小調" }[st.variant]}`;
+            sig = `調號 ${pretty(mk.keySignature) || "無"}・關係大調 ${pretty(mk.relativeMajor)}`;
+            api = `Key.minorKey("${mk.tonic}").${st.variant}`;
+          } else {
+            k = Key.majorKey(MAJ[st.idx]);
+            title = `${pretty(k.tonic)} 大調`;
+            sig = `調號 ${pretty(k.keySignature) || "無"}・關係小調 ${pretty(k.minorRelative)}m`;
+            api = `Key.majorKey("${k.tonic}")`;
+          }
+          ctx.$(".tl-khead b").textContent = title;
+          ctx.$(".tl-ksig").textContent = sig;
+          ctx.$(".tl-kapi").textContent = api;
+          const row = (label, arr, fn) => { cells.push(h("div", { class: "l", text: label })); arr.forEach((x, i) => cells.push(fn(x, i))); };
+          const fnCls = (i) => (k.chordsHarmonicFunction ? ` f${k.chordsHarmonicFunction[i]}` : "");
+          const btn = (sym, cls = "") => { const b = h("button", { type: "button", class: cls.trim(), title: sym, text: sym ? pretty(sym) : "·" }); if (sym) b.addEventListener("click", () => playChord(sym)); return b; };
+          row("級數", k.grades, (x) => h("div", { class: "tl-m", text: pretty(x) }));
+          row("音階", k.scale || k.notes || [], (x) => h("div", { text: pretty(x) }));
+          row("三和弦", k.triads, (x, i) => btn(x, fnCls(i)));
+          row("七和弦", k.chords, (x, i) => btn(x, fnCls(i)));
+          row("功能", k.chordsHarmonicFunction || [], (x) => h("div", { class: "tl-m", text: x }));
+          if (k.secondaryDominants) row("副屬和弦", k.secondaryDominants, (x) => btn(x));
+          if (k.substituteDominants) row("代理屬七", k.substituteDominants, (x) => btn(x));
+          tab.replaceChildren(...cells);
+          v.draw();
+        }
+        render();
+      },
+    },
+    // 4 --------------------------------------------------------------------------------------
+    {
+      id: "mode", title: "七種調式",
+      api: "Mode.get・Mode.notes・Mode.triads・Mode.relativeTonic",
+      desc: "同一個主音上的七種教會調式，由亮到暗排列。粉紅格是和大調（ionian）不同的音，一眼看出每個調式的特徵音。",
+      hint: "點左側調式名稱試聽音階並看順階三和弦；切換主音後所有拼字由 Tonal 重算。",
+      mount(ctx) {
+        ctx.html(`<div class="tl-board"><div class="tl-modes"></div><div class="tl-box tl-mdet"></div></div>`);
+        const out = sceneBus(ctx);
+        const ORDER = [["lydian", "利地安", "♯4"], ["ionian", "大調", "基準"], ["mixolydian", "米索利地安", "♭7"], ["dorian", "多利安", "♮6"], ["aeolian", "自然小調", "♭3 ♭6 ♭7"], ["phrygian", "弗里吉安", "♭2"], ["locrian", "洛克利安", "♭2 ♭5"]];
+        const HD = ["1", "♭2", "2", "♭3", "3", "4", "♯4", "5", "♭6", "6", "♭7", "7"];
+        const st = { tonic: "D", mode: "dorian" };
+        ctx.select("主音", ROOTS.map((r) => ({ value: r, label: pretty(r) })), st.tonic, (v) => { st.tonic = v; render(); });
+        ctx.button("▶ 播放", () => play(st.mode), { primary: true });
+        function play(name) {
+          const notes = Mode.notes(name, st.tonic), ms = stack(notes, 4), b = out();
+          ms.push(ms[0] + 12);
+          ms.forEach((m, i) => tone(b, m, i * 0.18, 0.26));
+          const tri = stack(Chord.get(Mode.triads(name, st.tonic)[0]).notes, 3), at = ms.length * 0.18 + 0.1;
+          tri.forEach((m) => tone(b, m, at, 1.1, 0.14));
+        }
+        function render() {
+          const ion = Mode.get("ionian").chroma, cells = [h("div", { class: "hd", text: "" }), ...HD.map((x) => h("div", { class: "hd", text: x }))];
+          const tc = Note.chroma(st.tonic);
+          for (const [name, cn, tag] of ORDER) {
+            const md = Mode.get(name), notes = Mode.notes(name, st.tonic);
+            const nb = h("button", { class: "tl-mname", type: "button", "aria-pressed": String(name === st.mode) });
+            nb.innerHTML = `${cn}<small>${name} ${tag}</small>`;
+            nb.addEventListener("click", () => { st.mode = name; render(); play(name); });
+            cells.push(nb);
+            for (let i = 0; i < 12; i++) {
+              const inMode = md.chroma[i] === "1";
+              const note = inMode ? notes.find((n) => (Note.chroma(n) - tc + 12) % 12 === i) : "";
+              const cls = !inMode ? "" : i === 0 ? " in tonic" : ion[i] !== "1" ? " in alt" : " in";
+              cells.push(h("div", { class: `tl-cell${cls}${name === st.mode ? " tl-mrow-on" : ""}`, text: note ? pretty(note) : "" }));
+            }
+          }
+          ctx.$(".tl-modes").replaceChildren(...cells);
+          const md = Mode.get(st.mode), rel = Mode.relativeTonic("ionian", st.mode, st.tonic), cn = ORDER.find((o) => o[0] === st.mode)[1];
+          const det = ctx.$(".tl-mdet");
+          det.replaceChildren(
+            h("div", { class: "tl-cap", text: `${pretty(st.tonic)} ${cn}：和 ${pretty(rel)} 大調用同一組音（Mode.relativeTonic），主和弦是 ${md.triad || "大三"} 類，七和弦 ${md.seventh}` }),
+            h("div", { class: "tl-api", text: `Mode.notes("${st.mode}", "${st.tonic}") → ${JSON.stringify(Mode.notes(st.mode, st.tonic))}` }),
+            h("div", { class: "tl-list" }, ...Mode.triads(st.mode, st.tonic).map((s, i) => chip(pretty(s), String(i + 1), () => { const ms = stack(Chord.get(s).notes, 3); ms.forEach((m) => tone(out(), m, 0, 1, 0.15)); }))),
+          );
+        }
+        render();
+      },
+    },
+    // 5 --------------------------------------------------------------------------------------
+    {
+      id: "prog", title: "和弦進行與聲部",
+      api: "Progression.fromRomanNumerals・RomanNumeral.get・Voicing.sequence",
+      desc: "用羅馬數字寫進行，換調時 Tonal 重新拼出和弦；Voicing.sequence 依聲部進行挑選每個和弦的排列，讓手指移動最少。",
+      hint: "選一組進行與調性後按「▶ 播放」循環；下方線條是每個聲部的走向，線越平代表聲部進行越順。",
+      mount(ctx) {
+        ctx.html(`<div class="tl-board"><div class="tl-api tl-papi"></div><div class="tl-prog"></div><div class="tl-cv tl-roll" style="flex:1 1 auto;min-height:110px"></div></div>`);
+        const out = sceneBus(ctx);
+        const PRESETS = [
+          ["流行 I-V-vi-IV", ["I", "V", "VIm", "IV"]],
+          ["爵士 ii-V-I", ["IIm7", "V7", "Imaj7", "VIm7"]],
+          ["卡農", ["I", "V", "VIm", "IIIm", "IV", "I", "IV", "V"]],
+          ["小調 i-♭VI-♭III-♭VII", ["Im", "bVI", "bIII", "bVII"]],
+          ["12 小節藍調", ["I7", "IV7", "I7", "I7", "IV7", "IV7", "I7", "I7", "V7", "IV7", "I7", "V7"]],
+        ];
+        const st = { p: 0, key: "C", playing: false, cur: -1 };
+        let prog = null, take = null, t0 = 0, next = 0;
+        const DUR = 1.4;
+        ctx.select("進行", PRESETS.map((p, i) => ({ value: String(i), label: p[0] })), "0", (v) => { st.p = +v; build(); });
+        ctx.select("調", ROOTS.map((r) => ({ value: r, label: pretty(r) })), "C", (v) => { st.key = v; build(); });
+        const pb = ctx.button("▶ 播放", () => (st.playing ? stop() : start()), { primary: true });
+        function build() {
+          const rns = PRESETS[st.p][1];
+          const syms = Progression.fromRomanNumerals(st.key, rns);
+          let vs = [];
+          try { vs = Voicing.sequence(syms, ["E3", "D5"]); } catch (e) { console.warn("[tonal] Voicing.sequence failed", e); }
+          const voicings = syms.map((s, i) => {
+            const v = vs[i] && vs[i].length ? vs[i].map(Note.midi) : stack(Chord.get(s).notes, 3);
+            return { v, auto: !!(vs[i] && vs[i].length) };
+          });
+          prog = rns.map((rn, i) => ({ rn, sym: syms[i], ...voicings[i], bass: Note.midi(Note.pitchClass(Chord.get(syms[i]).tonic || st.key) + "2"), info: RomanNumeral.get(rn) }));
+          ctx.$(".tl-papi").textContent = `Progression.fromRomanNumerals("${st.key}", ${JSON.stringify(rns)}) → ${JSON.stringify(syms)}`;
+          const cards = prog.map((c, i) => {
+            const el = h("button", { class: "tl-pc", type: "button" });
+            el.innerHTML = `<i>${pretty(c.rn)}</i><b>${pretty(c.sym)}</b><span>${c.v.map((m) => pretty(Note.pitchClass(Note.fromMidi(m)))).join(" ")}</span>`;
+            el.title = `RomanNumeral.get("${c.rn}") → 音程 ${c.info.interval}・和弦類型 ${c.info.chordType || "M"}${c.auto ? "" : "（字典無此和弦，改用基本排列）"}`;
+            el.addEventListener("click", () => { strike(c, 0, out()); st.cur = i; mark(); });
+            return el;
+          });
+          ctx.$(".tl-prog").replaceChildren(...cards);
+          st.cur = -1; mark(); roll.draw();
+        }
+        function strike(c, when, dest) {
+          tone(dest, c.bass, when, DUR * 0.9, 0.17);
+          c.v.forEach((m) => tone(dest, m, when, DUR * 0.85, 0.12));
+        }
+        function mark() { [...ctx.$(".tl-prog").children].forEach((el, i) => el.classList.toggle("now", i === st.cur)); }
+        function start() {
+          audio();
+          take = AC.createGain(); take.connect(out());
+          st.playing = true; pb.textContent = "■ 停止";
+          t0 = AC.currentTime + 0.08; next = 0;
+        }
+        function stop() {
+          st.playing = false; pb.textContent = "▶ 播放";
+          if (take) { take.gain.value = 0; take.disconnect(); take = null; }
+          st.cur = -1; mark(); roll.draw();
+        }
+        ctx.onCleanup(() => { if (take) take.disconnect(); });
+        // Look-ahead scheduler: queue chords 0.3 s ahead of the audio clock.
+        ctx.interval(() => {
+          if (!st.playing) return;
+          while (t0 + next * DUR < AC.currentTime + 0.3) {
+            strike(prog[next % prog.length], t0 + next * DUR - AC.currentTime, take);
+            next++;
+          }
+        }, 60);
+        const roll = view(ctx, ctx.$(".tl-roll"), (v) => {
+          const { g, w, h: hh } = v;
+          g.clearRect(0, 0, w, hh);
+          if (!prog) return;
+          const all = prog.flatMap((c) => c.v), lo = Math.min(...all) - 2, hi = Math.max(...all) + 2;
+          const n = prog.length, pad = 26, cw = (w - pad - 8) / n, y = (m) => 34 + ((hi - m) / (hi - lo)) * (hh - 46);
+          for (let m = lo; m <= hi; m++) if (m % 12 === 0) { g.fillStyle = "rgba(255,255,255,.07)"; g.fillRect(pad, y(m) - 0.5, w - pad - 8, 1); txt(g, Note.fromMidi(m), 4, y(m), "#7d8490", 9.5, "left", true); }
+          const cols = ["#f7df1e", "#4cc9f0", "#06d6a0", "#f72585", "#9d8cff"];
+          const voices = Math.max(...prog.map((c) => c.v.length));
+          for (let k = 0; k < voices; k++) {
+            g.strokeStyle = cols[k % cols.length]; g.globalAlpha = 0.5; g.lineWidth = 1.5; g.beginPath();
+            prog.forEach((c, i) => { const m = c.v[Math.min(k, c.v.length - 1)]; const x = pad + i * cw + cw * 0.85, xn = pad + (i + 1) * cw + cw * 0.15; if (i) g.lineTo(pad + i * cw + cw * 0.15, y(m)); else g.moveTo(pad + cw * 0.15, y(m)); g.lineTo(x, y(m)); if (i < n - 1) { const mn = prog[i + 1].v[Math.min(k, prog[i + 1].v.length - 1)]; g.lineTo(xn, y(mn)); } });
+            g.stroke(); g.globalAlpha = 1;
+          }
+          prog.forEach((c, i) => {
+            const on = i === st.cur;
+            c.v.forEach((m, k) => { g.fillStyle = on ? "#fff" : cols[k % cols.length]; g.fillRect(pad + i * cw + cw * 0.15, y(m) - 3, cw * 0.7, 6); });
+            txt(g, pretty(c.sym), pad + i * cw + cw / 2, 14, on ? "#f7df1e" : "#a8b0bd", Math.min(12, cw * 0.28), "center", false, 600);
+          });
+          if (st.playing && AC) {
+            const pos = ((AC.currentTime - t0) / DUR) % n;
+            if (pos >= 0) { g.fillStyle = "rgba(247,223,30,.8)"; g.fillRect(pad + pos * cw, 26, 2, hh - 30); }
+          }
+        });
+        ctx.raf(() => {
+          if (!st.playing) return;
+          const i = Math.floor(Math.max(0, AC.currentTime - t0) / DUR) % prog.length;
+          if (i !== st.cur) { st.cur = i; mark(); }
+          roll.draw();
+        });
+        build();
+      },
+    },
+    // 6 --------------------------------------------------------------------------------------
+    {
+      id: "interval", title: "音程計算",
+      api: "Interval.distance・Interval.get・invert・simplify・Note.freq・Range.chromatic",
+      desc: "在琴鍵上點兩個音，Interval 算出音程名稱、半音數、轉位與化簡；Note.freq 給出頻率比，右側用李薩如圖形畫出這個比例。",
+      hint: "琴鍵輪流設定第一音（黃）與第二音（粉）；下方晶片從第一音往上疊常見音程，點了直接換成第二音。",
+      mount(ctx) {
+        ctx.html(`<div class="tl-board tl-ivwrap"><div class="tl-iv"><div class="tl-box"><div class="tl-big tl-ivname"></div><div class="tl-api tl-ivapi"></div><div class="tl-facts"></div><div class="tl-cap tl-range"></div></div><div class="tl-cv tl-liss"></div></div><div class="tl-list tl-ups"></div><div class="kb"></div></div>`);
+        const out = sceneBus(ctx);
+        const st = { a: 60, b: 67, turn: 0 };
+        const kb = piano(ctx, ctx.$(".kb"), 48, 84, (m) => {
+          if (st.turn === 0) st.a = m; else st.b = m;
+          st.turn ^= 1; tone(out(), m, 0, 0.6); render();
+        });
+        ctx.button("▶ 播放", () => {
+          const b = out();
+          tone(b, st.a, 0, 0.5); tone(b, st.b, 0.55, 0.5); tone(b, st.a, 1.15, 1.2, 0.14); tone(b, st.b, 1.15, 1.2, 0.14);
+          kb.flash(st.a, 0, 400); kb.flash(st.b, 0.55, 400); kb.flash(st.a, 1.15, 1000); kb.flash(st.b, 1.15, 1000);
+        }, { primary: true });
+        ctx.button("交換", () => { [st.a, st.b] = [st.b, st.a]; render(); });
+        const liss = view(ctx, ctx.$(".tl-liss"), (v) => {
+          const { g, w, h: hh } = v;
+          g.clearRect(0, 0, w, hh);
+          const fa = Note.freq(Note.fromMidi(st.a)), fb = Note.freq(Note.fromMidi(st.b));
+          const lo = Math.min(fa, fb), r = Math.max(fa, fb) / lo;
+          const cx = w / 2, cy = hh / 2 + 8, R = Math.min(w, hh - 30) / 2 - 10;
+          g.strokeStyle = "#4cc9f0"; g.lineWidth = 1.4; g.globalAlpha = 0.9; g.beginPath();
+          const N = 2400, turns = 12;
+          for (let i = 0; i <= N; i++) { const t = (i / N) * Math.PI * 2 * turns; const x = cx + Math.sin(t + Math.PI / 4) * R, y = cy + Math.sin(t * r) * R; i ? g.lineTo(x, y) : g.moveTo(x, y); }
+          g.stroke(); g.globalAlpha = 1;
+          txt(g, `頻率比 ${r.toFixed(4)}`, 10, 14, "#e8e6e3", 12, "left", false, 600);
+          txt(g, "李薩如圖形：比例越接近簡單整數比，圖形越穩定", 10, hh - 10, "#7d8490", 10.5);
+        });
+        function render() {
+          const A = Note.fromMidi(st.a), B = Note.fromMidi(st.b);
+          const ivn = Interval.distance(A, B), iv = Interval.get(ivn);
+          const fa = Note.freq(A), fb = Note.freq(B), cents = 1200 * Math.log2(fb / fa);
+          ctx.$(".tl-ivname").innerHTML = `${ivCn(Interval.simplify(ivn).replace(/^-/, ""))}<small>${pretty(A)} → ${pretty(B)}・${ivn}${iv.dir < 0 ? "（下行）" : ""}${Math.abs(iv.num) > 8 ? `・複音程 ${ivCn(ivn.replace(/^-/, ""))}` : ""}</small>`;
+          ctx.$(".tl-ivapi").textContent = `Interval.distance("${A}", "${B}") → "${ivn}"`;
+          const facts = [["半音數", `${iv.semitones}`], ["性質", Q_CN[iv.q] || iv.q], ["度數", `${Math.abs(iv.num)} 度`], ["轉位 invert", Interval.invert(Interval.simplify(ivn))], ["化簡 simplify", Interval.simplify(ivn)], ["音分差", `${cents.toFixed(0)} ¢`]];
+          ctx.$(".tl-facts").replaceChildren(...facts.map(([k, x]) => h("div", {}, h("small", { text: k }), h("b", { class: "tl-m", text: x }))));
+          const rng = Range.chromatic([A, B]);
+          ctx.$(".tl-range").textContent = `Range.chromatic 共 ${rng.length} 個音：${rng.slice(0, 14).map(pretty).join(" ")}${rng.length > 14 ? " …" : ""}`;
+          const UPS = ["2m", "2M", "3m", "3M", "4P", "4A", "5P", "6m", "6M", "7m", "7M", "8P"];
+          chips(ctx.$(".tl-ups"), [h("span", { class: "tl-cap", text: `Note.transpose("${A}", …)` }), ...UPS.map((u) => {
+            const n = Note.transpose(A, u);
+            return chip(pretty(n), u, () => { const m = Note.midi(n); if (m != null && m <= 84) { st.b = m; st.turn = 0; tone(out(), m, 0, 0.6); render(); } }, Note.midi(n) === st.b);
+          })]);
+          kb.paint(new Map([[st.a, { cls: "on root", html: "1" }], [st.b, { cls: "on alt", html: "2" }]]));
+          liss.draw();
+        }
+        render();
+      },
+    },
+    // 7 --------------------------------------------------------------------------------------
+    {
+      id: "stress", title: "極限測試", kind: "stress",
+      api: "Chord.detect・Scale.detect・Chord.get × N",
+      desc: "產生 N 組隨機音集合或和弦代號，量測 Tonal 純 JavaScript 樂理運算的吞吐量；右側統計最後一輪辨識出的和弦類型分布。",
+      hint: "先選要量哪個函式再按「開始測試」；滑鼠停在結果列上可看每秒次數與記憶體變化。",
+      mount(ctx) {
+        ctx.html(`<div class="tl-bv"><div class="tl-cv" style="position:absolute;inset:0;border:0"></div></div>`);
+        ctx.controls.classList.add("bottom");
+        const OPS = ["Chord.detect", "Scale.detect", "Chord.get 解析"];
+        let op = 0, last = null;
+        ctx.group(OPS, 0, (i) => { op = i; });
+        const symbols = ChordType.all().flatMap((t) => t.aliases.slice(0, 1));
+        const pcs = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"];
+        const pick = (k) => { const a = pcs.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a.slice(0, k); };
+        const v = view(ctx, ctx.$(".tl-bv > .tl-cv"), (v) => {
+          const { g, w, h: hh } = v;
+          g.clearRect(0, 0, w, hh);
+          if (!last) {
+            txt(g, "尚未測試：按「開始測試」後，這裡統計最後一輪的結果分布", 14, 20, "#7d8490", 12);
+            const demo = [["C", "E", "G"], ["D", "F#", "A", "C"], ["E", "G", "B", "D"], ["F", "A", "C", "E"], ["B", "D", "F", "Ab"]];
+            demo.forEach((s, i) => txt(g, `Chord.detect(${JSON.stringify(s)}) → ${JSON.stringify(Chord.detect(s))}`, 14, 52 + i * 22, "#a8b0bd", 11.5, "left", true));
+            return;
+          }
+          txt(g, `${last.op}・${fmtCompact(last.n)} 次・${fmtMs(last.ms)}・每秒約 ${fmtCompact(last.n / (last.ms / 1000))} 次`, 14, 18, "#e8e6e3", 12.5, "left", false, 600);
+          txt(g, `有結果 ${((last.hit / last.n) * 100).toFixed(1)}%・最常見的結果${last.op === "Chord.detect" ? "（Chord.tokenize 取出的和弦類型代號）" : ""}：`, 14, 40, "#7d8490", 11.5);
+          const top = [...last.hist.entries()].sort((a, b) => b[1] - a[1]).slice(0, Math.max(4, Math.floor((hh - 70) / 20)));
+          const max = top.length ? top[0][1] : 1, bx = Math.min(170, w * 0.36);
+          top.forEach(([k, c], i) => {
+            const y = 62 + i * 20;
+            txt(g, k, bx - 8, y, "#a8b0bd", 11, "right", true);
+            g.fillStyle = `hsl(${190 + i * 9} 80% 60%)`;
+            g.fillRect(bx, y - 6, Math.max(2, ((w - bx - 70) * c) / max), 12);
+            txt(g, fmtCompact(c), bx + Math.max(2, ((w - bx - 70) * c) / max) + 6, y, "#e8e6e3", 10.5, "left", true);
+          });
+        });
+        ctx.bench({
+          label: "運算次數", unit: "次", sizes: [1000, 5000, 20000, 50000, 100000, 250000], target: 1000, budget: 3000,
+          title: "極限測試：Tonal 樂理運算吞吐量",
+          note: "計時只含函式呼叫本身（輸入在 prepare 階段先產生）。Chord.detect 會比對約百種和弦類型，Scale.detect 比對約九十種音階，Chord.get 只解析代號字串。",
+          prepare: (n) => {
+            const data = new Array(n);
+            for (let i = 0; i < n; i++) data[i] = op === 2 ? pcs[i % 12] + symbols[(i * 7) % symbols.length] : pick(3 + (i % 3));
+            return data;
+          },
+          run: (n, data) => {
+            const hist = new Map(), name = OPS[op];
+            let hit = 0;
+            const t = performance.now();
+            for (let i = 0; i < n; i++) {
+              let r;
+              if (op === 0) { const x = Chord.detect(data[i]); r = x.length ? Chord.tokenize(x[0])[1] || "M" : ""; }
+              else if (op === 1) { const x = Scale.detect(data[i]); r = x.length ? Scale.get(x[0]).type : ""; }
+              else { const c = Chord.get(data[i]); r = c.empty ? "" : c.quality || "?"; }
+              if (r) { hit++; hist.set(r, (hist.get(r) || 0) + 1); }
+            }
+            last = { op: name, n, ms: performance.now() - t, hit, hist };
+            v.draw();
+            return `有結果 ${((hit / n) * 100).toFixed(0)}%`;
+          },
+        });
+      },
+    },
+  ],
 });
-
-render();
 </script>
 </body>
 </html>

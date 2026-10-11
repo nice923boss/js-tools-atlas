@@ -3,78 +3,610 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>p5.js 示範：雜訊流場</title>
+<title>p5.js 示範：8 個場景看懂創意程式設計與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["雜訊流場","曲線與形狀","色彩空間","影像濾鏡","文字轉點","3D 光影材質","strands 著色器","極限測試"]}</script>
+<style>
+  .p5-host { position: absolute; inset: 0; }
+  .p5-host canvas { display: block; touch-action: none; }
+  .p5-tag {
+    position: absolute; right: 10px; bottom: 10px; text-align: right; z-index: 2; max-width: calc(100% - 20px);
+    padding: 5px 9px; border-radius: 6px; border: 1px solid var(--line);
+    background: rgba(14, 16, 19, .82); color: var(--fg); font: 600 12px/1.4 var(--mono);
+    pointer-events: none;
+  }
+  .p5-tag b { color: var(--accent); font-weight: 600; }
+  .stress-host {
+    position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 8px;
+    border-radius: 10px; overflow: hidden; background: #0b0d10;
+  }
+  @media (min-width: 761px) { .stress-host { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 350px; } }
+</style>
 </head>
 <body>
-<div class="controls">
-  <button class="btn" id="reset">重新生成</button>
-</div>
-<div class="hint">移動滑鼠擾動流場・點擊換色盤</div>
-
 <script src="https://cdn.jsdelivr.net/npm/p5@2.3.4/lib/p5.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Perlin-noise flow field: particles follow noise() angles and leave fading trails.
-const PALETTES = [
-  ["#f7df1e", "#4cc9f0", "#f72585"],
-  ["#7bd389", "#ff8c42", "#9d8cff"],
-  ["#ffffff", "#4cc9f0", "#9d8cff"],
-];
-let particles = [];
-let palette = 0;
-let zoff = 0;
+// p5.js 2.x showcase: every scene is an instance-mode sketch (new p5(fn, host)) so scenes never leak globals.
+const PAL = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#9d8cff"];
+const rootCss = getComputedStyle(document.documentElement);
+const FONT = rootCss.getPropertyValue("--font").trim() || "system-ui, sans-serif";
+const MONO = rootCss.getPropertyValue("--mono").trim() || "ui-monospace, monospace";
+const FONT_URL = "https://cdn.jsdelivr.net/npm/@fontsource/archivo-black@5.3.0/files/archivo-black-latin-400-normal.woff";
+const PHOTO = (n) => `_shared/img/photo-${n}.jpg`;
+const DPR = () => Math.min(2, window.devicePixelRatio || 1);
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+// Y just below the top-right control cluster.
+const belowControls = (ctx) => (ctx.controls.childElementCount ? ctx.controls.offsetHeight + 20 : 12);
 
-function setup() {
-  createCanvas(windowWidth, windowHeight);
-  seed();
+// Mount an instance-mode sketch into `host` (defaults to a full-scene div). Returns { inst, destroy }.
+// p5's remove() does not release a WebGL context, so it is lost explicitly afterwards.
+function sketch(ctx, def, host) {
+  const box = host || Showcase.h("div", { class: "p5-host" });
+  if (!box.isConnected) ctx.el.prepend(box);
+  const inst = new p5(def, box);
+  let gone = false;
+  const destroy = () => {
+    if (gone) return;
+    gone = true;
+    const g = inst.drawingContext;
+    Promise.resolve(inst.remove()).then(() => {
+      if (g && typeof g.getExtension === "function") g.getExtension("WEBGL_lose_context")?.loseContext();
+    });
+  };
+  ctx.onCleanup(destroy);
+  return { inst, box, destroy };
+}
+// createCanvas sized to the host element, capped pixel density, kept in sync on resize.
+function fitCanvas(p, ctx, box, mode, onResize) {
+  p.createCanvas(Math.max(1, box.clientWidth), Math.max(1, box.clientHeight), mode);
+  p.pixelDensity(DPR());
+  ctx.onResize(() => {
+    p.resizeCanvas(Math.max(1, box.clientWidth), Math.max(1, box.clientHeight));
+    if (onResize) onResize();
+  });
+}
+// Small rounded caption on a 2D canvas (CSS pixels), drawn with the raw 2D context.
+function tag(p, text, x, y, { color = "#ecebe6", size = 12, align = "left", mono = false } = {}) {
+  const g = p.drawingContext;
+  g.save();
+  g.font = `600 ${size}px ${mono ? MONO : FONT}`;
+  const w = g.measureText(text).width + 12, hh = size + 9;
+  let left = align === "center" ? x - w / 2 : align === "right" ? x - w : x;
+  left = clamp(left, 4, Math.max(4, p.width - w - 4));
+  g.fillStyle = "rgba(14,16,19,.8)";
+  g.beginPath(); g.roundRect(left, y - hh / 2, w, hh, 5); g.fill();
+  g.fillStyle = color; g.textAlign = "left"; g.textBaseline = "middle";
+  g.fillText(text, left + 6, y + 0.5);
+  g.restore();
+}
+const onCanvas = (p, e) => e && e.target === p.drawingContext.canvas;
+// HTML caption for WEBGL scenes (no font needed).
+function htmlTag(ctx) {
+  const el = Showcase.h("div", { class: "p5-tag" });
+  ctx.el.append(el);
+  return (html) => { el.innerHTML = html; };
 }
 
-function seed() {
-  background(14, 16, 19);
-  noiseSeed(floor(random(1e6)));
-  particles = Array.from({ length: floor((width * height) / 900) }, () => ({
-    pos: createVector(random(width), random(height)),
-    prev: null,
-    hue: floor(random(3)),
-  }));
-}
+Showcase.run({ scenes: [
+  {
+    id: "flow", title: "雜訊流場",
+    api: "noise(x * s, y * s, z) + p5.Vector.fromAngle(a) + beginShape(LINES)",
+    desc: "原版招牌：數千顆粒子沿 Perlin 雜訊角度場流動，半透明底色留下軌跡。滑桿調雜訊尺度，數值越大流線越碎。",
+    hint: "移動滑鼠擾動流向・點畫面換配色・重新生成換雜訊種子",
+    mount(ctx) {
+      const PALS = [["#f7df1e", "#4cc9f0", "#f72585"], ["#7bd389", "#ff8c42", "#9d8cff"], ["#ffffff", "#4cc9f0", "#9d8cff"]];
+      let pal = 0, scale = 0.004, zoff = 0, parts = [], cols = [];
+      const grp = ctx.group(["黃藍粉", "綠橘紫", "白藍紫"], 0, (i) => { pal = i; paint(); });
+      ctx.slider("雜訊尺度", { min: 0.001, max: 0.012, step: 0.0005, value: scale, format: (v) => v.toFixed(4) }, (v) => { scale = v; });
+      ctx.button("重新生成", () => reseed());
+      let p = null;
+      const paint = () => { if (p) cols = PALS[pal].map((c) => { const k = p.color(c); k.setAlpha(150); return k; }); };
+      function reseed() {
+        p.noiseSeed(Math.floor(Math.random() * 1e6));
+        const n = Math.min(5000, Math.floor((p.width * p.height) / 160));
+        parts = Array.from({ length: n }, () => p.createVector(p.random(p.width), p.random(p.height)));
+        p.background(14, 16, 19);
+      }
+      sketch(ctx, (s) => {
+        p = s;
+        s.setup = () => { fitCanvas(s, ctx, ctx.el, s.P2D, reseed); paint(); reseed(); };
+        s.draw = () => {
+          s.noStroke(); s.fill(14, 16, 19, 22); s.rect(0, 0, s.width, s.height);
+          s.strokeWeight(1.2);
+          // One beginShape(LINES) per color: far cheaper than thousands of separate line() calls.
+          for (let c = 0; c < 3; c++) {
+            s.stroke(cols[c]);
+            s.beginShape(s.LINES);
+            for (let i = c; i < parts.length; i += 3) {
+              const pt = parts[i];
+              let a = s.noise(pt.x * scale, pt.y * scale, zoff) * s.TWO_PI * 2;
+              const d = s.dist(pt.x, pt.y, s.mouseX, s.mouseY);
+              if (d < 120) a += s.map(d, 0, 120, s.PI, 0);
+              const v = p5.Vector.fromAngle(a, 1.6);
+              s.vertex(pt.x, pt.y);
+              s.vertex(pt.x + v.x, pt.y + v.y);
+              pt.add(v);
+              if (pt.x < 0 || pt.x > s.width || pt.y < 0 || pt.y > s.height) pt.set(s.random(s.width), s.random(s.height));
+            }
+            s.endShape();
+          }
+          zoff += 0.003;
+          tag(s, `${parts.length} 顆粒子・noise 尺度 ${scale.toFixed(4)}`, s.width - 10, s.height - 18, { mono: true, align: "right" });
+        };
+        s.mousePressed = (e) => { if (onCanvas(s, e)) grp.children[(pal + 1) % 3].click(); };
+      });
+    },
+  },
+  {
+    id: "curves", title: "曲線與形狀",
+    api: "beginShape() + splineVertex() / bezierOrder(n) + bezierVertex() + endShape()",
+    desc: "同一組 7 個控制點，切換 2.x 新的 splineVertex（通過每個點）與二次、三次貝茲（控制點把曲線拉過去）。tightness 只影響 spline。",
+    hint: "拖曳圓點改形狀・切換曲線種類比較・滑桿調 tightness",
+    mount(ctx) {
+      let mode = 0, tight = 0, drag = -1;
+      ctx.group(["spline", "貝茲 3 次", "貝茲 2 次", "折線"], 0, (i) => { mode = i; });
+      ctx.slider("tightness", { min: -1.5, max: 1.5, step: 0.1, value: 0, format: (v) => v.toFixed(1) }, (v) => { tight = v; });
+      // Control points as fractions of the content box so they survive resizes.
+      const pts = [[0.04, 0.7], [0.18, 0.12], [0.34, 0.86], [0.5, 0.3], [0.66, 0.9], [0.82, 0.1], [0.96, 0.6]];
+      sketch(ctx, (p) => {
+        let box = { x: 0, y: 0, w: 1, h: 1 };
+        const fit = () => { const top = belowControls(ctx) + 20; box = { x: 30, y: top, w: p.width - 60, h: Math.max(60, p.height - top - 50) }; };
+        const at = (i) => [box.x + pts[i][0] * box.w, box.y + pts[i][1] * box.h];
+        p.setup = () => { fitCanvas(p, ctx, ctx.el, p.P2D, fit); fit(); };
+        p.draw = () => {
+          p.background(14, 16, 19);
+          const xy = pts.map((_, i) => at(i));
+          const order = mode === 1 ? 3 : 2;
+          // Control polygon
+          p.drawingContext.setLineDash([5, 6]);
+          p.stroke(255, 60); p.strokeWeight(1); p.noFill();
+          p.beginShape(); xy.forEach(([x, y]) => p.vertex(x, y)); p.endShape();
+          p.drawingContext.setLineDash([]);
+          // The curve itself
+          p.stroke(PAL[0]); p.strokeWeight(4); p.noFill();
+          p.beginShape();
+          if (mode === 0) {
+            p.splineProperty("tightness", tight);
+            xy.forEach(([x, y]) => p.splineVertex(x, y));
+          } else if (mode === 3) {
+            xy.forEach(([x, y]) => p.vertex(x, y));
+          } else {
+            p.bezierOrder(order);
+            p.vertex(xy[0][0], xy[0][1]);
+            for (let i = 1; i < xy.length; i++) p.bezierVertex(xy[i][0], xy[i][1]);
+          }
+          p.endShape();
+          // Points: anchors (on the curve) vs. pull-only control points
+          xy.forEach(([x, y], i) => {
+            const anchor = mode === 0 || mode === 3 || i % order === 0;
+            const hot = i === drag || p.dist(p.mouseX, p.mouseY, x, y) < 16;
+            p.strokeWeight(2);
+            if (anchor) { p.stroke(14, 16, 19); p.fill(hot ? "#ffffff" : PAL[1]); p.circle(x, y, hot ? 18 : 14); }
+            else { p.stroke(hot ? "#ffffff" : PAL[2]); p.fill(14, 16, 19); p.circle(x, y, hot ? 18 : 13); }
+          });
+          const label = mode === 0 ? `splineProperty("tightness", ${tight.toFixed(1)})` : mode === 3 ? "vertex() × 7" : `bezierOrder(${order})：1 + ${order} × ${order === 3 ? 2 : 3} 個點`;
+          tag(p, label, box.x - 20, box.y - 18, { mono: true, color: PAL[0] });
+          if (mode === 1 || mode === 2) tag(p, "藍：曲線經過的錨點　粉：只負責拉動的控制點", p.width - 10, p.height - 18, { align: "right" });
+          else tag(p, mode === 0 ? "spline 會穿過每一個點" : "直線連接每一個點", p.width - 10, p.height - 18, { align: "right" });
+        };
+        p.mousePressed = (e) => {
+          if (!onCanvas(p, e)) return;
+          let best = 24;
+          pts.forEach((_, i) => { const [x, y] = at(i); const d = p.dist(p.mouseX, p.mouseY, x, y); if (d < best) { best = d; drag = i; } });
+        };
+        p.mouseDragged = () => {
+          if (drag < 0) return;
+          pts[drag] = [clamp((p.mouseX - box.x) / box.w, -0.02, 1.02), clamp((p.mouseY - box.y) / box.h, -0.05, 1.05)];
+        };
+        p.mouseReleased = () => { drag = -1; };
+      });
+    },
+  },
+  {
+    id: "color", title: "色彩空間",
+    api: "colorMode(OKLCH) + lerpColor(a, b, t) / paletteLerp([[c, stop], …], t)",
+    desc: "同兩個端點顏色，在 RGB、HSB、HSL、LAB、OKLAB、OKLCH 下內插結果完全不同：RGB 中段發灰，OKLCH 亮度與彩度最平均。最後一列是 2.x 的多停駐點 paletteLerp。",
+    hint: "切換色彩組合・滑桿調色階數看分段",
+    mount(ctx) {
+      const PAIRS = [["#f7df1e", "#3a5bff"], ["#f72585", "#2ec27e"], ["#4cc9f0", "#ff8c42"]];
+      let pair = 0, steps = 48;
+      ctx.group(["黃 → 藍", "洋紅 → 綠", "青 → 橘"], 0, (i) => { pair = i; });
+      ctx.slider("色階數", { min: 4, max: 64, step: 1, value: steps }, (v) => { steps = v; });
+      sketch(ctx, (p) => {
+        const MODES = [["RGB", p.RGB], ["HSB", p.HSB], ["HSL", p.HSL], ["LAB", p.LAB], ["OKLAB", p.OKLAB], ["OKLCH", p.OKLCH]];
+        let last = "", ready = false;
+        p.setup = () => { fitCanvas(p, ctx, ctx.el, p.P2D); p.noLoop(); ready = true; };
+        p.draw = () => {
+          p.background(14, 16, 19);
+          p.colorMode(p.RGB);
+          const [ca, cb] = PAIRS[pair];
+          const A = p.color(ca), B = p.color(cb), M = p.color("#ffffff");
+          const top = belowControls(ctx), lw = p.width < 520 ? 74 : 104;
+          const x0 = 12 + lw, w = p.width - x0 - 14, rows = MODES.length + 1;
+          const gap = 8, rh = Math.max(16, (p.height - top - 16 - gap * (rows - 1)) / rows);
+          const cell = w / steps;
+          const row = (i, label, colorAt) => {
+            const y = top + i * (rh + gap);
+            p.noStroke();
+            for (let k = 0; k < steps; k++) { p.fill(colorAt(steps === 1 ? 0 : k / (steps - 1))); p.rect(x0 + k * cell, y, cell + 0.6, rh); }
+            p.colorMode(p.RGB);
+            tag(p, label, 10, y + rh / 2, { mono: true, size: p.width < 520 ? 10 : 12 });
+          };
+          // lerp() interpolates in the colors' own space, so convert both endpoints into each mode first.
+          const inMode = (c, mode) => new p5.Color(c, mode);
+          MODES.forEach(([name, mode], i) => {
+            const a = inMode(A, mode), b = inMode(B, mode);
+            row(i, name, (t) => { p.colorMode(mode); return p.lerpColor(a, b, t); });
+          });
+          const stops = [[inMode(A, p.OKLCH), 0], [inMode(M, p.OKLCH), 0.5], [inMode(B, p.OKLCH), 1]];
+          row(MODES.length, "palette", (t) => { p.colorMode(p.OKLCH); return p.paletteLerp(stops, t); });
+          p.colorMode(p.RGB);
+        };
+        // Redraw only when inputs change (noLoop keeps the scene idle).
+        ctx.interval(() => {
+          const k = `${pair}|${steps}|${p.width}|${p.height}`;
+          if (ready && k !== last) { last = k; p.redraw(); }
+        }, 60);
+      });
+    },
+  },
+  {
+    id: "image", title: "影像濾鏡",
+    api: "await loadImage(url) + img.filter(BLUR, r) / img.loadPixels() + pixels[]",
+    desc: "同一張照片複製八份，分別套用 p5.Image 內建的 GRAY、INVERT、THRESHOLD、POSTERIZE、BLUR、DILATE，以及直接改 pixels 陣列的自訂效果（紅藍色版互換）。",
+    hint: "切換照片・滑桿調 BLUR 半徑（會重新運算）",
+    mount(ctx) {
+      const PICS = [1, 2, 5, 7];
+      let pic = 0, radius = 4, tiles = [], src = null;
+      const cache = {};
+      ctx.group(["峽灣", "峽谷", "瀑布", "母獅"], 0, (i) => { pic = i; load(); });
+      ctx.slider("BLUR 半徑", { min: 1, max: 12, step: 1, value: radius }, (v) => { radius = v; build(); });
+      let p = null;
+      async function load() {
+        const url = PHOTO(PICS[pic]);
+        cache[url] = cache[url] || p.loadImage(url);
+        const img = await cache[url];
+        if (!ctx.active || url !== PHOTO(PICS[pic])) return;
+        src = img.get();
+        src.resize(480, 0);
+        build();
+      }
+      function build() {
+        if (!src) return;
+        const make = (name, fn) => { const c = src.get(); fn(c); return { name, img: c }; };
+        tiles = [
+          make("原圖", () => {}),
+          make("GRAY", (c) => c.filter(p.GRAY)),
+          make("INVERT", (c) => c.filter(p.INVERT)),
+          make("THRESHOLD 0.5", (c) => c.filter(p.THRESHOLD, 0.5)),
+          make("POSTERIZE 4", (c) => c.filter(p.POSTERIZE, 4)),
+          make(`BLUR ${radius}`, (c) => c.filter(p.BLUR, radius)),
+          make("DILATE", (c) => { c.filter(p.DILATE); c.filter(p.DILATE); }),
+          make("pixels[] 紅藍互換", (c) => {
+            c.loadPixels();
+            const px = c.pixels;
+            for (let i = 0; i < px.length; i += 4) { const r = px[i]; px[i] = px[i + 2]; px[i + 2] = r; }
+            c.updatePixels();
+          }),
+        ];
+        p.redraw();
+      }
+      sketch(ctx, (s) => {
+        p = s;
+        s.setup = () => { fitCanvas(s, ctx, ctx.el, s.P2D, () => s.redraw()); s.noLoop(); load(); };
+        s.draw = () => {
+          s.background(14, 16, 19);
+          if (!tiles.length) { tag(s, "載入照片中…", s.width / 2, s.height / 2, { align: "center" }); return; }
+          const top = belowControls(ctx), gap = 8, availH = s.height - top - 10;
+          // Pick 4x2 or 2x4, whichever gives tiles closer to the photo's landscape shape.
+          const shape = (c) => ((s.width - 20 - gap * (c - 1)) / c) / ((availH - gap * (8 / c - 1)) / (8 / c));
+          const cols = Math.abs(Math.log(shape(4) / 1.3)) < Math.abs(Math.log(shape(2) / 1.3)) ? 4 : 2, rows = 8 / cols;
+          const tw = (s.width - 20 - gap * (cols - 1)) / cols, th = (availH - gap * (rows - 1)) / rows;
+          tiles.forEach((t, i) => {
+            const x = 10 + (i % cols) * (tw + gap), y = top + Math.floor(i / cols) * (th + gap);
+            // Cover-crop the source into the tile
+            const ir = t.img.width / t.img.height, tr = tw / th;
+            const sw = ir > tr ? t.img.height * tr : t.img.width, sh = ir > tr ? t.img.height : t.img.width / tr;
+            s.image(t.img, x, y, tw, th, (t.img.width - sw) / 2, (t.img.height - sh) / 2, sw, sh);
+            tag(s, t.name, x + 4, y + 13, { mono: true, size: 11, color: i ? "#ecebe6" : PAL[0] });
+          });
+        };
+      });
+    },
+  },
+  {
+    id: "text", title: "文字轉點",
+    api: "await loadFont(url) + font.textToPoints(str, x, y, { sampleFactor })",
+    desc: "載入 WOFF 字型後把字的輪廓取樣成點，每個點變成會回彈的粒子。sampleFactor 越大點越密；滑鼠靠近會把粒子推開。",
+    hint: "移動滑鼠推開粒子・切換文字・滑桿調取樣密度",
+    mount(ctx) {
+      const WORDS = ["p5.js", "TAIPEI", "2026"];
+      let word = 0, sf = 0.2, font = null, parts = [], count = 0;
+      ctx.group(WORDS, 0, (i) => { word = i; build(); });
+      ctx.slider("sampleFactor", { min: 0.04, max: 0.3, step: 0.01, value: sf, format: (v) => v.toFixed(2) }, (v) => { sf = v; build(); });
+      let p = null;
+      function build() {
+        if (!font) return;
+        const top = belowControls(ctx), str = WORDS[word];
+        p.textFont(font); p.textSize(100);
+        const size = Math.min((100 * p.width * 0.84) / p.textWidth(str), (p.height - top) * 0.55);
+        p.textSize(size); p.textAlign(p.CENTER, p.CENTER);
+        const pts = font.textToPoints(str, p.width / 2, top + (p.height - top) / 2 - size * 0.08, { sampleFactor: sf });
+        count = pts.length;
+        // Reuse existing particles so they fly from the old word to the new one.
+        while (parts.length < pts.length) parts.push({ x: p.random(p.width), y: p.random(p.height), vx: 0, vy: 0, tx: 0, ty: 0 });
+        parts.length = pts.length;
+        pts.forEach((pt, i) => { parts[i].tx = pt.x; parts[i].ty = pt.y; });
+      }
+      sketch(ctx, (s) => {
+        p = s;
+        s.setup = async () => {
+          fitCanvas(s, ctx, ctx.el, s.P2D, build);
+          const st = ctx.status("載入字型 Archivo Black（WOFF）…");
+          // p5 probes font URLs with a HEAD request first; handing it a data: URL skips that extra round trip.
+          const blob = await (await fetch(FONT_URL)).blob();
+          const dataUrl = await new Promise((ok) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.readAsDataURL(blob); });
+          font = await s.loadFont(dataUrl);
+          st.done();
+          build();
+        };
+        s.draw = () => {
+          s.background(14, 16, 19, 90);
+          const mx = s.mouseX, my = s.mouseY;
+          s.strokeWeight(clamp(Math.sqrt((s.width * s.height) / Math.max(1, count)) * 0.35, 2.5, 6));
+          for (let i = 0; i < parts.length; i++) {
+            const q = parts[i];
+            q.vx += (q.tx - q.x) * 0.05; q.vy += (q.ty - q.y) * 0.05;
+            const dx = q.x - mx, dy = q.y - my, d2 = dx * dx + dy * dy;
+            if (d2 < 6400) { const f = (6400 - d2) / 6400 * 6 / Math.sqrt(d2 + 1); q.vx += dx * f; q.vy += dy * f; }
+            q.vx *= 0.84; q.vy *= 0.84; q.x += q.vx; q.y += q.vy;
+            s.stroke(PAL[i % 6]);
+            s.point(q.x, q.y);
+          }
+          if (font) tag(s, `textToPoints → ${count} 個點・sampleFactor ${sf.toFixed(2)}`, s.width - 10, s.height - 18, { mono: true, align: "right" });
+        };
+      });
+    },
+  },
+  {
+    id: "3d", title: "3D 光影材質",
+    api: "createCanvas(w, h, WEBGL) + orbitControl() + pointLight() + specularMaterial() / texture(img)",
+    desc: "WEBGL 模式的六種內建幾何體，切換四種材質：法向量著色、點光源加鏡面反光、照片貼圖、線框。兩盞彩色點光源繞著轉，可看到高光跟著移動。",
+    hint: "拖曳旋轉鏡頭・滾輪縮放・切換材質",
+    mount(ctx) {
+      let mat = 1, spin = true, tex = null;
+      ctx.group(["法向量", "光源＋鏡面", "照片貼圖", "線框"], mat, (i) => { mat = i; say(); });
+      ctx.toggle("自動旋轉", spin, (v) => { spin = v; });
+      const setTag = htmlTag(ctx);
+      const LABELS = ["normalMaterial()", "pointLight() × 2 + specularMaterial() + shininess(80)", "lights() + texture(img)", "noFill() + stroke()"];
+      const say = () => setTag(`<b>${LABELS[mat]}</b>`);
+      say();
+      sketch(ctx, (p) => {
+        let t = 0;
+        p.setup = () => {
+          fitCanvas(p, ctx, ctx.el, p.WEBGL);
+          p.loadImage(PHOTO(3)).then((img) => { tex = img; });
+        };
+        p.draw = () => {
+          p.background(14, 16, 19);
+          p.orbitControl();
+          if (spin) t += p.deltaTime / 1000;
+          const S = Math.min(p.width, p.height - belowControls(ctx) * 0.6);
+          const R = S * 0.36, s = S * 0.11;
+          p.translate(0, belowControls(ctx) * 0.25, 0);
+          p.rotateX(-0.35);
+          const lx = Math.cos(t * 1.3) * R * 1.4, lz = Math.sin(t * 1.3) * R * 1.4;
+          if (mat === 1) {
+            p.ambientLight(30);
+            p.pointLight(247, 37, 133, lx, -R * 0.6, lz);
+            p.pointLight(76, 201, 240, -lx, R * 0.4, -lz);
+          } else if (mat === 2) p.lights();
+          p.rotateY(t * 0.4);
+          const shapes = [
+            () => p.box(s * 1.2), () => p.torus(s * 0.7, s * 0.26), () => p.sphere(s * 0.75),
+            () => p.cone(s * 0.6, s * 1.3), () => p.cylinder(s * 0.55, s * 1.2), () => p.ellipsoid(s * 0.85, s * 0.5, s * 0.5),
+          ];
+          shapes.forEach((draw, i) => {
+            const a = (i / shapes.length) * p.TWO_PI;
+            p.push();
+            p.translate(Math.cos(a) * R, 0, Math.sin(a) * R);
+            p.rotateX(t * 0.9 + i); p.rotateY(t * 1.3 + i);
+            if (mat === 0) { p.noStroke(); p.normalMaterial(); }
+            else if (mat === 1) { p.noStroke(); p.fill(236); p.specularMaterial(255); p.shininess(80); }
+            else if (mat === 2) { p.noStroke(); if (tex) p.texture(tex); else p.fill(120); }
+            else { p.noFill(); p.stroke(PAL[i]); p.strokeWeight(1); }
+            draw();
+            p.pop();
+          });
+          if (mat === 1) {
+            // Visualize the two point lights
+            p.push(); p.noStroke(); p.rotateY(-t * 0.4);
+            p.push(); p.translate(lx, -R * 0.6, lz); p.emissiveMaterial(247, 37, 133); p.fill(247, 37, 133); p.sphere(5); p.pop();
+            p.push(); p.translate(-lx, R * 0.4, -lz); p.emissiveMaterial(76, 201, 240); p.fill(76, 201, 240); p.sphere(5); p.pop();
+            p.pop();
+          }
+        };
+      });
+    },
+  },
+  {
+    id: "strands", title: "strands 著色器",
+    api: "buildMaterialShader(cb) + buildFilterShader(cb) + filter(shader)",
+    desc: "p5.js 2.x 的 p5.strands：用 JavaScript 寫著色器，不必手寫 GLSL。圓環用材質 shader 做動態凹凸與邊緣光，整個畫面再套後製濾鏡（色散、波紋、像素化）。",
+    hint: "切換後製濾鏡・滑桿調強度・材質 shader 可關閉比較",
+    mount(ctx) {
+      let fx = 1, amt = 0.5, matOn = true, photo = null;
+      ctx.group(["無濾鏡", "色散", "波紋", "像素化"], fx, (i) => { fx = i; say(); });
+      ctx.slider("強度", { min: 0, max: 1, step: 0.05, value: amt, format: (v) => v.toFixed(2) }, (v) => { amt = v; });
+      ctx.toggle("材質 shader", matOn, (v) => { matOn = v; say(); });
+      const setTag = htmlTag(ctx);
+      const FX = ["", "色散 getTexture(canvasContent, uv ± off)", "波紋 sin(length(uv) × 60 − t)", "像素化 floor(uv × cells) / cells"];
+      const say = () => setTag(`${matOn ? "<b>buildMaterialShader</b> 凹凸＋邊緣光" : "預設 specularMaterial"}${fx ? `<br><b>buildFilterShader</b> ${FX[fx]}` : ""}`);
+      say();
+      sketch(ctx, (p) => {
+        let mat, chroma, ripple, pixel;
+        p.setup = () => {
+          fitCanvas(p, ctx, ctx.el, p.WEBGL);
+          p.loadImage(PHOTO(6)).then((img) => { photo = img; });
+          // Per-pixel bumpy normals plus rim light, written in JS and compiled to GLSL by p5.strands.
+          mat = p.buildMaterialShader(({ p }) => {
+            const t = p.uniformFloat("t");
+            let nrm = p.sharedVec3();
+            p.pixelInputs.begin();
+            p.pixelInputs.normal.x += 0.35 * p.sin(p.TWO_PI * (p.pixelInputs.texCoord.y * 10 + t));
+            p.pixelInputs.normal.y += 0.35 * p.sin(p.TWO_PI * (p.pixelInputs.texCoord.x * 24 - t));
+            p.pixelInputs.normal = p.normalize(p.pixelInputs.normal);
+            nrm = p.pixelInputs.normal;
+            p.pixelInputs.end();
+            p.finalColor.begin();
+            p.finalColor.set(p.mix([1, 0.87, 0.12, 1], p.finalColor.color, p.abs(p.dot(nrm, [0, 0, 1]))));
+            p.finalColor.end();
+          }, { p });
+          chroma = p.buildFilterShader(({ p }) => {
+            const amt = p.uniformFloat("amt");
+            p.filterColor.begin();
+            const uv = p.filterColor.texCoord;
+            const off = (uv - [0.5, 0.5]) * amt;
+            const r = p.getTexture(p.filterColor.canvasContent, uv + off).r;
+            const g = p.getTexture(p.filterColor.canvasContent, uv).g;
+            const b = p.getTexture(p.filterColor.canvasContent, uv - off).b;
+            p.filterColor.set([r, g, b, 1]);
+            p.filterColor.end();
+          }, { p });
+          ripple = p.buildFilterShader(({ p }) => {
+            const amt = p.uniformFloat("amt");
+            const t = p.uniformFloat("t");
+            p.filterColor.begin();
+            const uv = p.filterColor.texCoord;
+            const d = uv - [0.5, 0.5];
+            const k = p.sin(p.length(d) * 60 - t * 5) * amt;
+            p.filterColor.set(p.getTexture(p.filterColor.canvasContent, uv + d * k));
+            p.filterColor.end();
+          }, { p });
+          pixel = p.buildFilterShader(({ p }) => {
+            const cells = p.uniformFloat("cells");
+            p.filterColor.begin();
+            const uv = p.floor(p.filterColor.texCoord * cells) / cells;
+            p.filterColor.set(p.getTexture(p.filterColor.canvasContent, uv));
+            p.filterColor.end();
+          }, { p });
+        };
+        p.draw = () => {
+          const t = p.millis() / 1000, W = p.width, H = p.height;
+          p.background(14, 16, 19);
+          if (photo) {
+            // Cover-fit the photo as a backdrop
+            const k = Math.max(W / photo.width, H / photo.height);
+            p.push(); p.noStroke(); p.translate(0, 0, -40);
+            p.image(photo, -photo.width * k / 2, -photo.height * k / 2, photo.width * k, photo.height * k);
+            p.pop();
+          }
+          p.push();
+          p.ambientLight(70);
+          p.directionalLight(255, 255, 255, 0.4, 0.5, -1);
+          p.translate(0, belowControls(ctx) * 0.25, 60);
+          p.rotateX(t * 0.5); p.rotateY(t * 0.7);
+          p.noStroke(); p.fill("#f72585"); p.specularMaterial(255); p.shininess(60);
+          if (matOn) { mat.setUniform("t", t * 0.6); p.shader(mat); } else p.resetShader();
+          const S = Math.min(W, H);
+          p.torus(S * 0.24, S * 0.09, 72, 36);
+          p.pop();
+          const a = amt;
+          if (fx === 1) { chroma.setUniform("amt", 0.08 * a); p.filter(chroma); }
+          else if (fx === 2) { ripple.setUniform("amt", 0.12 * a); ripple.setUniform("t", t); p.filter(ripple); }
+          else if (fx === 3) { pixel.setUniform("cells", 180 - 165 * a); p.filter(pixel); }
+        };
+      });
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "circle() 逐一繪製 vs. buildGeometry() + model(geom, count) + instanceID()",
+    desc: "同一個向日葵螺旋星盤，2D 模式每顆點都由 JavaScript 計算座標再呼叫 circle()；WEBGL 實例化模式只送一次幾何，座標交給 strands 著色器用 instanceID() 在 GPU 算。",
+    hint: "按「自動加壓」開始・切換模式後再測一次比較",
+    mount(ctx) {
+      ctx.controls.classList.add("bottom");
+      let mode = 0, n = 2000, ms = 0, cur = null;
+      const host = Showcase.h("div", { class: "stress-host" });
+      ctx.el.append(host);
+      const COLS = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#9d8cff"];
+      const view = (p) => ({ W: p.width, H: p.height, R: Math.min(p.width, p.height) * 0.46 });
+      const dot = (R) => clamp((R * 1.9) / Math.sqrt(n), 1.2, 10);
 
-function draw() {
-  noStroke();
-  fill(14, 16, 19, 22);
-  rect(0, 0, width, height);
-  zoff += 0.003;
-  for (const p of particles) {
-    let a = noise(p.pos.x * 0.004, p.pos.y * 0.004, zoff) * TAU * 2;
-    const d = dist(mouseX, mouseY, p.pos.x, p.pos.y);
-    if (d < 120) a += map(d, 0, 120, PI, 0);
-    p.prev = p.pos.copy();
-    p.pos.add(p5.Vector.fromAngle(a, 1.6));
-    if (p.pos.x < 0 || p.pos.x > width || p.pos.y < 0 || p.pos.y > height) {
-      p.pos.set(random(width), random(height));
-      continue;
-    }
-    const c = color(PALETTES[palette][p.hue]);
-    c.setAlpha(150);
-    stroke(c);
-    strokeWeight(1.2);
-    line(p.prev.x, p.prev.y, p.pos.x, p.pos.y);
-  }
-}
-
-function mousePressed(e) {
-  if (e.target.tagName !== "CANVAS") return;
-  palette = (palette + 1) % PALETTES.length;
-}
-
-function windowResized() {
-  resizeCanvas(windowWidth, windowHeight);
-  seed();
-}
-
-document.getElementById("reset").addEventListener("click", seed);
+      function build2d(p) {
+        p.setup = () => { fitCanvas(p, ctx, host, p.P2D); };
+        p.draw = () => {
+          const t0 = performance.now();
+          const { W, H, R } = view(p), t = p.millis() / 1000, d = dot(R);
+          p.background(11, 13, 16); p.noStroke();
+          // Bucket by color so fill() changes only six times per frame.
+          for (let c = 0; c < 6; c++) {
+            p.fill(COLS[c]);
+            for (let i = c; i < n; i += 6) {
+              const k = i / n, r = Math.sqrt(k) * R, a = i * 2.39996 + t * (1 - k);
+              p.circle(W / 2 + r * Math.cos(a), H / 2 + r * Math.sin(a), d);
+            }
+          }
+          ms += (performance.now() - t0 - ms) * 0.1;
+        };
+      }
+      function buildGL(p) {
+        let geo, sh;
+        p.setup = () => {
+          fitCanvas(p, ctx, host, p.WEBGL);
+          geo = p.buildGeometry(() => p.plane(1, 1));
+          sh = p.buildMaterialShader(({ p }) => {
+            const t = p.uniformFloat("t");
+            const count = p.uniformFloat("count");
+            const rad = p.uniformFloat("rad");
+            p.worldInputs.begin();
+            const id = p.instanceID();
+            const k = id / count;
+            const r = p.sqrt(k) * rad;
+            const a = id * 2.39996 + t * (1 - k);
+            p.worldInputs.position.x += r * p.cos(a);
+            p.worldInputs.position.y += r * p.sin(a);
+            p.worldInputs.end();
+            p.finalColor.begin();
+            p.finalColor.set(p.mix([0.97, 0.87, 0.12, 1], [0.97, 0.15, 0.52, 1], k));
+            p.finalColor.end();
+          }, { p });
+        };
+        p.draw = () => {
+          const t0 = performance.now();
+          const { R } = view(p);
+          p.background(11, 13, 16); p.noStroke();
+          sh.setUniform("t", p.millis() / 1000);
+          sh.setUniform("count", n);
+          sh.setUniform("rad", R);
+          p.shader(sh);
+          p.scale(dot(R));
+          p.model(geo, n);
+          ms += (performance.now() - t0 - ms) * 0.1;
+        };
+      }
+      function start() {
+        if (cur) cur.destroy();
+        host.textContent = "";
+        ms = 0;
+        cur = sketch(ctx, mode ? buildGL : build2d, host);
+      }
+      ctx.group(["2D circle()", "WEBGL 實例化"], 0, (i) => { mode = i; start(); });
+      start();
+      ctx.ramp({
+        label: "點", unit: "個", minFps: 30,
+        steps: [1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000],
+        initial: 1,
+        apply(v) { n = v; },
+        metrics: () => ({ 模式: mode ? "WEBGL 實例化" : "2D circle()", "draw() 耗時": `${ms.toFixed(1)} ms` }),
+        note: "2D 模式的瓶頸在 JavaScript 迴圈與每顆 circle() 的路徑繪製，draw() 耗時會隨點數線性上升；實例化模式 CPU 幾乎不動，上限取決於 GPU 填色與頂點處理。無頭瀏覽器用軟體繪圖，WEBGL 數字會明顯偏低。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

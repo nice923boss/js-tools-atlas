@@ -20,11 +20,14 @@
 
 主程式是 ES module，直接雙擊 `index.html`（file://）時瀏覽器會擋下腳本，清單是空的。請開本機伺服器：
 
-```bash
-python -m http.server 8765
-```
+- Windows：雙擊 `start-server.bat`。它在 8765 埠開伺服器（只接受本機連線）並自動開瀏覽器，關掉視窗即停止；埠已在使用中時直接開瀏覽器。需要已安裝 Python 3 並加入 PATH。
+- 其他系統：
 
-然後開 `http://localhost:8765/`。
+  ```bash
+  python -m http.server 8765 --bind 127.0.0.1
+  ```
+
+  然後開 `http://localhost:8765/`。
 
 ## 網址
 
@@ -41,6 +44,7 @@ python -m http.server 8765
 
 ```
 index.html              主頁
+start-server.bat        Windows 本機預覽伺服器
 assets/
   app.js app.css        清單、篩選、路由
   stage.js              右側示範台
@@ -50,9 +54,9 @@ assets/
   js-tools-list.xlsx    資料來源，頁首可下載
   thumbs/<slug>.webp    清單縮圖，由驗證截圖產生
 demos/
-  <slug>.html           每個工具一個示範頁
+  <slug>.html           每個工具一個示範頁（多場景，最後一個場景是極限測試）
   assets/<slug>/        個別示範用到的素材
-  _shared/              共用樣式、閘門腳本、圖片、3D 模型、音樂
+  _shared/              共用樣式、閘門腳本、showcase.js（場景頁籤與極限測試面板）、圖片、3D 模型、音樂
 scripts/
   build_data.py         Excel 轉 data.js
   verify_demos.py       無頭 Chromium 檢查示範並產生縮圖
@@ -69,10 +73,10 @@ scripts/
 4. 檢查示範並更新縮圖：
 
    ```bash
-   python scripts/verify_demos.py <slug> --narrow --stage --thumbs
+   python scripts/verify_demos.py <slug> --scenes --narrow --stage --stress 6 --thumbs
    ```
 
-   全部重跑用 `--all`。需要按鈕啟動的示範加 `--start` 可截到啟動後的畫面。
+   `--scenes` 逐一切換每個場景檢查，`--stress 6` 在極限測試場景按「開始測試」並跑 6 秒。全部重跑用 `--all`。需要按鈕啟動的示範加 `--start` 可截到啟動後的畫面。
 5. 再跑一次 `python scripts/build_data.py`，讓清單知道哪些工具有縮圖。
 
 ## 已知限制

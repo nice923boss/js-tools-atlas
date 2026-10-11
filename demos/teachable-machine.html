@@ -3,399 +3,1133 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Teachable Machine 示範：用鏡頭現場訓練影像分類</title>
+<title>Teachable Machine 示範：八個場景看懂瀏覽器端遷移學習</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"click","needs":["camera"],"size":"約 3 MB","note":"樣本與訓練都在瀏覽器內完成，影像不會上傳"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"click","size":"約 2 MB","scenes":["現場訓練","訓練曲線","混淆矩陣","樣本數","捷徑學習","特徵空間","匯出與載入","極限測試"],"note":"TensorFlow.js 與 Teachable Machine 函式庫約 270 KB，MobileNet v2（alpha 0.35）基底權重約 1.7 MB，由 Google 的 storage.googleapis.com/teachable-machine-models 提供。樣本是頁面內產生的圖形，第一個場景也能改用鏡頭，影像不會上傳"}</script>
 <style>
-  .app {
-    position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
-    gap: 12px; padding: 12px 14px 46px;
-  }
-  .cam {
-    position: relative; min-height: 0; border-radius: 12px; overflow: hidden; border: 1px solid var(--line);
-    background: radial-gradient(circle at 50% 40%, #1d222c, #0c0e12);
-  }
-  .cam video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
-  .cam .frame { position: absolute; inset: 0; border-radius: 12px; pointer-events: none; transition: box-shadow .15s; }
-  .cam .empty {
-    position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 6px;
-    color: var(--muted); font-size: 13px; padding: 0 20px;
-  }
-  .cam .empty b { font-size: 34px; }
-  .pred {
-    position: absolute; left: 10px; top: 10px; right: 10px; display: flex; align-items: center; gap: 10px;
-    padding: 8px 12px; border-radius: 10px; background: rgba(12, 14, 18, .74); backdrop-filter: blur(4px);
-    font-size: 12.5px; color: var(--muted);
-  }
-  .pred strong { font-size: 19px; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .pred .pct { margin-left: auto; font: 700 18px var(--mono); }
-  .rec-badge {
-    position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); padding: 5px 12px; border-radius: 999px;
-    background: rgba(229, 72, 77, .9); color: #fff; font-size: 12.5px; font-weight: 600; white-space: nowrap; display: none;
-  }
-  .rec-badge.on { display: block; animation: blink 1s infinite; }
-  @keyframes blink { 50% { opacity: .65; } }
-
-  .side { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
-  .cls {
-    --cc: var(--c1); border: 1px solid var(--line); border-left: 4px solid var(--cc); border-radius: 10px;
-    background: var(--panel); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; flex: 1 1 0; min-height: 0;
-  }
-  .cls.win { box-shadow: 0 0 0 1px var(--cc), 0 0 18px -4px var(--cc); }
-  .cls-head { display: flex; align-items: center; gap: 8px; }
-  .cls-head input {
-    flex: 1; min-width: 0; background: transparent; border: 1px solid transparent; border-radius: 6px;
-    color: var(--fg); font: 600 15px var(--font); padding: 3px 6px;
-  }
-  .cls-head input:hover, .cls-head input:focus { border-color: var(--line); outline: none; background: var(--bg-2); }
-  .count { font: 600 12px var(--mono); color: var(--muted); white-space: nowrap; }
-  .strip { --t: 34px; position: relative; flex: 1; min-height: calc(var(--t) + 8px); border-radius: 6px; background: var(--bg-2); }
-  /* absolutely sized grid so auto-fill knows the height: rows past the box get a zero-height implicit track */
-  .thumbs {
-    position: absolute; inset: 4px; display: grid; gap: 4px; align-content: start; overflow: hidden;
-    grid-template-columns: repeat(auto-fill, var(--t)); grid-template-rows: repeat(auto-fill, var(--t)); grid-auto-rows: 0;
-  }
-  .thumbs canvas { width: 100%; height: 100%; border-radius: 4px; }
-  .thumbs .ph { grid-column: 1 / -1; font-size: 12px; color: var(--muted); padding: 9px 0 0 6px; white-space: nowrap; }
-  .cls-foot { display: flex; align-items: center; gap: 10px; }
-  .rec { user-select: none; -webkit-user-select: none; touch-action: none; white-space: nowrap; }
-  .rec.active { background: var(--cc); color: #111; border-color: var(--cc); }
-  .bar { flex: 1; height: 22px; border-radius: 6px; background: var(--bg-2); position: relative; overflow: hidden; }
-  .bar i { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--cc); opacity: .85; transition: width .12s; }
-  .bar b { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font: 600 12px var(--mono); }
-
-  .train {
-    border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 10px 12px;
-    display: flex; flex-direction: column; gap: 8px;
-  }
-  .train-row { display: flex; align-items: center; gap: 8px; }
-  .train-row .info { flex: 1; min-width: 0; font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #chart { width: 100%; height: 46px; display: block; border-radius: 6px; background: var(--bg-2); }
-  .legend { display: flex; gap: 12px; font-size: 11.5px; color: var(--muted); }
-  .legend i { display: inline-block; width: 12px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
-  .msg { font-size: 12.5px; color: var(--muted); min-height: 1.4em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .msg.err { color: var(--c3); }
-
-  @media (max-width: 720px) and (max-aspect-ratio: 1/1) {
-    .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(150px, 1fr) auto; padding: 10px 10px 46px; gap: 8px; overflow-y: auto; }
-    .side { gap: 8px; }
-    .cls { padding: 8px 10px; gap: 6px; flex: none; }
-    .strip { --t: 28px; flex: none; height: 36px; min-height: 0; }
-    .thumbs .ph { padding-top: 5px; }
-    .train { padding: 8px 10px; gap: 6px; }
-    #chart, .legend { display: none; }
-    .pred strong { font-size: 16px; } .pred .pct { font-size: 15px; }
-  }
-  @media (max-height: 460px) {
-    .cls { padding: 7px 10px; gap: 6px; }
-    .strip { --t: 26px; }
-    .thumbs .ph { padding-top: 5px; }
-    #chart, .legend { display: none; }
-    .train { padding: 8px 10px; gap: 6px; }
-  }
+  .tm-wrap { position: absolute; inset: 0; overflow: auto; padding: calc(var(--sc-ctl-h, 0px) + 10px) 12px calc(var(--sc-ctl-b, 0px) + 14px); display: grid; gap: 10px; align-content: start; }
+  .tm-cols { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) 310px; align-items: start; }
+  .tm-live { grid-template-columns: minmax(0, 400px) minmax(0, 1fr); }
+  @media (max-width: 720px) { .tm-cols, .tm-live { grid-template-columns: minmax(0, 1fr); } }
+  .tm-col { display: grid; gap: 10px; align-content: start; min-width: 0; }
+  .tm-card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+  .tm-card h2 { margin: 0 0 8px; font: 500 13px var(--font); color: var(--muted); display: flex; justify-content: space-between; gap: 8px; }
+  .tm-card h2 b { color: var(--fg); font: 500 12px var(--mono); text-align: right; }
+  .tm-info { font-size: 12.5px; color: var(--muted); min-height: 1.4em; margin-top: 6px; }
+  .tm-info.err { color: var(--c3); }
+  .tm-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .tm-kpi { display: grid; grid-template-columns: repeat(auto-fit, minmax(86px, 1fr)); gap: 6px; }
+  .tm-kpi div { background: color-mix(in srgb, var(--fg) 5%, transparent); border-radius: 8px; padding: 6px 8px; min-width: 0; }
+  .tm-kpi b { display: block; font: 700 18px var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tm-kpi span { font-size: 11px; color: var(--muted); }
+  .tm-chart { display: block; width: 100%; height: 170px; }
+  .tm-chart.sm { height: 80px; margin-top: 8px; }
+  .tm-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+  .tm-legend span::before { content: ""; display: inline-block; width: 12px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; background: var(--k); }
+  .tm-legend span.dash::before { background: repeating-linear-gradient(90deg, var(--k) 0 4px, transparent 4px 7px); }
+  .tm-legend span.dot::before { width: 9px; height: 9px; border-radius: 50%; }
+  .tm-thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 4px; }
+  .tm-thumbs canvas { display: block; width: 100%; height: auto; aspect-ratio: 1; border-radius: 5px; }
+  .tm-thumbs canvas.new { outline: 2px solid var(--c1); outline-offset: -2px; }
+  .tm-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 6px; }
+  .tm-th { border: 2px solid var(--k, var(--line)); border-radius: 8px; overflow: hidden; background: var(--bg); min-width: 0; }
+  .tm-th canvas { display: block; width: 100%; height: auto; aspect-ratio: 1; }
+  .tm-th span { display: block; padding: 2px 5px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tm-ok { color: var(--c4); } .tm-bad { color: var(--c3); }
+  .tm-tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .tm-tbl th { text-align: left; font: 500 11.5px var(--font); color: var(--muted); padding: 4px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  .tm-tbl td { padding: 4px 6px; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+  .tm-tbl td.n { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tm-tbl canvas { display: block; width: 34px; height: 34px; border-radius: 4px; }
+  .tm-cm td.n { text-align: center; font-size: 15px; font-weight: 700; }
+  .tm-bars { display: grid; gap: 8px; }
+  .tm-bar { display: grid; grid-template-columns: minmax(0, 150px) minmax(0, 1fr) 96px; gap: 8px; align-items: center; font-size: 12px; }
+  .tm-bar .t { height: 16px; border-radius: 4px; background: color-mix(in srgb, var(--line) 50%, transparent); overflow: hidden; }
+  .tm-bar .t i { display: block; height: 100%; width: 0; background: var(--k, var(--c4)); transition: width .4s; }
+  .tm-bar b { font: 600 12px var(--mono); text-align: right; white-space: nowrap; }
+  .tm-pre { margin: 0; max-height: 170px; overflow: auto; font: 11.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
+  .tm-dl { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .tm-dl a { text-decoration: none; }
+  /* scene 1: live training */
+  .tm-stage { position: relative; aspect-ratio: 1; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); background: #15171c; transition: box-shadow .15s; }
+  .tm-stage canvas { display: block; width: 100%; height: 100%; }
+  .tm-stage video { display: none; }
+  .tm-pred { position: absolute; left: 8px; right: 8px; top: 8px; display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 9px; background: rgba(12, 14, 18, .76); color: #c9ced6; font-size: 12.5px; }
+  .tm-pred strong { font-size: 18px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .tm-pred .p { margin-left: auto; font: 700 17px var(--mono); }
+  .tm-truth { position: absolute; left: 8px; bottom: 8px; padding: 3px 9px; border-radius: 999px; background: rgba(12, 14, 18, .72); color: #fff; font-size: 12px; }
+  .tm-truth:empty { display: none; }
+  .tm-recb { position: absolute; right: 8px; bottom: 8px; padding: 3px 10px; border-radius: 999px; background: rgba(229, 72, 77, .92); color: #fff; font-size: 12px; font-weight: 600; display: none; }
+  .tm-recb.on { display: block; animation: tm-blink 1s infinite; }
+  @keyframes tm-blink { 50% { opacity: .6; } }
+  .tm-cls { --k: var(--c1); border: 1px solid var(--line); border-left: 4px solid var(--k); border-radius: 10px; background: var(--bg-2); padding: 9px 11px; display: grid; gap: 7px; min-width: 0; }
+  .tm-cls.win { box-shadow: 0 0 0 1px var(--k), 0 0 18px -4px var(--k); }
+  .tm-cls-h { display: flex; align-items: center; gap: 8px; }
+  .tm-cls-h input { flex: 1; min-width: 0; background: transparent; border: 1px solid transparent; border-radius: 6px; color: var(--fg); font: 600 15px var(--font); padding: 3px 6px; }
+  .tm-cls-h input:hover, .tm-cls-h input:focus { border-color: var(--line); outline: none; background: var(--bg); }
+  .tm-cnt { font: 600 12px var(--mono); color: var(--muted); white-space: nowrap; }
+  .tm-strip { display: flex; flex-wrap: wrap; gap: 4px; height: 76px; overflow: hidden; align-content: flex-start; border-radius: 6px; padding: 4px; background: color-mix(in srgb, var(--fg) 5%, transparent); }
+  .tm-strip canvas { width: 32px; height: 32px; border-radius: 4px; }
+  .tm-strip span { font-size: 12px; color: var(--muted); padding: 6px; }
+  .tm-cls-f { display: flex; align-items: center; gap: 10px; }
+  .tm-rec { user-select: none; -webkit-user-select: none; touch-action: none; white-space: nowrap; }
+  .tm-rec.on { background: var(--k); color: #111; border-color: var(--k); }
+  .tm-pbar { flex: 1; height: 22px; border-radius: 6px; background: color-mix(in srgb, var(--fg) 7%, transparent); position: relative; overflow: hidden; }
+  .tm-pbar i { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--k); opacity: .8; transition: width .12s; }
+  .tm-pbar b { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font: 600 12px var(--mono); }
+  /* scene 6 */
+  .tm-scatter { display: block; width: 100%; height: 360px; }
+  .tm-live-th { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px; align-items: center; }
+  .tm-live-th canvas { width: 96px; height: 96px; border-radius: 8px; border: 2px solid var(--k, var(--line)); }
+  .tm-live-th div { font-size: 13px; display: grid; gap: 4px; }
+  /* scene 8 */
+  .tm-stress { position: absolute; inset: 8px; padding: 10px 12px calc(var(--sc-ctl-b, 0px) + 10px); overflow: hidden; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 10px; }
+  @media (min-width: 761px) { .tm-stress { inset: 8px 8px 8px 350px; } }
+  .tm-stress .tm-tiles { overflow: hidden; align-content: start; }
+  .tm-stress .tm-bar { grid-template-columns: minmax(0, 170px) minmax(0, 1fr) 96px; }
 </style>
 </head>
 <body>
-<div class="app">
-  <div class="cam" id="cam">
-    <div class="empty" id="camEmpty"><b>📷</b>鏡頭畫面會顯示在這裡</div>
-    <video id="video" playsinline muted></video>
-    <div class="frame" id="frame"></div>
-    <div class="pred" id="pred"><span id="predText">先替兩個類別收集樣本</span></div>
-    <div class="rec-badge" id="recBadge"></div>
-  </div>
-  <div class="side">
-    <div class="cls" data-i="0" style="--cc: var(--c1)">
-      <div class="cls-head"><input value="✋ 舉手" maxlength="12" aria-label="類別 1 名稱"><span class="count">0 張</span></div>
-      <div class="strip"><div class="thumbs"><span class="ph">按住下方按鈕，對著鏡頭舉起手</span></div></div>
-      <div class="cls-foot"><button class="btn rec">● 按住收集</button><div class="bar"><i></i><b>0%</b></div></div>
-    </div>
-    <div class="cls" data-i="1" style="--cc: var(--c2)">
-      <div class="cls-head"><input value="🙂 沒舉手" maxlength="12" aria-label="類別 2 名稱"><span class="count">0 張</span></div>
-      <div class="strip"><div class="thumbs"><span class="ph">按住下方按鈕，手放下只露出臉</span></div></div>
-      <div class="cls-foot"><button class="btn rec">● 按住收集</button><div class="bar"><i></i><b>0%</b></div></div>
-    </div>
-    <div class="train">
-      <div class="train-row">
-        <button class="btn primary" id="trainBtn">🧠 訓練模型</button>
-        <span class="info" id="trainInfo">每類至少 10 張</span>
-        <button class="btn" id="resetBtn">↺ 重來</button>
-      </div>
-      <canvas id="chart"></canvas>
-      <div class="legend"><span><i style="background:var(--c3)"></i>損失</span><span><i style="background:var(--c4)"></i>準確率</span></div>
-      <div class="msg" id="msg"></div>
-    </div>
-  </div>
-</div>
-<div class="hint">按住「收集」各錄 10 張以上，再按「訓練模型」</div>
-
-<script src="_shared/gate.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
+// Teachable Machine image (official library) on TensorFlow.js 1.3.1. Every scene builds its own
+// TeachableMobileNet on one shared truncated MobileNet and disposes its trained head on exit.
 const TF_URL = "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js";
 const TM_URL = "https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8.5/dist/teachablemachine-image.min.js";
-const MIN_SAMPLES = 10, MAX_SAMPLES = 120, SAMPLE_GAP = 90; // ms between captured frames while holding
-const TRAIN = { denseUnits: 100, epochs: 40, learningRate: 0.001, batchSize: 16 };
-const COLORS = ["#f7df1e", "#4cc9f0"];
+const KIND = { circle: "圓形", triangle: "三角形", star: "星形", octagon: "八邊形", hexagon: "六邊形" };
+const CLS = ["--c1", "--c2", "--c5"];
+const abort = () => new DOMException("Scene unmounted", "AbortError");
+const isAbort = (e) => e && e.name === "AbortError";
+const pct = (x) => `${Math.round((x || 0) * 100)}%`;
+const sec = (ms) => `${(ms / 1000).toFixed(1)} s`;
+const kb = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(2)} MB` : `${(n / 1024).toFixed(1)} KB`);
+const C = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim() || "#888";
+const MONO = () => getComputedStyle(document.documentElement).getPropertyValue("--mono").trim() || "monospace";
+const accOf = (l) => l.acc ?? l.accuracy ?? 0;
+const valOf = (l) => l.val_acc ?? l.val_accuracy ?? 0;
 
-const video = document.getElementById("video");
-const cards = [...document.querySelectorAll(".cls")];
-const nameIns = cards.map((c) => c.querySelector("input"));
-const countEls = cards.map((c) => c.querySelector(".count"));
-const strips = cards.map((c) => c.querySelector(".thumbs"));
-const recBtns = cards.map((c) => c.querySelector(".rec"));
-const barFills = cards.map((c) => c.querySelector(".bar i"));
-const barTexts = cards.map((c) => c.querySelector(".bar b"));
-const predEl = document.getElementById("pred"), frameEl = document.getElementById("frame");
-const recBadge = document.getElementById("recBadge");
-const trainBtn = document.getElementById("trainBtn"), resetBtn = document.getElementById("resetBtn");
-const trainInfo = document.getElementById("trainInfo"), msgEl = document.getElementById("msg");
-const chart = document.getElementById("chart"), cctx = chart.getContext("2d");
-
-// 224x224 mirrored center crop of the webcam, shared by addExample and predict
-const cap = document.createElement("canvas");
-cap.width = cap.height = 224;
-const capCtx = cap.getContext("2d");
-
-let model = null;
-let counts = [0, 0];
-let recording = -1, recToken = 0;
-let training = false, trained = false, dirty = false;
-let history = [];
-let smooth = null; // smoothed class probabilities for display
-
-function setMsg(text, kind) { msgEl.textContent = msgEl.title = text; msgEl.className = "msg" + (kind ? " " + kind : ""); }
-function labels() { return nameIns.map((el, i) => el.value.trim() || `類別 ${i + 1}`); }
-
-function grab() {
-  const vw = video.videoWidth, vh = video.videoHeight, side = Math.min(vw, vh);
-  capCtx.save();
-  capCtx.translate(224, 0); capCtx.scale(-1, 1);
-  capCtx.drawImage(video, (vw - side) / 2, (vh - side) / 2, side, side, 0, 0, 224, 224);
-  capCtx.restore();
+// ---------- in-page sample generator (seeded, 224x224) ----------
+function rng(seed) {
+  let a = seed >>> 0;
+  return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }
-
-function addThumb(i) {
-  const t = document.createElement("canvas");
-  t.width = t.height = 48;
-  t.getContext("2d").drawImage(cap, 0, 0, 48, 48);
-  const strip = strips[i];
-  strip.querySelector(".ph")?.remove();
-  strip.prepend(t);
-  while (strip.children.length > 48) strip.lastChild.remove();
-}
-
-function refreshCounts() {
-  counts.forEach((n, i) => { countEls[i].textContent = `${n} 張`; });
-  const ready = counts.every((n) => n >= MIN_SAMPLES);
-  if (!training) trainInfo.textContent = ready ? (trained && !dirty ? "模型已訓練，可再加樣本重訓" : "樣本足夠，可以訓練了") : `每類至少 ${MIN_SAMPLES} 張`;
-}
-
-// ---------- hold-to-record ----------
-async function recordLoop(i) {
-  const token = ++recToken;
-  recording = i;
-  recBtns[i].classList.add("active");
-  recBadge.textContent = `● 收集中：${labels()[i]}`;
-  recBadge.classList.add("on");
-  frameEl.style.boxShadow = `inset 0 0 0 4px ${COLORS[i]}`;
-  while (recording === i && token === recToken) {
-    if (counts[i] >= MAX_SAMPLES) { setMsg(`每類最多 ${MAX_SAMPLES} 張，已達上限`); break; }
-    const t0 = performance.now();
-    grab();
-    await model.addExample(i, cap);
-    counts[i]++;
-    addThumb(i);
-    if (trained) dirty = true;
-    refreshCounts();
-    await new Promise((r) => setTimeout(r, Math.max(0, SAMPLE_GAP - (performance.now() - t0))));
+const SIDES = { triangle: 3, hexagon: 6, octagon: 8 };
+function shapePath(g, kind, x, y, r, rot) {
+  g.beginPath();
+  if (kind === "circle") g.arc(x, y, r, 0, Math.PI * 2);
+  else if (kind === "star") {
+    for (let i = 0; i < 10; i++) { const a = rot + (i * Math.PI) / 5 - Math.PI / 2, rr = i % 2 ? r * 0.45 : r; g.lineTo(x + rr * Math.cos(a), y + rr * Math.sin(a)); }
+  } else {
+    const n = SIDES[kind];
+    for (let i = 0; i < n; i++) { const a = rot + (i * 2 * Math.PI) / n - Math.PI / 2; g.lineTo(x + r * Math.cos(a), y + r * Math.sin(a)); }
   }
-  if (token === recToken) stopRecording();
+  g.closePath();
 }
-function stopRecording() {
-  recording = -1;
-  recBtns.forEach((b) => b.classList.remove("active"));
-  recBadge.classList.remove("on");
-  frameEl.style.boxShadow = "";
-  if (dirty) setMsg("新增了樣本，再按一次「訓練模型」更新辨識結果");
-}
-recBtns.forEach((btn, i) => {
-  btn.addEventListener("pointerdown", (e) => {
-    if (!model || training) return;
-    e.preventDefault();
-    btn.setPointerCapture(e.pointerId);
-    recordLoop(i);
-  });
-  const end = () => { if (recording === i) { recToken++; stopRecording(); } };
-  btn.addEventListener("pointerup", end);
-  btn.addEventListener("pointercancel", end);
-  btn.addEventListener("lostpointercapture", end);
-  btn.addEventListener("contextmenu", (e) => e.preventDefault());
-});
-nameIns.forEach((el, i) => el.addEventListener("input", () => model && model.setLabel(i, labels()[i])));
-
-// ---------- training ----------
-function drawChart() {
-  const dpr = Math.min(devicePixelRatio || 1, 2);
-  const w = chart.clientWidth, h = chart.clientHeight;
-  if (chart.width !== Math.round(w * dpr)) { chart.width = Math.round(w * dpr); chart.height = Math.round(h * dpr); }
-  cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  cctx.clearRect(0, 0, w, h);
-  if (!history.length) return;
-  const n = TRAIN.epochs, pad = 4;
-  const maxLoss = Math.max(...history.map((l) => l.loss), 0.01);
-  const line = (vals, color) => {
-    cctx.beginPath();
-    vals.forEach((v, k) => {
-      const x = pad + (k / Math.max(1, n - 1)) * (w - pad * 2), y = h - pad - v * (h - pad * 2);
-      k ? cctx.lineTo(x, y) : cctx.moveTo(x, y);
-    });
-    cctx.strokeStyle = color; cctx.lineWidth = 2; cctx.lineJoin = "round"; cctx.stroke();
-  };
-  line(history.map((l) => l.loss / maxLoss), "#f72585");
-  line(history.map((l) => l.acc ?? l.accuracy ?? 0), "#7bd389");
-}
-
-async function train() {
-  if (!model || training) return;
-  const short = counts.findIndex((n) => n < MIN_SAMPLES);
-  if (short >= 0) { setMsg(`「${labels()[short]}」還差 ${MIN_SAMPLES - counts[short]} 張樣本`, "err"); return; }
-  training = true; history = []; drawChart();
-  trainBtn.disabled = resetBtn.disabled = true;
-  recBtns.forEach((b) => (b.disabled = true));
-  setMsg("在瀏覽器內訓練中，請稍候…");
-  try {
-    model.prepare(); // rebuild the dataset so newly added samples are included
-    await model.train(TRAIN, {
-      onEpochEnd: async (epoch, logs) => {
-        history.push(logs);
-        drawChart();
-        const acc = logs.acc ?? logs.accuracy ?? 0;
-        trainInfo.textContent = `第 ${epoch + 1}/${TRAIN.epochs} 輪．準確率 ${Math.round(acc * 100)}%`;
-        await tf.nextFrame();
-      },
-    });
-    trained = true; dirty = false; smooth = null;
-    const last = history[history.length - 1] || {};
-    setMsg(`訓練完成（${counts[0] + counts[1]} 張樣本，最後一輪準確率 ${Math.round((last.acc ?? last.accuracy ?? 0) * 100)}%），對著鏡頭試試看`);
-  } catch (err) {
-    console.error(err);
-    setMsg(`訓練失敗：${err.message || err}`, "err");
+function drawSample(cv, kind, rand, { noise = 1, size = 1, bg } = {}) {
+  const S = 224, g = cv.getContext("2d");
+  g.fillStyle = `hsl(${rand() * 360},22%,${80 + rand() * 12}%)`;
+  g.fillRect(0, 0, S, S);
+  if (bg === "grass") {
+    g.fillStyle = "#4f8a3a"; g.fillRect(0, 0, S, S); g.lineWidth = 2;
+    for (let i = 0; i < 400; i++) { g.strokeStyle = `hsl(${90 + rand() * 40},50%,${25 + rand() * 30}%)`; const x = rand() * S, y = rand() * S; g.beginPath(); g.moveTo(x, y); g.lineTo(x + (rand() - 0.5) * 6, y - 8 - rand() * 10); g.stroke(); }
   }
-  training = false;
-  trainBtn.disabled = resetBtn.disabled = false;
-  recBtns.forEach((b) => (b.disabled = false));
-  refreshCounts();
+  if (bg === "sky") {
+    const gr = g.createLinearGradient(0, 0, 0, S); gr.addColorStop(0, "#5aa7e6"); gr.addColorStop(1, "#cfe8fb"); g.fillStyle = gr; g.fillRect(0, 0, S, S);
+    for (let i = 0; i < 3; i++) { g.fillStyle = "rgba(255,255,255,.7)"; const x = rand() * S, y = rand() * S * 0.7; for (let j = 0; j < 4; j++) { g.beginPath(); g.arc(x + j * 14, y + (j % 2) * 6, 12 + rand() * 6, 0, 7); g.fill(); } }
+  }
+  g.lineWidth = 3;
+  for (let i = 0; i < 5; i++) { g.strokeStyle = `hsla(${rand() * 360},30%,45%,${0.12 + rand() * 0.15})`; g.beginPath(); g.moveTo(rand() * S, rand() * S); g.lineTo(rand() * S, rand() * S); g.stroke(); }
+  const r = (40 + rand() * 36) * size, x = r + 6 + rand() * (S - 2 * r - 12), y = r + 6 + rand() * (S - 2 * r - 12);
+  g.fillStyle = `hsl(${rand() * 360},${62 + rand() * 25}%,${42 + rand() * 12}%)`;
+  shapePath(g, kind, x, y, r, rand() * Math.PI * 2);
+  g.fill();
+  for (let i = 0; i < 260 * noise; i++) { g.fillStyle = rand() < 0.5 ? "rgba(0,0,0,.16)" : "rgba(255,255,255,.22)"; g.fillRect(rand() * S, rand() * S, 2, 2); }
+  return cv;
 }
-trainBtn.addEventListener("click", train);
+function sample(kind, seed, opts) {
+  const c = document.createElement("canvas");
+  c.width = c.height = 224;
+  return drawSample(c, kind, rng(seed), opts);
+}
+function mini(cv, s = 64) {
+  const c = document.createElement("canvas");
+  c.width = c.height = s;
+  c.getContext("2d").drawImage(cv, 0, 0, s, s);
+  return c;
+}
+function tile(cv, text, ok) {
+  const d = document.createElement("div");
+  d.className = "tm-th";
+  if (ok != null) d.style.setProperty("--k", ok ? "var(--c4)" : "var(--c3)");
+  const s = document.createElement("span");
+  s.textContent = text;
+  d.append(mini(cv, 96), s);
+  return d;
+}
 
-resetBtn.addEventListener("click", () => {
-  if (!model || training) return;
-  model.setLabels(labels()); // also clears the stored examples
-  counts = [0, 0]; trained = false; dirty = false; smooth = null; history = []; drawChart();
-  strips.forEach((s, i) => { s.innerHTML = `<span class="ph">${i ? "按住下方按鈕，手放下只露出臉" : "按住下方按鈕，對著鏡頭舉起手"}</span>`; });
-  showIdle();
-  refreshCounts();
-  setMsg("已清除所有樣本");
-});
-
-// ---------- live prediction ----------
-function showIdle() {
-  predEl.innerHTML = '<span>先替兩個類別收集樣本，再按「訓練模型」</span>';
-  cards.forEach((c) => c.classList.remove("win"));
-  barFills.forEach((b) => (b.style.width = "0"));
-  barTexts.forEach((b) => (b.textContent = "0%"));
-}
-function showPrediction(res) {
-  const names = labels();
-  // light smoothing so the label does not flicker between frames
-  const probs = res.map((r) => r.probability);
-  smooth = smooth ? smooth.map((v, i) => v * 0.6 + probs[i] * 0.4) : probs;
-  let best = 0;
-  smooth.forEach((v, i) => {
-    if (v > smooth[best]) best = i;
-    barFills[i].style.width = `${(v * 100).toFixed(1)}%`;
-    barTexts[i].textContent = `${Math.round(v * 100)}%`;
-  });
-  cards.forEach((c, i) => c.classList.toggle("win", i === best));
-  const p = Math.round(smooth[best] * 100);
-  predEl.innerHTML = `<span>辨識結果</span><strong></strong><span class="pct" style="color:${COLORS[best]}">${p}%</span>`;
-  predEl.querySelector("strong").textContent = names[best];
-  if (recording < 0) frameEl.style.boxShadow = `inset 0 0 0 ${2 + smooth[best] * 4}px ${COLORS[best]}`;
-}
-async function predictLoop() {
-  if (trained && !training && video.readyState >= 2) {
+// ---------- library + shared truncated MobileNet ----------
+let primed = false, truncP = null, TRUNC = null;
+async function engine(ctx) {
+  if (!primed) {
+    await ctx.gate({
+      icon: "🧠", title: "在瀏覽器裡教 AI 認圖形",
+      desc: "按下後下載 TensorFlow.js、Teachable Machine 函式庫與 Google 提供的 MobileNet v2 基底權重。各場景用頁面內產生的圖形當樣本（第一個場景也可改用鏡頭），訓練與辨識都在瀏覽器內完成，影像不會上傳。",
+      tags: ["約 2 MB", "可選用鏡頭", "影像不上傳"], button: "下載並開始（約 2 MB）",
+    });
+    primed = true;
+  }
+  if (!TRUNC) {
+    const s = ctx.status("下載 TensorFlow.js 與 Teachable Machine…");
+    s.progress(0.15);
     try {
-      grab();
-      showPrediction(await model.predict(cap));
-    } catch (err) {
-      console.error(err);
+      await ctx.load([TF_URL, TM_URL]);
+      s.text("下載 MobileNet v2 基底權重（約 1.7 MB）…");
+      s.progress(0.5);
+      if (!truncP) truncP = tmImage.loadTruncatedMobileNet({ version: 2, alpha: 0.35 }).catch((e) => { truncP = null; throw e; });
+      TRUNC = await truncP;
+    } catch (e) {
+      s.error(`載入失敗：${e && e.message ? e.message : e}，請確認網路連線後重新整理`);
+      throw e;
     }
+    s.done();
   }
-  requestAnimationFrame(predictLoop);
+  if (!ctx.active) throw abort();
 }
 
-// ---------- start ----------
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    const el = document.createElement("script");
-    el.src = src;
-    el.onload = resolve;
-    el.onerror = () => reject(new Error("函式庫下載失敗"));
-    document.head.append(el);
-  });
+// Wraps one TeachableMobileNet: serialised training, stop on scene exit, head disposed once.
+function teach(ctx, labels, seed) {
+  const m = new tmImage.TeachableMobileNet(TRUNC, { tfjsVersion: tf.version.tfjs, labels: labels.slice() });
+  m.setLabels(labels.slice());
+  m.setSeed(seed);
+  let chain = Promise.resolve(), ticket = 0, running = false, halted = false;
+  const drop = () => {
+    // never call m.dispose(): it would also dispose the shared truncated MobileNet
+    if (m.trainingModel) { m.trainingModel.dispose(); m.trainingModel = null; }
+    m.model = null;
+  };
+  const stop = () => {
+    ticket++;
+    if (running && !halted) { halted = true; m.stopTraining(); }
+    return chain;
+  };
+  async function fitNow(my, params, onEpoch, reprepare) {
+    if (my !== ticket || !ctx.active) return null;
+    drop();
+    if (reprepare || !m.isPrepared) m.prepare();
+    const P = { denseUnits: 100, epochs: 20, learningRate: 0.001, batchSize: 16, ...params };
+    running = true; halted = false;
+    const t0 = performance.now();
+    try {
+      await m.train(P, {
+        onEpochEnd: async (e, logs) => {
+          if (!ctx.active || my !== ticket) { if (!halted) { halted = true; m.stopTraining(); } return; }
+          if (onEpoch) onEpoch(e, logs, P);
+          await tf.nextFrame();
+        },
+      });
+    } finally { running = false; }
+    return { ms: performance.now() - t0, stopped: halted };
+  }
+  const api = {
+    m,
+    // the constructor starts with an empty tf.sequential(); isTrained wants > 2 layers but the joint model has 2
+    get ready() { return !!m.model && m.model.layers.length > 0 && !running; },
+    get running() { return running; },
+    stop,
+    async add(i, img) { if (!ctx.active) throw abort(); await m.addExample(i, img); },
+    fit(params = {}, onEpoch, { reprepare = true } = {}) {
+      stop();
+      const my = ticket;
+      const p = chain.then(() => fitNow(my, params, onEpoch, reprepare));
+      chain = p.catch(() => {});
+      return p.then((r) => { if (!r || !ctx.active) throw abort(); return r; });
+    },
+    async reset(names) {
+      await stop();
+      drop();
+      m.setLabels(names.slice());
+      m.trainDataset = m.validationDataset = undefined;
+    },
+  };
+  ctx.onCleanup(() => { stop().then(() => { drop(); m.examples = []; }); });
+  return api;
+}
+async function classify(T, cv) {
+  const r = await T.m.predict(cv);
+  let b = 0;
+  r.forEach((x, j) => { if (x.probability > r[b].probability) b = j; });
+  return { idx: b, prob: r[b].probability, probs: r.map((x) => x.probability) };
+}
+function guard(ctx, info) {
+  return (e) => {
+    // after the scene exits, cleanup disposes models that in-flight predict() calls still use; those errors are expected
+    if (isAbort(e) || !ctx.active) return;
+    console.error(e);
+    if (ctx.active && info) { info.textContent = `發生錯誤：${e && e.message ? e.message : e}`; info.classList.add("err"); }
+  };
+}
+
+function lineChart(cv, series, { n = 2, max = 1, fmt = pct } = {}) {
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (!w || !h) return;
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const L = 38, R = 8, T = 7, B = 16, pw = w - L - R, ph = h - T - B;
+  g.font = `10px ${MONO()}`;
+  g.strokeStyle = C("--line"); g.fillStyle = C("--muted"); g.lineWidth = 1;
+  g.textAlign = "right"; g.textBaseline = "middle";
+  [0, 0.5, 1].forEach((f) => { const y = T + ph * (1 - f); g.beginPath(); g.moveTo(L, y); g.lineTo(w - R, y); g.stroke(); g.fillText(fmt(max * f), L - 5, y); });
+  g.textAlign = "center"; g.textBaseline = "top";
+  g.fillText("1", L, h - B + 3);
+  g.fillText(`${n} 輪`, w - R - 14, h - B + 3);
+  const X = (k) => L + (n > 1 ? k / (n - 1) : 0) * pw, Y = (v) => T + ph * (1 - Math.max(0, Math.min(v, max)) / max);
+  for (const s of series) {
+    if (!s.vals.length) continue;
+    g.setLineDash(s.dash ? [5, 4] : []);
+    g.strokeStyle = s.color; g.lineWidth = s.dash ? 1.5 : 2; g.lineJoin = "round";
+    g.beginPath();
+    s.vals.forEach((v, k) => (k ? g.lineTo(X(k), Y(v)) : g.moveTo(X(k), Y(v))));
+    g.stroke();
+  }
+  g.setLineDash([]);
+}
+
+// Self-built PCA (not part of Teachable Machine): Gram matrix + power iteration, top two components.
+function pca2(rows) {
+  const n = rows.length, d = rows[0].length;
+  const mean = new Float64Array(d);
+  for (const r of rows) for (let j = 0; j < d; j++) mean[j] += r[j] / n;
+  const X = rows.map((r) => Float64Array.from(r, (v, j) => v - mean[j]));
+  const G = X.map((a) => X.map((b) => { let s = 0; for (let j = 0; j < d; j++) s += a[j] * b[j]; return s; }));
+  let total = 0;
+  for (let i = 0; i < n; i++) total += G[i][i];
+  const axes = [], lams = [];
+  for (let k = 0; k < 2; k++) {
+    let v = Array.from({ length: n }, (_, i) => 1 + ((i * 7919) % 13) / 13), lam = 0;
+    for (let it = 0; it < 150; it++) {
+      const u = G.map((row) => row.reduce((s, x, j) => s + x * v[j], 0));
+      lam = Math.hypot(...u) || 1;
+      v = u.map((x) => x / lam);
+    }
+    for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) G[i][j] -= lam * v[i] * v[j];
+    const w = new Float64Array(d), s = Math.sqrt(lam) || 1;
+    X.forEach((x, i) => { for (let j = 0; j < d; j++) w[j] += (x[j] * v[i]) / s; });
+    axes.push(w); lams.push(lam);
+  }
+  const project = (f) => axes.map((w) => { let s = 0; for (let j = 0; j < d; j++) s += (f[j] - mean[j]) * w[j]; return s; });
+  return { project, coords: rows.map(project), ratio: lams.map((l) => l / (total || 1)) };
+}
+// Same preprocessing as the library's capture(): pixels / 127 - 1, batch of one (self-built call)
+async function features(cv) {
+  const t = tf.tidy(() => TRUNC.predict(tf.browser.fromPixels(cv).toFloat().div(127).sub(1).expandDims(0)));
+  const d = await t.data();
+  t.dispose();
+  return d;
 }
 function cameraError(err) {
   const name = err && err.name;
-  if (name === "NotAllowedError" || name === "SecurityError") return "鏡頭權限被拒絕。請在瀏覽器網址列的權限設定允許使用鏡頭，再重新整理頁面";
-  if (name === "NotFoundError" || name === "OverconstrainedError") return "找不到鏡頭。這個示範需要網路攝影機，請接上鏡頭後重新整理";
-  if (name === "NotReadableError") return "鏡頭正被其他程式使用中，請關閉該程式後重新整理";
-  return `無法開啟鏡頭：${(err && err.message) || err}`;
+  if (name === "NotAllowedError" || name === "SecurityError") return "鏡頭權限被拒絕，已切回示範圖形。可在網址列的權限設定允許鏡頭後再試";
+  if (name === "NotFoundError" || name === "OverconstrainedError") return "找不到鏡頭，已切回示範圖形";
+  if (name === "NotReadableError") return "鏡頭正被其他程式使用中，已切回示範圖形";
+  return `無法開啟鏡頭：${(err && err.message) || err}，已切回示範圖形`;
 }
 
-(async () => {
-  await demoGate({
-    icon: "🧠",
-    title: "現場教 AI 認東西",
-    desc: "用鏡頭替兩個類別各拍幾張樣本，Teachable Machine 會在瀏覽器內用遷移學習訓練分類模型，接著即時辨識鏡頭畫面。影像不會上傳。",
-    tags: ["需要鏡頭", "約 3 MB"],
-    button: "開啟鏡頭",
-  });
-  const s = demoStatus("開啟鏡頭…");
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    s.error("這個瀏覽器不支援鏡頭存取（需要 HTTPS 與較新的瀏覽器）");
-    return;
-  }
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: "user" }, audio: false });
-    video.srcObject = stream;
-    await video.play();
-    document.getElementById("camEmpty").remove();
-  } catch (err) {
-    console.error(err);
-    s.error(cameraError(err));
-    document.getElementById("camEmpty").innerHTML = "<b>📷</b>沒有鏡頭畫面，無法收集樣本";
-    return;
-  }
-  try {
-    s.text("下載 TensorFlow.js…"); s.progress(0.2);
-    await loadScript(TF_URL);
-    s.text("下載 Teachable Machine…"); s.progress(0.45);
-    await loadScript(TM_URL);
-    s.text("載入 MobileNet 基底模型（約 1.7 MB）…"); s.progress(0.65);
-    model = await tmImage.createTeachable({ tfjsVersion: tf.version.tfjs }, { version: 2, alpha: 0.35 });
-    model.setLabels(labels());
-    s.done();
-  } catch (err) {
-    console.error(err);
-    s.error(`載入失敗：${err.message || err}，請確認網路連線後重新整理`);
-    return;
-  }
-  showIdle();
-  refreshCounts();
-  setMsg("按住「● 按住收集」錄下兩種畫面，越多樣越準");
-  predictLoop();
-})();
+Showcase.run({ scenes: [
+  {
+    id: "live", title: "現場訓練", api: "addExample() → train() → predict()",
+    desc: "三個類別各收幾張樣本，Teachable Machine 用 MobileNet v2 抽特徵、只訓練最後的小型分類層，幾秒內就能即時辨識。預設用頁面產生的圖形自動示範，也能切到鏡頭自己教。",
+    hint: "按住類別下方的「● 按住收集」加樣本，再按「訓練模型」",
+    async mount(ctx) {
+      ctx.html(`<div class="tm-wrap"><div class="tm-cols tm-live">
+        <div class="tm-col">
+          <div class="tm-stage"><canvas class="tm-view" width="224" height="224"></canvas><video playsinline muted></video>
+            <div class="tm-pred"><span>載入中…</span></div><div class="tm-truth"></div><div class="tm-recb"></div></div>
+          <div class="tm-card"><div class="tm-row"><button class="btn primary tm-train" type="button">🧠 訓練模型</button><button class="btn tm-auto" type="button">▶ 自動示範</button><button class="btn tm-reset" type="button">↺ 重來</button></div>
+            <div class="tm-info"></div><canvas class="tm-chart sm"></canvas>
+            <div class="tm-legend"><span style="--k:var(--c4)">訓練準確率 acc</span><span style="--k:var(--c2)">驗證準確率 val_acc</span></div></div>
+        </div>
+        <div class="tm-col tm-classes"></div>
+      </div></div>`);
+      const view = ctx.$(".tm-view"), vg = view.getContext("2d", { willReadFrequently: true }), video = ctx.$("video");
+      const stage = ctx.$(".tm-stage"), predEl = ctx.$(".tm-pred"), truthEl = ctx.$(".tm-truth"), recEl = ctx.$(".tm-recb");
+      const info = ctx.$(".tm-info"), chart = ctx.$(".tm-chart"), list = ctx.$(".tm-classes");
+      const trainBtn = ctx.$(".tm-train"), autoBtn = ctx.$(".tm-auto"), resetBtn = ctx.$(".tm-reset");
+      const DEMO = ["circle", "triangle", "star"];
+      const NAMES = [DEMO.map((k) => KIND[k]), ["✋ 舉手", "🙂 沒舉手", "👍 比讚"]];
+      const HELP = [DEMO.map((k) => `按住按鈕，產生${KIND[k]}樣本`), ["按住按鈕，對鏡頭舉手", "按住按鈕，手放下", "按住按鈕，比個讚"]];
+      const MIN = 4, MAX = 60, GAP = 110, EPOCHS = 20;
+      let src = 0, stream = null, names = NAMES[0].slice(), counts = [0, 0, 0], hist = [], smooth = null, cards = [];
+      let busy = false, recording = -1, recTok = 0, demoTok = 0, demoP = null, seed = 1;
+      const say = (t, err) => { info.textContent = t; info.classList.toggle("err", !!err); };
+      const fail = guard(ctx, info);
+      vg.fillStyle = "#15171c"; vg.fillRect(0, 0, 224, 224);
+      await engine(ctx);
+      const T = teach(ctx, names, "live");
+
+      const plot = () => lineChart(chart, [{ vals: hist.map(accOf), color: C("--c4") }, { vals: hist.map(valOf), color: C("--c2") }], { n: EPOCHS });
+      const lock = (on) => { [trainBtn, autoBtn, resetBtn].forEach((b) => (b.disabled = on)); cards.forEach((c) => (c.btn.disabled = on)); };
+      const refresh = () => cards.forEach((c, i) => (c.cnt.textContent = `${counts[i]} 張`));
+      function idle() {
+        predEl.innerHTML = "<span>先替三個類別收集樣本，再按「訓練模型」</span>";
+        cards.forEach((c) => { c.el.classList.remove("win"); c.fill.style.width = "0"; c.val.textContent = "0%"; });
+        stage.style.boxShadow = "";
+      }
+      function renderClasses() {
+        list.innerHTML = names.map((n, i) => `<div class="tm-cls" style="--k:var(${CLS[i]})"><div class="tm-cls-h"><input maxlength="12" aria-label="類別 ${i + 1} 名稱"><span class="tm-cnt">0 張</span></div>
+          <div class="tm-strip"><span>${HELP[src][i]}</span></div><div class="tm-cls-f"><button class="btn tm-rec" type="button">● 按住收集</button><div class="tm-pbar"><i></i><b>0%</b></div></div></div>`).join("");
+        cards = [...list.children].map((el, i) => {
+          const input = el.querySelector("input"), btn = el.querySelector(".tm-rec");
+          input.value = names[i];
+          input.addEventListener("input", () => { names[i] = input.value.trim() || `類別 ${i + 1}`; T.m.setLabel(i, names[i]); });
+          btn.addEventListener("pointerdown", (e) => {
+            if (busy || recording >= 0) return;
+            e.preventDefault();
+            btn.setPointerCapture(e.pointerId);
+            record(i).catch(fail);
+          });
+          const end = () => { if (recording === i) recTok++; };
+          ["pointerup", "pointercancel", "lostpointercapture"].forEach((t) => btn.addEventListener(t, end));
+          btn.addEventListener("contextmenu", (e) => e.preventDefault());
+          return { el, btn, cnt: el.querySelector(".tm-cnt"), strip: el.querySelector(".tm-strip"), fill: el.querySelector(".tm-pbar i"), val: el.querySelector(".tm-pbar b") };
+        });
+      }
+      function drawDemo(k) {
+        drawSample(view, DEMO[k], rng(Math.imul(seed++, 2654435761) >>> 0));
+        truthEl.textContent = `畫面中：${KIND[DEMO[k]]}`;
+      }
+      function recUI(i) {
+        cards.forEach((c, j) => c.btn.classList.toggle("on", j === i));
+        recEl.textContent = i >= 0 ? `● 收集中：${names[i]}` : "";
+        recEl.classList.toggle("on", i >= 0);
+        stage.style.boxShadow = i >= 0 ? `0 0 0 3px ${C(CLS[i])}` : "";
+      }
+      function thumb(i) {
+        const s = cards[i].strip;
+        const ph = s.querySelector("span");
+        if (ph) ph.remove();
+        s.prepend(mini(view, 48));
+        while (s.children.length > 40) s.lastChild.remove();
+      }
+      async function record(i) {
+        const tok = ++recTok;
+        recording = i; recUI(i);
+        try {
+          while (tok === recTok && ctx.active) {
+            if (counts[i] >= MAX) { say(`每類最多 ${MAX} 張，已達上限`); break; }
+            const t0 = performance.now();
+            if (src === 1 && video.readyState < 2) { await ctx.sleep(100); continue; }
+            if (src === 0) drawDemo(i);
+            await T.add(i, view);
+            counts[i]++; thumb(i); refresh();
+            if (T.ready) say("加入了新樣本，再按一次「訓練模型」才會更新辨識結果");
+            await ctx.sleep(Math.max(16, GAP - (performance.now() - t0)));
+          }
+        } finally { recording = -1; recUI(-1); }
+      }
+      async function train() {
+        if (busy || recording >= 0) return;
+        const short = counts.findIndex((n) => n < MIN);
+        if (short >= 0) { say(`「${names[short]}」還差 ${MIN - counts[short]} 張（每類至少 ${MIN} 張）`, true); return; }
+        busy = true; lock(true); hist = []; smooth = null; plot();
+        say("在瀏覽器內訓練中…");
+        try {
+          const r = await T.fit({ epochs: EPOCHS }, (e, l) => { hist.push(l); plot(); say(`第 ${e + 1}/${EPOCHS} 輪・訓練 ${pct(accOf(l))}・驗證 ${pct(valOf(l))}`); });
+          const last = hist[hist.length - 1] || {};
+          say(`訓練完成：${counts.reduce((a, b) => a + b, 0)} 張樣本，${sec(r.ms)}，驗證準確率 ${pct(valOf(last))}。${src ? "對著鏡頭試試看" : "畫面每秒換一張沒看過的新圖形"}`);
+        } finally { busy = false; lock(false); }
+      }
+      async function reset() {
+        recTok++; demoTok++;
+        await T.reset(names);
+        counts = [0, 0, 0]; hist = []; smooth = null;
+        plot(); renderClasses(); idle();
+      }
+      function autoDemo() {
+        if (busy || recording >= 0 || src !== 0) return;
+        demoP = (async () => {
+          await reset();
+          const my = demoTok;
+          busy = true; lock(true);
+          try {
+            for (let i = 0; i < 3; i++) {
+              recUI(i);
+              for (let j = 0; j < 6; j++) {
+                if (my !== demoTok || !ctx.active) throw abort();
+                drawDemo(i);
+                await T.add(i, view);
+                counts[i]++; thumb(i); refresh();
+                say(`自動示範：收集「${names[i]}」第 ${j + 1}/6 張`);
+                await ctx.sleep(60);
+              }
+            }
+          } finally { recUI(-1); busy = false; lock(false); }
+          if (my !== demoTok) throw abort();
+          await train();
+        })();
+        demoP.catch(fail);
+      }
+      function stopCam() {
+        if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+        video.srcObject = null;
+      }
+      ctx.onCleanup(stopCam);
+      async function switchSrc(i) {
+        if (i === src) return;
+        demoTok++; recTok++;
+        await T.stop();
+        if (demoP) await demoP.catch(() => {});
+        stopCam();
+        src = i;
+        let err = "";
+        if (src === 1) {
+          say("開啟鏡頭…");
+          try {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("這個瀏覽器不支援鏡頭存取（需要 HTTPS）");
+            stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: "user" }, audio: false });
+            if (!ctx.active) { stopCam(); throw abort(); }
+            video.srcObject = stream;
+            await video.play();
+          } catch (e) {
+            if (isAbort(e)) throw e;
+            stopCam(); src = 0; err = cameraError(e);
+            [...seg.children].forEach((b, j) => b.setAttribute("aria-pressed", String(j === 0)));
+          }
+        }
+        names = NAMES[src].slice();
+        await reset();
+        autoBtn.hidden = src !== 0;
+        truthEl.textContent = "";
+        if (src === 0) { drawDemo(0); say(err || "按住按鈕收集樣本，或按「▶ 自動示範」", !!err); }
+        else say(`鏡頭已開啟（畫面左右鏡像），三個類別各收集至少 ${MIN} 張再訓練`);
+      }
+      function show(res) {
+        const probs = res.map((r) => r.probability);
+        smooth = smooth ? smooth.map((v, i) => v * 0.6 + probs[i] * 0.4) : probs;
+        let best = 0;
+        smooth.forEach((v, i) => {
+          if (v > smooth[best]) best = i;
+          cards[i].fill.style.width = `${(v * 100).toFixed(1)}%`;
+          cards[i].val.textContent = pct(v);
+        });
+        cards.forEach((c, i) => c.el.classList.toggle("win", i === best));
+        predEl.innerHTML = `<span>辨識結果</span><strong></strong><span class="p" style="color:var(${CLS[best]})">${pct(smooth[best])}</span>`;
+        predEl.querySelector("strong").textContent = names[best];
+        stage.style.boxShadow = `0 0 0 ${2 + smooth[best] * 3}px ${C(CLS[best])}`;
+      }
+
+      const seg = ctx.group(["示範圖形", "鏡頭"], 0, (i) => switchSrc(i).catch(fail));
+      trainBtn.addEventListener("click", () => train().catch(fail));
+      autoBtn.addEventListener("click", autoDemo);
+      resetBtn.addEventListener("click", () => { if (!busy) reset().then(() => say("已清除所有樣本")).catch(fail); });
+      ctx.raf(() => {
+        if (src !== 1 || video.readyState < 2) return;
+        const vw = video.videoWidth, vh = video.videoHeight, s = Math.min(vw, vh);
+        vg.save(); vg.translate(224, 0); vg.scale(-1, 1);
+        vg.drawImage(video, (vw - s) / 2, (vh - s) / 2, s, s, 0, 0, 224, 224);
+        vg.restore();
+      });
+      ctx.interval(() => { if (src === 0 && !busy && recording < 0) drawDemo(Math.floor(Math.random() * 3)); }, 1100);
+      ctx.onResize(plot);
+      renderClasses(); idle(); drawDemo(0); plot();
+      (async () => {
+        while (ctx.active) {
+          if (T.ready && !busy && recording < 0 && (src === 0 || video.readyState >= 2)) {
+            const res = await T.m.predict(view);
+            if (ctx.active && T.ready && !busy) show(res);
+          }
+          await ctx.frame();
+        }
+      })().catch(fail);
+      autoDemo();
+    },
+  },
+  {
+    id: "curve", title: "訓練曲線", api: "train({ learningRate, epochs }, { onEpochEnd })",
+    desc: "同一批 24 張樣本、同一個亂數種子，只改學習率與訓練輪數，看 onEpochEnd 回報的訓練／驗證準確率與損失怎麼變化。虛線是上一次完成的結果。",
+    hint: "右上角換學習率或輪數，會停掉目前的訓練並重跑",
+    async mount(ctx) {
+      ctx.html(`<div class="tm-wrap"><div class="tm-cols">
+        <div class="tm-col">
+          <div class="tm-card"><h2>準確率<b class="c-acc">-</b></h2><canvas class="tm-chart ca"></canvas>
+            <div class="tm-legend"><span style="--k:var(--c4)">訓練 acc</span><span style="--k:var(--c2)">驗證 val_acc</span><span class="dash" style="--k:var(--muted)">上一次的 val_acc</span></div></div>
+          <div class="tm-card"><h2>損失<b class="c-loss">-</b></h2><canvas class="tm-chart cl"></canvas>
+            <div class="tm-legend"><span style="--k:var(--c5)">訓練 loss</span><span style="--k:var(--c3)">驗證 val_loss</span><span class="dash" style="--k:var(--muted)">上一次的 val_loss</span></div></div>
+        </div>
+        <div class="tm-col">
+          <div class="tm-card"><h2>這一次<b class="cfg">-</b></h2><div class="tm-kpi"><div><b class="k-acc">-</b><span>訓練準確率</span></div><div><b class="k-val">-</b><span>驗證準確率</span></div><div><b class="k-ms">-</b><span>訓練耗時</span></div></div><div class="tm-info run"></div></div>
+          <div class="tm-card"><h2>上一次<b class="pcfg">-</b></h2><div class="tm-info prev" style="margin:0">還沒有完成的紀錄</div></div>
+          <div class="tm-card"><h2>樣本<b>3 類 × 8 張</b></h2><div class="tm-thumbs"></div>
+            <div class="tm-info">prepare() 每類取 15%（無條件進位）當驗證集：訓練 18 張、驗證 6 張。驗證集很小，所以 val_acc 只會是 1/6 的倍數。</div></div>
+        </div></div></div>`);
+      const KINDS = ["circle", "triangle", "star"], names = KINDS.map((k) => KIND[k]);
+      const info = ctx.$(".tm-info.run"), ca = ctx.$(".ca"), cl = ctx.$(".cl");
+      let lr = 0.001, epochs = 30, logs = [], ghost = null, lastDone = null, tok = 0;
+      const fail = guard(ctx, info);
+      await engine(ctx);
+      const T = teach(ctx, names, "curve");
+      const th = ctx.$(".tm-thumbs");
+      for (let k = 0; k < 3; k++) for (let j = 0; j < 8; j++) {
+        const cv = sample(KINDS[k], 300 + k * 50 + j, { size: 0.5 });
+        await T.add(k, cv);
+        th.append(mini(cv, 48));
+        info.textContent = `addExample() 抽取特徵 ${k * 8 + j + 1}/24`;
+        await ctx.frame();
+      }
+      T.m.prepare();
+      const draw = () => {
+        const n = Math.max(epochs, ghost ? ghost.logs.length : 0);
+        const g = ghost ? ghost.logs : [];
+        lineChart(ca, [{ vals: g.map(valOf), color: C("--muted"), dash: true }, { vals: logs.map(accOf), color: C("--c4") }, { vals: logs.map(valOf), color: C("--c2") }], { n });
+        const all = [...logs, ...g].flatMap((l) => [l.loss, l.val_loss]).filter(Number.isFinite);
+        const max = Math.max(0.2, ...all) * 1.05;
+        lineChart(cl, [{ vals: g.map((l) => l.val_loss), color: C("--muted"), dash: true }, { vals: logs.map((l) => l.loss), color: C("--c5") }, { vals: logs.map((l) => l.val_loss), color: C("--c3") }], { n, max, fmt: (v) => v.toFixed(2) });
+        const last = logs[logs.length - 1];
+        ctx.$(".c-acc").textContent = last ? `${pct(accOf(last))} / ${pct(valOf(last))}` : "-";
+        ctx.$(".c-loss").textContent = last ? `${last.loss.toFixed(3)} / ${last.val_loss.toFixed(3)}` : "-";
+        ctx.$(".k-acc").textContent = last ? pct(accOf(last)) : "-";
+        ctx.$(".k-val").textContent = last ? pct(valOf(last)) : "-";
+      };
+      ctx.onResize(draw);
+      async function run() {
+        const my = ++tok;
+        logs = []; ghost = lastDone;
+        ctx.$(".cfg").textContent = `學習率 ${lr}・${epochs} 輪`;
+        ctx.$(".k-ms").textContent = "…";
+        ctx.$(".pcfg").textContent = ghost ? `學習率 ${ghost.lr}・${ghost.epochs} 輪` : "-";
+        ctx.$(".prev").textContent = ghost ? `訓練 ${pct(accOf(ghost.last))}，驗證 ${pct(valOf(ghost.last))}，驗證損失 ${ghost.last.val_loss.toFixed(3)}，耗時 ${sec(ghost.ms)}` : "還沒有完成的紀錄";
+        draw();
+        info.classList.remove("err");
+        try {
+          const r = await T.fit({ learningRate: lr, epochs }, (e, l) => {
+            if (my !== tok) return;
+            logs.push(l); draw();
+            info.textContent = `第 ${e + 1}/${epochs} 輪`;
+          }, { reprepare: false });
+          if (my !== tok) return;
+          ctx.$(".k-ms").textContent = sec(r.ms);
+          info.textContent = `完成。同一個種子，初始權重與資料切分都一樣，差異只來自學習率與輪數。`;
+          if (!r.stopped && logs.length) lastDone = { logs: logs.slice(), lr, epochs, ms: r.ms, last: logs[logs.length - 1] };
+        } catch (e) { fail(e); }
+      }
+      ctx.select("學習率", ["0.0001", "0.001", "0.01"], "0.001", (v) => { lr = +v; run(); });
+      ctx.select("輪數", [10, 30, 60].map((n) => ({ value: String(n), label: `${n} 輪` })), "30", (v) => { epochs = +v; run(); });
+      run();
+    },
+  },
+  {
+    id: "confusion", title: "混淆矩陣", api: "calculateAccuracyPerClass() + predict()",
+    desc: "圓形、八邊形、六邊形在小尺寸時很像。各用 8 張訓練後，用官方 calculateAccuracyPerClass() 算驗證集準確率，再拿 24 張沒看過的圖片逐張 predict()，整理成混淆矩陣。",
+    hint: "右上角切換大圖形／小圖形，或按「換一批」重抽樣本",
+    async mount(ctx) {
+      ctx.html(`<div class="tm-wrap"><div class="tm-cols">
+        <div class="tm-col">
+          <div class="tm-card"><h2>混淆矩陣（列：實際，欄：預測）<b class="cm-n">-</b></h2><table class="tm-tbl tm-cm"></table><div class="tm-info run"></div></div>
+          <div class="tm-card"><h2>測試圖片（綠框對、紅框錯）</h2><div class="tm-tiles"></div></div>
+        </div>
+        <div class="tm-col">
+          <div class="tm-card"><h2>結果</h2><div class="tm-kpi"><div><b class="k-val">-</b><span>驗證集（官方 API）</span></div><div><b class="k-test">-</b><span>測試集 24 張</span></div></div><div class="tm-info conf"></div></div>
+          <div class="tm-card"><h2>訓練樣本<b>3 類 × 8 張</b></h2><div class="tm-thumbs"></div></div>
+        </div></div></div>`);
+      const KINDS = ["circle", "octagon", "hexagon"], names = KINDS.map((k) => KIND[k]);
+      const SIZES = [1, 0.4];
+      const info = ctx.$(".tm-info.run"), table = ctx.$(".tm-cm"), tiles = ctx.$(".tm-tiles"), thumbs = ctx.$(".tm-thumbs");
+      let mode = 1, batch = 0, tok = 0;
+      const fail = guard(ctx, info);
+      await engine(ctx);
+      const T = teach(ctx, names, "confusion");
+      function renderM(M) {
+        const head = `<tr><th></th>${names.map((n) => `<th>${n}</th>`).join("")}<th>召回率</th></tr>`;
+        table.innerHTML = head + M.map((row, k) => {
+          const tot = row.reduce((a, b) => a + b, 0);
+          return `<tr><th>${names[k]}</th>${row.map((v, j) => {
+            const a = tot ? Math.round((v / tot) * 70) : 0;
+            return `<td class="n" style="background:color-mix(in srgb, var(${j === k ? "--c4" : "--c3"}) ${v ? a : 0}%, transparent)">${v}</td>`;
+          }).join("")}<td class="n">${tot ? pct(row[k] / tot) : "-"}</td></tr>`;
+        }).join("");
+      }
+      async function run() {
+        const my = ++tok;
+        const live = () => { if (!ctx.active || my !== tok) throw abort(); };
+        const size = SIZES[mode];
+        info.classList.remove("err");
+        await T.reset(names);
+        live();
+        const M = names.map(() => names.map(() => 0));
+        renderM(M); tiles.innerHTML = ""; thumbs.innerHTML = "";
+        ["k-val", "k-test"].forEach((c) => (ctx.$(`.${c}`).textContent = "-"));
+        ctx.$(".conf").textContent = ""; ctx.$(".cm-n").textContent = "-";
+        for (let k = 0; k < 3; k++) for (let j = 0; j < 8; j++) {
+          live();
+          const cv = sample(KINDS[k], 1000 + batch * 10000 + k * 100 + j, { size });
+          await T.add(k, cv);
+          thumbs.append(mini(cv, 48));
+          info.textContent = `addExample() ${k * 8 + j + 1}/24`;
+          await ctx.frame();
+        }
+        live();
+        await T.fit({ epochs: 20 }, (e) => { if (my === tok) info.textContent = `train() 第 ${e + 1}/20 輪`; });
+        live();
+        const { reference, predictions } = await T.m.calculateAccuracyPerClass();
+        const ref = await reference.data(), pre = await predictions.data();
+        reference.dispose();
+        if (predictions !== reference) predictions.dispose();
+        live();
+        const vOk = ref.reduce((s, v, i) => s + (v === pre[i] ? 1 : 0), 0);
+        ctx.$(".k-val").textContent = `${pct(vOk / ref.length)}`;
+        ctx.$(".k-val").title = `${vOk}/${ref.length}`;
+        let ok = 0, n = 0;
+        for (let k = 0; k < 3; k++) for (let j = 0; j < 8; j++) {
+          live();
+          const cv = sample(KINDS[k], 500000 + batch * 10000 + k * 100 + j, { size });
+          const c = await classify(T, cv);
+          live();
+          M[k][c.idx]++; n++; ok += c.idx === k ? 1 : 0;
+          tiles.append(tile(cv, `${names[c.idx]} ${pct(c.prob)}`, c.idx === k));
+          renderM(M);
+          ctx.$(".cm-n").textContent = `${n}/24`;
+          info.textContent = `predict() ${n}/24`;
+          await ctx.frame();
+        }
+        ctx.$(".k-test").textContent = pct(ok / n);
+        let worst = null;
+        M.forEach((row, k) => row.forEach((v, j) => { if (j !== k && v && (!worst || v > worst.v)) worst = { v, k, j }; }));
+        ctx.$(".conf").textContent = worst ? `最常見的錯誤：把「${names[worst.k]}」認成「${names[worst.j]}」${worst.v} 次。` : "測試集全部答對。";
+        info.textContent = `完成。驗證集只有 ${ref.length} 張（官方 calculateAccuracyPerClass），測試集是另外產生的 24 張。`;
+      }
+      ctx.group(["好分：大圖形", "難分：小圖形"], mode, (i) => { mode = i; run().catch(fail); });
+      ctx.button("換一批", () => { batch++; run().catch(fail); });
+      run().catch(fail);
+    },
+  },
+  {
+    id: "samples", title: "樣本數", api: "addExample() 逐步加量 → prepare() → train()",
+    desc: "每類從 2 張樣本開始，逐步加到 3、5、8 張，每一步重新訓練，再用同一組 15 張測試圖片量準確率，看樣本數對小模型的影響。",
+    hint: "按「換一批」用另一組隨機樣本重跑",
+    async mount(ctx) {
+      const STEPS = [2, 3, 5, 8], TESTS = 5;
+      ctx.html(`<div class="tm-wrap"><div class="tm-cols">
+        <div class="tm-col">
+          <div class="tm-card"><h2>測試準確率 vs 每類樣本數<b class="st">-</b></h2><div class="tm-bars">${STEPS.map((n) =>
+            `<div class="tm-bar"><span>每類 ${n} 張（訓練 ${n - Math.ceil(0.15 * n)}・驗證 ${Math.ceil(0.15 * n)}）</span><span class="t"><i></i></span><b>未測</b></div>`).join("")}</div><div class="tm-info run"></div></div>
+          <div class="tm-card"><h2>固定測試集（每類 ${TESTS} 張），顯示最新一步的結果</h2><div class="tm-tiles"></div></div>
+        </div>
+        <div class="tm-col">
+          <div class="tm-card"><h2>訓練樣本（黃框是這一步新增）</h2><div class="rows"></div></div>
+          <div class="tm-card"><h2>說明</h2><div class="tm-info" style="margin:0">prepare() 會從每類切 15%（無條件進位）當驗證集，所以每類 2 張時其實只有 1 張拿來訓練。類別是圓形、八邊形、六邊形，形狀接近，樣本少時容易混淆。</div></div>
+        </div></div></div>`);
+      const KINDS = ["circle", "octagon", "hexagon"], names = KINDS.map((k) => KIND[k]);
+      const info = ctx.$(".tm-info.run"), tiles = ctx.$(".tm-tiles"), bars = ctx.$$(".tm-bar"), rows = ctx.$(".rows");
+      let batch = 0, tok = 0;
+      const fail = guard(ctx, info);
+      await engine(ctx);
+      const T = teach(ctx, names, "samples");
+      async function run() {
+        const my = ++tok;
+        const live = () => { if (!ctx.active || my !== tok) throw abort(); };
+        info.classList.remove("err");
+        await T.reset(names);
+        live();
+        bars.forEach((b) => { b.querySelector("i").style.width = "0"; b.querySelector("b").textContent = "未測"; });
+        rows.innerHTML = names.map((n) => `<div class="tm-info" style="margin:4px 0 3px">${n}</div><div class="tm-thumbs"></div>`).join("");
+        const strips = [...rows.querySelectorAll(".tm-thumbs")];
+        const tests = KINDS.flatMap((k, c) => Array.from({ length: TESTS }, (_, j) => ({ cv: sample(k, 900000 + batch * 10000 + c * 100 + j), c })));
+        tiles.innerHTML = "";
+        tests.forEach((t) => tiles.append(tile(t.cv, "未測")));
+        let have = 0;
+        for (let s = 0; s < STEPS.length; s++) {
+          const n = STEPS[s];
+          strips.forEach((st) => st.querySelectorAll(".new").forEach((c) => c.classList.remove("new")));
+          for (let k = 0; k < 3; k++) for (let j = have; j < n; j++) {
+            live();
+            const cv = sample(KINDS[k], 2000 + batch * 10000 + k * 100 + j);
+            await T.add(k, cv);
+            const m = mini(cv, 48);
+            m.className = "new";
+            strips[k].append(m);
+            info.textContent = `每類 ${n} 張：addExample() 加入「${names[k]}」`;
+            await ctx.frame();
+          }
+          have = n;
+          live();
+          const r = await T.fit({ epochs: 20 }, (e) => { if (my === tok) info.textContent = `每類 ${n} 張：train() 第 ${e + 1}/20 輪`; });
+          live();
+          let ok = 0;
+          tiles.innerHTML = "";
+          for (const t of tests) {
+            live();
+            const c = await classify(T, t.cv);
+            live();
+            ok += c.idx === t.c ? 1 : 0;
+            tiles.append(tile(t.cv, `${names[c.idx]} ${pct(c.prob)}`, c.idx === t.c));
+            info.textContent = `每類 ${n} 張：predict() ${tiles.children.length}/${tests.length}`;
+            await ctx.frame();
+          }
+          const acc = ok / tests.length;
+          bars[s].querySelector("i").style.width = `${Math.max(2, acc * 100)}%`;
+          bars[s].querySelector("b").textContent = `${pct(acc)}・${sec(r.ms)}`;
+          ctx.$(".st").textContent = `${s + 1}/${STEPS.length} 步`;
+        }
+        info.textContent = "完成。測試圖片每一步都相同，只有訓練樣本變多；秒數是 train() 的耗時。";
+      }
+      ctx.button("換一批", () => { batch++; run().catch(fail); });
+      run().catch(fail);
+    },
+  },
+  {
+    id: "shortcut", title: "捷徑學習", api: "predict() 對調背景測試",
+    desc: "訓練時圓形都在草地上、三角形都在天空裡，模型可能只學會「看背景」。把背景對調後再測，就能看出它到底學到什麼；補幾張對調背景的樣本再訓練，準確率會回升。",
+    hint: "按右上角「補 4 張對調背景的樣本」重新訓練",
+    async mount(ctx) {
+      ctx.html(`<div class="tm-wrap"><div class="tm-cols">
+        <div class="tm-col">
+          <div class="tm-card"><h2>測試一：背景和訓練時相同<b class="ka">-</b></h2><div class="tm-tiles ta"></div></div>
+          <div class="tm-card"><h2>測試二：背景對調（圓形在天空、三角形在草地）<b class="kb">-</b></h2><div class="tm-tiles tb"></div></div>
+        </div>
+        <div class="tm-col">
+          <div class="tm-card"><h2>結果</h2><div class="tm-kpi"><div><b class="k-a">-</b><span>背景相同</span></div><div><b class="k-b">-</b><span>背景對調</span></div></div><div class="tm-info run"></div></div>
+          <div class="tm-card"><h2>訓練資料<b class="cnt">-</b></h2><div class="tm-thumbs"></div><div class="tm-info hint2"></div></div>
+        </div></div></div>`);
+      const KINDS = ["circle", "triangle"], names = KINDS.map((k) => KIND[k]);
+      const BG = [["grass", "sky"], ["sky", "grass"]];
+      const info = ctx.$(".tm-info.run"), thumbs = ctx.$(".tm-thumbs");
+      let fixed = false, tok = 0;
+      const fail = guard(ctx, info);
+      await engine(ctx);
+      const T = teach(ctx, names, "shortcut");
+      async function test(my, el, kpi, kpi2, swap) {
+        let ok = 0, n = 0;
+        el.innerHTML = "";
+        for (let k = 0; k < 2; k++) for (let j = 0; j < 6; j++) {
+          if (!ctx.active || my !== tok) throw abort();
+          const cv = sample(KINDS[k], 700000 + swap * 1000 + k * 100 + j, { bg: BG[swap][k], size: 0.5 });
+          const c = await classify(T, cv);
+          if (!ctx.active || my !== tok) throw abort();
+          n++; ok += c.idx === k ? 1 : 0;
+          el.append(tile(cv, `${names[c.idx]} ${pct(c.prob)}`, c.idx === k));
+          kpi.textContent = kpi2.textContent = `${pct(ok / n)}`;
+          await ctx.frame();
+        }
+        return ok / n;
+      }
+      async function run() {
+        const my = ++tok;
+        const live = () => { if (!ctx.active || my !== tok) throw abort(); };
+        info.classList.remove("err");
+        await T.reset(names);
+        live();
+        thumbs.innerHTML = "";
+        ["ka", "kb", "k-a", "k-b"].forEach((c) => (ctx.$(`.${c}`).textContent = "-"));
+        ctx.$(".ta").innerHTML = ctx.$(".tb").innerHTML = "";
+        const plan = [];
+        for (let k = 0; k < 2; k++) for (let j = 0; j < 8; j++) plan.push({ k, j, swap: 0 });
+        if (fixed) for (let k = 0; k < 2; k++) for (let j = 0; j < 4; j++) plan.push({ k, j, swap: 1 });
+        for (const p of plan) {
+          live();
+          const cv = sample(KINDS[p.k], 3000 + p.swap * 500 + p.k * 100 + p.j, { bg: BG[p.swap][p.k], size: 0.5 });
+          await T.add(p.k, cv);
+          const m = mini(cv, 48);
+          if (p.swap) m.className = "new";
+          thumbs.append(m);
+          info.textContent = `addExample() ${thumbs.children.length}/${plan.length}`;
+          await ctx.frame();
+        }
+        ctx.$(".cnt").textContent = `${plan.length} 張`;
+        ctx.$(".hint2").textContent = fixed ? "黃框是補上的對調背景樣本：每類 8 張原始＋4 張對調。" : "每類 8 張：圓形全在草地、三角形全在天空。";
+        live();
+        await T.fit({ epochs: 20 }, (e) => { if (my === tok) info.textContent = `train() 第 ${e + 1}/20 輪`; });
+        live();
+        info.textContent = "測試中…";
+        const a = await test(my, ctx.$(".ta"), ctx.$(".ka"), ctx.$(".k-a"), 0);
+        const b = await test(my, ctx.$(".tb"), ctx.$(".kb"), ctx.$(".k-b"), 1);
+        info.textContent = b < a - 0.2
+          ? `背景一對調，準確率從 ${pct(a)} 掉到 ${pct(b)}：模型主要靠背景在判斷，而不是形狀。`
+          : `背景對調後仍有 ${pct(b)}：多樣化的樣本讓模型改看形狀本身。`;
+      }
+      const btn = ctx.button("＋ 補 4 張對調背景的樣本", () => {
+        fixed = !fixed;
+        btn.textContent = fixed ? "↺ 回到原始訓練資料" : "＋ 補 4 張對調背景的樣本";
+        run().catch(fail);
+      }, { primary: true });
+      run().catch(fail);
+    },
+  },
+  {
+    id: "features", title: "特徵空間", api: "addExample() 的 1280 維特徵 + 自製 PCA",
+    desc: "Teachable Machine 先用 MobileNet 把每張圖變成 1280 維的特徵向量，再只在這些向量上訓練小型分類層。這裡用本頁自製的 PCA 把特徵壓成 2 維，看三類圖形是否分得開。",
+    hint: "右上角切換大圖形／小圖形；每 1.2 秒會投影一張新圖片",
+    async mount(ctx) {
+      ctx.html(`<div class="tm-wrap"><div class="tm-cols">
+        <div class="tm-col"><div class="tm-card"><h2>主成分 1 × 主成分 2<b class="var">-</b></h2><canvas class="tm-scatter"></canvas>
+          <div class="tm-legend lg"></div><div class="tm-info run"></div></div></div>
+        <div class="tm-col">
+          <div class="tm-card"><h2>即時新圖片</h2><div class="tm-live-th"><canvas width="96" height="96"></canvas><div class="lv"><span class="tm-info" style="margin:0">等待中…</span></div></div></div>
+          <div class="tm-card"><h2>怎麼看這張圖</h2><div class="tm-info" style="margin:0">每個點是一張訓練圖片的特徵（由官方 addExample() 抽取，讀自 model.examples），十字是各類中心。圓圈是新圖片，連線指向 1280 維空間中最近的類別中心。PCA 投影與最近中心判斷是本頁自製的分析，不是 Teachable Machine 的 API。</div></div>
+        </div></div></div>`);
+      const KINDS = ["circle", "octagon", "hexagon"], names = KINDS.map((k) => KIND[k]);
+      const SIZES = [1, 0.4];
+      const cv = ctx.$(".tm-scatter"), g = cv.getContext("2d"), info = ctx.$(".tm-info.run");
+      const liveCv = ctx.$(".tm-live-th canvas"), lv = ctx.$(".lv");
+      ctx.$(".lg").innerHTML = names.map((n, i) => `<span class="dot" style="--k:var(${CLS[i]})">${n}</span>`).join("");
+      let mode = 0, tok = 0, state = null, livePt = null, seed = 1;
+      const fail = guard(ctx, info);
+      await engine(ctx);
+      const T = teach(ctx, names, "features");
+      function draw(t) {
+        const w = cv.clientWidth, h = cv.clientHeight, dpr = Math.min(devicePixelRatio || 1, 2);
+        if (!w || !h) return;
+        if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+        g.setTransform(dpr, 0, 0, dpr, 0, 0);
+        g.clearRect(0, 0, w, h);
+        if (!state) return;
+        const pts = state.coords.concat(livePt ? [livePt.xy] : []);
+        let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+        pts.forEach(([x, y]) => { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); });
+        const px = (x1 - x0) * 0.1 || 1, py = (y1 - y0) * 0.1 || 1, P = 18;
+        const X = (x) => P + ((x - x0 + px) / (x1 - x0 + 2 * px)) * (w - 2 * P);
+        const Y = (y) => h - P - ((y - y0 + py) / (y1 - y0 + 2 * py)) * (h - 2 * P);
+        g.strokeStyle = C("--line"); g.lineWidth = 1;
+        g.beginPath(); g.moveTo(P, h / 2); g.lineTo(w - P, h / 2); g.moveTo(w / 2, P); g.lineTo(w / 2, h - P); g.stroke();
+        const cols = CLS.map(C);
+        state.coords.forEach(([x, y], i) => { g.fillStyle = cols[state.labels[i]]; g.globalAlpha = 0.85; g.beginPath(); g.arc(X(x), Y(y), 6, 0, 7); g.fill(); });
+        g.globalAlpha = 1;
+        state.cent2.forEach(([x, y], k) => {
+          g.strokeStyle = cols[k]; g.lineWidth = 3;
+          g.beginPath(); g.moveTo(X(x) - 9, Y(y)); g.lineTo(X(x) + 9, Y(y)); g.moveTo(X(x), Y(y) - 9); g.lineTo(X(x), Y(y) + 9); g.stroke();
+        });
+        if (livePt) {
+          const [x, y] = livePt.xy, [cx, cy] = state.cent2[livePt.near], col = cols[livePt.near];
+          const age = (t - livePt.t0) / 1000, r = 7 + 5 * Math.abs(Math.sin(age * 3));
+          g.strokeStyle = col; g.lineWidth = 1.5; g.setLineDash([4, 4]);
+          g.beginPath(); g.moveTo(X(x), Y(y)); g.lineTo(X(cx), Y(cy)); g.stroke(); g.setLineDash([]);
+          g.lineWidth = 3; g.strokeStyle = C("--fg");
+          g.beginPath(); g.arc(X(x), Y(y), r, 0, 7); g.stroke();
+          g.fillStyle = col; g.beginPath(); g.arc(X(x), Y(y), 4, 0, 7); g.fill();
+        }
+      }
+      async function run() {
+        const my = ++tok;
+        const live = () => { if (!ctx.active || my !== tok) throw abort(); };
+        state = null; livePt = null;
+        info.classList.remove("err");
+        ctx.$(".var").textContent = "-";
+        await T.reset(names);
+        for (let k = 0; k < 3; k++) for (let j = 0; j < 8; j++) {
+          live();
+          await T.add(k, sample(KINDS[k], 4000 + k * 100 + j, { size: SIZES[mode] }));
+          info.textContent = `addExample() 抽取特徵 ${k * 8 + j + 1}/24`;
+          await ctx.frame();
+        }
+        live();
+        const rows = [], labels = [];
+        T.m.examples.forEach((list, k) => list.forEach((f) => { rows.push(f); labels.push(k); }));
+        const p = pca2(rows);
+        const d = rows[0].length;
+        const centF = names.map((_, k) => { const c = new Float64Array(d); let n = 0; rows.forEach((r, i) => { if (labels[i] === k) { n++; for (let j = 0; j < d; j++) c[j] += r[j]; } }); return c.map((v) => v / n); });
+        state = { p, coords: p.coords, labels, centF, cent2: centF.map((c) => p.project(c)) };
+        ctx.$(".var").textContent = `解釋變異 ${pct(p.ratio[0])} + ${pct(p.ratio[1])}`;
+        info.textContent = `${rows.length} 個點，每個點原本是 ${d} 維。${mode ? "小圖形的特徵擠在一起，分類層比較難切開。" : "大圖形各自成群，分類層很容易切開。"}`;
+      }
+      ctx.group(["好分：大圖形", "難分：小圖形"], mode, (i) => { mode = i; run().catch(fail); });
+      ctx.raf((t) => draw(t));
+      run().catch(fail);
+      while (ctx.active) {
+        await ctx.sleep(1200);
+        if (!state) continue;
+        const my = tok, k = Math.floor(Math.random() * 3);
+        const img = sample(KINDS[k], 800000 + seed++, { size: SIZES[mode] });
+        const f = await features(img);
+        if (!ctx.active || my !== tok || !state) continue;
+        let near = 0, best = Infinity;
+        state.centF.forEach((c, j) => { let s = 0; for (let i = 0; i < f.length; i++) s += (f[i] - c[i]) ** 2; if (s < best) { best = s; near = j; } });
+        livePt = { xy: state.p.project(f), near, t0: performance.now() };
+        liveCv.getContext("2d").drawImage(img, 0, 0, 96, 96);
+        liveCv.parentElement.style.setProperty("--k", `var(${CLS[near]})`);
+        lv.innerHTML = `<span>實際：${names[k]}</span><span>最近的中心：<b class="${near === k ? "tm-ok" : "tm-bad"}">${names[near]}</b></span><span class="tm-info" style="margin:0">${near === k ? "落在正確的群裡" : "落到別的群附近"}</span>`;
+      }
+    },
+  },
+  {
+    id: "export", title: "匯出與載入", api: "save(tf.io.withSaveHandler) + tmImage.loadFromFiles()",
+    desc: "訓練好的模型用 save() 匯出成 model.json、weights.bin、metadata.json 三個檔案（和 Teachable Machine 網站下載的格式相同），再用官方 loadFromFiles() 載回來，逐張比對兩邊的預測。",
+    hint: "可以下載三個檔案，放進自己的網頁用 tmImage.load() 載入",
+    async mount(ctx) {
+      ctx.html(`<div class="tm-wrap"><div class="tm-cols">
+        <div class="tm-col">
+          <div class="tm-card"><h2>匯出的檔案</h2><table class="tm-tbl files"><tr><th>檔名</th><th>大小</th><th>內容</th></tr></table><div class="tm-dl"></div><div class="tm-info run"></div></div>
+          <div class="tm-card"><h2>metadata.json</h2><pre class="tm-pre meta">-</pre></div>
+        </div>
+        <div class="tm-col">
+          <div class="tm-card"><h2>載回後比對</h2><div class="tm-kpi"><div><b class="k-diff">-</b><span>機率最大差</span></div><div><b class="k-same">-</b><span>結果一致</span></div><div><b class="k-load">-</b><span>載入耗時</span></div></div></div>
+          <div class="tm-card"><table class="tm-tbl cmp"><tr><th>圖片</th><th>原模型</th><th>載回的模型</th></tr></table></div>
+        </div></div></div>`);
+      const KINDS = ["circle", "star"], names = KINDS.map((k) => KIND[k]);
+      const info = ctx.$(".tm-info.run"), files = ctx.$(".files"), cmp = ctx.$(".cmp");
+      const fail = guard(ctx, info);
+      const urls = [];
+      let loaded = null;
+      ctx.onCleanup(() => { urls.forEach((u) => URL.revokeObjectURL(u)); if (loaded) loaded.model.dispose(); });
+      await engine(ctx);
+      const T = teach(ctx, names, "export");
+      try {
+        for (let k = 0; k < 2; k++) for (let j = 0; j < 5; j++) {
+          await T.add(k, sample(KINDS[k], 5000 + k * 100 + j));
+          info.textContent = `addExample() ${k * 5 + j + 1}/10`;
+          await ctx.frame();
+          if (!ctx.active) throw abort();
+        }
+        await T.fit({ epochs: 15 }, (e) => { info.textContent = `train() 第 ${e + 1}/15 輪`; });
+        let art = null;
+        await T.m.save(tf.io.withSaveHandler(async (a) => { art = a; return { modelArtifactsInfo: { dateSaved: new Date(), modelTopologyType: "JSON" } }; }));
+        if (!ctx.active) throw abort();
+        const meta = T.m.getMetadata();
+        const modelJson = JSON.stringify({ modelTopology: art.modelTopology, format: art.format, generatedBy: art.generatedBy, convertedBy: art.convertedBy, weightsManifest: [{ paths: ["weights.bin"], weights: art.weightSpecs }] });
+        const metaJson = JSON.stringify(meta, null, 2);
+        const list = [
+          { name: "model.json", data: modelJson, type: "application/json", what: `網路結構＋${art.weightSpecs.length} 組權重的索引` },
+          { name: "weights.bin", data: art.weightData, type: "application/octet-stream", what: "所有權重（含 MobileNet 基底）" },
+          { name: "metadata.json", data: metaJson, type: "application/json", what: `類別名稱 ${meta.labels.join("、")}` },
+        ].map((f) => ({ ...f, file: new File([f.data], f.name, { type: f.type }) }));
+        list.forEach((f) => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td class="n">${f.name}</td><td class="n">${kb(f.file.size)}</td><td></td>`;
+          tr.lastChild.textContent = f.what;
+          files.append(tr);
+          const u = URL.createObjectURL(f.file);
+          urls.push(u);
+          const a = document.createElement("a");
+          a.className = "btn"; a.href = u; a.download = f.name; a.textContent = `⬇ ${f.name}`;
+          ctx.$(".tm-dl").append(a);
+        });
+        ctx.$(".meta").textContent = metaJson;
+        info.textContent = "tmImage.loadFromFiles() 載入中…";
+        await ctx.frame();
+        const t0 = performance.now();
+        loaded = await tmImage.loadFromFiles(list[0].file, list[1].file, list[2].file);
+        const loadMs = performance.now() - t0;
+        if (!ctx.active) throw abort();
+        ctx.$(".k-load").textContent = sec(loadMs);
+        let maxDiff = 0, same = 0;
+        for (let i = 0; i < 6; i++) {
+          const img = sample(KINDS[i % 2], 60000 + i);
+          const a = await T.m.predict(img), b = await loaded.predict(img);
+          if (!ctx.active) throw abort();
+          const ai = a[0].probability >= a[1].probability ? 0 : 1, bi = b[0].probability >= b[1].probability ? 0 : 1;
+          a.forEach((x, j) => (maxDiff = Math.max(maxDiff, Math.abs(x.probability - b[j].probability))));
+          same += ai === bi ? 1 : 0;
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td></td><td class="n">${names[ai]} ${(a[ai].probability * 100).toFixed(2)}%</td><td class="n">${names[bi]} ${(b[bi].probability * 100).toFixed(2)}%</td>`;
+          tr.firstChild.append(mini(img, 68));
+          cmp.append(tr);
+          await ctx.frame();
+        }
+        ctx.$(".k-diff").textContent = maxDiff === 0 ? "0" : maxDiff < 1e-4 ? maxDiff.toExponential(1) : maxDiff.toFixed(4);
+        ctx.$(".k-same").textContent = `${same}/6`;
+        info.textContent = `載回的模型共 ${loaded.model.layers.length} 層（MobileNet 基底＋分類層），${loaded.model.countParams().toLocaleString()} 個參數。檔案在本機產生，沒有上傳。`;
+      } catch (e) { fail(e); }
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress", api: "predict() ✕ N 張 vs model.predict(批次 32)",
+    desc: "用訓練好的三類模型連續辨識 1 到 1024 張圖片，量每秒能辨識幾張。逐張模式是官方 predict()；批次模式把圖片疊成 32 張一批，直接呼叫 tf.js 的 model.predict()。產生圖片與預熱不計時。",
+    hint: "選模式後按「開始測試」",
+    async mount(ctx) {
+      const MODES = ["predict() 逐張", "model.predict 批次 32"], POOL = 16, BATCH = 32;
+      ctx.html(`<div class="tm-stress"><div class="tm-card"><h2>各模式最佳速度（張/秒）<b class="be">-</b></h2><div class="tm-bars">${MODES.map((m, i) =>
+        `<div class="tm-bar" style="--k:var(${CLS[i + 1]})"><span>${m}</span><span class="t"><i></i></span><b>未測</b></div>`).join("")}</div>
+        <div class="tm-kpi" style="margin-top:8px"><div><b class="k-t">-</b><span>tf 張量數</span></div><div><b class="k-acc">-</b><span>最近一批正確率</span></div><div><b class="k-n">-</b><span>最近一批張數</span></div></div></div>
+        <div class="tm-card" style="overflow:hidden"><h2>最近一批的辨識結果（最多顯示 24 張）<b class="meta">-</b></h2><div class="tm-tiles"></div></div></div>`);
+      const KINDS = ["circle", "triangle", "star"], names = KINDS.map((k) => KIND[k]);
+      const bars = ctx.$$(".tm-bar"), best = MODES.map(() => 0);
+      let mi = 1, gen = 0, pool = null;
+      ctx.onCleanup(() => { if (pool) pool.dispose(); });
+      await engine(ctx);
+      const st = ctx.status("準備測試用模型：每類 3 張樣本，訓練 10 輪…");
+      const T = teach(ctx, names, "stress");
+      for (let k = 0; k < 3; k++) for (let j = 0; j < 3; j++) await T.add(k, sample(KINDS[k], 6000 + k * 100 + j, { size: 0.8 }));
+      await T.fit({ epochs: 10 });
+      st.done();
+      const cvs = Array.from({ length: POOL }, (_, i) => sample(KINDS[i % 3], 7000 + i, { size: 0.8 }));
+      pool = tf.tidy(() => tf.stack(cvs.map((c) => tf.browser.fromPixels(c).toFloat().div(127).sub(1))));
+      ctx.$(".be").textContent = `後端 ${tf.getBackend()}`;
+      const warmed = new Set();
+      const paint = () => {
+        const max = Math.max(...best, 0.001);
+        best.forEach((v, i) => { bars[i].querySelector("i").style.width = `${(v / max) * 100}%`; bars[i].querySelector("b").textContent = v ? `${v.toFixed(v < 10 ? 1 : 0)} 張/秒` : "未測"; });
+      };
+      async function single(n, my) {
+        const out = [];
+        for (let i = 0; i < n; i++) {
+          out.push(await classify(T, cvs[i % POOL]));
+          if (!ctx.active || my !== gen) throw abort();
+        }
+        return out;
+      }
+      async function batched(n, my) {
+        const out = [];
+        for (let off = 0; off < n; off += BATCH) {
+          const b = Math.min(BATCH, n - off);
+          const y = tf.tidy(() => T.m.model.predict(tf.gather(pool, tf.tensor1d(Array.from({ length: b }, (_, j) => (off + j) % POOL), "int32"))));
+          const d = await y.data();
+          y.dispose();
+          if (!ctx.active || my !== gen) throw abort();
+          for (let j = 0; j < b; j++) {
+            let k = 0;
+            for (let c = 1; c < 3; c++) if (d[j * 3 + c] > d[j * 3 + k]) k = c;
+            out.push({ idx: k, prob: d[j * 3 + k] });
+          }
+        }
+        return out;
+      }
+      const makeBench = () => {
+        const lab = ctx.el.querySelector(".sc-lab");
+        if (lab) lab.remove();
+        const my = ++gen, idx = mi;
+        ctx.bench({
+          label: `${MODES[idx]}・圖片張數`, unit: "張", sizes: [1, 4, 16, 64, 256, 1024], target: 1000, budget: 4000,
+          async prepare(n) {
+            if (my !== gen) throw abort();
+            // warm-up (untimed): compile shaders for the batch shapes this size will use
+            const shapes = idx ? [Math.min(n, BATCH), n > BATCH ? n % BATCH : 0].filter(Boolean) : [1];
+            for (const b of shapes) {
+              const key = `${idx}:${b}`;
+              if (warmed.has(key)) continue;
+              if (idx) await batched(b, my); else await single(1, my);
+              warmed.add(key);
+            }
+            return null;
+          },
+          async run(n) {
+            if (my !== gen) throw abort();
+            const t0 = performance.now();
+            const res = idx ? await batched(n, my) : await single(n, my);
+            const rate = n / ((performance.now() - t0) / 1000);
+            if (!ctx.active || my !== gen) throw abort();
+            const ok = res.reduce((s, r, i) => s + (r.idx === i % POOL % 3 ? 1 : 0), 0);
+            if (rate > best[idx]) best[idx] = rate;
+            paint();
+            const tiles = ctx.$(".tm-tiles");
+            tiles.innerHTML = "";
+            res.slice(0, 24).forEach((r, i) => tiles.append(tile(cvs[i % POOL], `${names[r.idx]} ${pct(r.prob)}`, r.idx === i % POOL % 3)));
+            ctx.$(".k-t").textContent = tf.memory().numTensors;
+            ctx.$(".k-acc").textContent = pct(ok / n);
+            ctx.$(".k-n").textContent = n;
+            ctx.$(".meta").textContent = MODES[idx];
+            return `${rate.toFixed(rate < 10 ? 1 : 0)} 張/秒`;
+          },
+          note: "模型是 MobileNet v2（alpha 0.35，輸入 224×224）加上本場景訓練的分類層。逐張模式每次都經過官方 predict() 的裁切與正規化；批次模式用預先正規化好的張量，走 tf.js 的 model.predict()，不是 Teachable Machine 的公開 API。張量數穩定代表沒有記憶體洩漏。",
+        });
+      };
+      ctx.group(MODES, mi, (i) => { mi = i; makeBench(); });
+      ctx.controls.classList.add("bottom");
+      ctx.$(".k-t").textContent = tf.memory().numTensors;
+      makeBench();
+    },
+  },
+] });
 </script>
 </body>
 </html>

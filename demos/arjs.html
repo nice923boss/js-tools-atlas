@@ -3,271 +3,296 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AR.js 示範：Hiro 標記擴增實境</title>
+<title>AR.js 示範：八個場景看懂標記與位置型 AR</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"click","needs":["camera"],"size":"約 4 MB","note":"沒有鏡頭或標記時可改用模擬畫面"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"click","needs":["camera"],"size":"約 4 MB（A-Frame 場景另載約 3 MB）","note":"沒有鏡頭時，標記場景改用標明「模擬畫面」的頁內 3D 算繪畫面，偵測與姿態由 ARToolKit 實際計算；位置型 AR 以 fakeGps 模擬定位","scenes":["Hiro 標記","條碼標記","自訂圖樣","偵測與門檻","平滑與尺寸","A-Frame 整合","位置型 AR","極限測試"]}</script>
 <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"}}</script>
 <style>
-  .app { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr) 300px; }
-  .main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 10px; padding: 12px 12px 48px; min-width: 0; min-height: 0; }
-  .top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .top h1 { margin: 0; font-size: 15px; }
-  .chip { margin-left: auto; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg-2); color: var(--muted); white-space: nowrap; }
-  .chip.on { color: #0a0c0f; background: var(--c4); border-color: var(--c4); font-weight: 700; }
-  .stage { position: relative; inset: auto; display: grid; place-items: center; min-height: 0; border-radius: 14px; overflow: hidden; container-type: size;
-    background: radial-gradient(70% 90% at 50% 0%, rgba(247, 223, 30, .08), transparent 70%), #0a0c0f; border: 1px solid var(--line); }
-  /* The processed frame is always 4:3, so the view keeps that ratio and the overlay lines up pixel for pixel */
-  .view { position: relative; width: min(100cqw, 133.333cqh); aspect-ratio: 4 / 3; background: #000; }
-  .view canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-  .ov { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; gap: 14px; align-items: center; justify-content: center; pointer-events: none;
-    font-size: 13px; color: var(--fg); text-align: center; padding: 16px; }
-  .ov span { padding: 4px 12px; border-radius: 999px; background: rgba(10, 12, 15, .85); border: 1px solid var(--line); }
-  #loading { background: rgba(10, 12, 15, .6); }
-  .spin { width: 46px; height: 46px; border-radius: 50%; border: 4px solid rgba(255, 255, 255, .15); border-top-color: var(--c1); animation: spin 1s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .scan { width: min(34%, 200px); aspect-ratio: 1; opacity: .85; border-radius: 6px; animation: pulse 1.6s ease-in-out infinite;
+  .aj-board { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); display: grid; gap: 10px; min-height: 0;
+    grid-template-columns: minmax(0, 1fr) 236px; grid-template-rows: minmax(0, 1fr); }
+  .aj-stage, .aj-pane { position: relative; min-width: 0; min-height: 0; border-radius: 12px; overflow: hidden; border: 1px solid var(--line);
+    background: radial-gradient(70% 90% at 50% 0%, rgba(247, 223, 30, .08), transparent 70%), #0a0c0f; }
+  .aj-stage { container-type: size; display: grid; place-items: center; }
+  /* ARToolKit processes a fixed 640x480 frame, so the view keeps 4:3 and every overlay lines up pixel for pixel */
+  .aj-view { position: relative; width: min(100cqw, 133.333cqh); aspect-ratio: 4 / 3; background: #000; }
+  .aj-view canvas, .aj-pane > canvas, .aj-pane > iframe { position: absolute; inset: 0; width: 100%; height: 100%; display: block; border: 0; }
+  .aj-view canvas.aj-bin[hidden] { display: none; }
+  .aj-tag, .aj-state { position: absolute; top: 8px; z-index: 3; font-size: 12px; padding: 3px 10px; border-radius: 999px; pointer-events: none; white-space: nowrap;
+    background: rgba(10, 12, 15, .82); border: 1px solid var(--line); max-width: calc(50% - 12px); overflow: hidden; text-overflow: ellipsis; color: #e6edf3; }
+  .aj-tag { left: 8px; }
+  .aj-tag:empty { display: none; }
+  .aj-tag.sim { border-color: rgba(255, 140, 66, .6); color: #ffb37a; }
+  .aj-state { right: 8px; color: #8b949e; }
+  .aj-state:empty { display: none; }
+  .aj-state.on { color: #0a0c0f; background: #7bd389; border-color: #7bd389; font-weight: 700; }
+  .aj-msg { position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 4; padding: 7px 11px; border-radius: 10px; font-size: 12.5px; line-height: 1.5; color: #e6edf3;
+    background: rgba(10, 12, 15, .9); border: 1px solid rgba(255, 140, 66, .6); }
+  .aj-msg.err { border-color: #e5484d; }
+  .aj-msg[hidden] { display: none; }
+  .aj-scan { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; gap: 12px; align-items: center; justify-content: center; pointer-events: none; }
+  .aj-scan.hidden { display: none; }
+  .aj-scan div { width: min(34%, 200px); aspect-ratio: 1; opacity: .85; animation: aj-pulse 1.6s ease-in-out infinite;
     background: linear-gradient(90deg, #fff 3px, transparent 3px) 0 0 / 26px 26px no-repeat, linear-gradient(180deg, #fff 3px, transparent 3px) 0 0 / 26px 26px no-repeat,
       linear-gradient(270deg, #fff 3px, transparent 3px) 100% 0 / 26px 26px no-repeat, linear-gradient(180deg, #fff 3px, transparent 3px) 100% 0 / 26px 26px no-repeat,
       linear-gradient(90deg, #fff 3px, transparent 3px) 0 100% / 26px 26px no-repeat, linear-gradient(0deg, #fff 3px, transparent 3px) 0 100% / 26px 26px no-repeat,
       linear-gradient(270deg, #fff 3px, transparent 3px) 100% 100% / 26px 26px no-repeat, linear-gradient(0deg, #fff 3px, transparent 3px) 100% 100% / 26px 26px no-repeat; }
-  @keyframes pulse { 50% { transform: scale(1.08); opacity: .55; } }
-  .hidden { display: none !important; }
-  .badge { position: absolute; top: 8px; left: 8px; z-index: 3; font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
-    background: rgba(10, 12, 15, .78); border: 1px solid var(--line); pointer-events: none; }
-  .badge:empty { display: none; }
-  .empty { position: absolute; left: 50%; bottom: 10px; z-index: 3; transform: translateX(-50%); max-width: 92%; color: var(--fg); font-size: 12px; pointer-events: none;
-    padding: 4px 12px; border-radius: 999px; background: rgba(10, 12, 15, .85); border: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .empty:empty { display: none; }
-  .src { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
-  .src .btn { white-space: nowrap; }
-  .src .or { font-size: 12px; color: var(--muted); }
-  .src .btn[aria-pressed="true"], .objs .btn[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-  .side { border-left: 1px solid var(--line); background: var(--bg-2); padding: 14px 14px 48px; overflow-y: auto; min-height: 0; }
-  .side h2 { margin: 0 0 8px; font-size: 16px; }
-  .side h3 { margin: 14px 0 6px; font-size: 12px; color: var(--muted); font-weight: 600; }
-  .side p { margin: 0 0 12px; font-size: 12px; color: var(--muted); line-height: 1.6; }
-  .side p.howto { color: var(--fg); padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(247, 223, 30, .45); background: rgba(247, 223, 30, .07); }
-  .marker { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px; align-items: center; margin: 0 0 4px; }
-  .marker img { width: 96px; height: 96px; display: block; border-radius: 6px; background: #fff; padding: 4px; }
-  .dl { display: grid; gap: 6px; }
-  .dl .btn { padding: 5px 9px; font-size: 12px; text-decoration: none; text-align: center; }
-  .objs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
-  .objs .btn { padding: 6px 4px; font-size: 12px; }
-  .pose { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; margin: 0; font-size: 12px; }
-  .pose dt { color: var(--muted); }
-  .pose dd { margin: 0; font: 600 12px var(--mono); text-align: right; }
-  pre.code { margin: 12px 0 0; padding: 10px; border-radius: 10px; background: #0a0c0f; border: 1px solid var(--line); font: 11px/1.65 var(--mono); color: #c9d1d9;
-    white-space: pre-wrap; overflow-wrap: anywhere; }
-  pre.code em { font-style: normal; color: var(--c3); }
-  pre.code u { text-decoration: none; color: var(--c2); }
-  pre.code s { text-decoration: none; color: var(--muted); }
-  @media (max-width: 640px) {
-    /* single column: the side panel scrolls under the fixed hint, and its own text already explains the controls */
-    .hint { display: none; }
-    .app { grid-template-columns: 1fr; grid-template-rows: minmax(0, 58%) minmax(0, 42%); }
-    .main { padding: 8px 8px 6px; gap: 6px; }
-    .top h1 { font-size: 13px; }
-    .chip { padding: 2px 8px; font-size: 11px; }
-    .src .btn { padding: 6px 9px; font-size: 12px; }
-    .side { border-left: 0; border-top: 1px solid var(--line); padding: 8px 12px 12px; }
-    .side h2 { font-size: 14px; }
-    .side p:not(.howto) { display: none; }
+  .aj-scan span { font-size: 12.5px; padding: 3px 12px; border-radius: 999px; background: rgba(10, 12, 15, .85); border: 1px solid var(--line); color: #e6edf3; }
+  @keyframes aj-pulse { 50% { transform: scale(1.08); opacity: .55; } }
+  .aj-side { min-width: 0; min-height: 0; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); padding: 10px 12px;
+    font-size: 12.5px; line-height: 1.5; overflow: hidden; display: flex; flex-direction: column; gap: 8px; }
+  .aj-side h4 { margin: 0; font-size: 12.5px; display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .aj-side h4 span { color: var(--muted); font: 400 11px/1.4 var(--mono); white-space: nowrap; }
+  .aj-side p { margin: 0; color: var(--muted); font-size: 12px; }
+  .aj-kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 10px; font-size: 12px; }
+  .aj-kv span { color: var(--muted); white-space: nowrap; }
+  .aj-kv b { font: 600 12px var(--mono); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .aj-marker { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px; align-items: center; }
+  .aj-marker img { width: 74px; height: 74px; display: block; border-radius: 6px; background: #fff; padding: 3px; }
+  .aj-dl { display: grid; gap: 6px; }
+  .aj-dl .btn { padding: 5px 8px; font-size: 12px; text-decoration: none; text-align: center; white-space: nowrap; }
+  .aj-ids { display: grid; gap: 5px; }
+  .aj-id { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 12px; }
+  .aj-id img { width: 26px; height: 26px; display: block; border-radius: 3px; }
+  .aj-id span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .aj-id em { font-style: normal; color: #ff8c42; margin-left: 6px; font-size: 11px; }
+  .aj-id b, .aj-chip { font: 600 11px var(--mono); padding: 2px 7px; border-radius: 999px; color: var(--muted); background: rgba(127, 127, 127, .14); white-space: nowrap; }
+  .aj-id b.on, .aj-chip.on { color: #0a0c0f; background: #7bd389; }
+  .aj-id b.warn { color: #0a0c0f; background: #ff8c42; }
+  .aj-pat { display: grid; grid-template-columns: 82px minmax(0, 1fr); gap: 10px; align-items: center; }
+  .aj-pat img { width: 82px; height: 82px; display: block; border-radius: 6px; background: #fff; padding: 3px; }
+  .aj-rots { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+  .aj-rots canvas { width: 100%; aspect-ratio: 1; image-rendering: pixelated; border-radius: 3px; border: 1px solid var(--line); display: block; }
+  .aj-rots small { grid-column: 1 / -1; color: var(--muted); font-size: 11px; }
+  .aj-legend { display: grid; gap: 4px; font-size: 12px; }
+  .aj-legend div { display: flex; gap: 7px; align-items: center; min-width: 0; }
+  .aj-legend i { flex: none; width: 10px; height: 10px; border-radius: 3px; }
+  .aj-legend span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .aj-legend code { margin-left: auto; font: 11px var(--mono); color: var(--muted); white-space: nowrap; }
+  .aj-log { margin: 0; flex: 1; min-height: 0; overflow: hidden; font: 11.5px/1.55 var(--mono); color: var(--muted); display: flex; flex-direction: column; justify-content: flex-end;
+    -webkit-mask-image: linear-gradient(transparent, #000 18px); mask-image: linear-gradient(transparent, #000 18px); }
+  .aj-log div { flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .aj-log .on { color: #7bd389; }
+  .aj-log .off { color: #f72585; }
+  .aj-code { margin: 0; padding: 8px 10px; border-radius: 10px; background: #0a0c0f; border: 1px solid var(--line); font: 10.5px/1.55 var(--mono); color: #c9d1d9;
+    white-space: pre; overflow: hidden; min-height: 0; flex: none; }
+  .aj-chart { position: relative; flex: 1; min-height: 80px; border-radius: 9px; background: #0a0c0f; border: 1px solid var(--line); overflow: hidden; }
+  .aj-chart canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .aj-stress { position: absolute; inset: 8px 8px 8px 350px; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; }
+  .aj-tbl { width: 100%; border-collapse: collapse; font-size: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .aj-tbl th, .aj-tbl td { padding: 4px 8px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+  .aj-tbl th { color: var(--muted); font-weight: 500; }
+  .aj-tbl th:first-child, .aj-tbl td:first-child { text-align: left; }
+  .aj-tbl td { font: 12px var(--mono); font-variant-numeric: tabular-nums; }
+  .aj-tbl tr:last-child td { border-bottom: 0; }
+  @media (max-width: 760px) {
+    .aj-stress { display: none; }
+  }
+  @media (max-width: 640px) and (min-height: 521px) {
+    .aj-board { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; gap: 8px; padding-left: 8px; padding-right: 8px; }
+    .aj-side { padding: 8px 10px; gap: 6px; }
+    .aj-marker { grid-template-columns: 52px minmax(0, 1fr); }
+    .aj-marker img { width: 52px; height: 52px; }
+    .aj-dl { grid-template-columns: 1fr 1fr; }
+    .aj-pat { grid-template-columns: 60px minmax(0, 1fr); }
+    .aj-pat img { width: 60px; height: 60px; }
+    .aj-rots small { display: none; }
+    .aj-log { flex: none; height: 54px; }
+    .aj-wide { display: none !important; }
+    .aj-ids { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 8px; }
+    .aj-id { grid-template-columns: minmax(0, 1fr) auto; gap: 4px; }
+    .aj-id img, .aj-id em { display: none; }
+    .aj-legend { grid-template-columns: 1fr 1fr; gap: 3px 10px; }
+    .aj-legend code { display: none; }
+    .aj-kv { grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr); }
+    .aj-chart { flex: none; height: 70px; }
+  }
+  @media (max-height: 520px) {
+    .aj-board { grid-template-columns: minmax(0, 1fr) 190px; gap: 8px; padding-left: 8px; padding-right: 8px; }
+    .aj-side { padding: 8px 10px; gap: 6px; }
+    .aj-wide { display: none !important; }
+    .aj-marker { grid-template-columns: 52px minmax(0, 1fr); }
+    .aj-marker img { width: 52px; height: 52px; }
+    .aj-pat { grid-template-columns: 56px minmax(0, 1fr); }
+    .aj-pat img { width: 56px; height: 56px; }
+    .aj-rots small, .aj-id img, .aj-id em, .aj-legend code { display: none; }
+    .aj-id { grid-template-columns: minmax(0, 1fr) auto; }
   }
 </style>
 </head>
 <body>
-<div class="app">
-  <section class="main">
-    <div class="top">
-      <h1>🎯 Hiro 標記追蹤</h1>
-      <span class="chip" id="chip">尚未啟動</span>
-    </div>
-    <div class="stage">
-      <div class="view" id="view">
-        <canvas id="frame" width="640" height="480"></canvas>
-        <div class="ov hidden" id="loading"><div class="spin"></div><span id="loadingText">載入中…</span></div>
-        <div class="ov hidden" id="scanning"><div class="scan"></div><span>把鏡頭對準 Hiro 標記</span></div>
-        <span class="badge" id="badge"></span>
-        <div class="empty" id="empty"></div>
-      </div>
-    </div>
-    <div class="src">
-      <button class="btn" data-src="camera" aria-pressed="true">📷 鏡頭</button>
-      <span class="or">或</span>
-      <button class="btn" data-src="sim" aria-pressed="false">🧪 模擬畫面</button>
-    </div>
-  </section>
-  <aside class="side">
-    <h2>標記型擴增實境</h2>
-    <p class="howto">📱 用手機開啟此頁、對準另一個螢幕上的標記（下方的 Hiro 圖），3D 物件會立在標記上，跟著你的角度轉動。也可以下載後印出來。</p>
-    <div class="marker">
-      <img src="assets/arjs/hiro.png" alt="Hiro 標記圖">
-      <div class="dl">
-        <a class="btn" href="assets/arjs/hiro.png" download="arjs-hiro.png">⬇️ 標記圖 PNG</a>
-        <a class="btn" href="assets/arjs/patt.hiro" download="patt.hiro">⬇️ patt.hiro 圖樣檔</a>
-      </div>
-    </div>
-    <h3>放在標記上的物件</h3>
-    <div class="objs" id="objs">
-      <button class="btn" data-obj="knot" aria-pressed="true">🪢 環形結</button>
-      <button class="btn" data-obj="cube" aria-pressed="false">🧊 方塊</button>
-      <button class="btn" data-obj="robot" aria-pressed="false">🤖 機器人</button>
-    </div>
-    <h3>即時姿態（以標記寬度為 1）</h3>
-    <dl class="pose">
-      <dt>距離</dt><dd id="pDist">-</dd>
-      <dt>傾斜</dt><dd id="pTilt">-</dd>
-      <dt>旋轉</dt><dd id="pSpin">-</dd>
-      <dt>辨識頻率</dt><dd id="pRate">-</dd>
-    </dl>
-    <h3>運作方式</h3>
-    <p>AR.js 用 ARToolKit（WebAssembly）在每一格畫面找出黑色方框，比對框內圖樣確認是 Hiro，再依相機參數解出標記相對鏡頭的姿態矩陣，three.js 用同一組投影矩陣把物件畫在標記上。「模擬畫面」是用 three.js 即時算繪桌上的標記，同樣交給 AR.js 辨識。</p>
-    <pre class="code"><s>// AR.js 3.4.8 + three.js</s>
-const ctx = new <u>ArToolkitContext</u>({
-  cameraParametersUrl: <em>"camera_para.dat"</em> })
-ctx.init(() =&gt; camera.projectionMatrix
-  .copy(ctx.<u>getProjectionMatrix</u>()))
-new <u>ArMarkerControls</u>(ctx, markerRoot, {
-  type: <em>"pattern"</em>, patternUrl: <em>"patt.hiro"</em> })
-<s>// every frame</s>
-ctx.<u>update</u>(frameCanvas)</pre>
-  </aside>
-</div>
-<div class="hint">換個角度看看，物件會跟著標記傾斜</div>
-
-<script src="_shared/gate.js"></script>
+<script src="_shared/showcase.js"></script>
 <script type="module">
-// three.js and AR.js are downloaded only after the start button is pressed
-let THREE, ArToolkitContext, ArMarkerControls;
-let renderer, scene, camera, markerRoot, anchor;
+// AR.js 3.4.8 three.js builds import "three" through the import map above
 const AR_URL = "https://cdn.jsdelivr.net/npm/@ar-js-org/ar.js@3.4.8/three.js/build/ar-threex.mjs";
-
+const LOC_URL = "https://cdn.jsdelivr.net/npm/@ar-js-org/ar.js@3.4.8/three.js/build/ar-threex-location-only.mjs";
+const AFRAME_URL = "https://cdn.jsdelivr.net/npm/aframe@1.6.0/dist/aframe-master.min.js";
+const AFRAME_AR_URL = "https://cdn.jsdelivr.net/npm/@ar-js-org/ar.js@3.4.8/aframe/build/aframe-ar.js";
 const DATA = "assets/arjs/";
-const FW = 640, FH = 480;  // processing and display frame
-const $ = (id) => document.getElementById(id);
-const frame = $("frame"), view = $("view");
-const g2d = frame.getContext("2d", { willReadFrequently: true });
+const HIRO_PATT = DATA + "patt.hiro";
+const FW = 640, FH = 480;
+const SRC = [{ value: "sim", label: "模擬畫面" }, { value: "cam", label: "鏡頭" }];
+const COLORS = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#9d8cff"];
+const { fmt, fmtMs } = Showcase;
+const abs = (u) => new URL(u, location.href).href;
+const fontOf = () => getComputedStyle(document.body).getPropertyValue("--font");
 
-let source = "camera", video = null, simWorld = null, arCtx = null, ready = false, busy = true;  // busy until the libraries load
-let found = false, uiFound = null, processed = 0, rateAt = 0, lastT = 0;
-let objKey = "knot", mixer = null;
-const objects = {};
-
-/* ---------- UI helpers ---------- */
-function setChip(text, on = false) { $("chip").textContent = text; $("chip").classList.toggle("on", on); }
-function note(text) { $("empty").textContent = text; }
-function showLoading(text) { $("loadingText").textContent = text; $("loading").classList.remove("hidden"); }
-function markSource() {
-  for (const b of document.querySelectorAll("[data-src]")) {
-    b.setAttribute("aria-pressed", String(b.dataset.src === source));
-    b.disabled = busy;
+/* ---------- library loading (one gate for the whole page) ---------- */
+const lib = { THREE: null, AR: null, LOC: null };
+let gated = false;
+async function libs(ctx, need = []) {
+  if (!gated) {
+    await ctx.gate({
+      icon: "🎯", title: "AR.js 標記與位置型擴增實境", button: "開始",
+      desc: "載入 three.js 與 AR.js 3.4.8（ARToolKit WebAssembly）。沒有鏡頭也能看：標記場景用 three.js 即時算繪的「模擬畫面」當輸入，偵測與姿態都由 ARToolKit 實際計算；位置型 AR 用 fakeGps 模擬定位。只有選擇「鏡頭」或「真實 GPS」時才會要求權限。",
+      tags: ["約 4 MB", "AR.js 3.4.8", "鏡頭可選"],
+    });
+    gated = true;
   }
-  $("badge").textContent = source === "sim" ? "模擬畫面" : "";
+  const todo = [];
+  if (!lib.THREE) todo.push(async () => { lib.THREE = await import("three"); });
+  if (need.includes("ar") && !lib.AR) todo.push(async () => { lib.AR = await import(AR_URL); });
+  if (need.includes("loc") && !lib.LOC) todo.push(async () => { lib.LOC = await import(LOC_URL); });
+  if (!todo.length) return lib;
+  const st = ctx.status("下載 AR.js 與 three.js…");
+  try {
+    for (let i = 0; i < todo.length; i++) { st.progress(i / todo.length); await todo[i](); }
+  } catch (e) {
+    st.error("AR.js 載入失敗，請確認網路連線後重新整理");
+    throw e;
+  }
+  st.done();
+  return lib;
 }
 
-/* ---------- three.js overlay ---------- */
-function setupScene() {
-  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-  renderer.setClearColor(0x000000, 0);
-  view.insertBefore(renderer.domElement, $("loading"));
-  scene = new THREE.Scene();
-  camera = new THREE.Camera();  // AR.js supplies the projection matrix
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 2));
-  const sun = new THREE.DirectionalLight(0xffffff, 2.4);
+/* ---------- small helpers ---------- */
+const abortError = () => new DOMException("scene switched", "AbortError");
+const imgCache = new Map();
+function loadImage(url) {
+  if (!imgCache.has(url)) {
+    imgCache.set(url, new Promise((ok, fail) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => ok(img);
+      img.onerror = () => { imgCache.delete(url); fail(new Error(`圖片載入失敗：${url}`)); };
+      img.src = url;
+    }));
+  }
+  return imgCache.get(url);
+}
+const makeCanvas = (w, h = w) => Object.assign(document.createElement("canvas"), { width: w, height: h });
+function download(href, name) {
+  const a = Showcase.h("a", { href, download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+}
+const gauss = () => (Math.random() + Math.random() + Math.random() - 1.5) / 0.5;
+// Sub-lifecycle inside a scene: each restart disposes the previous source first
+function runner(ctx) {
+  let cur = null;
+  const stop = () => { const old = cur; cur = null; if (old) while (old.fns.length) { try { old.fns.pop()(); } catch (e) { console.warn(e); } } };
+  ctx.onCleanup(stop);
+  return async (fn) => {
+    stop();
+    const life = { fns: [], get active() { return ctx.active && cur === life; }, onCleanup(f) { if (life.active) life.fns.push(f); else f(); } };
+    cur = life;
+    try { await fn(life); } catch (e) { if (life.active && e?.name !== "AbortError") throw e; }
+  };
+}
+function fitCanvas(ctx, canvas, paint) {
+  const g = canvas.getContext("2d");
+  const resize = () => {
+    const r = canvas.getBoundingClientRect();
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    canvas.width = Math.max(1, Math.round(r.width * dpr)); canvas.height = Math.max(1, Math.round(r.height * dpr));
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    paint(g, r.width, r.height);
+  };
+  const ro = new ResizeObserver(() => { if (ctx.active) resize(); });
+  ro.observe(canvas);
+  ctx.onCleanup(() => ro.disconnect());
+  resize();
+  return { g, size: () => canvas.getBoundingClientRect(), repaint: resize };
+}
+
+/* ---------- stage: 4:3 processed frame plus overlays ---------- */
+const SCAN = `<div class="aj-scan"><div></div><span>把鏡頭對準標記</span></div>`;
+function stageBox(extra = "") {
+  return `<div class="aj-stage"><div class="aj-view"><canvas class="aj-frame" width="${FW}" height="${FH}"></canvas>${extra}</div>
+    <span class="aj-tag"></span><span class="aj-state"></span><div class="aj-msg" hidden></div></div>`;
+}
+function stageUI(ctx, root = ctx.el) {
+  const q = (s) => root.querySelector(s);
+  const frame = q(".aj-frame"), tag = q(".aj-tag"), state = q(".aj-state"), msg = q(".aj-msg");
+  const g = frame.getContext("2d", { willReadFrequently: true });
+  g.fillStyle = "#000"; g.fillRect(0, 0, FW, FH);
+  return {
+    view: q(".aj-view"), frame, g,
+    tag(text, sim) { tag.textContent = text; tag.classList.toggle("sim", !!sim); },
+    state(text, on) { state.textContent = text; state.classList.toggle("on", !!on); },
+    msg(text, err) { msg.textContent = text || ""; msg.hidden = !text; msg.classList.toggle("err", !!err); },
+  };
+}
+
+/* ---------- AR.js context and three.js overlay ---------- */
+async function arContext(life, opts = {}) {
+  const ac = new lib.AR.ArToolkitContext({
+    cameraParametersUrl: DATA + "camera_para.dat", detectionMode: "mono", canvasWidth: FW, canvasHeight: FH, maxDetectionRate: 60, ...opts,
+  });
+  let dead = false, ready = false;
+  life.onCleanup(() => { dead = true; if (ready && ac.arController) ac.dispose(); });
+  await new Promise((ok, fail) => {
+    const timer = setTimeout(() => fail(new Error("ARToolKit 初始化逾時")), 30000);
+    ac.init(() => { clearTimeout(timer); ok(); });
+  });
+  ready = true;
+  if (dead) { ac.dispose(); throw abortError(); }
+  return ac;
+}
+// Wrap loadMarker so each pattern source can be mapped to the id ARToolKit assigned to it
+function patternIds(ar) {
+  const ids = new Map();
+  const orig = ar.loadMarker.bind(ar);
+  ar.loadMarker = async (src) => { const id = await orig(src); ids.set(src, id); return id; };
+  return ids;
+}
+const fovOf = (ac) => 2 * Math.atan(1 / ac.getProjectionMatrix().elements[5]) * 180 / Math.PI;
+function overlay(life, view, ac) {
+  const T = lib.THREE;
+  const r = new T.WebGLRenderer({ antialias: true, alpha: true });
+  r.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+  r.setClearColor(0x000000, 0);
+  view.append(r.domElement);
+  const scene = new T.Scene();
+  const cam = new T.Camera();  // AR.js supplies the projection matrix
+  cam.projectionMatrix.copy(ac.getProjectionMatrix());
+  cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
+  scene.add(new T.HemisphereLight(0xffffff, 0x445566, 2));
+  const sun = new T.DirectionalLight(0xffffff, 2.4);
   sun.position.set(1, 3, 2);
   scene.add(sun);
-
-  markerRoot = new THREE.Group();  // AR.js writes the raw marker pose into this group's matrix
-  anchor = new THREE.Group();  // smoothed copy of that pose which carries the visible content
-  anchor.visible = false;
-  scene.add(anchor);
-  // Marker frame: 1 unit = width of the black square, y points out of the marker
-  const edge = [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]].map(([x, z]) => new THREE.Vector3(x, 0.004, z));
-  anchor.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(edge), new THREE.LineBasicMaterial({ color: 0x4cc9f0 })));
-  anchor.add(new THREE.Mesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
-    new THREE.MeshBasicMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0.16, depthWrite: false })));
-  const shadow = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.9).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({
-    map: radialTexture("rgba(0,0,0,.55)"), transparent: true, depthWrite: false }));
-  shadow.position.y = 0.006;
-  anchor.add(shadow);
-
-  renderer.setAnimationLoop(tick);
-  new ResizeObserver(resize).observe(view);
-  resize();
+  const fit = () => { const w = view.clientWidth, h = view.clientHeight; if (w && h) r.setSize(w, h, false); };
+  const ro = new ResizeObserver(fit);
+  ro.observe(view);
+  fit();
+  life.onCleanup(() => { ro.disconnect(); r.dispose(); r.forceContextLoss(); r.domElement.remove(); });
+  return { scene, cam, render: () => r.render(scene, cam) };
 }
 
-function radialTexture(inner) {
-  const c = document.createElement("canvas");
-  c.width = c.height = 128;
+/* ---------- simulated feed: printed markers on a desk, rendered with a moving camera ---------- */
+function radialTexture(T, inner) {
+  const c = makeCanvas(128);
   const g = c.getContext("2d"), grad = g.createRadialGradient(64, 64, 4, 64, 64, 62);
   grad.addColorStop(0, inner);
   grad.addColorStop(1, "rgba(0,0,0,0)");
   g.fillStyle = grad;
   g.fillRect(0, 0, 128, 128);
-  return new THREE.CanvasTexture(c);
+  return new T.CanvasTexture(c);
 }
-
-function buildKnot() {
-  const knot = new THREE.Mesh(new THREE.TorusKnotGeometry(0.27, 0.085, 180, 24),
-    new THREE.MeshStandardMaterial({ color: 0xf7df1e, metalness: 0.35, roughness: 0.3 }));
-  const group = new THREE.Group();
-  group.add(knot);
-  group.userData.tick = (t, dt) => { knot.rotation.y += dt * 0.9; knot.rotation.x = Math.sin(t * 0.7) * 0.4; group.position.y = 0.72 + Math.sin(t * 2) * 0.05; };
-  return group;
-}
-function buildCube() {
-  // The classic AR.js "hello world": a normal-shaded cube standing on the marker
-  const geo = new THREE.BoxGeometry(0.72, 0.72, 0.72);
-  const cube = new THREE.Mesh(geo, new THREE.MeshNormalMaterial({ transparent: true, opacity: 0.88 }));
-  cube.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo), new THREE.LineBasicMaterial({ color: 0xffffff })));
-  const group = new THREE.Group();
-  group.add(cube);
-  group.userData.tick = (t) => { cube.rotation.y = t * 0.6; cube.position.y = 0.36 + Math.abs(Math.sin(t * 2.4)) * 0.18; };
-  return group;
-}
-async function buildRobot() {
-  const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js");
-  const gltf = await new GLTFLoader().loadAsync("_shared/models/robot.glb");
-  const model = gltf.scene;
-  // Skinned hand meshes report bind-pose bounds hundreds of units wide, so size the robot from rigid meshes only
-  const box = new THREE.Box3();
-  model.updateMatrixWorld(true);
-  model.traverse((o) => { if (o.isMesh && !o.isSkinnedMesh) box.expandByObject(o); });
-  const k = 1.05 / (box.max.y - box.min.y);
-  model.scale.setScalar(k);
-  model.position.y = -box.min.y * k;
-  const robotMixer = new THREE.AnimationMixer(model);
-  const clip = gltf.animations.find((a) => a.name === "Wave") || gltf.animations[0];
-  robotMixer.clipAction(clip).play();
-  const group = new THREE.Group();
-  group.add(model);
-  group.userData.mixer = robotMixer;
-  return group;
-}
-async function selectObject(key) {
-  if (!markerRoot) return;
-  objKey = key;
-  for (const b of document.querySelectorAll("[data-obj]")) b.setAttribute("aria-pressed", String(b.dataset.obj === key));
-  if (!objects[key]) {
-    if (key === "robot") {
-      note("下載機器人模型…");
-      try { objects.robot = await buildRobot(); note(""); }
-      catch (err) { console.error(err); note("機器人模型載入失敗"); return; }
-    } else objects[key] = key === "knot" ? buildKnot() : buildCube();
-  }
-  if (objKey !== key) return;
-  for (const [k, o] of Object.entries(objects)) {
-    if (k === key) anchor.add(o); else anchor.remove(o);
-  }
-  mixer = objects[key].userData.mixer || null;
-}
-
-/* ---------- simulated feed: a Hiro card on a desk, rendered with a moving camera ---------- */
-function woodTexture() {
-  const c = document.createElement("canvas");
-  c.width = 512; c.height = 512;
+function woodTexture(T) {
+  const c = makeCanvas(512);
   const g = c.getContext("2d");
   g.fillStyle = "#a8774a";
   g.fillRect(0, 0, 512, 512);
@@ -280,226 +305,1250 @@ function woodTexture() {
     for (let x = 0; x <= 512; x += 32) g.lineTo(x, y + Math.sin(x / 70 + i) * 6);
     g.stroke();
   }
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(3, 3);
+  const tex = new T.CanvasTexture(c);
+  tex.colorSpace = T.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = T.RepeatWrapping;
+  tex.repeat.set(4, 4);
   return tex;
 }
-async function buildSimWorld(fovY) {
-  const r = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+// cards: [{ img, size = 1 (black square width), fill = share of the image the black square spans, x, z, rot }]
+function simDesk(life, fovY, cards) {
+  const T = lib.THREE;
+  const r = new T.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
   r.setPixelRatio(1);
   r.setSize(FW, FH, false);
-  const s = new THREE.Scene();
-  s.background = new THREE.Color(0x3a2a1c);
-  const flat = (w, h, mat, y) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h).rotateX(-Math.PI / 2), mat); m.position.y = y; s.add(m); return m; };
-  flat(14, 14, new THREE.MeshBasicMaterial({ map: woodTexture() }), 0);
-  flat(2.1, 2.1, new THREE.MeshBasicMaterial({ map: radialTexture("rgba(0,0,0,.5)"), transparent: true, depthWrite: false }), 0.002).position.set(0.06, 0.002, 0.08);
-  flat(1.7, 1.7, new THREE.MeshBasicMaterial({ color: 0xf4f4f0 }), 0.004);
-  const tex = await new THREE.TextureLoader().loadAsync(DATA + "hiro.png");
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = r.capabilities.getMaxAnisotropy();
-  // hiro.png has a thin white margin: the black square spans about 92% of the image, so scale it to 1 unit
-  flat(1 / 0.92, 1 / 0.92, new THREE.MeshBasicMaterial({ map: tex }), 0.006);
-  const cam = new THREE.PerspectiveCamera(fovY, FW / FH, 0.05, 50);
-  const look = new THREE.Vector3();
-  return {
-    draw(t) {
-      const az = Math.sin(t * 0.33) * 0.62, el = 0.98 + Math.sin(t * 0.47) * 0.24, d = 3.3 + Math.sin(t * 0.26) * 0.55;
-      cam.position.set(Math.sin(az) * Math.cos(el) * d, Math.sin(el) * d, Math.cos(az) * Math.cos(el) * d);
-      look.set(Math.sin(t * 0.58) * 0.32, 0, Math.cos(t * 0.43) * 0.22);
-      cam.lookAt(look);
-      r.render(s, cam);
-      g2d.drawImage(r.domElement, 0, 0);
-    },
-  };
+  life.onCleanup(() => { r.dispose(); r.forceContextLoss(); });
+  const s = new T.Scene();
+  s.background = new T.Color(0x3a2a1c);
+  const flat = (w, mat, y) => { const m = new T.Mesh(new T.PlaneGeometry(w, w).rotateX(-Math.PI / 2), mat); m.position.y = y; return m; };
+  s.add(flat(18, new T.MeshBasicMaterial({ map: woodTexture(T) }), 0));
+  const shadowMap = radialTexture(T, "rgba(0,0,0,.5)");
+  const out = cards.map((c) => {
+    const k = c.size ?? 1;
+    const grp = new T.Group();
+    const shadow = flat(k * 2.1, new T.MeshBasicMaterial({ map: shadowMap, transparent: true, depthWrite: false }), 0.002);
+    shadow.position.set(0.06 * k, 0.002, 0.08 * k);
+    const tex = c.img instanceof HTMLCanvasElement ? new T.CanvasTexture(c.img) : new T.Texture(c.img);
+    tex.needsUpdate = true;
+    tex.colorSpace = T.SRGBColorSpace;
+    tex.anisotropy = r.capabilities.getMaxAnisotropy();
+    grp.add(shadow, flat(k * 1.7, new T.MeshBasicMaterial({ color: 0xf4f4f0 }), 0.004), flat(k / (c.fill ?? 1), new T.MeshBasicMaterial({ map: tex }), 0.006));
+    grp.position.set(c.x ?? 0, 0, c.z ?? 0);
+    grp.rotation.y = c.rot ?? 0;
+    s.add(grp);
+    return { group: grp, tex };
+  });
+  const cam = new T.PerspectiveCamera(fovY, FW / FH, 0.05, 60);
+  return { cam, cards: out, draw(g) { r.render(s, cam); g.drawImage(r.domElement, 0, 0); } };
+}
+const look = { x: 0, z: 0 };
+function orbit(cam, t, { d = 3.3, amp = 1, cx = 0, cz = 0 } = {}) {
+  const az = Math.sin(t * 0.33) * 0.62 * amp, el = 0.98 + Math.sin(t * 0.47) * 0.24 * amp, dd = d * (1 + Math.sin(t * 0.26) * 0.17 * amp);
+  cam.position.set(cx + Math.sin(az) * Math.cos(el) * dd, Math.sin(el) * dd, cz + Math.cos(az) * Math.cos(el) * dd);
+  look.x = cx + Math.sin(t * 0.58) * 0.1 * d * amp;
+  look.z = cz + Math.cos(t * 0.43) * 0.07 * d * amp;
+  cam.lookAt(look.x, 0, look.z);
 }
 
 /* ---------- camera feed ---------- */
-async function openCamera() {
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 960 } }, audio: false });
+async function openStream(life) {
+  if (!navigator.mediaDevices?.getUserMedia) throw Object.assign(new Error("這個瀏覽器不支援 getUserMedia"), { name: "NotSupportedError" });
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 960 } } });
+  life.onCleanup(() => stream.getTracks().forEach((t) => t.stop()));
+  if (!life.active) throw abortError();
+  return stream;
+}
+async function openVideo(life) {
+  const stream = await openStream(life);
   const v = document.createElement("video");
   v.muted = true; v.playsInline = true; v.srcObject = stream;
+  life.onCleanup(() => { v.pause(); v.srcObject = null; });
   await v.play();
   return v;
 }
-function closeCamera() {
-  video?.srcObject?.getTracks().forEach((t) => t.stop());
-  video = null;
+function camError(e) {
+  if (e?.name === "NotAllowedError" || e?.name === "SecurityError") return "未取得鏡頭權限";
+  if (e?.name === "NotFoundError" || e?.name === "OverconstrainedError") return "這台裝置找不到可用的鏡頭";
+  if (e?.name === "NotSupportedError") return "這個瀏覽器不支援鏡頭存取";
+  return `無法開啟鏡頭（${e?.name || e?.message || e}）`;
 }
-function drawCamera() {
-  const vw = video.videoWidth, vh = video.videoHeight;
+// Center-crop into the 4:3 frame, never mirrored so the marker pattern stays readable
+function drawCover(g, v) {
+  const vw = v.videoWidth, vh = v.videoHeight;
   if (!vw) return;
-  // Center-crop the camera image into the 4:3 frame (never mirrored, so the marker pattern stays readable)
   const k = Math.max(FW / vw, FH / vh);
-  g2d.drawImage(video, (FW - vw * k) / 2, (FH - vh * k) / 2, vw * k, vh * k);
+  g.drawImage(v, (FW - vw * k) / 2, (FH - vh * k) / 2, vw * k, vh * k);
 }
-
-/* ---------- AR.js ---------- */
-function initAR() {
-  arCtx = new ArToolkitContext({
-    cameraParametersUrl: DATA + "camera_para.dat",
-    detectionMode: "mono",
-    canvasWidth: FW,
-    canvasHeight: FH,
-    maxDetectionRate: 60,
-  });
-  new ArMarkerControls(arCtx, markerRoot, {
-    type: "pattern",
-    patternUrl: DATA + "patt.hiro",
-    size: 1,
-    // AR.js smoothing compares the running average with the raw pose and can freeze during slow motion,
-    // so the raw pose is used here and eased in followMarker() instead
-    smooth: false,
-  });
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("ARToolKit 初始化逾時")), 30000);
-    arCtx.init(() => {
-      clearTimeout(timer);
-      camera.projectionMatrix.copy(arCtx.getProjectionMatrix());
-      camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
-      resolve();
-    });
-  });
-}
-
-/* ---------- light pose smoothing ---------- */
-let rawPos, rawQuat, rawScale;
-function followMarker(snap) {
-  if (!rawPos) { rawPos = new THREE.Vector3(); rawQuat = new THREE.Quaternion(); rawScale = new THREE.Vector3(); }
-  markerRoot.matrix.decompose(rawPos, rawQuat, rawScale);
-  // Ease toward each new detection to hide camera noise, but jump straight there when the marker reappears
-  const k = snap ? 1 : 0.6;
-  anchor.position.lerp(rawPos, k);
-  anchor.quaternion.slerp(rawQuat, k);
-}
-
-/* ---------- pose readout ---------- */
-let P, AX, AY;
-function updatePose(now) {
-  if (now - rateAt >= 1000) {
-    $("pRate").textContent = `${Math.round(processed * 1000 / (now - rateAt))} 次/秒`;
-    processed = 0;
-    rateAt = now;
-  }
-  if (!found) {
-    for (const id of ["pDist", "pTilt", "pSpin"]) $(id).textContent = "-";
-    return;
-  }
-  if (!P) { P = new THREE.Vector3(); AX = new THREE.Vector3(); AY = new THREE.Vector3(); }
-  P.copy(anchor.position);
-  AX.set(1, 0, 0).applyQuaternion(anchor.quaternion);
-  AY.set(0, 1, 0).applyQuaternion(anchor.quaternion);
-  const dist = P.length();
-  const tilt = THREE.MathUtils.radToDeg(Math.acos(THREE.MathUtils.clamp(AY.normalize().dot(P.clone().negate().normalize()), -1, 1)));
-  const spin = THREE.MathUtils.radToDeg(Math.atan2(AX.y, AX.x));
-  $("pDist").textContent = `${dist.toFixed(2)} 倍`;
-  $("pTilt").textContent = `${tilt.toFixed(0)}°`;
-  $("pSpin").textContent = `${spin.toFixed(0)}°`;
-}
-
-/* ---------- main loop ---------- */
-let simTime = 0;
-function tick(now) {
-  const dt = Math.min((now - lastT) / 1000, 0.1);
-  lastT = now;
-  if (!ready) return;
-  simTime += dt;
-  if (source === "sim" && simWorld) simWorld.draw(simTime);
-  else if (source === "camera" && video) drawCamera();
-  else return;
-  if (arCtx.update(frame)) {
-    processed++;
-    if (markerRoot.visible) followMarker(!found);
-  }
-  found = anchor.visible = markerRoot.visible;
-  if (found !== uiFound) {
-    uiFound = found;
-    setChip(found ? "🎯 已鎖定 Hiro 標記" : "🔍 尋找標記中", found);
-    $("scanning").classList.toggle("hidden", found);
-  }
-  const o = objects[objKey];
-  o?.userData.tick?.(simTime, dt);
-  mixer?.update(dt);
-  updatePose(performance.now());
-  renderer.render(scene, camera);
-}
-
-function resize() {
-  const w = view.clientWidth, h = view.clientHeight;
-  if (w && h) renderer.setSize(w, h, false);
-}
-
-async function useSource(next) {
-  if (busy) return;
-  busy = true;
-  source = next;
-  markSource();
-  note("");
-  try {
-    if (!arCtx) {
-      showLoading("載入 ARToolKit 與相機參數…");
-      await initAR();
+// Returns a draw function for the real camera, or null to keep the simulated desk
+async function pickFeed(life, ui, sel) {
+  ui.msg("");
+  if (sel.value === "cam") {
+    try {
+      const v = await openVideo(life);
+      ui.tag("📷 鏡頭");
+      return (g) => drawCover(g, v);
+    } catch (e) {
+      if (!life.active) throw abortError();
+      ui.msg(`${camError(e)}，改用模擬畫面`);
+      sel.value = "sim";
     }
-    if (next === "camera") {
-      if (!video) {
-        showLoading("開啟鏡頭…");
-        try { video = await openCamera(); }
-        catch (err) {
-          console.warn("camera unavailable, using the simulated feed", err);
-          source = "sim";
-          markSource();
-          note("找不到可用的鏡頭，改用模擬畫面");
-        }
+  }
+  ui.tag("模擬畫面", true);
+  return null;
+}
+
+/* ---------- printable markers ---------- */
+// 3x3 barcode (patternRatio 0.5): cell 0 white, cells 2 and 8 black, data bits 0..5 live in cells 1,3,4,5,6,7 (1 = black)
+const BAR_BITS = [1, 3, 4, 5, 6, 7];
+function barcodeCanvas(id, size = 256, margin = 0) {
+  const c = makeCanvas(size + margin * 2);
+  const g = c.getContext("2d");
+  g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height);
+  g.fillStyle = "#000"; g.fillRect(margin, margin, size, size);
+  const cs = size / 6, o = margin + size / 4;
+  g.fillStyle = "#fff";
+  for (let cell = 0; cell < 9; cell++) {
+    const bit = BAR_BITS.indexOf(cell);
+    const black = cell === 2 || cell === 8 || (bit >= 0 && (id >> bit) & 1);
+    if (!black) g.fillRect(o + (cell % 3) * cs, o + Math.floor(cell / 3) * cs, cs, cs);
+  }
+  return c;
+}
+// Black border with a white inner square (patternRatio 0.5) holding a glyph or an uploaded picture
+function glyphMarker(src, size = 512) {
+  const c = makeCanvas(size);
+  const g = c.getContext("2d");
+  const o = size / 4, inner = size / 2;
+  g.fillStyle = "#000"; g.fillRect(0, 0, size, size);
+  g.fillStyle = "#fff"; g.fillRect(o, o, inner, inner);
+  if (typeof src === "string") {
+    g.fillStyle = "#000"; g.textAlign = "center"; g.textBaseline = "middle";
+    let px = inner * 0.78;
+    g.font = `900 ${px}px ${fontOf()}`;
+    const w = g.measureText(src).width;
+    if (w > inner * 0.86) { px *= inner * 0.86 / w; g.font = `900 ${px}px ${fontOf()}`; }
+    g.fillText(src, size / 2, size / 2 + px * 0.04);
+  } else {
+    const iw = src.naturalWidth || src.width, ih = src.naturalHeight || src.height;
+    const k = Math.min(inner * 0.92 / iw, inner * 0.92 / ih);
+    g.drawImage(src, size / 2 - iw * k / 2, size / 2 - ih * k / 2, iw * k, ih * k);
+  }
+  return c;
+}
+// Same layout as the AR.js marker training tool: 4 orientations, each as B, G, R planes of 16x16 values
+function encodePatt(marker) {
+  const size = marker.width, o = size / 4, inner = size / 2;
+  const k = makeCanvas(16);
+  const q = k.getContext("2d", { willReadFrequently: true });
+  const lines = [];
+  const views = [];
+  for (let r = 0; r < 4; r++) {
+    q.save();
+    q.clearRect(0, 0, 16, 16);
+    q.translate(8, 8);
+    q.rotate(-r * Math.PI / 2);
+    q.drawImage(marker, o, o, inner, inner, -8, -8, 16, 16);
+    q.restore();
+    const d = q.getImageData(0, 0, 16, 16);
+    views.push(d);
+    if (r) lines.push("");
+    for (let ch = 2; ch >= 0; ch--) {
+      for (let y = 0; y < 16; y++) {
+        const row = [];
+        for (let x = 0; x < 16; x++) row.push(String(d.data[(y * 16 + x) * 4 + ch]).padStart(3));
+        lines.push(row.join(" "));
       }
-    } else closeCamera();
-    if (source === "sim" && !simWorld) {
-      showLoading("準備模擬畫面…");
-      const fovY = THREE.MathUtils.radToDeg(2 * Math.atan(1 / camera.projectionMatrix.elements[5]));
-      simWorld = await buildSimWorld(fovY);
     }
-    if (source === "sim") closeCamera();
-    ready = true;
-    uiFound = null;  // refresh the chip and scan overlay on the next frame
-  } catch (err) {
-    console.error(err);
-    setChip("啟動失敗");
-    note(`AR.js 啟動失敗：${err?.message || err}`);
-  } finally {
-    $("loading").classList.add("hidden");
-    busy = false;
-    markSource();
   }
+  return { text: lines.join("\n") + "\n", views };
 }
 
-for (const b of document.querySelectorAll("[data-src]")) b.addEventListener("click", () => { if (b.dataset.src !== source || (b.dataset.src === "camera" && !video)) useSource(b.dataset.src); });
-for (const b of document.querySelectorAll("[data-obj]")) b.addEventListener("click", () => selectObject(b.dataset.obj));
-
-g2d.fillStyle = "#000";
-g2d.fillRect(0, 0, FW, FH);
-markSource();
-await demoGate({
-  icon: "🎯",
-  title: "AR.js Hiro 標記擴增實境",
-  desc: "用鏡頭對準 Hiro 標記，3D 物件會立在標記上並跟著角度轉動。沒有鏡頭或標記時，可改用模擬畫面觀看追蹤效果。",
-  tags: ["需要鏡頭", "約 4 MB", "AR.js 3.4.8"],
-  button: "開啟鏡頭",
-});
-showLoading("下載 three.js 與 AR.js…");
-setChip("載入中");
-try {
-  [THREE, { ArToolkitContext, ArMarkerControls }] = await Promise.all([import("three"), import(AR_URL)]);
-  setupScene();
-  await selectObject("knot");
-  busy = false;
-  useSource("camera");
-} catch (err) {
-  console.error(err);
-  $("loading").classList.add("hidden");
-  setChip("啟動失敗");
-  note(`函式庫載入失敗：${err?.message || err}`);
+/* ---------- overlay content (marker space: 1 unit = marker width, +y out of the marker) ---------- */
+function markerBase(T, color) {
+  const g = new T.Group();
+  const edge = [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]].map(([x, z]) => new T.Vector3(x, 0.004, z));
+  g.add(new T.LineLoop(new T.BufferGeometry().setFromPoints(edge), new T.LineBasicMaterial({ color })));
+  g.add(new T.Mesh(new T.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), new T.MeshBasicMaterial({ color, transparent: true, opacity: 0.16, depthWrite: false })));
+  return g;
 }
+function shadowDisc(T) {
+  const m = new T.Mesh(new T.PlaneGeometry(0.9, 0.9).rotateX(-Math.PI / 2), new T.MeshBasicMaterial({ map: radialTexture(T, "rgba(0,0,0,.55)"), transparent: true, depthWrite: false }));
+  m.position.y = 0.006;
+  return m;
+}
+function labelSprite(T, text, color, h = 0.26) {
+  const c = makeCanvas(320, 112);
+  const g = c.getContext("2d");
+  g.font = `700 54px ${fontOf()}`;
+  const w = Math.min(304, g.measureText(text).width + 44);
+  g.fillStyle = "rgba(10, 12, 15, .85)";
+  g.beginPath(); g.roundRect(160 - w / 2, 8, w, 96, 26); g.fill();
+  g.lineWidth = 6; g.strokeStyle = color; g.stroke();
+  g.fillStyle = color; g.textAlign = "center"; g.textBaseline = "middle";
+  g.fillText(text, 160, 58, 280);
+  const tex = new T.CanvasTexture(c);
+  tex.colorSpace = T.SRGBColorSpace;
+  const s = new T.Sprite(new T.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
+  s.scale.set(h * 320 / 112, h, 1);
+  return s;
+}
+function buildKnot(T) {
+  const knot = new T.Mesh(new T.TorusKnotGeometry(0.27, 0.085, 180, 24), new T.MeshStandardMaterial({ color: 0xf7df1e, metalness: 0.35, roughness: 0.3 }));
+  const group = new T.Group();
+  group.add(knot);
+  group.userData.tick = (t, dt) => { knot.rotation.y += dt * 0.9; knot.rotation.x = Math.sin(t * 0.7) * 0.4; group.position.y = 0.72 + Math.sin(t * 2) * 0.05; };
+  return group;
+}
+function buildCube(T) {
+  // The classic AR.js "hello world": a normal-shaded cube standing on the marker
+  const geo = new T.BoxGeometry(0.72, 0.72, 0.72);
+  const cube = new T.Mesh(geo, new T.MeshNormalMaterial({ transparent: true, opacity: 0.88 }));
+  cube.add(new T.LineSegments(new T.EdgesGeometry(geo), new T.LineBasicMaterial({ color: 0xffffff })));
+  const group = new T.Group();
+  group.add(cube);
+  group.userData.tick = (t) => { cube.rotation.y = t * 0.6; cube.position.y = 0.36 + Math.abs(Math.sin(t * 2.4)) * 0.18; };
+  return group;
+}
+// Fetch the model bytes once per page; each visit parses its own copy so disposal never touches a shared scene
+let robotBytes = null;
+async function loadRobot(T) {
+  robotBytes ||= fetch("_shared/models/robot.glb").then((r) => {
+    if (!r.ok) throw new Error(`robot.glb HTTP ${r.status}`);
+    return r.arrayBuffer();
+  });
+  robotBytes.catch(() => { robotBytes = null; });
+  const { GLTFLoader } = await import("three/addons/loaders/GLTFLoader.js");
+  const gltf = await new GLTFLoader().parseAsync(await robotBytes, "");
+  const model = gltf.scene;
+  // Skinned hand meshes report bind-pose bounds hundreds of units wide, so size the robot from rigid meshes only
+  const box = new T.Box3();
+  model.updateMatrixWorld(true);
+  model.traverse((o) => { if (o.isMesh && !o.isSkinnedMesh) box.expandByObject(o); });
+  const k = 1.05 / (box.max.y - box.min.y);
+  model.scale.setScalar(k);
+  model.position.y = -box.min.y * k;
+  const mixer = new T.AnimationMixer(model);
+  const clip = gltf.animations.find((a) => a.name === "Wave") || gltf.animations[0];
+  if (clip) mixer.clipAction(clip).play();
+  const group = new T.Group();
+  group.add(model);
+  group.userData.mixer = mixer;
+  return group;
+}
+function logLine(box, text, cls = "", max = 40) {
+  const now = new Date();
+  const ts = [now.getHours(), now.getMinutes(), now.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
+  box.append(Showcase.h("div", { class: cls, text: `${ts} ${text}` }));
+  while (box.children.length > max) box.firstChild.remove();
+}
+
+/* ---------- location-based helpers (short distances, so a local flat-earth approximation is enough) ---------- */
+const R_EARTH = 6371e3;
+const rad = (d) => d * Math.PI / 180;
+function geo(a, b) {
+  const e = rad(b.lon - a.lon) * Math.cos(rad((a.lat + b.lat) / 2)) * R_EARTH, n = rad(b.lat - a.lat) * R_EARTH;
+  return { e, n, d: Math.hypot(e, n), brg: (Math.atan2(e, n) * 180 / Math.PI + 360) % 360 };
+}
+function stepFrom(p, brg, m) {
+  return { lat: p.lat + m * Math.cos(rad(brg)) / R_EARTH * 180 / Math.PI, lon: p.lon + m * Math.sin(rad(brg)) / (R_EARTH * Math.cos(rad(p.lat))) * 180 / Math.PI };
+}
+const DIRS = ["北", "東北", "東", "東南", "南", "西南", "西", "西北"];
+const dirName = (b) => DIRS[Math.round(b / 45) % 8];
+const fmtDist = (m) => (m >= 1000 ? `${(m / 1000).toFixed(m >= 10000 ? 0 : 1)} km` : `${Math.round(m)} m`);
+// Approximate coordinates of Taipei landmarks around the starting point (Taipei Main Station)
+const ORIGIN = { name: "台北車站", lat: 25.0478, lon: 121.5171 };
+const POIS = [
+  { name: "北門", lat: 25.0477, lon: 121.5113 },
+  { name: "總統府", lat: 25.0401, lon: 121.5119 },
+  { name: "西門紅樓", lat: 25.0419, lon: 121.5068 },
+  { name: "中正紀念堂", lat: 25.0355, lon: 121.5219 },
+  { name: "國父紀念館", lat: 25.0400, lon: 121.5600 },
+  { name: "台北101", lat: 25.0339, lon: 121.5645 },
+];
+const AFRAME_SNIPPET = `<a-scene embedded arjs="sourceType: webcam;
+  detectionMode: mono_and_matrix;
+  matrixCodeType: 3x3">
+  <a-marker type="pattern" url="patt.hiro"
+            smooth="true" smoothCount="5">
+    <a-box position="0 0.5 0"></a-box>
+  </a-marker>
+  <a-marker type="barcode" value="5">
+    <a-sphere radius="0.4"></a-sphere>
+  </a-marker>
+  <a-entity camera></a-entity>
+</a-scene>`;
+function aframeDoc() {
+  return `<!doctype html><html><head><meta charset="utf-8"><base href="${abs("./")}">
+<script>navigator.mediaDevices.getUserMedia = () => parent.__ajFeed();<\/script>
+<script src="${AFRAME_URL}"><\/script>
+<script src="${AFRAME_AR_URL}"><\/script>
+<style>html { background: #000; } html, body { margin: 0; height: 100%; overflow: hidden; } .a-enter-vr, .a-enter-ar, .a-orientation-modal { display: none !important; }</style>
+</head><body>
+<a-scene embedded vr-mode-ui="enabled: false" arjs="sourceType: webcam; debugUIEnabled: false; cameraParametersUrl: ${abs(DATA + "camera_para.dat")}; detectionMode: mono_and_matrix; matrixCodeType: 3x3">
+  <a-marker id="m-hiro" type="pattern" url="${abs(HIRO_PATT)}" smooth="true" smoothCount="5">
+    <a-box position="0 0.5 0" material="color: #f7df1e; roughness: 0.4" animation="property: rotation; to: 0 360 0; loop: true; dur: 5000; easing: linear"></a-box>
+  </a-marker>
+  <a-marker id="m-bar" type="barcode" value="5">
+    <a-sphere position="0 0.45 0" radius="0.4" material="color: #4cc9f0; roughness: 0.3"></a-sphere>
+    <a-cone position="0 1.05 0" radius-bottom="0.18" height="0.35" material="color: #f72585"></a-cone>
+  </a-marker>
+  <a-entity camera></a-entity>
+</a-scene></body></html>`;
+}
+
+Showcase.run({ scenes: [
+  {
+    id: "hiro", title: "Hiro 標記",
+    api: "new ArToolkitContext({ cameraParametersUrl })・new ArMarkerControls(ctx, root, { type: \"pattern\", patternUrl })・ctx.update(canvas)",
+    desc: "經典的 AR.js 入門：ARToolKit（WebAssembly）在每格畫面找黑色方框、比對框內圖樣確認是 Hiro，再依相機參數解出標記相對鏡頭的姿態矩陣，three.js 用同一組投影矩陣把物件立在標記上。",
+    hint: "來源可切換模擬畫面或鏡頭・上方按鈕換放在標記上的物件",
+    async mount(ctx) {
+      const { THREE: T, AR } = await libs(ctx, ["ar"]);
+      ctx.html(`<div class="aj-board">${stageBox(SCAN)}
+        <div class="aj-side">
+          <div class="aj-marker"><img src="${DATA}hiro.png" alt="Hiro 標記圖">
+            <div class="aj-dl"><a class="btn" href="${DATA}hiro.png" download="arjs-hiro.png">⬇️ 標記 PNG</a><a class="btn" href="${HIRO_PATT}" download="patt.hiro">⬇️ patt.hiro</a></div></div>
+          <h4>即時姿態 <span>標記寬 = 1</span></h4>
+          <div class="aj-kv"><span>距離</span><b data-k="dist">-</b><span>傾斜</span><b data-k="tilt">-</b><span>旋轉</span><b data-k="spin">-</b><span>辨識</span><b data-k="rate">-</b></div>
+          <p class="aj-wide">用手機開啟此頁、對準另一個螢幕上的 Hiro 圖，或下載後印出來。「模擬畫面」是 three.js 即時算繪的桌面，同樣逐格交給 ARToolKit 辨識，物件位置完全來自偵測結果。</p>
+        </div></div>`);
+      const ui = stageUI(ctx);
+      const scan = ctx.$(".aj-scan");
+      const kv = Object.fromEntries(ctx.$$("[data-k]").map((b) => [b.dataset.k, b]));
+      const run = runner(ctx);
+      let feed = null;
+      const start = () => run(async (life) => { feed = null; feed = await pickFeed(life, ui, sel); });
+      const sel = ctx.select("來源", SRC, "sim", start);
+      let want = 0;
+      let pickFn = null;
+      ctx.group(["🪢 環形結", "🧊 方塊", "🤖 機器人"], 0, (i) => { want = i; pickFn?.(i); });
+      const st = ctx.status("載入 ARToolKit 與相機參數…");
+      const [ac, hiro] = await Promise.all([arContext(ctx), loadImage(DATA + "hiro.png")]);
+      st.done();
+      const ov = overlay(ctx, ui.view, ac);
+      const root = new T.Group();  // AR.js writes the raw marker pose into this group's matrix
+      // AR.js smoothing can freeze during slow motion (see scene 5), so the raw pose is eased here instead
+      new AR.ArMarkerControls(ac, root, { type: "pattern", patternUrl: HIRO_PATT, size: 1, smooth: false });
+      const anchor = new T.Group();
+      anchor.visible = false;
+      anchor.add(markerBase(T, 0x4cc9f0), shadowDisc(T));
+      ov.scene.add(anchor);
+      // hiro.png has a thin white margin: the black square spans about 92% of the image
+      const desk = simDesk(ctx, fovOf(ac), [{ img: hiro, fill: 0.92 }]);
+      const objs = [buildKnot(T), buildCube(T), null];
+      let cur = null, mixer = null;
+      async function pick(i) {
+        want = i;
+        if (i === 2 && !objs[2]) {
+          ui.msg("下載機器人模型…");
+          try { objs[2] = await loadRobot(T); ui.msg(""); } catch (e) { console.error(e); ui.msg("機器人模型載入失敗", true); return; }
+          if (!ctx.active || want !== 2) return;
+        }
+        if (cur) anchor.remove(cur);
+        cur = objs[i];
+        anchor.add(cur);
+        mixer = cur.userData.mixer || null;
+      }
+      pickFn = pick;
+      pick(want);
+      start();
+      const P = new T.Vector3(), Q = new T.Quaternion(), S = new T.Vector3(), AX = new T.Vector3(), AY = new T.Vector3(), V = new T.Vector3();
+      let simT = 0, found = null, processed = 0, rateAt = performance.now();
+      ctx.raf((now, dtMs) => {
+        const dt = dtMs / 1000;
+        simT += dt;
+        if (feed) feed(ui.g); else { orbit(desk.cam, simT); desk.draw(ui.g); }
+        if (ac.update(ui.frame)) {
+          processed++;
+          if (root.visible) {
+            root.matrix.decompose(P, Q, S);
+            // Ease toward each detection to hide noise, but jump straight there when the marker reappears
+            const k = found ? 0.6 : 1;
+            anchor.position.lerp(P, k);
+            anchor.quaternion.slerp(Q, k);
+          }
+        }
+        if (root.visible !== found) {
+          found = root.visible;
+          anchor.visible = found;
+          ui.state(found ? "🎯 已鎖定 Hiro" : "🔍 尋找標記中", found);
+          scan.classList.toggle("hidden", found);
+        }
+        cur?.userData.tick?.(simT, dt);
+        mixer?.update(dt);
+        const t = performance.now();
+        if (t - rateAt >= 1000) { kv.rate.textContent = `${Math.round(processed * 1000 / (t - rateAt))} 次/秒`; processed = 0; rateAt = t; }
+        if (found) {
+          AX.set(1, 0, 0).applyQuaternion(anchor.quaternion);
+          AY.set(0, 1, 0).applyQuaternion(anchor.quaternion);
+          V.copy(anchor.position).negate().normalize();
+          kv.dist.textContent = `${anchor.position.length().toFixed(2)} 倍`;
+          kv.tilt.textContent = `${T.MathUtils.radToDeg(Math.acos(T.MathUtils.clamp(AY.dot(V), -1, 1))).toFixed(0)}°`;
+          kv.spin.textContent = `${T.MathUtils.radToDeg(Math.atan2(AX.y, AX.x)).toFixed(0)}°`;
+        } else kv.dist.textContent = kv.tilt.textContent = kv.spin.textContent = "-";
+        ov.render();
+      });
+    },
+  },
+  {
+    id: "barcode", title: "條碼標記",
+    api: "detectionMode: \"mono_and_matrix\"・matrixCodeType: \"3x3\"・new ArMarkerControls(ctx, root, { type: \"barcode\", barcodeValue })",
+    desc: "條碼標記不必比對圖樣，ARToolKit 直接讀框內 3×3 格的黑白位元得到 ID（3x3 有 64 種），所以能同時辨識很多張，速度也比圖樣快。桌上 6 張卡只註冊了 5 個 ID，第 6 張 ID 63 會被偵測到，但沒有物件跟著它。",
+    hint: "右側列出每個 ID 的狀態與信心值・上方可下載任一 ID 的條碼圖",
+    async mount(ctx) {
+      const { THREE: T, AR } = await libs(ctx, ["ar"]);
+      const IDS = [5, 12, 23, 37, 48, 63], REG = IDS.slice(0, 5);
+      ctx.html(`<div class="aj-board">${stageBox()}
+        <div class="aj-side">
+          <h4>條碼 ID <span>3x3・0 到 63</span></h4>
+          <div class="aj-ids">${IDS.map((id) => `<div class="aj-id" data-id="${id}"><img src="${barcodeCanvas(id, 52, 4).toDataURL()}" alt=""><span>ID ${id}${REG.includes(id) ? "" : "<em>未註冊</em>"}</span><b>未見</b></div>`).join("")}</div>
+          <div class="aj-kv"><span>每格偵測</span><b data-k="n">-</b><span>處理耗時</span><b data-k="ms">-</b></div>
+          <p class="aj-wide">信心值 cfMatrix 來自位元解碼；3x3 用 2 格固定黑格判斷方向，剩下 6 個位元就是 ID。只有用 ArMarkerControls 註冊過的 ID 才會更新物件姿態。</p>
+        </div></div>`);
+      const ui = stageUI(ctx);
+      const rows = new Map(ctx.$$(".aj-id").map((el) => [+el.dataset.id, el.querySelector("b")]));
+      const kvN = ctx.$('[data-k="n"]'), kvMs = ctx.$('[data-k="ms"]');
+      const run = runner(ctx);
+      let feed = null;
+      const start = () => run(async (life) => { feed = null; feed = await pickFeed(life, ui, sel); });
+      const sel = ctx.select("來源", SRC, "sim", start);
+      const idSel = ctx.select("條碼", Array.from({ length: 64 }, (_, i) => ({ value: String(i), label: `ID ${i}` })), "5", () => {});
+      ctx.button("⬇️ PNG", () => download(barcodeCanvas(+idSel.value, 480, 60).toDataURL(), `arjs-barcode-3x3-${idSel.value}.png`));
+      const st = ctx.status("載入 ARToolKit 與相機參數…");
+      const ac = await arContext(ctx, { detectionMode: "mono_and_matrix", matrixCodeType: "3x3" });
+      st.done();
+      const ov = overlay(ctx, ui.view, ac);
+      const spinners = [];
+      REG.forEach((id, i) => {
+        const color = COLORS[i % COLORS.length];
+        const root = new T.Group();
+        const cube = new T.Mesh(new T.BoxGeometry(0.5, 0.5, 0.5), new T.MeshStandardMaterial({ color, roughness: 0.35, metalness: 0.2 }));
+        cube.position.y = 0.3;
+        const label = labelSprite(T, `ID ${id}`, color, 0.3);
+        label.position.y = 0.85;
+        root.add(markerBase(T, color), cube, label);
+        ov.scene.add(root);
+        spinners.push(cube);
+        new AR.ArMarkerControls(ac, root, { type: "barcode", barcodeValue: id, size: 1 });
+      });
+      // getMarker fires for every decoded square, registered or not
+      const seen = new Map();
+      let perFrame = 0;
+      const onGet = (ev) => {
+        const m = ev.data.marker;
+        perFrame++;
+        if (m.idMatrix >= 0) seen.set(m.idMatrix, { t: performance.now(), cf: m.cfMatrix });
+      };
+      const ar = ac.arController;
+      ar.addEventListener("getMarker", onGet);
+      ctx.onCleanup(() => ar.removeEventListener("getMarker", onGet));
+      const desk = simDesk(ctx, fovOf(ac), IDS.map((id, i) => ({ img: barcodeCanvas(id, 256), size: 0.75, x: (i % 3 - 1) * 1.35, z: (Math.floor(i / 3) - 0.5) * 1.35 })));
+      start();
+      let simT = 0, lastUi = 0, msAvg = 0;
+      ctx.raf((now, dtMs) => {
+        simT += dtMs / 1000;
+        if (feed) feed(ui.g); else { orbit(desk.cam, simT * 0.8, { d: 5.4, amp: 0.7 }); desk.draw(ui.g); }
+        perFrame = 0;
+        const t0 = performance.now();
+        const did = ac.update(ui.frame);
+        if (did) { msAvg = msAvg * 0.9 + (performance.now() - t0) * 0.1; kvN.textContent = `${perFrame} 個方框`; }
+        spinners.forEach((c, i) => { c.rotation.y = simT * (0.8 + i * 0.15); });
+        const t = performance.now();
+        if (t - lastUi > 200) {
+          lastUi = t;
+          let live = 0;
+          for (const [id, b] of rows) {
+            const s = seen.get(id);
+            const on = s && t - s.t < 300;
+            const reg = REG.includes(id);
+            if (on && reg) live++;
+            b.textContent = on ? `${reg ? "追蹤" : "偵測到"} ${s.cf.toFixed(2)}` : "未見";
+            b.className = on ? (reg ? "on" : "warn") : "";
+          }
+          ui.state(`追蹤中 ${live} / ${REG.length}`, live > 0);
+          kvMs.textContent = fmtMs(msAvg);
+        }
+        ov.render();
+      });
+    },
+  },
+  {
+    id: "custom", title: "自訂圖樣",
+    api: "new ArMarkerControls(ctx, root, { type: \"pattern\", patternUrl: pattText })・arController.addEventListener(\"getMarker\", e => e.data.marker.cfPatt)",
+    desc: "在瀏覽器裡做自己的圖樣標記：把字或上傳的圖片放進黑框，取框內 50% 區域縮成 16×16、存成 4 個方向的 .patt，直接把文字內容當 patternUrl 交給 AR.js，和 Hiro 並排同時辨識。",
+    hint: "上方切換字樣或上傳圖片・右側有 .patt 的 4 個方向取樣與下載",
+    async mount(ctx) {
+      const { THREE: T, AR } = await libs(ctx, ["ar"]);
+      const GLYPHS = ["JS", "AR", "★", "貓", "3D"];
+      ctx.html(`<div class="aj-board">${stageBox()}
+        <div class="aj-side">
+          <div class="aj-pat"><img data-mk alt="自訂標記圖"><div class="aj-rots">${"<canvas width=16 height=16></canvas>".repeat(4)}<small>.patt 的 4 個方向（16×16）</small></div></div>
+          <div class="aj-kv"><span>Hiro 信心值</span><b data-k="hiro">-</b><span>自訂 信心值</span><b data-k="cus">-</b><span>.patt 大小</span><b data-k="size">-</b></div>
+          <div class="aj-dl" style="grid-template-columns:1fr 1fr"><a class="btn" data-dl="png">⬇️ 標記 PNG</a><a class="btn" data-dl="patt">⬇️ .patt</a></div>
+          <p class="aj-wide">ARToolKit 會拿每個方框跟所有已載入的圖樣比對，取最像的那個；信心值 cfPatt 達 0.6（minConfidence）才算辨識成功。字樣越不對稱、筆畫越粗，越不容易認錯方向。</p>
+        </div></div>`);
+      const ui = stageUI(ctx);
+      const kvHiro = ctx.$('[data-k="hiro"]'), kvCus = ctx.$('[data-k="cus"]'), kvSize = ctx.$('[data-k="size"]');
+      const mkImg = ctx.$("[data-mk]"), rots = ctx.$$(".aj-rots canvas"), dlPng = ctx.$('[data-dl="png"]'), dlPatt = ctx.$('[data-dl="patt"]');
+      const run = runner(ctx);
+      let feed = null;
+      const start = () => run(async (life) => { feed = null; feed = await pickFeed(life, ui, sel); });
+      const sel = ctx.select("來源", SRC, "sim", start);
+      let applyPattern = null;
+      const seg = ctx.group(GLYPHS, 0, (i) => applyPattern?.(GLYPHS[i], GLYPHS[i]));
+      const file = Showcase.h("input", { type: "file", accept: "image/*", hidden: true });
+      ctx.el.append(file);
+      ctx.button("🖼️ 上傳", () => file.click());
+      const st = ctx.status("載入 ARToolKit 與相機參數…");
+      const [ac, hiro] = await Promise.all([arContext(ctx), loadImage(DATA + "hiro.png")]);
+      st.done();
+      const ar = ac.arController;
+      const pid = patternIds(ar);
+      const ov = overlay(ctx, ui.view, ac);
+      const hiroRoot = new T.Group(), cusBody = new T.Group();
+      const hl = labelSprite(T, "Hiro", COLORS[0], 0.28);
+      hl.position.y = 0.45;
+      hiroRoot.add(markerBase(T, 0xf7df1e), hl);
+      const faceCanvas = makeCanvas(256), faceTex = new T.CanvasTexture(faceCanvas);
+      faceTex.colorSpace = T.SRGBColorSpace;
+      const cube = new T.Mesh(new T.BoxGeometry(0.55, 0.55, 0.55), new T.MeshStandardMaterial({ map: faceTex, roughness: 0.5 }));
+      cube.position.y = 0.4;
+      cusBody.add(markerBase(T, 0xf72585), cube);
+      ov.scene.add(hiroRoot);
+      new AR.ArMarkerControls(ac, hiroRoot, { type: "pattern", patternUrl: HIRO_PATT, size: 1 });
+      const cardCanvas = makeCanvas(512);
+      const desk = simDesk(ctx, fovOf(ac), [{ img: hiro, fill: 0.92, x: -0.95, rot: 0.08 }, { img: cardCanvas, x: 0.95, rot: -0.12 }]);
+      const cardTex = desk.cards[1].tex;
+      // Best confidence per pattern id over the last few frames
+      const conf = new Map();
+      const onGet = (ev) => {
+        const m = ev.data.marker;
+        if (m.idPatt < 0) return;
+        const prev = conf.get(m.idPatt);
+        const t = performance.now();
+        if (!prev || t - prev.t > 250 || m.cfPatt > prev.cf) conf.set(m.idPatt, { t, cf: m.cfPatt });
+      };
+      ar.addEventListener("getMarker", onGet);
+      ctx.onCleanup(() => ar.removeEventListener("getMarker", onGet));
+      // ARToolKit cannot unload a pattern and ArMarkerControls.dispose() leaves its listener behind,
+      // so each distinct pattern gets one controls object for the whole visit and the content moves between them
+      const roots = new Map();
+      let cusRoot = new T.Group(), cusKey = "", urls = [];
+      ctx.onCleanup(() => urls.forEach((u) => URL.revokeObjectURL(u)));
+      function setPattern(src, name) {
+        const mk = glyphMarker(src, 512);
+        cardCanvas.getContext("2d").drawImage(mk, 0, 0);
+        cardTex.needsUpdate = true;
+        const fg = faceCanvas.getContext("2d");
+        fg.fillStyle = "#fff"; fg.fillRect(0, 0, 256, 256);
+        fg.drawImage(mk, 64, 64, 128, 128, 16, 16, 224, 224);
+        faceTex.needsUpdate = true;
+        const { text, views } = encodePatt(mk);
+        views.forEach((d, i) => rots[i].getContext("2d").putImageData(d, 0, 0));
+        mkImg.src = mk.toDataURL();
+        urls.forEach((u) => URL.revokeObjectURL(u));
+        urls = [URL.createObjectURL(new Blob([text], { type: "text/plain" }))];
+        dlPatt.href = urls[0];
+        dlPatt.download = `pattern-${name}.patt`;
+        dlPng.href = mkImg.src;
+        dlPng.download = `arjs-marker-${name}.png`;
+        kvSize.textContent = `${(text.length / 1024).toFixed(1)} KB`;
+        cusKey = text;
+        if (!roots.has(text)) {
+          const root = new T.Group();
+          ov.scene.add(root);
+          new AR.ArMarkerControls(ac, root, { type: "pattern", patternUrl: text, size: 1 });
+          roots.set(text, root);
+        }
+        cusRoot = roots.get(text);
+        cusRoot.add(cusBody);
+      }
+      applyPattern = setPattern;
+      ctx.on(file, "change", async () => {
+        const f = file.files?.[0];
+        file.value = "";
+        if (!f) return;
+        const url = URL.createObjectURL(f);
+        try {
+          const img = await loadImage(url);
+          if (!ctx.active) return;
+          seg.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", "false"));
+          setPattern(img, "upload");
+          ui.msg("");
+        } catch (e) {
+          ui.msg("這個檔案無法當成圖片讀取", true);
+        } finally {
+          imgCache.delete(url);
+          URL.revokeObjectURL(url);
+        }
+      });
+      setPattern(GLYPHS[0], GLYPHS[0]);
+      start();
+      let simT = 0, lastUi = 0;
+      const cf = (key) => {
+        const id = pid.get(key), c = id == null ? null : conf.get(id);
+        return c && performance.now() - c.t < 400 ? c.cf : null;
+      };
+      ctx.raf((now, dtMs) => {
+        simT += dtMs / 1000;
+        if (feed) feed(ui.g); else { orbit(desk.cam, simT * 0.8, { d: 4.6, amp: 0.7 }); desk.draw(ui.g); }
+        ac.update(ui.frame);
+        cube.rotation.y = simT * 0.9;
+        const t = performance.now();
+        if (t - lastUi > 200) {
+          lastUi = t;
+          const a = cf(HIRO_PATT), b = cf(cusKey);
+          kvHiro.textContent = a == null ? "未見" : a.toFixed(2);
+          kvCus.textContent = b == null ? "未見" : b.toFixed(2);
+          const n = (hiroRoot.visible ? 1 : 0) + (cusRoot.visible ? 1 : 0);
+          ui.state(`辨識 ${n} / 2`, n > 0);
+        }
+        ov.render();
+      });
+    },
+  },
+  {
+    id: "detect", title: "偵測與門檻",
+    api: "arController.detectMarker(canvas)・getMarkerNum()・getMarker(i).vertex・setThresholdMode(mode)・setThreshold(v)・setDebugMode(true)",
+    desc: "拆開 ctx.update() 看底層：ARToolKit 先把畫面二值化，找出四邊形候選方框，再逐一比對圖樣或解碼條碼。調暗一側光線，再切換門檻模式，就能看到手動門檻在陰影下漏抓、自動模式重新抓回來的過程。",
+    hint: "上方調整門檻模式與陰影・按「二值化」看 ARToolKit 實際處理的黑白影像",
+    async mount(ctx) {
+      const { THREE: T } = await libs(ctx, ["ar"]);
+      ctx.html(`<div class="aj-board">${stageBox(`<canvas class="aj-bin" width="${FW}" height="${FH}" hidden></canvas><canvas class="aj-quad" width="${FW}" height="${FH}"></canvas>`)}
+        <div class="aj-side">
+          <h4>偵測結果 <span>每格</span></h4>
+          <div class="aj-kv"><span>候選方框</span><b data-k="n">-</b><span>門檻值</span><b data-k="thr">-</b><span>偵測耗時</span><b data-k="ms">-</b></div>
+          <div class="aj-legend">
+            <div><i style="background:${COLORS[0]}"></i><span>圖樣（Hiro）</span><code>idPatt</code></div>
+            <div><i style="background:${COLORS[1]}"></i><span>條碼</span><code>idMatrix</code></div>
+            <div><i style="background:${COLORS[4]}"></i><span>方框但認不出</span><code>cf 低</code></div>
+          </div>
+          <div class="aj-log" data-list></div>
+          <p class="aj-wide">桌上有 Hiro、條碼 12 和一個全黑方塊。全黑方塊會被當成方框候選，但圖樣信心值低、條碼也解不出來。</p>
+        </div></div>`);
+      const ui = stageUI(ctx);
+      const bin = ctx.$(".aj-bin"), quad = ctx.$(".aj-quad");
+      const bg = bin.getContext("2d"), qg = quad.getContext("2d");
+      const binImg = bg.createImageData(FW, FH);
+      const kvN = ctx.$('[data-k="n"]'), kvThr = ctx.$('[data-k="thr"]'), kvMs = ctx.$('[data-k="ms"]'), list = ctx.$("[data-list]");
+      const st = ctx.status("載入 ARToolKit 與相機參數…");
+      const [ac, hiro] = await Promise.all([arContext(ctx, { detectionMode: "mono_and_matrix", matrixCodeType: "3x3" }), loadImage(DATA + "hiro.png")]);
+      const ar = ac.arController;
+      const hiroId = await ar.loadMarker(HIRO_PATT);
+      st.done();
+      if (!ctx.active) return;
+      const MODES = [{ value: "0", label: "手動" }, { value: "1", label: "自動：中位數" }, { value: "2", label: "自動：Otsu" }, { value: "3", label: "自動：自適應" }];
+      let thr = 100, shade = 0.55, debug = false;
+      const modeSel = ctx.select("門檻", MODES, String(ar.getThresholdMode()), (v) => ar.setThresholdMode(+v));
+      ctx.slider("手動值", { min: 0, max: 255, step: 1, value: thr }, (v) => { thr = v; ar.setThreshold(v); });
+      ctx.slider("陰影", { min: 0, max: 0.9, step: 0.05, value: shade, format: (v) => `${Math.round(v * 100)}%` }, (v) => { shade = v; });
+      ctx.toggle("二值化", false, (v) => { debug = v; ar.setDebugMode(v); bin.hidden = !v; });
+      ar.setThreshold(thr);
+      ar.setThresholdMode(+modeSel.value);
+      ctx.onCleanup(() => ar.setDebugMode?.(false));
+      ui.tag("模擬畫面", true);
+      const black = makeCanvas(64);
+      black.getContext("2d").fillRect(0, 0, 64, 64);
+      const desk = simDesk(ctx, fovOf(ac), [
+        { img: hiro, fill: 0.92, size: 0.9, x: -1.25, rot: 0.1 },
+        { img: barcodeCanvas(12, 256), size: 0.9, x: 0, rot: -0.05 },
+        { img: black, size: 0.9, x: 1.25, rot: 0.15 },
+      ]);
+      let simT = 0, lastUi = 0, msAvg = 0, cands = [];
+      ctx.raf((now, dtMs) => {
+        simT += dtMs / 1000;
+        orbit(desk.cam, simT * 0.6, { d: 4.8, amp: 0.55 });
+        desk.draw(ui.g);
+        if (shade > 0) {
+          // A soft shadow across the left half: uneven light is what defeats a single global threshold
+          const grad = ui.g.createLinearGradient(0, 0, FW * 0.75, FH * 0.3);
+          grad.addColorStop(0, `rgba(0,0,0,${shade})`);
+          grad.addColorStop(1, "rgba(0,0,0,0)");
+          ui.g.fillStyle = grad;
+          ui.g.fillRect(0, 0, FW, FH);
+        }
+        const t0 = performance.now();
+        ar.detectMarker(ui.frame);
+        const n = ar.getMarkerNum();
+        msAvg = msAvg * 0.9 + (performance.now() - t0) * 0.1;
+        cands = [];
+        for (let i = 0; i < n; i++) {
+          const m = ar.getMarker(i);  // shared object: copy what is needed right away
+          cands.push({ v: m.vertex.map((p) => [p[0], p[1]]), idPatt: m.idPatt, cfPatt: m.cfPatt, idMatrix: m.idMatrix, cfMatrix: m.cfMatrix, area: m.area });
+        }
+        if (debug) {
+          const buf = new Uint8Array(ar.artoolkit.instance.HEAPU8.buffer, ar.getProcessingImage(), FW * FH);
+          const d = binImg.data;
+          // ARToolKit marks dark pixels as 255; invert so the view reads like the original frame
+          for (let i = 0, j = 0; i < buf.length; i++, j += 4) { const v = 255 - buf[i]; d[j] = d[j + 1] = d[j + 2] = v; d[j + 3] = 255; }
+          bg.putImageData(binImg, 0, 0);
+        }
+        qg.clearRect(0, 0, FW, FH);
+        qg.lineWidth = 3;
+        qg.font = `600 15px ${fontOf()}`;
+        for (const c of cands) {
+          const bar = c.idMatrix >= 0 && c.cfMatrix >= 0.5, pat = !bar && c.idPatt === hiroId && c.cfPatt >= 0.6;
+          c.color = bar ? COLORS[1] : pat ? COLORS[0] : COLORS[4];
+          c.label = bar ? `條碼 ${c.idMatrix}・${c.cfMatrix.toFixed(2)}` : pat ? `Hiro・${c.cfPatt.toFixed(2)}` : `未知・${Math.max(c.cfPatt, 0).toFixed(2)}`;
+          qg.strokeStyle = c.color;
+          qg.beginPath();
+          c.v.forEach(([x, y], k) => (k ? qg.lineTo(x, y) : qg.moveTo(x, y)));
+          qg.closePath();
+          qg.stroke();
+          const [x, y] = c.v.reduce((a, p) => (p[1] < a[1] ? p : a));
+          const w = qg.measureText(c.label).width + 12;
+          qg.fillStyle = "rgba(10, 12, 15, .85)";
+          qg.fillRect(x - w / 2, y - 28, w, 22);
+          qg.fillStyle = c.color;
+          qg.fillText(c.label, x - w / 2 + 6, y - 11);
+        }
+        const t = performance.now();
+        if (t - lastUi > 250) {
+          lastUi = t;
+          kvN.textContent = String(n);
+          kvThr.textContent = String(ar.getThreshold());
+          kvMs.textContent = fmtMs(msAvg);
+          list.replaceChildren(...cands.slice(0, 6).map((c) => Showcase.h("div", { style: `color:${c.color}`, text: `${c.label}　面積 ${fmt(c.area)}` })));
+          const ok = cands.filter((c) => c.color !== COLORS[4]).length;
+          ui.state(`認出 ${ok} / 候選 ${n}`, ok > 0);
+        }
+      });
+    },
+  },
+  {
+    id: "params", title: "平滑與尺寸",
+    api: "new ArMarkerControls(ctx, root, { smooth: true, smoothCount, smoothTolerance, smoothThreshold, size })",
+    desc: "同一次偵測產生兩個姿態：橘框是原始矩陣，青框是開了 smooth 的 ArMarkerControls。smooth 取最近 smoothCount 個矩陣平均，有至少 smoothThreshold 個元素和原始值相差超過 smoothTolerance 才更新，否則凍結。size 是標記實際寬度（交給 trackPatternMarkerId 的姿態解算），只會改變位移的單位。",
+    hint: "上方切換平滑預設與雜訊・橘框是原始姿態、青框是平滑後",
+    async mount(ctx) {
+      const { THREE: T, AR } = await libs(ctx, ["ar"]);
+      const PRESETS = [
+        { label: "預設", p: { smoothCount: 5, smoothTolerance: 0.01, smoothThreshold: 2 } },
+        { label: "反應快", p: { smoothCount: 3, smoothTolerance: 0.005, smoothThreshold: 1 } },
+        { label: "強平滑", p: { smoothCount: 15, smoothTolerance: 0.01, smoothThreshold: 2 } },
+        { label: "易凍結", p: { smoothCount: 5, smoothTolerance: 0.05, smoothThreshold: 6 } },
+      ];
+      ctx.html(`<div class="aj-board">${stageBox()}
+        <div class="aj-side">
+          <h4>左右位移 <span>最近 3 秒</span></h4>
+          <div class="aj-chart"><canvas></canvas></div>
+          <div class="aj-legend"><div><i style="background:${COLORS[4]}"></i><span>原始</span><code data-k="p0"></code></div><div><i style="background:${COLORS[1]}"></i><span>平滑</span><code data-k="p1"></code></div></div>
+          <div class="aj-kv"><span>抖動（原始）</span><b data-k="j0">-</b><span>抖動（平滑）</span><b data-k="j1">-</b><span>落後</span><b data-k="lag">-</b><span>凍結比例</span><b data-k="frz">-</b><span>距離</span><b data-k="dist">-</b></div>
+        </div></div>`);
+      const ui = stageUI(ctx);
+      const kv = Object.fromEntries(ctx.$$("[data-k]").map((b) => [b.dataset.k, b]));
+      let preset = PRESETS[0].p, noise = 1.5, size = 1, smCtl = null, applySize = () => {};
+      ctx.group(PRESETS.map((p) => p.label), 0, (i) => {
+        preset = PRESETS[i].p;
+        if (smCtl) { Object.assign(smCtl.parameters, preset); smCtl.smoothMatrices = []; }
+        showParams();
+      });
+      ctx.slider("雜訊", { min: 0, max: 3, step: 0.25, value: noise }, (v) => { noise = v; });
+      ctx.select("size", [{ value: "1", label: "1（標記寬）" }, { value: "0.08", label: "0.08 m" }, { value: "0.2", label: "0.2 m" }], "1", (v) => { size = +v; applySize(); });
+      const showParams = () => {
+        kv.p0.textContent = "smooth: false";
+        kv.p1.textContent = `${preset.smoothCount} / ${preset.smoothTolerance} / ${preset.smoothThreshold}`;
+      };
+      showParams();
+      const st = ctx.status("載入 ARToolKit 與相機參數…");
+      const [ac, hiro] = await Promise.all([arContext(ctx), loadImage(DATA + "hiro.png")]);
+      st.done();
+      ui.tag("模擬畫面", true);
+      const ar = ac.arController;
+      const pid = patternIds(ar);
+      const ov = overlay(ctx, ui.view, ac);
+      const frameBox = (color, solid) => {
+        const g = new T.Group();
+        g.add(markerBase(T, color));
+        const geo = new T.BoxGeometry(0.6, 0.6, 0.6);
+        const box = solid ? new T.Mesh(geo, new T.MeshStandardMaterial({ color, transparent: true, opacity: 0.55, roughness: 0.4 })) : new T.LineSegments(new T.EdgesGeometry(geo), new T.LineBasicMaterial({ color }));
+        box.position.y = 0.3;
+        g.add(box);
+        return g;
+      };
+      const rawRoot = new T.Group(), smRoot = new T.Group();
+      const rawBody = frameBox(0xff8c42, false), smBody = frameBox(0x4cc9f0, true);
+      rawRoot.add(rawBody);
+      smRoot.add(smBody);
+      ov.scene.add(smRoot, rawRoot);
+      const hist = [];
+      smCtl = new AR.ArMarkerControls(ac, smRoot, { type: "pattern", patternUrl: HIRO_PATT, size, smooth: true, ...preset });
+      // AR.js 3.4.8 keeps only one working ARToolKit instance per page, so the raw pose comes from the same
+      // getMarker event, passed through ArMarkerControls' own matrix conversion with smoothing turned off
+      const rawProxy = { object3d: rawRoot, context: ac, parameters: { changeMatrixMode: "modelViewMatrix", smooth: false }, dispatchEvent() {} };
+      let rawSeen = false;
+      const onGet = (ev) => {
+        const m = ev.data.marker;
+        if (m.idPatt !== pid.get(HIRO_PATT) || m.cfPatt < 0.6) return;
+        rawSeen = true;
+        AR.ArMarkerControls.prototype.updateWithModelViewMatrix.call(rawProxy, new T.Matrix4().fromArray(ev.data.matrix));
+      };
+      ar.addEventListener("getMarker", onGet);
+      ctx.onCleanup(() => ar.removeEventListener("getMarker", onGet));
+      applySize = () => {
+        // Content is modelled in marker widths, so scale it to the reported unit
+        rawBody.scale.setScalar(size); smBody.scale.setScalar(size);
+        smCtl.parameters.size = size;
+        const id = pid.get(HIRO_PATT);
+        if (id != null) ar.trackPatternMarkerId(id, size);  // marker width used by the pose solver
+        smCtl.smoothMatrices = [];
+        hist.length = 0;
+      };
+      const desk = simDesk(ctx, fovOf(ac), [{ img: hiro, fill: 0.92 }]);
+      const chart = fitCanvas(ctx, ctx.$(".aj-chart canvas"), (g, w, h) => {
+        g.clearRect(0, 0, w, h);
+        const pts = hist.filter((s) => s.raw != null);
+        if (pts.length < 2) {
+          g.fillStyle = "#8b949e"; g.font = `12px ${fontOf()}`; g.textAlign = "center";
+          g.fillText("等待偵測…", w / 2, h / 2); g.textAlign = "left";
+          return;
+        }
+        let lo = Infinity, hi = -Infinity;
+        for (const s of pts) { lo = Math.min(lo, s.raw, s.sm ?? s.raw); hi = Math.max(hi, s.raw, s.sm ?? s.raw); }
+        const pad = Math.max((hi - lo) * 0.15, 0.002 * size);
+        lo -= pad; hi += pad;
+        const X = (i) => 4 + i / (150 - 1) * (w - 8), Y = (v) => h - 4 - (v - lo) / (hi - lo) * (h - 8);
+        for (const [key, color] of [["raw", COLORS[4]], ["sm", COLORS[1]]]) {
+          g.strokeStyle = color; g.lineWidth = 1.5; g.beginPath();
+          let pen = false;
+          hist.forEach((s, i) => { if (s[key] == null) { pen = false; return; } if (pen) g.lineTo(X(i), Y(s[key])); else { g.moveTo(X(i), Y(s[key])); pen = true; } });
+          g.stroke();
+        }
+      });
+      const unit = () => (size === 1 ? { k: 1, u: "" } : { k: 1000, u: " mm" });
+      let simT = 0, lastUi = 0;
+      ctx.raf((now, dtMs) => {
+        simT += dtMs / 1000;
+        orbit(desk.cam, simT * 0.9, { amp: 0.7 });
+        if (noise) {
+          // Hand shake: tiny random camera translation and rotation every frame
+          desk.cam.position.x += gauss() * noise * 0.004;
+          desk.cam.position.y += gauss() * noise * 0.004;
+          desk.cam.rotateX(gauss() * noise * 0.0012);
+          desk.cam.rotateY(gauss() * noise * 0.0012);
+        }
+        desk.draw(ui.g);
+        rawSeen = false;
+        const a = ac.update(ui.frame);
+        if (a) rawRoot.visible = rawSeen;
+        if (a) {
+          hist.push({ raw: rawRoot.visible ? rawRoot.matrix.elements[12] : null, sm: smRoot.visible ? smRoot.matrix.elements[12] : null,
+            d: rawRoot.visible ? Math.hypot(...rawRoot.matrix.elements.slice(12, 15)) : null, smz: smRoot.matrix.elements.slice(12, 15).join(",") });
+          if (hist.length > 150) hist.shift();
+        }
+        const t = performance.now();
+        if (t - lastUi > 250) {
+          lastUi = t;
+          chart.repaint();
+          let j0 = 0, j1 = 0, nj = 0, lag = 0, nl = 0, frz = 0, nf = 0;
+          for (let i = 1; i < hist.length; i++) {
+            const p = hist[i - 1], s = hist[i];
+            if (s.raw != null && p.raw != null) { j0 += Math.abs(s.raw - p.raw); nj++; }
+            if (s.sm != null && p.sm != null) { j1 += Math.abs(s.sm - p.sm); nf++; if (s.smz === p.smz) frz++; }
+            if (s.raw != null && s.sm != null) { lag += Math.abs(s.raw - s.sm); nl++; }
+          }
+          const { k, u } = unit();
+          kv.j0.textContent = nj ? `${(j0 / nj * k).toFixed(size === 1 ? 4 : 2)}${u}` : "-";
+          kv.j1.textContent = nf ? `${(j1 / nf * k).toFixed(size === 1 ? 4 : 2)}${u}` : "-";
+          kv.lag.textContent = nl ? `${(lag / nl * k).toFixed(size === 1 ? 4 : 2)}${u}` : "-";
+          kv.frz.textContent = nf ? `${Math.round(frz / nf * 100)}%` : "-";
+          const d = hist.length ? hist[hist.length - 1].d : null;
+          kv.dist.textContent = d == null ? "-" : size === 1 ? `${d.toFixed(2)} 標記寬` : `${(d * 100).toFixed(1)} cm`;
+          ui.state(rawRoot.visible ? "🎯 已鎖定" : "🔍 尋找標記中", rawRoot.visible);
+        }
+        ov.render();
+      });
+    },
+  },
+  {
+    id: "aframe", title: "A-Frame 整合",
+    api: "<a-scene arjs=\"sourceType: webcam; detectionMode: mono_and_matrix\">・<a-marker type=\"pattern\" | \"barcode\">・markerFound / markerLost",
+    desc: "多數 AR.js 作品其實是寫 HTML：A-Frame 版只要在 a-scene 加 arjs 屬性、用 a-marker 包住 3D 內容。這裡在 iframe 裡跑完整的 A-Frame 1.6 場景，並把 getUserMedia 換成頁內模擬畫面的串流（或你的鏡頭），標記事件即時記在右側。",
+    hint: "第一次進入要下載 A-Frame（約 3 MB）・右側是事件紀錄與場景原始碼",
+    async mount(ctx) {
+      const { THREE: T } = await libs(ctx, []);
+      ctx.html(`<div class="aj-board"><div class="aj-pane"><span class="aj-tag"></span><span class="aj-state"></span><div class="aj-msg" hidden></div></div>
+        <div class="aj-side">
+          <h4>標記事件 <span>a-marker</span></h4>
+          <div class="aj-log" data-log></div>
+          <pre class="aj-code aj-wide"></pre>
+        </div></div>`);
+      const pane = ctx.$(".aj-pane"), logBox = ctx.$("[data-log]");
+      ctx.$(".aj-code").textContent = AFRAME_SNIPPET;
+      const ui = {
+        tag(text, sim) { const t = ctx.$(".aj-tag"); t.textContent = text; t.classList.toggle("sim", !!sim); },
+        state(text, on) { const s = ctx.$(".aj-state"); s.textContent = text; s.classList.toggle("on", !!on); },
+        msg(text, err) { const m = ctx.$(".aj-msg"); m.textContent = text || ""; m.hidden = !text; m.classList.toggle("err", !!err); },
+      };
+      const run = runner(ctx);
+      // Simulated feed: the same desk renderer as the other scenes, captured as a 30 fps MediaStream
+      const feedCanvas = makeCanvas(FW, FH), fg = feedCanvas.getContext("2d");
+      const hiro = await loadImage(DATA + "hiro.png");
+      if (!ctx.active) return;
+      // Camera parameters for the desk come from the same camera_para.dat that AR.js loads inside the frame
+      const desk = simDesk(ctx, 37.8, [{ img: hiro, fill: 0.92, x: -0.95, rot: 0.1 }, { img: barcodeCanvas(5, 256), x: 0.95, rot: -0.1 }]);
+      let simT = 0, simOn = false;
+      ctx.raf((now, dtMs) => {
+        if (!simOn) return;
+        simT += dtMs / 1000;
+        orbit(desk.cam, simT * 0.8, { d: 4.6, amp: 0.8 });
+        desk.draw(fg);
+      });
+      const start = () => run(async (life) => {
+        ui.msg("");
+        ui.state("");
+        let stream = null;
+        if (sel.value === "cam") {
+          try { stream = await openStream(life); ui.tag("📷 鏡頭"); } catch (e) {
+            if (!life.active) throw abortError();
+            ui.msg(`${camError(e)}，改用模擬畫面`);
+            sel.value = "sim";
+          }
+        }
+        if (!stream) {
+          simOn = true;
+          stream = feedCanvas.captureStream(30);
+          const s = stream;
+          life.onCleanup(() => { simOn = false; s.getTracks().forEach((t) => t.stop()); });
+          ui.tag("模擬畫面", true);
+        }
+        window.__ajFeed = () => Promise.resolve(stream);
+        life.onCleanup(() => { delete window.__ajFeed; });
+        const st = ctx.status("下載 A-Frame 1.6 與 AR.js（A-Frame 版）…");
+        life.onCleanup(() => st.done());
+        const fr = Showcase.h("iframe", { title: "A-Frame AR.js 場景" });
+        life.onCleanup(() => fr.remove());
+        const loaded = new Promise((ok) => fr.addEventListener("load", ok, { once: true }));
+        fr.srcdoc = aframeDoc();
+        pane.prepend(fr);
+        await loaded;
+        if (!life.active) throw abortError();
+        st.done();
+        const w = fr.contentWindow;
+        if (!w.AFRAME) { ui.msg("A-Frame 載入失敗，請確認網路連線", true); return; }
+        logLine(logBox, `A-Frame ${w.AFRAME.version}・three r${w.THREE?.REVISION ?? "?"} 已啟動`);
+        const names = { "m-hiro": "Hiro", "m-bar": "條碼 5" };
+        const visible = new Set();
+        for (const [id, name] of Object.entries(names)) {
+          const m = w.document.getElementById(id);
+          m.addEventListener("markerFound", () => { visible.add(name); logLine(logBox, `markerFound  ${name}`, "on"); show(); });
+          m.addEventListener("markerLost", () => { visible.delete(name); logLine(logBox, `markerLost   ${name}`, "off"); show(); });
+        }
+        const show = () => ui.state(visible.size ? `看到 ${[...visible].join("、")}` : "🔍 尋找標記中", visible.size > 0);
+        show();
+      });
+      const sel = ctx.select("來源", SRC, "sim", start);
+      start();
+    },
+  },
+  {
+    id: "location", title: "位置型 AR",
+    api: "new LocationBased(scene, camera, { gpsMinDistance, gpsMinAccuracy })・fakeGps(lon, lat, elev, acc)・add(obj, lon, lat)・on(\"gpsupdate\")",
+    desc: "不用標記，改用經緯度：LocationBased 把經緯度投影成公尺座標（EPSG:3857），把景點放進 three.js 場景，GPS 更新時移動相機。gpsMinAccuracy 會丟掉精度太差的定位，gpsMinDistance 會忽略太小的移動。這裡以 fakeGps 模擬一位在台北車站附近步行的人。",
+    hint: "拖曳畫面轉向・調整兩個門檻看哪些定位被採用・景點座標為概略值",
+    async mount(ctx) {
+      const { THREE: T, LOC } = await libs(ctx, ["loc"]);
+      ctx.html(`<div class="aj-board"><div class="aj-pane" style="cursor:grab;touch-action:none"><span class="aj-tag"></span><span class="aj-state"></span><div class="aj-msg" hidden></div></div>
+        <div class="aj-side">
+          <h4>定位地圖 <span>對數距離</span></h4>
+          <div class="aj-chart"><canvas></canvas></div>
+          <div class="aj-kv"><span>收到／採用</span><b data-k="cnt">-</b><span>最近精度</span><b data-k="acc">-</b><span>朝向</span><b data-k="dir">-</b><span>最近景點</span><b data-k="near">-</b></div>
+          <div class="aj-log aj-wide" data-log style="flex:none;height:62px"></div>
+        </div></div>`);
+      const pane = ctx.$(".aj-pane"), logBox = ctx.$("[data-log]");
+      const kv = Object.fromEntries(ctx.$$("[data-k]").map((b) => [b.dataset.k, b]));
+      const tagEl = ctx.$(".aj-tag"), stateEl = ctx.$(".aj-state"), msgEl = ctx.$(".aj-msg");
+      const msg = (text, err) => { msgEl.textContent = text || ""; msgEl.hidden = !text; msgEl.classList.toggle("err", !!err); };
+      const r = new T.WebGLRenderer({ antialias: true });
+      r.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
+      pane.prepend(r.domElement);
+      ctx.onCleanup(() => { r.dispose(); r.forceContextLoss(); r.domElement.remove(); });
+      const scene = new T.Scene();
+      const sky = makeCanvas(4, 256), sg = sky.getContext("2d"), grad = sg.createLinearGradient(0, 0, 0, 256);
+      grad.addColorStop(0, "#0b1a33"); grad.addColorStop(0.5, "#2c5a8a"); grad.addColorStop(0.52, "#141b22"); grad.addColorStop(1, "#0b0e12");
+      sg.fillStyle = grad; sg.fillRect(0, 0, 4, 256);
+      const skyTex = new T.CanvasTexture(sky);
+      skyTex.colorSpace = T.SRGBColorSpace;
+      scene.background = skyTex;
+      const cam = new T.PerspectiveCamera(62, 1, 0.5, 60000);
+      cam.rotation.order = "YXZ";
+      cam.position.y = 1.6;
+      const grid = new T.GridHelper(4000, 80, 0x5b8cc0, 0x2c4560);
+      scene.add(grid);
+      const loc = new LOC.LocationBased(scene, cam, { gpsMinDistance: 0, gpsMinAccuracy: 100, initialPositionAsOrigin: true });
+      let received = 0, accepted = 0, lastFix = null, lastAccepted = false;
+      const fixes = [];
+      loc.on("gpsupdate", () => { accepted++; lastAccepted = true; });
+      // The first fix sets the world origin; objects can only be added after that
+      loc.fakeGps(ORIGIN.lon, ORIGIN.lat, null, 5);
+      const labels = [];
+      POIS.forEach((p, i) => {
+        const color = COLORS[i % COLORS.length];
+        const d = geo(ORIGIN, p).d;
+        // Pillars grow with distance so far landmarks stay visible; labels keep a constant screen size
+        const h = 30 + d * 0.12;
+        const grp = new T.Group();
+        const pillar = new T.Mesh(new T.CylinderGeometry(Math.max(3, h * 0.03), Math.max(3, h * 0.03), h, 16), new T.MeshBasicMaterial({ color }));
+        pillar.position.y = h / 2;
+        const c = makeCanvas(512, 128), tex = new T.CanvasTexture(c);
+        tex.colorSpace = T.SRGBColorSpace;
+        const sprite = new T.Sprite(new T.SpriteMaterial({ map: tex, sizeAttenuation: false, depthTest: false, transparent: true }));
+        sprite.scale.set(0.24, 0.06, 1);
+        sprite.position.y = h * (1.08 + (i % 2) * 0.22);  // stagger so neighbours in the same direction do not overlap
+        grp.add(pillar, sprite);
+        loc.add(grp, p.lon, p.lat);
+        labels.push({ p, c, tex, color });
+      });
+      const paintLabels = (here) => {
+        for (const { p, c, tex, color } of labels) {
+          const g = c.getContext("2d");
+          g.clearRect(0, 0, 512, 128);
+          g.fillStyle = "rgba(10, 12, 15, .85)"; g.beginPath(); g.roundRect(8, 10, 496, 108, 30); g.fill();
+          g.lineWidth = 6; g.strokeStyle = color; g.stroke();
+          g.fillStyle = "#fff"; g.textAlign = "center"; g.textBaseline = "middle";
+          g.font = `700 50px ${fontOf()}`;
+          g.fillText(`${p.name}・${fmtDist(geo(here, p).d)}`, 256, 66, 470);
+          tex.needsUpdate = true;
+        }
+      };
+      paintLabels(ORIGIN);
+      let yaw = -rad(geo(ORIGIN, POIS[5]).brg), pitch = 0.1, orient = null;
+      // Drag to look around (north is -z because LocationBased maps latitude to -z)
+      let drag = null;
+      ctx.on(pane, "pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY }; pane.setPointerCapture?.(e.pointerId); pane.style.cursor = "grabbing"; });
+      ctx.on(pane, "pointermove", (e) => {
+        if (!drag || orient) return;
+        yaw += (e.clientX - drag.x) * 0.005;
+        pitch = Math.max(-0.6, Math.min(0.6, pitch + (e.clientY - drag.y) * 0.004));
+        drag = { x: e.clientX, y: e.clientY };
+      });
+      ctx.on(pane, "pointerup", () => { drag = null; pane.style.cursor = "grab"; });
+      const fit = () => { const w = pane.clientWidth, h = pane.clientHeight; if (w && h) { r.setSize(w, h, false); cam.aspect = w / h; cam.updateProjectionMatrix(); } };
+      ctx.onResize(fit);
+      fit();
+      const mode = { v: "walk" };
+      const tag = () => { const real = mode.v === "gps"; tagEl.textContent = real ? "📍 真實 GPS" : "模擬 GPS（fakeGps）"; tagEl.classList.toggle("sim", !real); };
+      tag();
+      // Simulated walker: true position moves 8 m per tick; each fix adds noise proportional to its reported accuracy
+      let walker = { ...ORIGIN }, heading = 211, walked = 0;
+      function feed(lon, lat, acc, truth) {
+        received++;
+        lastAccepted = false;
+        const prev = lastFix;
+        loc.fakeGps(lon, lat, null, acc);
+        const here = { lat, lon };
+        const why = lastAccepted ? "採用" : acc > minAcc ? `略過：精度 ${Math.round(acc)} m 超過門檻` : `略過：位移 ${prev ? Math.round(geo(prev, here).d) : 0} m 太小`;
+        if (lastAccepted) { lastFix = here; paintLabels(here); }
+        fixes.push({ ...here, ok: lastAccepted, truth });
+        if (fixes.length > 40) fixes.shift();
+        kv.cnt.textContent = `${received}／${accepted}`;
+        kv.acc.textContent = `${Math.round(acc)} m`;
+        logLine(logBox, `#${received} ±${Math.round(acc)} m ${why}`, lastAccepted ? "on" : "off", 12);
+      }
+      let minDist = 0, minAcc = 100;
+      lastFix = { ...ORIGIN };
+      ctx.interval(() => {
+        if (mode.v !== "walk") return;
+        heading += gauss() * 6;
+        walked += 8;
+        if (walked > 700) { heading += 180; walked = 0; }
+        walker = stepFrom(walker, heading, 8);
+        const acc = Math.random() < 0.72 ? 4 + Math.random() * 22 : 40 + Math.random() * 150;
+        const off = stepFrom(walker, Math.random() * 360, Math.abs(gauss()) * acc * 0.35);
+        feed(off.lon, off.lat, acc, { ...walker });
+      }, 600);
+      let watching = false;
+      const stopReal = () => { if (watching) { loc.stopGps(); watching = false; } };
+      ctx.onCleanup(stopReal);
+      ctx.select("定位", [{ value: "walk", label: "模擬步行" }, { value: "gps", label: "真實 GPS" }, { value: "pause", label: "暫停" }], "walk", (v) => {
+        mode.v = v;
+        tag();
+        msg("");
+        stopReal();
+        if (v !== "gps") return;
+        if (!navigator.geolocation) { msg("這個瀏覽器不支援 Geolocation", true); return; }
+        loc.on("gpserror", (code) => {
+          msg(code === 1 ? "未取得定位權限，可改回模擬步行" : code === 2 ? "目前無法取得位置" : "定位逾時", true);
+        });
+        // Real fixes go through the same filters; record them for the map as they arrive
+        loc.on("gpsupdate", (pos) => {
+          accepted++;
+          lastAccepted = true;
+          if (mode.v !== "gps") return;
+          received++;
+          const here = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+          lastFix = here;
+          paintLabels(here);
+          fixes.push({ ...here, ok: true, truth: here });
+          if (fixes.length > 40) fixes.shift();
+          kv.cnt.textContent = `${received}／${accepted}`;
+          kv.acc.textContent = `${Math.round(pos.coords.accuracy)} m`;
+          logLine(logBox, `真實定位 ±${Math.round(pos.coords.accuracy)} m，距台北車站 ${fmtDist(geo(ORIGIN, here).d)}`, "on", 12);
+        });
+        watching = loc.startGps();
+        msg("等待瀏覽器定位…（只有通過精度與位移門檻的定位會出現）");
+      });
+      ctx.slider("最小位移", { min: 0, max: 50, step: 1, value: minDist, format: (v) => `${v} m` }, (v) => { minDist = v; loc.setGpsOptions({ gpsMinDistance: v }); });
+      ctx.slider("精度門檻", { min: 10, max: 200, step: 5, value: minAcc, format: (v) => `${v} m` }, (v) => { minAcc = v; loc.setGpsOptions({ gpsMinAccuracy: v }); });
+      ctx.button("🧭 方向", async () => {
+        if (orient) return;
+        if (!("DeviceOrientationEvent" in window)) { msg("這個瀏覽器不支援裝置方向事件，維持拖曳轉向"); return; }
+        try {
+          if (typeof DeviceOrientationEvent.requestPermission === "function" && (await DeviceOrientationEvent.requestPermission()) !== "granted") {
+            msg("未取得方向感測器權限，維持拖曳轉向"); return;
+          }
+        } catch (e) { msg("無法要求方向感測器權限，維持拖曳轉向"); return; }
+        let got = false;
+        const off = ctx.on(window, "deviceorientation", (e) => { if (e.alpha != null) got = true; });
+        msg("偵測方向感測器中…");
+        await ctx.sleep(1500);
+        if (typeof off === "function") off();
+        if (!got) { msg("1.5 秒內沒有收到方向感測器資料（桌機與無頭瀏覽器通常沒有），維持拖曳轉向"); return; }
+        orient = new LOC.DeviceOrientationControls(cam);
+        ctx.onCleanup(() => orient.dispose());
+        msg("");
+        stateEl.textContent = "🧭 裝置方向";
+      });
+      const map = fitCanvas(ctx, ctx.$(".aj-chart canvas"), () => {});
+      const R_LOG = Math.log1p(6000 / 20);
+      function drawMap() {
+        const { g } = map, { width: w, height: h } = map.size();
+        g.clearRect(0, 0, w, h);
+        const cx = w / 2, cy = h / 2, R = Math.min(w, h) / 2 - 6;
+        const center = mode.v === "walk" ? walker : lastFix;
+        // Log-radial scale so nearby fixes (meters) and far landmarks (kilometers) share one map
+        const P = (pt) => {
+          const v = geo(center, pt), rr = R * Math.log1p(v.d / 20) / R_LOG, a = Math.atan2(v.e, v.n);
+          return [cx + Math.sin(a) * rr, cy - Math.cos(a) * rr];
+        };
+        g.font = `10px ${fontOf()}`;
+        g.lineWidth = 1;
+        for (const m of [50, 500, 5000]) {
+          const rr = R * Math.log1p(m / 20) / R_LOG;
+          g.strokeStyle = "rgba(139, 148, 158, .3)"; g.beginPath(); g.arc(cx, cy, rr, 0, Math.PI * 2); g.stroke();
+          g.fillStyle = "#8b949e"; g.fillText(fmtDist(m), cx + 3, cy - rr + 11);
+        }
+        POIS.forEach((p, i) => {
+          const [x, y] = P(p);
+          g.fillStyle = COLORS[i % COLORS.length]; g.beginPath(); g.arc(x, y, 3.5, 0, Math.PI * 2); g.fill();
+          g.fillStyle = "#c9d1d9"; g.fillText(p.name, x + 5, y + 3);
+        });
+        for (const f of fixes) {
+          const [x, y] = P(f);
+          g.strokeStyle = f.ok ? "#7bd389" : "#f72585";
+          g.beginPath();
+          if (f.ok) g.arc(x, y, 2.5, 0, Math.PI * 2); else { g.moveTo(x - 3, y - 3); g.lineTo(x + 3, y + 3); g.moveTo(x + 3, y - 3); g.lineTo(x - 3, y + 3); }
+          g.stroke();
+        }
+        // Camera = last accepted fix, drawn with its viewing direction
+        const [ax, ay] = lastFix ? P(lastFix) : [cx, cy];
+        const brg = -yawNow();
+        g.fillStyle = "#f7df1e";
+        g.beginPath();
+        g.moveTo(ax + Math.sin(brg) * 9, ay - Math.cos(brg) * 9);
+        g.lineTo(ax + Math.sin(brg + 2.5) * 6, ay - Math.cos(brg + 2.5) * 6);
+        g.lineTo(ax + Math.sin(brg - 2.5) * 6, ay - Math.cos(brg - 2.5) * 6);
+        g.fill();
+        if (mode.v === "walk") { g.fillStyle = "#fff"; g.beginPath(); g.arc(cx, cy, 2.5, 0, Math.PI * 2); g.fill(); }
+        g.fillStyle = "#8b949e"; g.fillText("北", cx - 5, 11);
+      }
+      const yawNow = () => cam.rotation.y;
+      let lastUi = 0;
+      ctx.raf(() => {
+        if (orient) orient.update(); else cam.rotation.set(pitch, yaw, 0);
+        grid.position.set(Math.round(cam.position.x / 50) * 50, 0, Math.round(cam.position.z / 50) * 50);
+        r.render(scene, cam);
+        const t = performance.now();
+        if (t - lastUi > 200) {
+          lastUi = t;
+          const b = ((-yawNow() * 180 / Math.PI) % 360 + 360) % 360;
+          kv.dir.textContent = `${dirName(b)} ${Math.round(b)}°`;
+          if (lastFix) {
+            const near = POIS.map((p) => ({ p, d: geo(lastFix, p).d })).sort((a, z) => a.d - z.d)[0];
+            kv.near.textContent = `${near.p.name} ${fmtDist(near.d)}`;
+          }
+          if (!orient) stateEl.textContent = `門檻 ${minDist} m／±${minAcc} m`;
+          drawMap();
+        }
+      });
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "arController.detectMarker(canvas)・arController.process(canvas)・getMarkerNum()",
+    desc: "在 640×480 的畫面上排出 1 到 64 張不同 ID 的 3x3 條碼，每一級各跑 20 次 detectMarker（只找方框與解碼）和 process（再加上每張標記的姿態計算與事件），量每格耗時與實際偵測到的數量。",
+    hint: "按「開始測試」・寬螢幕右側畫出偵測到的方框與每一級的數據",
+    async mount(ctx) {
+      await libs(ctx, ["ar"]);
+      ctx.html(`<div class="aj-stress"><div class="aj-pane"><canvas></canvas></div>
+        <table class="aj-tbl"><thead><tr><th>張數</th><th>偵測到</th><th>detectMarker</th><th>process</th><th>等效 FPS</th></tr></thead><tbody></tbody></table></div>`);
+      const tbody = ctx.$(".aj-tbl tbody");
+      const st = ctx.status("載入 ARToolKit 與相機參數…");
+      const ac = await arContext(ctx, { detectionMode: "mono_and_matrix", matrixCodeType: "3x3" });
+      st.done();
+      const ar = ac.arController;
+      const src = makeCanvas(FW, FH), sg = src.getContext("2d", { willReadFrequently: true });
+      const codes = Array.from({ length: 64 }, (_, i) => barcodeCanvas(i, 120));
+      let last = null;
+      const view = fitCanvas(ctx, ctx.$(".aj-stress canvas"), (g, w, h) => {
+        g.clearRect(0, 0, w, h);
+        if (!last) {
+          g.fillStyle = "#8b949e"; g.font = `13px ${fontOf()}`; g.textAlign = "center";
+          g.fillText("按「開始測試」，每一級跑完會在這裡畫出偵測到的方框", w / 2, h / 2);
+          g.textAlign = "left";
+          return;
+        }
+        const k = Math.min((w - 16) / FW, (h - 16) / FH), ox = (w - FW * k) / 2, oy = (h - FH * k) / 2;
+        g.drawImage(src, ox, oy, FW * k, FH * k);
+        g.strokeStyle = "#7bd389"; g.lineWidth = 2;
+        for (const v of last.quads) {
+          g.beginPath();
+          v.forEach(([x, y], i) => (i ? g.lineTo(ox + x * k, oy + y * k) : g.moveTo(ox + x * k, oy + y * k)));
+          g.closePath(); g.stroke();
+        }
+      });
+      const grid = (n) => {
+        sg.fillStyle = "#fff"; sg.fillRect(0, 0, FW, FH);
+        const cols = Math.ceil(Math.sqrt(n * FW / FH)), rows = Math.ceil(n / cols);
+        const cell = Math.min(FW / cols, FH / rows), s = cell * 0.78;
+        for (let i = 0; i < n; i++) {
+          const x = (FW - cols * cell) / 2 + (i % cols) * cell + (cell - s) / 2, y = (FH - rows * cell) / 2 + Math.floor(i / cols) * cell + (cell - s) / 2;
+          sg.drawImage(codes[i], x, y, s, s);
+        }
+      };
+      const REPS = 20;
+      ctx.bench({
+        label: "標記數", unit: "張", sizes: [1, 4, 9, 16, 25, 36, 49, 64], target: 800, budget: 3000, format: (n) => String(n),
+        note: "每一級把 n 張 3x3 條碼（ID 0 到 n-1）排成格狀畫在 640×480 白底上，先跑 20 次 detectMarker（二值化、找四邊形、解碼），再跑 20 次 process（同樣偵測，加上每張標記的姿態矩陣與 getMarker 事件）。級距時間是兩者合計 40 次。標記越多、每張越小，解碼與姿態計算越多；64 張時格子小到有些會漏抓。",
+        prepare: (n) => {
+          if (n === 1) tbody.replaceChildren();
+          grid(n);
+          ar.detectMarker(src);  // warm-up so the first timed pass is not paying for buffer setup
+          return src;
+        },
+        run: (n, c) => {
+          let t0 = performance.now(), num = 0;
+          for (let k = 0; k < REPS; k++) { ar.detectMarker(c); num = ar.getMarkerNum(); }
+          const tDet = (performance.now() - t0) / REPS;
+          t0 = performance.now();
+          for (let k = 0; k < REPS; k++) ar.process(c);
+          const tProc = (performance.now() - t0) / REPS;
+          const quads = [];
+          let ok = 0;
+          for (let i = 0; i < ar.getMarkerNum(); i++) {
+            const m = ar.getMarker(i);
+            if (m.idMatrix >= 0 && m.cfMatrix >= 0.5) ok++;
+            quads.push(m.vertex.map((p) => [p[0], p[1]]));
+          }
+          last = { quads };
+          view.repaint();
+          tbody.append(Showcase.h("tr", {}, ...[String(n), `${ok} / ${num}`, fmtMs(tDet), fmtMs(tProc), fmt(1000 / tProc, 0)].map((t) => Showcase.h("td", { text: t }))));
+          return `${ok} 張・${tProc.toFixed(1)} ms/格`;
+        },
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

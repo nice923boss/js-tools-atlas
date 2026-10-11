@@ -3,61 +3,296 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>cannon-es 示範：骨牌連鎖反應</title>
+<title>cannon-es 示範：八個場景看懂 3D 剛體物理與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","note":"3D 繪圖使用 three.js 0.186.1，物理全部由 cannon-es 計算"}</script>
-<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"}}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["骨牌連鎖反應","形狀與複合剛體","材質與接觸材質","約束關節","布料與彈簧","射線與碰撞事件","射線載具","極限測試"],"note":"3D 繪圖使用 three.js 0.186.1，物理全部由 cannon-es 0.20.0 計算"}</script>
 <style>
-  body { background: radial-gradient(circle at 50% 35%, #2b2230 0%, #0e0c10 75%); }
-  #stage { position: fixed; inset: 0; touch-action: none; }
-  #stage canvas { display: block; }
-  .heading { position: fixed; left: 16px; top: 14px; z-index: 40; pointer-events: none; }
-  .heading h1 { margin: 0; font-size: clamp(18px, 4vw, 26px); letter-spacing: .06em; }
-  .heading p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
-  .stats { position: fixed; right: 12px; bottom: 12px; z-index: 40; padding: 5px 10px; border-radius: 999px; font-size: 12px; pointer-events: none; }
-  @media (max-width: 600px) { .heading { top: 100px; } .stats { bottom: 46px; } }
+  .sc-scene canvas.gl { position: absolute; left: 0; top: 0; display: block; touch-action: none; }
+  .cn-labels { position: absolute; left: 0; top: 0; pointer-events: none; overflow: hidden; }
+  .cn-lab { font: 600 11px/1.35 var(--font); color: var(--fg); text-align: center; padding: 3px 7px; border-radius: 7px;
+    background: var(--panel); border: 1px solid var(--line); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .cn-lab small { display: block; color: var(--muted); font-weight: 500; font-size: 10.5px; }
+  .cn-lab small:empty { display: none; }
+  .cn-chip { position: absolute; left: 10px; top: calc(var(--sc-ctl-h, 0px) + 10px); z-index: 105; max-width: min(440px, calc(100% - 20px));
+    padding: 6px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(6px);
+    font: 500 12px/1.5 var(--font); color: var(--fg); pointer-events: none; }
+  .cn-chip b { color: var(--accent); font: 600 12px/1.5 var(--mono); }
+  .cn-it { display: inline-block; white-space: nowrap; margin-right: 10px; }
+  .cn-sw { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+  .stress-view { position: absolute; inset: 8px; border-radius: 10px; overflow: hidden; background: #07080b; }
+  @media (min-width: 761px) { .stress-view { inset: 8px 8px 8px 350px; } }
 </style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
 </head>
 <body>
-<div id="stage"></div>
-<div class="heading"><h1>骨牌連鎖</h1><p>每張骨牌都是 cannon-es 剛體，點任何一張把它推倒</p></div>
-<div class="controls" id="bar">
-  <button class="btn" data-shape="spiral" aria-pressed="true">螺旋</button>
-  <button class="btn" data-shape="wave">波浪</button>
-  <button class="btn" data-shape="heart">愛心</button>
-  <button class="btn primary" id="push">推倒</button>
-  <button class="btn" id="auto" aria-pressed="true">自動輪播</button>
-</div>
-<div class="panel stats mono" id="stats">骨牌 0 張</div>
-<div class="hint">拖曳旋轉視角・點骨牌推倒</div>
-
+<script src="_shared/showcase.js"></script>
 <script type="module">
+// cannon-es showcase: eight scenes, each with its own CANNON.World and three.js renderer.
+// three.js only draws; every position and rotation comes from cannon-es bodies.
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
+import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
+import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 import * as CANNON from "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js";
 
-const SIZE = { t: 0.08, h: 0.5, w: 0.26 };  // thickness, height, width
-const GAP = 0.25;                              // distance between domino centers along the path
-const MAX = 400;
+const { h, fmt } = Showcase;
+const PALETTE = [0xf7df1e, 0x4cc9f0, 0xf72585, 0x7bd389, 0xff8c42, 0x9d8cff];
+const HEX = PALETTE.map((c) => "#" + c.toString(16).padStart(6, "0"));
+const V = (x = 0, y = 0, z = 0) => new CANNON.Vec3(x, y, z);
+const Q = (x, y, z) => new CANNON.Quaternion().setFromEuler(x, y, z);
+const PLANE_UP = Q(-Math.PI / 2, 0, 0); // turns a CANNON.Plane normal (+z) into +y
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const std = (color, extra) => new THREE.MeshStandardMaterial({ color, roughness: 0.55, ...extra });
 
-// Each shape is a parametric curve on the floor; it gets resampled at equal arc length.
-const SHAPES = {
-  spiral: (u) => {
-    const th = u * Math.PI * 2 * 3;
-    const r = 3.4 - 2.4 * u;
-    return [r * Math.cos(th), r * Math.sin(th)];
-  },
-  wave: (u) => [(u - 0.5) * 7.2, 1.5 * Math.sin(u * Math.PI * 2 * 1.5)],
-  heart: (u) => {
+// ---------- three.js stage (same pattern as the three.js showcase) ----------
+function disposeAll(root, extra) {
+  const seen = new Set();
+  const free = (x) => { if (x && !seen.has(x) && typeof x.dispose === "function") { seen.add(x); x.dispose(); } };
+  const freeMat = (m) => { if (!m) return; for (const v of Object.values(m)) if (v && v.isTexture) free(v); free(m); };
+  root.traverse((o) => {
+    free(o.geometry);
+    [].concat(o.material || []).forEach(freeMat);
+    if (o.isInstancedMesh) free(o);
+  });
+  for (const x of extra) (x && x.isMaterial ? freeMat : free)(x);
+}
+
+function stage(ctx, o = {}) {
+  const host = o.host || ctx.el;
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = o.exposure ?? 1;
+  if (o.shadows) { renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; }
+  const canvas = renderer.domElement;
+  canvas.className = "gl";
+  host.append(canvas);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(o.bg ?? 0x0e1013);
+  const fov = o.fov ?? 45;
+  const camera = new THREE.PerspectiveCamera(fov, 1, 0.1, o.far ?? 300);
+  camera.position.set(...(o.pos || [0, 2, 8]));
+  let controls = null;
+  if (o.orbit !== false) {
+    controls = new OrbitControls(camera, canvas);
+    controls.target.set(...(o.target || [0, 0, 0]));
+    controls.enableDamping = true;
+    controls.enablePan = false;
+    Object.assign(controls, o.orbit || {});
+  }
+  let labels = null;
+  if (o.labels) {
+    labels = new CSS2DRenderer();
+    labels.domElement.className = "cn-labels";
+    host.append(labels.domElement);
+  }
+  const frameFns = [], sizeFns = [], extra = [];
+  const S = {
+    renderer, scene, camera, controls, canvas, host, width: 1, height: 1, availH: 1, full: 1,
+    render: () => renderer.render(scene, camera),
+    onFrame(fn) { frameFns.push(fn); },
+    onSize(fn) { sizeFns.push(fn); fn(S.width, S.height); },
+    own(...xs) { extra.push(...xs); return xs[0]; },
+  };
+  let lastKey = "";
+  const fit = () => {
+    const w = Math.max(1, host.clientWidth), hh = Math.max(1, host.clientHeight);
+    const top = parseFloat(ctx.el.style.getPropertyValue("--sc-ctl-h")) || 0;
+    const bot = parseFloat(ctx.el.style.getPropertyValue("--sc-ctl-b")) || 0;
+    const key = `${w}x${hh}:${top}:${bot}`;
+    if (key === lastKey) return;
+    lastKey = key;
+    const d = Math.max(-hh * 0.4, Math.min(hh * 0.4, top - bot));
+    S.width = w; S.height = hh; S.full = hh + Math.abs(d); S.availH = hh - Math.abs(d);
+    renderer.setSize(w, hh);
+    if (labels) labels.setSize(w, hh);
+    camera.aspect = w / S.full;
+    camera.fov = o.portraitFov && w < hh ? o.portraitFov : fov;
+    if (d) camera.setViewOffset(w, S.full, 0, d < 0 ? -d : 0, w, hh); else camera.clearViewOffset();
+    camera.updateProjectionMatrix();
+    for (const fn of sizeFns) fn(w, hh);
+  };
+  fit();
+  const timer = new THREE.Timer();
+  ctx.raf((t) => {
+    fit();
+    timer.update(t);
+    const dt = Math.max(0, Math.min(timer.getDelta(), 0.1)), time = timer.getElapsed();
+    for (const fn of frameFns) fn(dt, time);
+    if (controls) controls.update(dt);
+    S.render();
+    if (labels) labels.render(scene, camera);
+  });
+  ctx.onCleanup(() => {
+    if (controls) controls.dispose();
+    timer.dispose();
+    disposeAll(scene, extra);
+    renderer.dispose();
+    renderer.forceContextLoss(); // WEBGL_lose_context: frees the GL context right away
+    canvas.remove();
+    if (labels) labels.domElement.remove();
+  });
+  return S;
+}
+
+// Camera distance that fits a halfW x halfH box into the visible (uncovered) part of the view.
+function fitDistance(S, halfW, halfH, margin = 1.12) {
+  const tanV = Math.tan(THREE.MathUtils.degToRad(S.camera.fov) / 2);
+  return Math.max((halfH * S.full) / (S.availH * tanV), halfW / (tanV * S.camera.aspect)) * margin;
+}
+const setNdc = (S, e, v) => {
+  const r = S.canvas.getBoundingClientRect();
+  return v.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+};
+// Click/tap that is not the end of an orbit drag.
+function onTap(ctx, el, fn) {
+  let d = null;
+  ctx.on(el, "pointerdown", (e) => { d = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+  ctx.on(el, "pointerup", (e) => {
+    if (d && performance.now() - d.t < 300 && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6) fn(e);
+    d = null;
+  });
+}
+// CSS2D label; userData.sub(text) updates the second line only when it changes.
+function label(title, sub = "") {
+  const s = h("small", { text: sub });
+  const obj = new CSS2DObject(h("div", { class: "cn-lab" }, h("span", { text: title }), s));
+  let last = sub;
+  obj.userData.sub = (x) => { if (x !== last) { last = x; s.textContent = x; } };
+  return obj;
+}
+function chip(ctx, html) {
+  const el = h("div", { class: "cn-chip" });
+  el.innerHTML = html;
+  ctx.el.append(el);
+  let last = html;
+  return (next) => { if (next !== last) { last = next; el.innerHTML = next; } };
+}
+// Smooth camera moves between framed views; re-frames on resize.
+function camRig(S) {
+  let cur = null, k = 1;
+  const p0 = new THREE.Vector3(), t0 = new THREE.Vector3(), p1 = new THREE.Vector3(), t1 = new THREE.Vector3();
+  const goal = () => { t1.set(...cur.t); p1.set(...cur.d).normalize().multiplyScalar(fitDistance(S, cur.hw, cur.hh)).add(t1); };
+  S.onSize(() => { if (!cur) return; goal(); if (k >= 1) { S.camera.position.copy(p1); S.controls.target.copy(t1); } });
+  S.onFrame((dt) => {
+    if (k >= 1) return;
+    k = Math.min(1, k + dt / 1.2);
+    const e = k * k * (3 - 2 * k);
+    S.camera.position.lerpVectors(p0, p1, e);
+    S.controls.target.lerpVectors(t0, t1, e);
+  });
+  return (view, instant) => {
+    cur = view; goal();
+    if (instant) { k = 1; S.camera.position.copy(p1); S.controls.target.copy(t1); }
+    else { k = 0; p0.copy(S.camera.position); t0.copy(S.controls.target); }
+  };
+}
+function lights(S, { shadow = 6, pos = [4, 9, 5], hemi = 1.3, sun = 2.4 } = {}) {
+  S.scene.add(new THREE.HemisphereLight(0xfff4e6, 0x20232c, hemi));
+  const d = new THREE.DirectionalLight(0xffffff, sun);
+  d.position.set(...pos);
+  if (shadow) {
+    d.castShadow = true;
+    d.shadow.mapSize.set(2048, 2048);
+    Object.assign(d.shadow.camera, { left: -shadow, right: shadow, top: shadow, bottom: -shadow, near: 0.5, far: 60 });
+    d.shadow.bias = -0.0005;
+  }
+  S.scene.add(d);
+  return d;
+}
+function floor(S, w, d, color, x = 0) {
+  const m = new THREE.Mesh(S.own(new THREE.PlaneGeometry(w, d)), S.own(std(color, { roughness: 0.9 })));
+  m.rotation.x = -Math.PI / 2;
+  m.position.x = x;
+  m.receiveShadow = true;
+  S.scene.add(m);
+  return m;
+}
+function shadowed(geo, mat) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = m.receiveShadow = true;
+  return m;
+}
+
+// ---------- cannon-es helpers ----------
+function newWorld({ iter = 10, ...opts } = {}) {
+  const world = new CANNON.World({ gravity: V(0, -9.82, 0), ...opts });
+  world.broadphase = new CANNON.SAPBroadphase(world);
+  world.solver.iterations = iter;
+  return world;
+}
+// Static body. cannon-es 0.20 keeps a cached AABB for static bodies, so after setting the
+// transform we flag it, otherwise rays and the broadphase test the stale box.
+function fixed(world, shape, pos = V(), quat = null, material) {
+  const b = new CANNON.Body({ mass: 0, shape, material, position: pos });
+  if (quat) b.quaternion.copy(quat);
+  b.aabbNeedsUpdate = true;
+  world.addBody(b);
+  return b;
+}
+// Teleport a body (and its interpolation state) and clear its motion.
+function place(b, p, q) {
+  for (const v of [b.position, b.previousPosition, b.interpolatedPosition]) v.copy(p);
+  if (q) for (const v of [b.quaternion, b.previousQuaternion, b.interpolatedQuaternion]) v.copy(q);
+  b.velocity.setZero(); b.angularVelocity.setZero(); b.force.setZero(); b.torque.setZero();
+  b.aabbNeedsUpdate = true;
+  b.wakeUp();
+}
+// Fixed-step loop: world.step(step, frameDt, maxSub) and copy interpolated transforms to meshes.
+function sim(S, world, { step = 1 / 60, maxSub = 4 } = {}) {
+  const pairs = new Map();
+  const P = {
+    scale: 1, ms: 0,
+    add(body, mesh) { world.addBody(body); if (mesh) { pairs.set(body, mesh); S.scene.add(mesh); } return body; },
+    remove(body) { world.removeBody(body); const m = pairs.get(body); if (m) { S.scene.remove(m); pairs.delete(body); } },
+  };
+  S.onFrame((dt) => {
+    const t0 = performance.now();
+    world.step(step, dt * P.scale, maxSub);
+    P.ms += (performance.now() - t0 - P.ms) * 0.1;
+    for (const [b, m] of pairs) { m.position.copy(b.interpolatedPosition); m.quaternion.copy(b.interpolatedQuaternion); }
+  });
+  return P;
+}
+// Convex hull from a closed three.js geometry; faces are re-wound counter-clockwise seen from outside.
+function convexFrom(geo) {
+  let g = geo.clone();
+  g.deleteAttribute("normal"); g.deleteAttribute("uv");
+  g = mergeVertices(g);
+  const p = g.attributes.position, idx = g.index.array, vertices = [], faces = [];
+  for (let i = 0; i < p.count; i++) vertices.push(V(p.getX(i), p.getY(i), p.getZ(i)));
+  for (let i = 0; i < idx.length; i += 3) {
+    const [a, b, c] = [idx[i], idx[i + 1], idx[i + 2]];
+    const n = vertices[b].vsub(vertices[a]).cross(vertices[c].vsub(vertices[a]));
+    faces.push(n.dot(vertices[a].vadd(vertices[b]).vadd(vertices[c])) < 0 ? [a, c, b] : [a, b, c]);
+  }
+  g.dispose();
+  return new CANNON.ConvexPolyhedron({ vertices, faces });
+}
+// Chip legend item: colour swatch + text that never wraps in the middle.
+const swatch = (i, html) => `<span class="cn-it"><i class="cn-sw" style="background:${HEX[i]}"></i>${html}</span>`;
+const segSet = (wrap, i) => [...wrap.children].forEach((b, j) => b.setAttribute("aria-pressed", String(j === i)));
+
+// Domino layouts: parametric floor curves resampled at equal arc length.
+const DOMINO_PATHS = [
+  (u) => { const th = u * Math.PI * 6, r = 3.4 - 2.4 * u; return [r * Math.cos(th), r * Math.sin(th)]; },
+  (u) => [(u - 0.5) * 7.2, 1.5 * Math.sin(u * Math.PI * 3)],
+  (u) => {
     const t = u * Math.PI * 2, s = 0.21;
     const y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
     return [16 * Math.sin(t) ** 3 * s, -(y + 6) * s];
   },
-};
-
-function samplePath(fn) {
+];
+function samplePath(fn, gap, max) {
   const pts = [];
   let prev = fn(0), acc = 0, next = 0;
   for (let i = 1; i <= 4000; i++) {
@@ -66,188 +301,945 @@ function samplePath(fn) {
     if (acc >= next) {
       const dx = p[0] - prev[0], dz = p[1] - prev[1], l = Math.hypot(dx, dz) || 1;
       pts.push({ x: p[0], z: p[1], tx: dx / l, tz: dz / l });
-      next += GAP;
+      next += gap;
     }
     prev = p;
   }
-  // Closed curves would put the last domino on top of the first.
   const a = pts[0], b = pts[pts.length - 1];
-  if (Math.hypot(a.x - b.x, a.z - b.z) < GAP * 1.2) pts.pop();
-  return pts.slice(0, MAX);
+  if (Math.hypot(a.x - b.x, a.z - b.z) < gap * 1.2) pts.pop(); // closed curve: drop the overlap
+  return pts.slice(0, max);
 }
 
-// --- three.js scene -----------------------------------------------------------------------
-const stage = document.getElementById("stage");
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.shadowMap.enabled = true;
-stage.appendChild(renderer.domElement);
-const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0x0e0c10, 12, 26);
-const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.autoRotate = true;
-controls.autoRotateSpeed = 0.6;
-controls.maxPolarAngle = Math.PI * 0.47;
-controls.minDistance = 4;
-controls.maxDistance = 20;
-
-scene.add(new THREE.HemisphereLight(0xfff4e6, 0x2a1d24, 1.4));
-const sun = new THREE.DirectionalLight(0xffffff, 2.6);
-sun.position.set(4, 9, 5);
-sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-Object.assign(sun.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6, near: 1, far: 30 });
-sun.shadow.bias = -0.0005;
-scene.add(sun);
-
-const floor = new THREE.Mesh(new THREE.CircleGeometry(9, 64), new THREE.MeshStandardMaterial({ color: 0x4a3328, roughness: 0.85 }));
-floor.rotation.x = -Math.PI / 2;
-floor.receiveShadow = true;
-scene.add(floor);
-
-const dominoMesh = new THREE.InstancedMesh(
-  new RoundedBoxGeometry(SIZE.t, SIZE.h, SIZE.w, 2, 0.015),
-  new THREE.MeshStandardMaterial({ roughness: 0.35, metalness: 0.05 }),
-  MAX,
-);
-dominoMesh.castShadow = true;
-dominoMesh.receiveShadow = true;
-scene.add(dominoMesh);
-
-// --- cannon-es world ----------------------------------------------------------------------
-const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.82, 0), allowSleep: true });
-world.broadphase = new CANNON.SAPBroadphase(world);
-world.solver.iterations = 12;
-const matFloor = new CANNON.Material("floor");
-const matDomino = new CANNON.Material("domino");
-world.addContactMaterial(new CANNON.ContactMaterial(matFloor, matDomino, { friction: 0.5, restitution: 0.02 }));
-world.addContactMaterial(new CANNON.ContactMaterial(matDomino, matDomino, { friction: 0.25, restitution: 0.05 }));
-const ground = new CANNON.Body({ mass: 0, material: matFloor, shape: new CANNON.Plane() });
-ground.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
-world.addBody(ground);
-
-const boxShape = new CANNON.Box(new CANNON.Vec3(SIZE.t / 2, SIZE.h / 2, SIZE.w / 2));
-let dominoes = [];   // { body, pt }
-let shape = "spiral";
-let phase = "wait", phaseAt = 0, lastFallen = 0, lastChange = 0;
-
-function setup(name) {
-  shape = name;
-  for (const d of dominoes) world.removeBody(d.body);
-  const pts = samplePath(SHAPES[name]);
-  const color = new THREE.Color();
-  dominoes = pts.map((pt, i) => {
-    const body = new CANNON.Body({ mass: 0.12, material: matDomino, shape: boxShape, sleepSpeedLimit: 0.08, sleepTimeLimit: 0.4 });
-    body.position.set(pt.x, SIZE.h / 2, pt.z);
-    body.quaternion.setFromEuler(0, Math.atan2(-pt.tz, pt.tx), 0);
-    world.addBody(body);
-    body.sleep();
-    color.setHSL((i / pts.length) * 0.85, 0.75, 0.58);
-    if (i === 0) color.set(0xffffff);
-    dominoMesh.setColorAt(i, color);
-    return { body, pt };
-  });
-  dominoMesh.count = dominoes.length;
-  dominoMesh.instanceColor.needsUpdate = true;
-  document.querySelectorAll("[data-shape]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.shape === name)));
-  phase = "wait";
-  phaseAt = world.time;
-  lastFallen = 0;
-}
-
-function push(i) {
-  const d = dominoes[i];
-  if (!d) return;
-  d.body.wakeUp();
-  // Tap the top edge forward along the path.
-  d.body.applyImpulse(new CANNON.Vec3(d.pt.tx * 0.09, 0, d.pt.tz * 0.09), new CANNON.Vec3(0, SIZE.h * 0.45, 0));
-  if (phase === "wait") phase = "run";
-  phaseAt = lastChange = world.time;
-}
-
-// y component of the body's local up axis: 1 when standing, near 0 when lying flat.
-const upY = (b) => 1 - 2 * (b.quaternion.x ** 2 + b.quaternion.z ** 2);
-const fallenCount = () => dominoes.reduce((n, d) => n + (upY(d.body) < 0.8 ? 1 : 0), 0);
-
-// A sleeping body is treated as immovable during the step it gets hit, which would soak up the
-// chain's momentum. Wake the next two dominoes ahead of anything that has started to tip.
-function wakeAhead() {
-  for (let i = 0; i < dominoes.length; i++) {
-    const b = dominoes[i].body;
-    if (b.sleepState !== CANNON.Body.AWAKE || upY(b) > 0.995) continue;
-    for (const j of [i + 1, i + 2]) if (dominoes[j] && dominoes[j].body.sleepState !== CANNON.Body.AWAKE) dominoes[j].body.wakeUp();
-  }
-}
-
-// --- input --------------------------------------------------------------------------------
-const ray = new THREE.Raycaster();
-let down = null;
-renderer.domElement.addEventListener("pointerdown", (e) => { down = [e.clientX, e.clientY]; });
-renderer.domElement.addEventListener("pointerup", (e) => {
-  if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return;
-  ray.setFromCamera(new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1), camera);
-  const hit = ray.intersectObject(dominoMesh)[0];
-  if (hit) { push(hit.instanceId); setAuto(false); }
-});
-const autoBtn = document.getElementById("auto");
-let auto = true;
-const setAuto = (on) => { auto = on; autoBtn.setAttribute("aria-pressed", String(on)); };
-autoBtn.addEventListener("click", () => setAuto(!auto));
-document.getElementById("push").addEventListener("click", () => {
-  if (phase !== "wait") setup(shape);
-  push(0);
-});
-document.querySelectorAll("[data-shape]").forEach((b) => b.addEventListener("click", () => setup(b.dataset.shape)));
-
-function resize() {
-  const w = innerWidth, h = innerHeight;
-  renderer.setSize(w, h);
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
-  // Portrait screens need the camera further back to fit the whole layout.
-  const dist = 9.5 / Math.min(1, camera.aspect * 1.25);
-  camera.position.set(0, dist * 0.72, dist * 0.7);
-  controls.target.set(0, 0, 0);
-  controls.update();
-}
-
-// --- loop ---------------------------------------------------------------------------------
-const m = new THREE.Matrix4(), pos = new THREE.Vector3(), quat = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1);
-const shapes = Object.keys(SHAPES);
-let last = performance.now();
-function frame(now) {
-  const dt = Math.min(0.05, (now - last) / 1000);
-  last = now;
-  wakeAhead();
-  world.step(1 / 120, dt, 6);
-  dominoes.forEach((d, i) => {
-    pos.copy(d.body.position);
-    quat.copy(d.body.quaternion);
-    dominoMesh.setMatrixAt(i, m.compose(pos, quat, one));
-  });
-  dominoMesh.instanceMatrix.needsUpdate = true;
-  dominoMesh.computeBoundingSphere();
-
-  // Phase timing uses simulated seconds so slow devices still see the whole chain.
-  const t = world.time;
-  const fallen = fallenCount();
-  if (fallen !== lastFallen) { lastFallen = fallen; lastChange = t; }
-  if (phase === "wait" && auto && t - phaseAt > 1.2) push(0);
-  if (phase === "run" && (fallen === dominoes.length || t - lastChange > 2.5)) { phase = "done"; phaseAt = t; }
-  if (phase === "done" && auto && t - phaseAt > 2.5) setup(shapes[(shapes.indexOf(shape) + 1) % shapes.length]);
-  document.getElementById("stats").textContent = "骨牌 " + dominoes.length + " 張・已倒 " + fallen;
-
-  controls.update();
-  renderer.render(scene, camera);
-  requestAnimationFrame(frame);
-}
-
-addEventListener("resize", resize);
-resize();
-setup("spiral");
-requestAnimationFrame(frame);
+Showcase.run({ scenes: [
+  {
+    id: "domino", title: "骨牌連鎖反應",
+    api: "new CANNON.World({ allowSleep: true })・body.applyImpulse(impulse, point)",
+    desc: "每張骨牌都是 cannon-es 剛體，靜止時進入睡眠、不參與求解，被撞到才醒來；畫面中顏色變暗的骨牌正在睡眠。",
+    hint: "點任一張骨牌從那裡推倒・拖曳旋轉視角",
+    mount(ctx) {
+      const S = stage(ctx, { shadows: true, fov: 42, bg: 0x0e0c10,
+        orbit: { autoRotate: true, autoRotateSpeed: 0.6, maxPolarAngle: Math.PI * 0.47, minDistance: 4, maxDistance: 24 } });
+      const fog = (S.scene.fog = new THREE.Fog(0x0e0c10, 12, 26));
+      lights(S, { shadow: 6, sun: 2.6, hemi: 1.4 });
+      const ground = new THREE.Mesh(S.own(new THREE.CircleGeometry(9, 64)), S.own(std(0x4a3328, { roughness: 0.85 })));
+      ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; S.scene.add(ground);
+      S.onSize(() => {
+        const d = fitDistance(S, 3.8, 2.9);
+        S.camera.position.set(0, 0.72, 0.7).normalize().multiplyScalar(d);
+        S.controls.target.set(0, 0, 0);
+        fog.near = d * 1.26; fog.far = d * 2.7;
+      });
+      const SIZE = { t: 0.08, h: 0.5, w: 0.26 }, MAX = 400;
+      const mesh = new THREE.InstancedMesh(S.own(new RoundedBoxGeometry(SIZE.t, SIZE.h, SIZE.w, 2, 0.015)), S.own(std(0xffffff, { roughness: 0.35 })), MAX);
+      mesh.castShadow = mesh.receiveShadow = true; mesh.frustumCulled = false; mesh.count = 0;
+      mesh.setColorAt(0, new THREE.Color());
+      S.scene.add(mesh);
+      const world = newWorld({ allowSleep: true, iter: 12 });
+      const mFloor = new CANNON.Material(), mDom = new CANNON.Material();
+      world.addContactMaterial(new CANNON.ContactMaterial(mFloor, mDom, { friction: 0.5, restitution: 0.02 }));
+      world.addContactMaterial(new CANNON.ContactMaterial(mDom, mDom, { friction: 0.25, restitution: 0.05 }));
+      fixed(world, new CANNON.Plane(), V(), PLANE_UP, mFloor);
+      const box = new CANNON.Box(V(SIZE.t / 2, SIZE.h / 2, SIZE.w / 2));
+      const base = [], dim = [], slept = new Int8Array(MAX);
+      let doms = [], shape = 0, phase = "wait", phaseAt = 0, lastFallen = 0, lastChange = 0, auto = true, slow = 1;
+      const setup = (i) => {
+        shape = i; segSet(seg, i);
+        for (const d of doms) world.removeBody(d.body);
+        const pts = samplePath(DOMINO_PATHS[i], 0.25, MAX);
+        doms = pts.map((pt, k) => {
+          const body = new CANNON.Body({ mass: 0.12, material: mDom, shape: box, sleepSpeedLimit: 0.08, sleepTimeLimit: 0.4,
+            position: V(pt.x, SIZE.h / 2, pt.z), quaternion: Q(0, Math.atan2(-pt.tz, pt.tx), 0) });
+          world.addBody(body);
+          body.sleep();
+          base[k] = k === 0 ? new THREE.Color(0xffffff) : new THREE.Color().setHSL((k / pts.length) * 0.85, 0.75, 0.58);
+          dim[k] = base[k].clone().multiplyScalar(0.45);
+          return { body, pt };
+        });
+        mesh.count = doms.length;
+        slept.fill(-1);
+        phase = "wait"; phaseAt = world.time; lastFallen = 0;
+      };
+      const push = (i) => {
+        const d = doms[i];
+        if (!d) return;
+        d.body.wakeUp();
+        d.body.applyImpulse(V(d.pt.tx * 0.09, 0, d.pt.tz * 0.09), V(0, SIZE.h * 0.45, 0)); // tap the top edge forward
+        if (phase === "wait") phase = "run";
+        phaseAt = lastChange = world.time;
+      };
+      // y of the body's local up axis: 1 standing, about 0 lying flat.
+      const upY = (b) => 1 - 2 * (b.quaternion.x ** 2 + b.quaternion.z ** 2);
+      // A sleeping body acts as immovable during the step it is hit, which soaks up the chain's
+      // momentum, so wake the next two dominoes ahead of anything that has started to tip.
+      const wakeAhead = () => {
+        for (let i = 0; i < doms.length; i++) {
+          const b = doms[i].body;
+          if (b.sleepState !== CANNON.Body.AWAKE || upY(b) > 0.995) continue;
+          for (const j of [i + 1, i + 2]) if (doms[j] && doms[j].body.sleepState !== CANNON.Body.AWAKE) doms[j].body.wakeUp();
+        }
+      };
+      const m4 = new THREE.Matrix4(), one = new THREE.Vector3(1, 1, 1), p = new THREE.Vector3(), q = new THREE.Quaternion();
+      const setChip = chip(ctx, "");
+      S.onFrame((dt) => {
+        wakeAhead();
+        world.step(1 / 120, dt * slow, 6);
+        let fallen = 0, sleeping = 0, recolor = false;
+        doms.forEach((d, i) => {
+          const b = d.body;
+          mesh.setMatrixAt(i, m4.compose(p.copy(b.interpolatedPosition), q.copy(b.interpolatedQuaternion), one));
+          if (upY(b) < 0.8) fallen++;
+          const s = b.sleepState === CANNON.Body.SLEEPING ? 1 : 0;
+          sleeping += s;
+          if (s !== slept[i]) { slept[i] = s; mesh.setColorAt(i, s ? dim[i] : base[i]); recolor = true; }
+        });
+        mesh.instanceMatrix.needsUpdate = true;
+        if (recolor) mesh.instanceColor.needsUpdate = true;
+        const t = world.time;
+        if (fallen !== lastFallen) { lastFallen = fallen; lastChange = t; }
+        if (phase === "wait" && auto && t - phaseAt > 0.5) push(0);
+        if (phase === "run" && (fallen === doms.length || t - lastChange > 2.5)) { phase = "done"; phaseAt = t; }
+        if (phase === "done" && auto && t - phaseAt > 2.5) setup((shape + 1) % DOMINO_PATHS.length);
+        setChip(`骨牌 <b>${doms.length}</b> 張・已倒 <b>${fallen}</b>・睡眠中 <b>${sleeping}</b>`);
+      });
+      const rc = new THREE.Raycaster(), ndc = new THREE.Vector2();
+      onTap(ctx, S.canvas, (e) => {
+        mesh.computeBoundingSphere();
+        rc.setFromCamera(setNdc(S, e, ndc), S.camera);
+        const hit = rc.intersectObject(mesh)[0];
+        if (hit) { push(hit.instanceId); auto = false; autoBtn.setAttribute("aria-pressed", "false"); }
+      });
+      const seg = ctx.group(["螺旋", "波浪", "愛心"], 0, (i) => setup(i));
+      ctx.button("推倒", () => { if (phase !== "wait") setup(shape); push(0); }, { primary: true });
+      ctx.toggle("慢動作", false, (v) => { slow = v ? 0.25 : 1; });
+      const autoBtn = ctx.toggle("自動輪播", true, (v) => { auto = v; });
+      setup(0);
+    },
+  },
+  {
+    id: "shapes", title: "形狀與複合剛體",
+    api: "body.addShape(shape, offset, orientation)・new CANNON.ConvexPolyhedron({ vertices, faces })",
+    desc: "方塊、球、圓柱、凸多面體各走不同的窄相碰撞演算法；啞鈴與桌子用 addShape 把多個形狀黏成一個剛體，質量與轉動慣量一起計算。",
+    hint: "點物體把它彈起・拖曳旋轉視角",
+    mount(ctx) {
+      const S = stage(ctx, { shadows: true, fov: 45, bg: 0x0d1016, orbit: { maxPolarAngle: Math.PI * 0.48, minDistance: 3, maxDistance: 22 } });
+      lights(S, { shadow: 6, pos: [3, 10, 6] });
+      camRig(S)({ t: [0, 0.4, 0], d: [0, 0.85, 1], hw: 4.6, hh: 2.6 }, true);
+      const world = newWorld({ allowSleep: true });
+      const P = sim(S, world);
+      const HX = 4.2, HZ = 2.8;
+      floor(S, HX * 2 + 0.6, HZ * 2 + 0.6, 0x1c2230);
+      fixed(world, new CANNON.Plane(), V(), PLANE_UP);
+      // Physics walls are tall so launched bodies fall back in; the visible glass stays low.
+      const glass = S.own(new THREE.MeshStandardMaterial({ color: 0x9fd8ff, transparent: true, opacity: 0.08, depthWrite: false }));
+      const edge = S.own(new THREE.LineBasicMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0.5 }));
+      for (const [x, z, hx, hz] of [[HX, 0, 0.1, HZ], [-HX, 0, 0.1, HZ], [0, HZ, HX, 0.1], [0, -HZ, HX, 0.1]]) {
+        fixed(world, new CANNON.Box(V(hx, 4, hz)), V(x, 4, z));
+        const g = S.own(new THREE.BoxGeometry(hx * 2, 0.6, hz * 2));
+        const m = new THREE.Mesh(g, glass);
+        m.position.set(x, 0.3, z);
+        m.add(new THREE.LineSegments(S.own(new THREE.EdgesGeometry(g)), edge));
+        S.scene.add(m);
+      }
+      const ico = S.own(new THREE.IcosahedronGeometry(0.42, 0));
+      const G = (geo) => S.own(geo);
+      const bar = (len, r) => ({ s: new CANNON.Cylinder(r, r, len, 12), g: G(new THREE.CylinderGeometry(r, r, len, 16)), rz: Math.PI / 2 });
+      const box = (x, y, z, p) => ({ s: new CANNON.Box(V(x, y, z)), g: G(new THREE.BoxGeometry(x * 2, y * 2, z * 2)), p });
+      const KINDS = [
+        { name: "Box", mass: 1, parts: [{ s: new CANNON.Box(V(0.3, 0.3, 0.3)), g: G(new RoundedBoxGeometry(0.6, 0.6, 0.6, 3, 0.05)) }] },
+        { name: "Sphere", mass: 1, parts: [{ s: new CANNON.Sphere(0.36), g: G(new THREE.SphereGeometry(0.36, 32, 16)) }] },
+        { name: "Cylinder", mass: 1, parts: [{ s: new CANNON.Cylinder(0.3, 0.3, 0.7, 16), g: G(new THREE.CylinderGeometry(0.3, 0.3, 0.7, 24)) }] },
+        { name: "Convex", mass: 1, flat: true, parts: [{ s: convexFrom(ico), g: ico }] },
+        { name: "啞鈴（複合）", mass: 1.4, parts: [
+          { s: new CANNON.Sphere(0.24), g: G(new THREE.SphereGeometry(0.24, 24, 12)), p: [-0.42, 0, 0] },
+          { s: new CANNON.Sphere(0.24), g: G(new THREE.SphereGeometry(0.24, 24, 12)), p: [0.42, 0, 0] },
+          bar(0.84, 0.07)] },
+        { name: "桌子（複合）", mass: 1.5, parts: [box(0.55, 0.05, 0.4, [0, 0.2, 0]),
+          ...[[-1, -1], [-1, 1], [1, -1], [1, 1]].map(([a, b]) => box(0.04, 0.26, 0.04, [a * 0.48, -0.11, b * 0.33]))] },
+      ];
+      KINDS.forEach((K, i) => {
+        K.mat = S.own(std(PALETTE[i], { roughness: 0.4, flatShading: !!K.flat }));
+        K.dim = S.own(std(new THREE.Color(PALETTE[i]).multiplyScalar(0.35), { roughness: 0.6, flatShading: !!K.flat }));
+      });
+      const items = [];
+      const spawn = (k, x, y, z) => {
+        if (items.length >= 60) P.remove(items.shift().body);
+        const K = KINDS[k];
+        const body = new CANNON.Body({ mass: K.mass, position: V(x, y, z), quaternion: Q(rand(0, 6.3), rand(0, 6.3), rand(0, 6.3)),
+          sleepSpeedLimit: 0.2, sleepTimeLimit: 0.6 });
+        const group = new THREE.Group();
+        for (const pt of K.parts) {
+          const off = V(...(pt.p || [0, 0, 0]));
+          body.addShape(pt.s, off, pt.rz ? new CANNON.Quaternion().setFromAxisAngle(V(0, 0, 1), pt.rz) : undefined);
+          const m = shadowed(pt.g, K.mat);
+          m.position.copy(off);
+          m.rotation.z = pt.rz || 0;
+          group.add(m);
+        }
+        const it = { body, group, k, asleep: false };
+        items.push(it);
+        P.add(body, group);
+      };
+      for (let i = 0; i < 14; i++) spawn(i % 6, -3 + (i % 4) * 2, 1 + Math.floor(i / 4) * 1.1, -1.3 + (i % 3) * 1.3);
+      let drop = true;
+      ctx.interval(() => { if (drop) spawn(Math.floor(Math.random() * 6), rand(-HX + 0.8, HX - 0.8), 4.2, rand(-HZ + 0.8, HZ - 0.8)); }, 350);
+      const legend = KINDS.map((K, i) => swatch(i, K.name)).join("");
+      const setChip = chip(ctx, "");
+      S.onFrame(() => {
+        let sl = 0;
+        for (const it of items) {
+          const a = it.body.sleepState === CANNON.Body.SLEEPING;
+          if (a) sl++;
+          if (a !== it.asleep) { it.asleep = a; const m = a ? KINDS[it.k].dim : KINDS[it.k].mat; it.group.children.forEach((c) => (c.material = m)); }
+        }
+        setChip(`剛體 <b>${items.length}</b>・睡眠中（變暗）<b>${sl}</b><br>${legend}`);
+      });
+      const kick = (b, up) => { b.wakeUp(); b.applyImpulse(V(rand(-1, 1), up, rand(-1, 1)).scale(b.mass), V(rand(-0.15, 0.15), 0, rand(-0.15, 0.15))); };
+      const rc = new THREE.Raycaster(), ndc = new THREE.Vector2();
+      onTap(ctx, S.canvas, (e) => {
+        rc.setFromCamera(setNdc(S, e, ndc), S.camera);
+        const hit = rc.intersectObjects(items.map((it) => it.group), true)[0];
+        const it = hit && items.find((x) => x.group === hit.object.parent);
+        if (it) kick(it.body, 6);
+      });
+      ctx.toggle("持續落下", true, (v) => { drop = v; });
+      ctx.button("全部炸開", () => {
+        for (const it of items) { const b = it.body; kick(b, rand(5, 8)); b.applyImpulse(V(b.position.x * 0.6, 0, b.position.z * 0.6).scale(b.mass)); }
+      }, { primary: true });
+    },
+  },
+  {
+    id: "material", title: "材質與接觸材質",
+    api: "new CANNON.ContactMaterial(matA, matB, { friction, restitution })",
+    desc: "左邊五個木塊只差摩擦係數 μ，右邊五顆球只差反彈係數 e。cannon-es 以 μ × m × g 近似摩擦上限，本場景調整 World 的 frictionGravity，讓斜坡滑動接近課本結果。",
+    hint: "切換摩擦／反彈視角・拖動坡度滑桿",
+    mount(ctx) {
+      const S = stage(ctx, { shadows: true, fov: 42, bg: 0x0f1014, orbit: { minDistance: 3, maxDistance: 30, maxPolarAngle: Math.PI * 0.49 } });
+      const sun = lights(S, { shadow: 11, pos: [12, 14, 8] });
+      sun.target.position.set(6, 0, 0);
+      S.scene.add(sun.target);
+      const go = camRig(S);
+      const VIEWS = [{ t: [1.4, 1.1, 0], d: [-0.2, 0.55, 1], hw: 5.4, hh: 2.3 }, { t: [12, 1.9, 0], d: [0, 0.2, 1], hw: 3.3, hh: 2.1 }];
+      go(VIEWS[0], true);
+      const world = newWorld({ frictionGravity: V(0, 9.82 / 240, 0) }); // see desc: rescales the friction bound
+      const P = sim(S, world);
+      const mGround = new CANNON.Material(), mRamp = new CANNON.Material();
+      floor(S, 30, 12, 0x1b2029, 6);
+      fixed(world, new CANNON.Plane(), V(), PLANE_UP, mGround);
+      // --- friction: five boxes on one ramp
+      const MUS = [0, 0.1, 0.2, 0.3, 0.5];
+      const ramp = fixed(world, new CANNON.Box(V(3.2, 0.1, 2.3)), V(), null, mRamp);
+      const rampMesh = shadowed(S.own(new THREE.BoxGeometry(6.4, 0.2, 4.6)), S.own(std(0x2b3442)));
+      const stripe = S.own(new THREE.BoxGeometry(6.4, 0.02, 0.03)), stripeMat = S.own(std(0x4a5568));
+      for (let i = 0; i < 4; i++) { const s = new THREE.Mesh(stripe, stripeMat); s.position.set(0, 0.11, (i - 1.5) * 0.88); rampMesh.add(s); }
+      S.scene.add(rampMesh);
+      const wall = fixed(world, new CANNON.Box(V(0.15, 0.5, 2.4)), V());
+      const wallMesh = shadowed(S.own(new THREE.BoxGeometry(0.3, 1, 4.8)), S.own(std(0x3a4150)));
+      S.scene.add(wallMesh);
+      const boxGeo = S.own(new RoundedBoxGeometry(0.4, 0.4, 0.4, 2, 0.04));
+      const lanes = MUS.map((mu, i) => {
+        const m = new CANNON.Material();
+        world.addContactMaterial(new CANNON.ContactMaterial(mRamp, m, { friction: mu, restitution: 0 }));
+        world.addContactMaterial(new CANNON.ContactMaterial(mGround, m, { friction: mu, restitution: 0 }));
+        const body = P.add(new CANNON.Body({ mass: 1, shape: new CANNON.Box(V(0.2, 0.2, 0.2)), material: m }), shadowed(boxGeo, S.own(std(PALETTE[i]))));
+        return { body, mu, z: (i - 2) * 0.88, at: null };
+      });
+      let endX = 0;
+      const setRamp = (deg) => {
+        const th = THREE.MathUtils.degToRad(deg);
+        place(ramp, V(0, 3.2 * Math.sin(th) + 0.05, 0), Q(0, 0, -th));
+        rampMesh.position.copy(ramp.position); rampMesh.quaternion.copy(ramp.quaternion);
+        endX = ramp.pointToWorldFrame(V(3.2, 0.1, 0)).x;
+        place(wall, V(endX + 3.6, 0.5, 0)); wallMesh.position.copy(wall.position);
+      };
+      // --- restitution: five balls dropped onto the same ground
+      const ES = [0.1, 0.3, 0.5, 0.7, 0.9], OX = 12, R = 0.28;
+      const grid = new THREE.GridHelper(6, 12, 0x3a4150, 0x262b35);
+      grid.rotation.x = Math.PI / 2; grid.position.set(OX, 3, -0.6);
+      S.scene.add(grid); S.own(grid.geometry, grid.material);
+      const ballGeo = S.own(new THREE.SphereGeometry(R, 32, 16)), tickGeo = S.own(new THREE.BoxGeometry(0.8, 0.03, 0.03));
+      const balls = ES.map((e, i) => {
+        const m = new CANNON.Material();
+        world.addContactMaterial(new CANNON.ContactMaterial(mGround, m, { friction: 0.3, restitution: e }));
+        const x = OX + (i - 2) * 1.15;
+        const body = P.add(new CANNON.Body({ mass: 1, shape: new CANNON.Sphere(R), material: m, linearDamping: 0 }), shadowed(ballGeo, S.own(std(PALETTE[i], { roughness: 0.3 }))));
+        const tick = new THREE.Mesh(tickGeo, S.own(new THREE.MeshBasicMaterial({ color: PALETTE[i] })));
+        tick.position.set(x, 0, -0.3);
+        S.scene.add(tick);
+        return { body, e, x, tick, st: 0, apex: 0 };
+      });
+      let t0 = 0, view = 0;
+      const reset = () => {
+        t0 = world.time;
+        for (const L of lanes) { place(L.body, ramp.pointToWorldFrame(V(-3.2 + 0.45, 0.305, L.z)), ramp.quaternion); L.at = null; }
+        for (const B of balls) { place(B.body, V(B.x, 3.6, 0)); B.st = 0; B.tick.visible = false; }
+      };
+      setRamp(24);
+      reset();
+      // Results go in the chip, keyed by colour, so nothing overlaps at narrow widths.
+      const setChip = chip(ctx, "");
+      S.onFrame(() => {
+        const t = world.time - t0;
+        const rows = lanes.map((L, i) => {
+          const b = L.body;
+          if (L.at == null && b.position.x > endX) L.at = t;
+          const r = L.at != null ? `<b>${L.at.toFixed(2)}</b> s` : t > 3 && b.velocity.length() < 0.02 ? "靜止" : "下滑中";
+          return swatch(i, `μ <b>${L.mu.toFixed(1)}</b> ${r}`);
+        });
+        const hops = balls.map((B, i) => {
+          const vy = B.body.velocity.y;
+          if (B.st === 0 && vy > 0.05) B.st = 1;
+          else if (B.st === 1 && vy <= 0) { B.st = 2; B.apex = B.body.position.y - R; B.tick.position.y = B.apex + R; B.tick.visible = true; }
+          const r = B.st === 2 ? `<b>${B.apex.toFixed(2)}</b> m` : t > 2.5 ? "幾乎不彈" : "落下中";
+          return swatch(i, `e <b>${B.e.toFixed(1)}</b> ${r}`);
+        });
+        setChip(view === 0 ? `同一斜坡，滑到底的時間<br>${rows.join("")}` : `從 3.6 m 落下，第一次反彈高度<br>${hops.join("")}`);
+        if (t > 6.5) reset();
+      });
+      ctx.group(["摩擦係數", "反彈係數"], 0, (i) => { view = i; go(VIEWS[i]); });
+      ctx.slider("坡度", { min: 10, max: 35, step: 1, value: 24, format: (v) => `${v}°` }, (v) => { setRamp(v); reset(); });
+      ctx.button("重新開始", reset);
+    },
+  },
+  {
+    id: "joints", title: "約束關節",
+    api: "PointToPointConstraint・HingeConstraint.enableMotor()・ConeTwistConstraint・LockConstraint",
+    desc: "四種約束各占一站：點對點串成鎖鏈、鉸鏈加馬達驅動風車、錐形扭轉限制布偶關節，鎖定約束組成的牆在受力超過 200 N 時斷開。",
+    hint: "上方按鈕切換鏡頭到各站・滑桿調整馬達轉速",
+    mount(ctx) {
+      const S = stage(ctx, { shadows: true, labels: true, fov: 45, bg: 0x0e1014, orbit: { maxPolarAngle: Math.PI * 0.49, minDistance: 3, maxDistance: 30 } });
+      lights(S, { shadow: 8, pos: [5, 12, 8] });
+      const go = camRig(S);
+      const world = newWorld({ iter: 20 });
+      const P = sim(S, world);
+      floor(S, 16, 11, 0x1b2029);
+      fixed(world, new CANNON.Plane(), V(), PLANE_UP);
+      const A = [-3.2, -2.2], B = [3.2, -2.2], C = [-3.2, 2.4], D = [3.2, 2.4];
+      const mat = PALETTE.map((c) => S.own(std(c, { roughness: 0.4 })));
+      const grey = S.own(std(0x59606e)), metal = S.own(std(0xb8c0cc, { metalness: 0.8, roughness: 0.3 }));
+      const M = (geo, m, x = 0, y = 0, z = 0) => { const o = shadowed(S.own(geo), m); o.position.set(x, y, z); return o; };
+      const tag = (t, sub, x, y, z) => { const o = label(t, sub); o.position.set(x, y, z); S.scene.add(o); return o; };
+      const lineMat = S.own(new THREE.LineBasicMaterial({ color: 0xe6e9ef }));
+      const polyline = (n) => {
+        const g = S.own(new THREE.BufferGeometry());
+        g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+        const l = new THREE.Line(g, lineMat);
+        l.frustumCulled = false;
+        S.scene.add(l);
+        return g.attributes.position;
+      };
+      const gallows = (x, z, top) => { S.scene.add(M(new THREE.BoxGeometry(0.12, top + 0.2, 0.12), grey, x, (top + 0.2) / 2, z - 0.8), M(new THREE.BoxGeometry(0.1, 0.1, 0.9), grey, x, top + 0.1, z - 0.4)); };
+      // A: PointToPoint chain, ten links and a heavy bob
+      const topA = V(A[0], 4.2, A[1]);
+      gallows(A[0], A[1], 4.2);
+      const anchorA = fixed(world, undefined, topA);
+      const chain = [anchorA];
+      const linkShape = new CANNON.Sphere(0.12), linkGeo = new THREE.SphereGeometry(0.12, 16, 10);
+      let prevPivot = V();
+      for (let i = 0; i < 10; i++) {
+        const b = P.add(new CANNON.Body({ mass: 0.5, shape: linkShape, position: V(topA.x + 0.15 + i * 0.3, topA.y, topA.z), linearDamping: 0.05 }), M(linkGeo, mat[1]));
+        const c = new CANNON.PointToPointConstraint(chain[chain.length - 1], prevPivot, b, V(-0.15, 0, 0));
+        c.collideConnected = false;
+        world.addConstraint(c);
+        chain.push(b); prevPivot = V(0.15, 0, 0);
+      }
+      const bob = P.add(new CANNON.Body({ mass: 2, shape: new CANNON.Sphere(0.32), position: V(topA.x + 3.35, topA.y, topA.z) }), M(new THREE.SphereGeometry(0.32, 32, 16), mat[0]));
+      world.addConstraint(new CANNON.PointToPointConstraint(chain[chain.length - 1], prevPivot, bob, V(-0.35, 0, 0)));
+      chain.push(bob);
+      const chainLine = polyline(chain.length);
+      let side = 1;
+      ctx.interval(() => { bob.applyImpulse(V(0, 0, (side = -side) * 5)); }, 6000);
+      // B: hinge windmill with a motor
+      const post = fixed(world, new CANNON.Box(V(0.12, 1.1, 0.12)), V(B[0], 1.1, B[1] - 0.35));
+      S.scene.add(M(new THREE.BoxGeometry(0.24, 2.2, 0.24), grey, B[0], 1.1, B[1] - 0.35));
+      const rotor = new CANNON.Body({ mass: 4, position: V(B[0], 2.2, B[1]) });
+      rotor.addShape(new CANNON.Box(V(1.2, 0.1, 0.04)));
+      rotor.addShape(new CANNON.Box(V(0.1, 1.2, 0.04)));
+      const rg = new THREE.Group();
+      const hub = M(new THREE.CylinderGeometry(0.16, 0.16, 0.2, 24), metal);
+      hub.rotation.x = Math.PI / 2;
+      rg.add(M(new THREE.BoxGeometry(2.4, 0.2, 0.08), mat[4]), M(new THREE.BoxGeometry(0.2, 2.4, 0.08), mat[4]), hub);
+      P.add(rotor, rg);
+      const hinge = new CANNON.HingeConstraint(post, rotor, { pivotA: V(0, 1.1, 0.35), axisA: V(0, 0, 1), pivotB: V(), axisB: V(0, 0, 1), collideConnected: false });
+      world.addConstraint(hinge);
+      hinge.enableMotor();
+      hinge.setMotorSpeed(2.5);
+      const drops = [], dropShape = new CANNON.Sphere(0.16), dropGeo = new THREE.SphereGeometry(0.16, 16, 10);
+      ctx.interval(() => {
+        while (drops.length && (drops.length >= 24 || world.time - drops[0].t > 7)) P.remove(drops.shift().b);
+        const b = P.add(new CANNON.Body({ mass: 0.3, shape: dropShape, position: V(B[0] + rand(-1.1, 1.1), 4.2, B[1] + rand(-0.05, 0.05)) }), M(dropGeo, mat[1 + (drops.length % 3)]));
+        drops.push({ b, t: world.time });
+      }, 500);
+      // C: ConeTwist ragdoll tumbling down stairs
+      for (let k = 0; k < 4; k++) {
+        const hgt = 1.2 - k * 0.3, x = C[0] - 1.2 + k * 0.6;
+        fixed(world, new CANNON.Box(V(0.3, hgt / 2, 0.8)), V(x, hgt / 2, C[1]));
+        S.scene.add(M(new THREE.BoxGeometry(0.6, hgt, 1.6), grey, x, hgt / 2, C[1]));
+      }
+      const PARTS = [ // half extents (or radius), offset from torso centre, mass
+        [[0.18, 0.25, 0.1], [0, 0, 0], 3], [0.13, [0, 0.42, 0], 1],
+        [[0.18, 0.05, 0.05], [-0.38, 0.19, 0], 0.5], [[0.18, 0.05, 0.05], [0.38, 0.19, 0], 0.5],
+        [[0.16, 0.08, 0.1], [0, -0.35, 0], 1.5],
+        [[0.06, 0.18, 0.06], [-0.09, -0.63, 0], 0.8], [[0.06, 0.18, 0.06], [0.09, -0.63, 0], 0.8],
+        [[0.05, 0.18, 0.05], [-0.09, -1.01, 0], 0.6], [[0.05, 0.18, 0.05], [0.09, -1.01, 0], 0.6],
+      ];
+      const rag = PARTS.map(([s, , mass], i) => {
+        const shape = Array.isArray(s) ? new CANNON.Box(V(...s)) : new CANNON.Sphere(s);
+        const geo = Array.isArray(s) ? new THREE.BoxGeometry(s[0] * 2, s[1] * 2, s[2] * 2) : new THREE.SphereGeometry(s, 24, 12);
+        return P.add(new CANNON.Body({ mass, shape, angularDamping: 0.3 }), M(geo, i === 1 ? mat[0] : i < 4 ? mat[5] : mat[3]));
+      });
+      const J = (a, b, pa, pb, axis, angle, twistAngle) => world.addConstraint(new CANNON.ConeTwistConstraint(rag[a], rag[b],
+        { pivotA: V(...pa), pivotB: V(...pb), axisA: V(...axis), axisB: V(...axis), angle, twistAngle, collideConnected: false }));
+      const PI = Math.PI;
+      J(0, 1, [0, 0.25, 0], [0, -0.17, 0], [0, 1, 0], PI / 4, PI / 8);       // neck
+      J(0, 2, [-0.2, 0.19, 0], [0.18, 0, 0], [1, 0, 0], PI / 3, PI / 4);      // shoulders
+      J(0, 3, [0.2, 0.19, 0], [-0.18, 0, 0], [1, 0, 0], PI / 3, PI / 4);
+      J(0, 4, [0, -0.26, 0], [0, 0.09, 0], [0, 1, 0], PI / 8, PI / 8);       // spine
+      J(4, 5, [-0.09, -0.09, 0], [0, 0.19, 0], [0, 1, 0], PI / 4, PI / 8);   // hips
+      J(4, 6, [0.09, -0.09, 0], [0, 0.19, 0], [0, 1, 0], PI / 4, PI / 8);
+      J(5, 7, [0, -0.19, 0], [0, 0.19, 0], [0, 1, 0], PI / 8, 0.1);          // knees
+      J(6, 8, [0, -0.19, 0], [0, 0.19, 0], [0, 1, 0], PI / 8, 0.1);
+      const dropRag = () => {
+        const q = Q(0, rand(-0.6, 0.6), -0.25), base = V(C[0] - 1.25, 2.7, C[1]);
+        rag.forEach((b, i) => { place(b, base.vadd(q.vmult(V(...PARTS[i][1]))), q); b.velocity.set(1.5, 0, 0); });
+      };
+      dropRag();
+      ctx.interval(dropRag, 5500);
+      // D: LockConstraint wall that breaks under load, hit by a wrecking ball
+      const blockShape = new CANNON.Box(V(0.2, 0.15, 0.25)), blockGeo = new RoundedBoxGeometry(0.4, 0.3, 0.5, 2, 0.03);
+      const blocks = [], home = [], locks = [];
+      for (let r = 0; r < 5; r++) for (let c = 0; c < 4; c++) {
+        const p = V(D[0] + 0.5, 0.15 + r * 0.3, D[1] + (c - 1.5) * 0.5);
+        home.push(p.clone());
+        blocks.push(P.add(new CANNON.Body({ mass: 1, shape: blockShape, position: p }), M(blockGeo, mat[(r + c) % 2 ? 2 : 5])));
+      }
+      for (let r = 0; r < 5; r++) for (let c = 0; c < 4; c++) {
+        const b = blocks[r * 4 + c];
+        if (c < 3) locks.push(new CANNON.LockConstraint(b, blocks[r * 4 + c + 1]));
+        if (r < 4) locks.push(new CANNON.LockConstraint(b, blocks[(r + 1) * 4 + c]));
+      }
+      locks.forEach((l) => world.addConstraint(l));
+      gallows(D[0] + 0.1, D[1], 4.2);
+      const anchorD = fixed(world, undefined, V(D[0] + 0.1, 4.2, D[1]));
+      const L = 3.45, a65 = THREE.MathUtils.degToRad(65);
+      const swingStart = () => V(D[0] + 0.1 - L * Math.sin(a65), 4.2 - L * Math.cos(a65), D[1]);
+      const ball = P.add(new CANNON.Body({ mass: 25, shape: new CANNON.Sphere(0.4), position: swingStart() }), M(new THREE.SphereGeometry(0.4, 32, 16), metal));
+      world.addConstraint(new CANNON.DistanceConstraint(anchorD, ball, L));
+      const rope = polyline(2);
+      const lockGeo = S.own(new THREE.BufferGeometry());
+      lockGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(locks.length * 6), 3));
+      const lockLines = new THREE.LineSegments(lockGeo, S.own(new THREE.LineBasicMaterial({ color: 0xf7df1e })));
+      lockLines.frustumCulled = false;
+      S.scene.add(lockLines);
+      let broken = 0;
+      // Break a lock when its point-to-point equations need more than 200 N.
+      const lockForce = (l) => Math.max(Math.abs(l.equations[0].multiplier), Math.abs(l.equations[1].multiplier), Math.abs(l.equations[2].multiplier));
+      world.addEventListener("postStep", () => {
+        for (const l of locks) if (!l.broken && lockForce(l) > 200) { l.broken = true; world.removeConstraint(l); broken++; }
+      });
+      const rebuild = () => {
+        blocks.forEach((b, i) => place(b, home[i], new CANNON.Quaternion()));
+        for (const l of locks) if (l.broken) { l.broken = false; world.addConstraint(l); }
+        broken = 0;
+        place(ball, swingStart());
+      };
+      ctx.interval(rebuild, 8000);
+      // labels and per-frame line updates
+      tag("PointToPoint 鎖鏈", "", A[0], 4.75, A[1]);
+      const hingeTag = tag("Hinge 馬達", "轉速 2.5 rad/s", B[0], 3.75, B[1]);
+      tag("ConeTwist 布偶", "", C[0] - 0.6, 3.3, C[1]);
+      const wallTag = tag("Lock 斷裂牆", "", D[0] + 0.5, 2.05, D[1]);
+      const ip = (b) => b.interpolatedPosition;
+      S.onFrame(() => {
+        chain.forEach((b, i) => chainLine.setXYZ(i, ip(b).x, ip(b).y, ip(b).z));
+        chainLine.needsUpdate = true;
+        rope.setXYZ(0, anchorD.position.x, anchorD.position.y, anchorD.position.z);
+        rope.setXYZ(1, ip(ball).x, ip(ball).y, ip(ball).z);
+        rope.needsUpdate = true;
+        const lp = lockGeo.attributes.position;
+        let n = 0;
+        for (const l of locks) {
+          if (l.broken) continue;
+          const p1 = ip(l.bodyA), p2 = ip(l.bodyB);
+          lp.setXYZ(n++, p1.x, p1.y, p1.z); lp.setXYZ(n++, p2.x, p2.y, p2.z);
+        }
+        lockGeo.setDrawRange(0, n);
+        lp.needsUpdate = true;
+        wallTag.userData.sub(`已斷 ${broken}/${locks.length}`);
+      });
+      const VIEWS = [
+        { t: [0, 1.4, 0.1], d: [0, 0.8, 1], hw: 6.4, hh: 3.3 },
+        { t: [A[0], 2.6, A[1]], d: [0.15, 0.25, 1], hw: 3.7, hh: 2.2 },
+        { t: [B[0], 2.2, B[1]], d: [0.2, 0.2, 1], hw: 1.9, hh: 2.1 },
+        { t: [C[0] - 0.4, 1.2, C[1]], d: [0.45, 0.35, 1], hw: 2.2, hh: 1.6 },
+        { t: [D[0] - 0.6, 1.8, D[1]], d: [-0.55, 0.35, 1], hw: 2.6, hh: 2.3 },
+      ];
+      go(VIEWS[0], true);
+      ctx.group(["全景", "鎖鏈", "風車", "布偶", "斷裂牆"], 0, (i) => go(VIEWS[i]));
+      ctx.slider("馬達轉速", { min: -6, max: 6, step: 0.5, value: 2.5, format: (v) => v.toFixed(1) }, (v) => {
+        hinge.setMotorSpeed(v); rotor.wakeUp(); hingeTag.userData.sub(`轉速 ${v.toFixed(1)} rad/s`);
+      });
+    },
+  },
+  {
+    id: "cloth", title: "布料與彈簧",
+    api: "new CANNON.Particle()・DistanceConstraint・new CANNON.Spring(bodyA, bodyB, { stiffness, damping })",
+    desc: "布料是 225 個質點用 420 條距離約束連成網，被運動學球體推開並受風吹動；右側三組彈簧只差勁度係數 k，k 越大振得越快、伸長越短。",
+    hint: "按「拉一下彈簧」比較三組的振幅與頻率",
+    mount(ctx) {
+      const S = stage(ctx, { shadows: true, fov: 42, bg: 0x0e1116, orbit: { maxPolarAngle: Math.PI * 0.49, minDistance: 3, maxDistance: 20 } });
+      lights(S, { shadow: 6, pos: [3, 10, 8] });
+      camRig(S)({ t: [0.3, 1.9, 0], d: [0.3, 0.25, 1], hw: 3.7, hh: 1.9 }, true);
+      const world = newWorld({ iter: 15 });
+      const P = sim(S, world);
+      floor(S, 12, 8, 0x1b2029);
+      fixed(world, new CANNON.Plane(), V(), PLANE_UP);
+      // cloth: N x N particles, top row static, structural distance constraints
+      const N = 15, W = 2.6, H = 2.4, CX = -1.4, TOP = 3.2, dx = W / (N - 1), dy = H / (N - 1);
+      const pShape = new CANNON.Particle(), pts = [];
+      for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+        const b = new CANNON.Body({ mass: j === 0 ? 0 : 0.06, shape: pShape, position: V(CX - W / 2 + i * dx, TOP - j * dy, 0), linearDamping: 0.2 });
+        world.addBody(b);
+        pts.push(b);
+      }
+      let links = 0;
+      for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+        const k = j * N + i;
+        if (i < N - 1) { world.addConstraint(new CANNON.DistanceConstraint(pts[k], pts[k + 1], dx)); links++; }
+        if (j < N - 1) { world.addConstraint(new CANNON.DistanceConstraint(pts[k], pts[k + N], dy)); links++; }
+      }
+      const cv = document.createElement("canvas");
+      cv.width = cv.height = 64;
+      const g2 = cv.getContext("2d");
+      g2.fillStyle = HEX[2]; g2.fillRect(0, 0, 64, 64); g2.fillStyle = HEX[5];
+      for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) if ((i + j) % 2) g2.fillRect(i * 16, j * 16, 16, 16);
+      const tex = S.own(new THREE.CanvasTexture(cv));
+      tex.colorSpace = THREE.SRGBColorSpace; tex.magFilter = THREE.NearestFilter;
+      const clothGeo = S.own(new THREE.PlaneGeometry(W, H, N - 1, N - 1));
+      const cloth = new THREE.Mesh(clothGeo, S.own(new THREE.MeshStandardMaterial({ map: tex, side: THREE.DoubleSide, roughness: 0.8 })));
+      cloth.frustumCulled = false; cloth.castShadow = true;
+      S.scene.add(cloth);
+      const rod = shadowed(S.own(new THREE.BoxGeometry(W + 0.4, 0.08, 0.08)), S.own(std(0x59606e)));
+      rod.position.set(CX, TOP + 0.04, 0);
+      S.scene.add(rod);
+      const mover = new CANNON.Body({ mass: 0, type: CANNON.Body.KINEMATIC, shape: new CANNON.Sphere(0.5), position: V(CX, 1.9, -1.3) });
+      P.add(mover, shadowed(S.own(new THREE.SphereGeometry(0.5, 32, 16)), S.own(std(PALETTE[1], { metalness: 0.3, roughness: 0.3 }))));
+      let wind = true;
+      world.addEventListener("preStep", () => {
+        const t = world.time, w = (2 * Math.PI) / 5;
+        mover.velocity.set(0, 0, 1.3 * w * Math.sin(w * t)); // kinematic: driven by velocity, z = -1.3 cos(wt)
+        if (!wind) return;
+        for (let k = N; k < pts.length; k++) {
+          const p = pts[k];
+          p.force.z += 0.06 * (3 + 2 * Math.sin(t * 1.3 + p.position.x * 1.7 + p.position.y));
+          p.force.x += 0.04 * Math.sin(t * 0.7 + p.position.y * 2);
+        }
+      });
+      // springs: same mass and rest length, different stiffness
+      const beam = shadowed(S.own(new THREE.BoxGeometry(3, 0.12, 0.3)), S.own(std(0x59606e)));
+      beam.position.set(2, 3.52, 0);
+      S.scene.add(beam);
+      const coilMat = S.own(new THREE.LineBasicMaterial({ color: 0xe6e9ef })), SEG = 26;
+      const springs = [15, 40, 120].map((k, i) => {
+        const x = 1 + i;
+        const anchor = fixed(world, undefined, V(x, 3.45, 0));
+        const box = P.add(new CANNON.Body({ mass: 1, shape: new CANNON.Box(V(0.22, 0.22, 0.22)), position: V(x, 3.45 - 1 - 9.82 / k - 0.22 - 0.6, 0), linearDamping: 0.05 }),
+          shadowed(S.own(new RoundedBoxGeometry(0.44, 0.44, 0.44, 2, 0.04)), S.own(std(PALETTE[i], { roughness: 0.4 }))));
+        const sp = new CANNON.Spring(anchor, box, { restLength: 1, stiffness: k, damping: 0.6, localAnchorB: V(0, 0.22, 0) });
+        const g = S.own(new THREE.BufferGeometry());
+        g.setAttribute("position", new THREE.BufferAttribute(new Float32Array((SEG + 1) * 3), 3));
+        const line = new THREE.Line(g, coilMat);
+        line.frustumCulled = false;
+        S.scene.add(line);
+        return { sp, k, anchor, box, pos: g.attributes.position, len: 0 };
+      });
+      world.addEventListener("postStep", () => { for (const s of springs) s.sp.applyForce(); });
+      const pull = () => { for (const s of springs) { s.box.wakeUp(); s.box.applyImpulse(V(0, -4, 0)); } };
+      ctx.interval(pull, 6000);
+      const cp = clothGeo.attributes.position, tip = V(0, 0.22, 0), end = V();
+      const setChip = chip(ctx, "");
+      S.onFrame(() => {
+        pts.forEach((b, k) => cp.setXYZ(k, b.interpolatedPosition.x, b.interpolatedPosition.y, b.interpolatedPosition.z));
+        cp.needsUpdate = true;
+        clothGeo.computeVertexNormals();
+        for (const s of springs) {
+          s.box.interpolatedQuaternion.vmult(tip, end).vadd(s.box.interpolatedPosition, end);
+          const a = s.anchor.position;
+          for (let i = 0; i <= SEG; i++) {
+            const t = i / SEG, off = i === 0 || i === SEG ? 0 : i % 2 ? 0.09 : -0.09;
+            s.pos.setXYZ(i, a.x + (end.x - a.x) * t + off, a.y + (end.y - a.y) * t, a.z + (end.z - a.z) * t);
+          }
+          s.pos.needsUpdate = true;
+          s.len = end.distanceTo(a);
+        }
+        const rows = springs.map((s, i) => swatch(i, `k <b>${s.k}</b> 長 <b>${s.len.toFixed(2)}</b> m`));
+        setChip(`Particle <b>${pts.length}</b> 個・DistanceConstraint <b>${links}</b> 條<br>Spring 原長 1 m：${rows.join("")}`);
+      });
+      ctx.toggle("風力", true, (v) => { wind = v; });
+      ctx.button("拉一下彈簧", pull, { primary: true });
+    },
+  },
+  {
+    id: "raycast", title: "射線與碰撞事件",
+    api: "world.raycastClosest(from, to, options, result)・body.addEventListener(\"collide\", fn)",
+    desc: "碗是一個 Trimesh 三角網格，六道雷射每格用 cannon-es 射線檢測找命中點；每顆球第一次碰到東西時觸發 collide 事件，依撞擊速度發光並噴出火花。",
+    hint: "點球把它彈起・切換 raycastClosest／raycastAll",
+    mount(ctx) {
+      const S = stage(ctx, { shadows: true, fov: 45, bg: 0x0b0d12, orbit: { autoRotate: true, autoRotateSpeed: 0.4, maxPolarAngle: Math.PI * 0.47, minDistance: 3, maxDistance: 20 } });
+      lights(S, { shadow: 5, pos: [3, 10, 4], hemi: 1.1 });
+      camRig(S)({ t: [0, 0.8, 0], d: [0, 1, 0.9], hw: 3.4, hh: 2.2 }, true);
+      const world = newWorld({ iter: 8 });
+      const P = sim(S, world);
+      const mBowl = new CANNON.Material(), mBall = new CANNON.Material();
+      world.addContactMaterial(new CANNON.ContactMaterial(mBowl, mBall, { friction: 0.1, restitution: 0.45 }));
+      world.addContactMaterial(new CANNON.ContactMaterial(mBall, mBall, { friction: 0.1, restitution: 0.6 }));
+      floor(S, 12, 12, 0x161a22);
+      fixed(world, new CANNON.Plane(), V(), PLANE_UP, mBowl);
+      // Lathe profile starts at r = 0.05 so no triangle collapses to a point.
+      const prof = [[0.05, 0], [0.5, 0.04], [1, 0.17], [1.5, 0.38], [2, 0.68], [2.5, 1.06], [2.9, 1.45], [3.1, 1.8], [3.2, 2.2]].map(([r, y]) => new THREE.Vector2(r, y));
+      const bowlGeo = S.own(new THREE.LatheGeometry(prof, 32));
+      fixed(world, new CANNON.Trimesh(Array.from(bowlGeo.attributes.position.array), Array.from(bowlGeo.index.array)), V(), null, mBowl);
+      const bowl = new THREE.Mesh(bowlGeo, S.own(std(0x2b3442, { side: THREE.DoubleSide, roughness: 0.6 })));
+      bowl.receiveShadow = true;
+      bowl.add(new THREE.Mesh(bowlGeo, S.own(new THREE.MeshBasicMaterial({ color: 0x4cc9f0, wireframe: true, transparent: true, opacity: 0.18 }))));
+      S.scene.add(bowl);
+      // sparks
+      const SP = 240, spPos = new Float32Array(SP * 3).fill(-100), spVel = new Float32Array(SP * 3), spLife = new Float32Array(SP);
+      const spGeo = S.own(new THREE.BufferGeometry());
+      spGeo.setAttribute("position", new THREE.BufferAttribute(spPos, 3));
+      const sparks = new THREE.Points(spGeo, S.own(new THREE.PointsMaterial({ color: 0xffd166, size: 0.07, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false })));
+      sparks.frustumCulled = false;
+      S.scene.add(sparks);
+      let spAt = 0;
+      const emit = (p, n) => {
+        for (let j = 0; j < n; j++) {
+          const s = spAt++ % SP;
+          spPos.set([p.x, p.y, p.z], s * 3);
+          spVel.set([rand(-1.5, 1.5), rand(1, 3), rand(-1.5, 1.5)], s * 3);
+          spLife[s] = 0.6;
+        }
+      };
+      // ball pool with collide listeners
+      let events = 0, lastV = 0;
+      const ballGeo = S.own(new THREE.SphereGeometry(1, 24, 12));
+      const pool = Array.from({ length: 40 }, (_, i) => {
+        const r = 0.16 + (i % 5) * 0.025;
+        const mat = S.own(std(PALETTE[i % 6], { emissive: PALETTE[i % 6], emissiveIntensity: 0, roughness: 0.35 }));
+        const mesh = shadowed(ballGeo, mat);
+        mesh.scale.setScalar(r);
+        const body = new CANNON.Body({ mass: r ** 3 * 40, shape: new CANNON.Sphere(r), material: mBall, linearDamping: 0.05, angularDamping: 0.1 });
+        const rec = { body, mesh, mat, flash: 0, live: false, born: 0 };
+        body.rec = rec;
+        body.addEventListener("collide", (e) => {
+          const v = Math.abs(e.contact.getImpactVelocityAlongNormal());
+          if (v < 0.3) return;
+          rec.flash = Math.min(1, v / 3);
+          if (e.body.rec && e.body.id < body.id) return; // ball pairs fire on both bodies: count once
+          events++; lastV = v;
+          if (v > 1) emit(e.contact.bi.position.vadd(e.contact.ri), Math.min(8, Math.round(v * 2)));
+        });
+        return rec;
+      });
+      const spawn = (a) => {
+        let rec = pool.find((r) => !r.live);
+        if (!rec) { rec = pool.reduce((o, r) => (r.born < o.born ? r : o)); P.remove(rec.body); }
+        place(rec.body, V(2.75 * Math.cos(a), 2.7 + rand(0, 0.3), 2.75 * Math.sin(a)));
+        rec.body.velocity.set(-Math.sin(a) * 2.6 - Math.cos(a) * 0.3, 0, Math.cos(a) * 2.6 - Math.sin(a) * 0.3);
+        rec.live = true; rec.born = performance.now();
+        P.add(rec.body, rec.mesh);
+      };
+      for (let k = 0; k < 18; k++) spawn((k / 18) * Math.PI * 2);
+      ctx.interval(() => spawn(rand(0, Math.PI * 2)), 1200);
+      // lasers
+      const NL = 6, FROM = V(0, 2.4, 0), LEN = 4.5, tilt = THREE.MathUtils.degToRad(40);
+      const laserGeo = S.own(new THREE.BufferGeometry());
+      laserGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(NL * 6), 3));
+      const lasers = new THREE.LineSegments(laserGeo, S.own(new THREE.LineBasicMaterial({ color: 0xf72585, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending })));
+      lasers.frustumCulled = false;
+      const dots = new THREE.InstancedMesh(S.own(new THREE.SphereGeometry(0.06, 12, 8)), S.own(new THREE.MeshBasicMaterial({ color: 0xffe0f0 })), 120);
+      dots.frustumCulled = false;
+      S.scene.add(lasers, dots);
+      let mode = 0, hitsNow = 0;
+      const res = new CANNON.RaycastResult(), to = V(), m4 = new THREE.Matrix4(), lp = laserGeo.attributes.position;
+      const setChip = chip(ctx, "");
+      S.onFrame((dt, time) => {
+        const hits = [];
+        for (let i = 0; i < NL; i++) {
+          const a = time * 0.6 + (i / NL) * Math.PI * 2;
+          to.set(Math.cos(a) * Math.cos(tilt) * LEN, FROM.y - Math.sin(tilt) * LEN, Math.sin(a) * Math.cos(tilt) * LEN);
+          let end = to;
+          if (mode === 0) {
+            res.reset();
+            world.raycastClosest(FROM, to, {}, res);
+            if (res.hasHit) { end = res.hitPointWorld.clone(); hits.push(end); }
+          } else {
+            world.raycastAll(FROM, to, {}, (r) => hits.push(r.hitPointWorld.clone()));
+          }
+          lp.setXYZ(i * 2, FROM.x, FROM.y, FROM.z);
+          lp.setXYZ(i * 2 + 1, end.x, end.y, end.z);
+        }
+        lp.needsUpdate = true;
+        hitsNow = Math.min(hits.length, 120);
+        for (let i = 0; i < hitsNow; i++) dots.setMatrixAt(i, m4.makeTranslation(hits[i].x, hits[i].y, hits[i].z));
+        dots.count = hitsNow;
+        dots.instanceMatrix.needsUpdate = true;
+        for (const r of pool) { r.flash = Math.max(0, r.flash - dt * 2.5); r.mat.emissiveIntensity = r.flash * 1.6; }
+        for (let s = 0; s < SP; s++) {
+          if (spLife[s] <= 0) continue;
+          spLife[s] -= dt;
+          spVel[s * 3 + 1] -= 9.8 * dt;
+          for (let c = 0; c < 3; c++) spPos[s * 3 + c] += spVel[s * 3 + c] * dt;
+          if (spLife[s] <= 0) spPos[s * 3 + 1] = -100;
+        }
+        spGeo.attributes.position.needsUpdate = true;
+        setChip(`collide 事件 <b>${fmt(events)}</b>・最近撞擊 <b>${lastV.toFixed(1)}</b> m/s・射線命中 <b>${hitsNow}</b>`);
+      });
+      const rc = new THREE.Raycaster(), ndc = new THREE.Vector2(), tapRes = new CANNON.RaycastResult();
+      onTap(ctx, S.canvas, (e) => {
+        rc.setFromCamera(setNdc(S, e, ndc), S.camera);
+        const o = rc.ray.origin, d = rc.ray.direction;
+        tapRes.reset();
+        world.raycastClosest(V(o.x, o.y, o.z), V(o.x + d.x * 60, o.y + d.y * 60, o.z + d.z * 60), {}, tapRes);
+        const b = tapRes.hasHit && tapRes.body;
+        if (b && b.rec) { b.applyImpulse(V(rand(-0.5, 0.5), 4, rand(-0.5, 0.5)).scale(b.mass)); b.rec.flash = 1; }
+      });
+      ctx.group(["raycastClosest", "raycastAll"], 0, (i) => { mode = i; });
+      ctx.button("倒入一批", () => { const a0 = rand(0, 6.3); for (let k = 0; k < 10; k++) spawn(a0 + (k / 10) * Math.PI * 2); }, { primary: true });
+    },
+  },
+  {
+    id: "vehicle", title: "射線載具",
+    api: "new CANNON.RaycastVehicle({ chassisBody })・vehicle.addWheel(options)・new CANNON.Heightfield(data, { elementSize })",
+    desc: "車身是一個剛體，四個輪子是向下的射線加懸吊彈簧，在 Heightfield 高度場地形上沿賽道自動駕駛並撞開木箱。",
+    hint: "WASD 或方向鍵手動駕駛・空白鍵煞車",
+    mount(ctx) {
+      const S = stage(ctx, { shadows: true, fov: 55, portraitFov: 72, bg: 0x101820, far: 400, orbit: false });
+      S.scene.fog = new THREE.Fog(0x101820, 30, 75);
+      const sun = lights(S, { shadow: 14, pos: [10, 18, 8], hemi: 1.2 });
+      S.scene.add(sun.target);
+      const world = newWorld({ iter: 10 });
+      const P = sim(S, world);
+      // terrain: a ring road (R = 17) through rolling hills that rise near the edges
+      const NG = 64, HW = (NG - 1) / 2, R = 17;
+      const hills = (x, z) => 1.1 * Math.sin(x * 0.21) * Math.cos(z * 0.17) + 0.7 * Math.sin(x * 0.07 + z * 0.11) + 0.35 * Math.cos(x * 0.43 - z * 0.37);
+      const hAt = (x, z) => {
+        const r = Math.hypot(x, z);
+        return hills(x, z) * (0.3 + 0.7 * clamp((Math.abs(r - R) - 1.6) / 3, 0, 1)) + Math.min(8, Math.max(0, r - 24) ** 1.5 * 0.25);
+      };
+      const data = [];
+      for (let i = 0; i < NG; i++) { data.push([]); for (let j = 0; j < NG; j++) data[i].push(hAt(-HW + i, HW - j)); }
+      // Heightfield lies in its local xy plane; rotating -90 deg about x maps vertex (i, j) to world (x0 + i, h, z0 - j).
+      fixed(world, new CANNON.Heightfield(data, { elementSize: 1 }), V(-HW, 0, HW), PLANE_UP);
+      const pos = new Float32Array(NG * NG * 3), col = new Float32Array(NG * NG * 3), idx = [];
+      const cLow = new THREE.Color(0x2f5d3a), cHigh = new THREE.Color(0x7d9a52), cRoad = new THREE.Color(0xb59a6a), c = new THREE.Color();
+      for (let i = 0; i < NG; i++) for (let j = 0; j < NG; j++) {
+        const k = i * NG + j, x = -HW + i, z = HW - j, y = data[i][j];
+        pos.set([x, y, z], k * 3);
+        c.lerpColors(cLow, cHigh, clamp(y / 3 + 0.5, 0, 1)).lerp(cRoad, 1 - clamp((Math.abs(Math.hypot(x, z) - R) - 1.2) / 0.8, 0, 1));
+        col.set([c.r, c.g, c.b], k * 3);
+        if (i < NG - 1 && j < NG - 1) idx.push(k, k + NG, k + 1, k + NG, k + NG + 1, k + 1);
+      }
+      const tg = S.own(new THREE.BufferGeometry());
+      tg.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      tg.setAttribute("color", new THREE.BufferAttribute(col, 3));
+      tg.setIndex(idx);
+      tg.computeVertexNormals();
+      const terrain = new THREE.Mesh(tg, S.own(std(0xffffff, { vertexColors: true, roughness: 0.95 })));
+      terrain.receiveShadow = true;
+      S.scene.add(terrain);
+      // vehicle: chassis box + four raycast wheels (front = local -x, left = local +z)
+      const chassis = new CANNON.Body({ mass: 150 });
+      chassis.addShape(new CANNON.Box(V(2, 0.5, 1)));
+      const vehicle = new CANNON.RaycastVehicle({ chassisBody: chassis });
+      const wheel = { radius: 0.5, directionLocal: V(0, -1, 0), suspensionStiffness: 30, suspensionRestLength: 0.3, frictionSlip: 1.4,
+        dampingRelaxation: 2.3, dampingCompression: 4.4, maxSuspensionForce: 100000, rollInfluence: 0.01, axleLocal: V(0, 0, 1),
+        maxSuspensionTravel: 0.3, customSlidingRotationalSpeed: -30, useCustomSlidingRotationalSpeed: true };
+      for (const [x, z] of [[-1, 1], [-1, -1], [1, 1], [1, -1]]) vehicle.addWheel({ ...wheel, chassisConnectionPointLocal: V(x, 0, z) });
+      vehicle.addToWorld(world);
+      const car = new THREE.Group();
+      const paint = S.own(std(PALETTE[0], { metalness: 0.3, roughness: 0.35 })), dark = S.own(std(0x1a1d24, { roughness: 0.7 }));
+      const body1 = shadowed(S.own(new RoundedBoxGeometry(4, 0.6, 1.7, 3, 0.12)), paint);
+      body1.position.y = 0.05;
+      const cabin = shadowed(S.own(new RoundedBoxGeometry(1.9, 0.55, 1.5, 3, 0.12)), dark);
+      cabin.position.set(0.25, 0.6, 0);
+      car.add(body1, cabin);
+      const wheelGeo = S.own(new THREE.CylinderGeometry(0.5, 0.5, 0.4, 24).rotateX(Math.PI / 2));
+      const wheelMat = S.own(std(0x2a2d33, { roughness: 0.8 })), rimMat = S.own(std(0xc9ced6, { metalness: 0.7 }));
+      const rimGeo = S.own(new THREE.BoxGeometry(0.7, 0.12, 0.42));
+      const wheels = vehicle.wheelInfos.map(() => { const w = shadowed(wheelGeo, wheelMat); w.add(new THREE.Mesh(rimGeo, rimMat)); car.add(w); return w; });
+      S.scene.add(car);
+      // crates on the road
+      const crateShape = new CANNON.Box(V(0.45, 0.45, 0.45)), crateGeo = S.own(new RoundedBoxGeometry(0.9, 0.9, 0.9, 2, 0.06));
+      const crateMat = S.own(std(PALETTE[4], { roughness: 0.7 }));
+      // frictionless chassis-crate contact: with friction the chassis edge rides up onto a crate and the car gets beached
+      const chassisCM = new CANNON.Material("chassis"), crateCM = new CANNON.Material("crate");
+      chassis.material = chassisCM;
+      world.addContactMaterial(new CANNON.ContactMaterial(chassisCM, crateCM, { friction: 0, restitution: 0.2 }));
+      const crates = Array.from({ length: 10 }, () => P.add(new CANNON.Body({ mass: 6, shape: crateShape, material: crateCM }), shadowed(crateGeo, crateMat)));
+      const resetCrates = () => crates.forEach((b, k) => {
+        const a = (k / 10) * Math.PI * 2 + 0.3, r = R + (k % 2 ? 0.7 : -0.7), x = r * Math.cos(a), z = r * Math.sin(a);
+        if (Math.hypot(x - chassis.position.x, z - chassis.position.z) < 3.5) return; // the car is parked on that spot
+        place(b, V(x, hAt(x, z) + 0.5, z), Q(0, -a, 0));
+      });
+      resetCrates();
+      ctx.interval(resetCrates, 24000);
+      let auto = true, stuck = 0, flipped = 0;
+      const resetCar = (phi) => {
+        // never drop the car onto a crate: step forward along the ring until the spot is clear
+        const near = (a) => crates.some((b) => Math.hypot(b.position.x - R * Math.cos(a), b.position.z - R * Math.sin(a)) < 3.2);
+        for (let k = 0; k < 12 && near(phi); k++) phi += 0.2;
+        const x = R * Math.cos(phi), z = R * Math.sin(phi);
+        place(chassis, V(x, hAt(x, z) + 1.3, z), new CANNON.Quaternion().setFromAxisAngle(V(0, 1, 0), Math.PI / 2 - phi));
+        stuck = flipped = 0;
+      };
+      resetCar(0);
+      const keys = new Set(), KEYS = ["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright", " "];
+      const autoBtn = ctx.toggle("自動駕駛", true, (v) => { auto = v; });
+      ctx.on(window, "keydown", (e) => {
+        const k = e.key.toLowerCase();
+        if (!KEYS.includes(k)) return;
+        e.preventDefault();
+        keys.add(k);
+        if (auto) { auto = false; autoBtn.setAttribute("aria-pressed", "false"); }
+      });
+      ctx.on(window, "keyup", (e) => keys.delete(e.key.toLowerCase()));
+      ctx.button("重擺木箱", resetCrates);
+      const cam = new THREE.Vector3(), look = new THREE.Vector3(), inv = new CANNON.Quaternion(), lq = new CANNON.Quaternion();
+      let first = true;
+      const setChip = chip(ctx, "");
+      S.onFrame((dt) => {
+        const p = chassis.position, kmh = Math.abs(vehicle.currentVehicleSpeedKmHour), phi = Math.atan2(p.z, p.x);
+        let steer = 0, engine = 0, brake = 0;
+        const has = (...ks) => ks.some((k) => keys.has(k));
+        if (auto) {
+          const ta = phi + 0.32, local = chassis.pointToLocalFrame(V(R * Math.cos(ta), p.y, R * Math.sin(ta)));
+          steer = clamp(1.5 * Math.atan2(local.z, -local.x), -0.5, 0.5); // positive steering turns left (+z)
+          engine = kmh < 30 ? -700 : 0;
+        } else {
+          if (has("w", "arrowup")) engine = -1000;
+          if (has("s", "arrowdown")) engine = 600;
+          if (has("a", "arrowleft")) steer = 0.5;
+          if (has("d", "arrowright")) steer = -0.5;
+          if (has(" ")) brake = 25;
+        }
+        for (let i = 0; i < 4; i++) { vehicle.setBrake(brake, i); if (i < 2) vehicle.setSteeringValue(steer, i); else vehicle.applyEngineForce(engine, i); }
+        flipped = chassis.quaternion.vmult(V(0, 1, 0)).y < 0.3 ? flipped + dt : 0;
+        stuck = auto && kmh < 2 ? stuck + dt : 0;
+        if (flipped > 1.5 || stuck > 3 || Math.abs(p.x) > HW - 2 || Math.abs(p.z) > HW - 2 || p.y < -5) resetCar(phi);
+        // draw: chassis from the interpolated pose, wheels relative to the chassis
+        const ci = chassis.interpolatedPosition, cq = chassis.interpolatedQuaternion;
+        car.position.copy(ci); car.quaternion.copy(cq);
+        chassis.quaternion.conjugate(inv);
+        const ground = vehicle.numWheelsOnGround; // read before updateWheelTransform, which clears isInContact
+        vehicle.wheelInfos.forEach((w, i) => {
+          vehicle.updateWheelTransform(i);
+          const t = w.worldTransform;
+          wheels[i].position.copy(chassis.pointToLocalFrame(t.position));
+          wheels[i].quaternion.copy(inv.mult(t.quaternion, lq));
+        });
+        const f = cq.vmult(V(-1, 0, 0));
+        const fl = Math.hypot(f.x, f.z) || 1;
+        cam.set(ci.x - (f.x / fl) * 8, ci.y + 3.4, ci.z - (f.z / fl) * 8);
+        cam.y = Math.max(cam.y, hAt(cam.x, cam.z) + 1.5);
+        if (first) { S.camera.position.copy(cam); first = false; } else S.camera.position.lerp(cam, 1 - Math.exp(-dt * 3));
+        S.camera.lookAt(look.set(ci.x + (f.x / fl) * 4, ci.y + 0.6, ci.z + (f.z / fl) * 4));
+        sun.position.set(ci.x + 10, ci.y + 18, ci.z + 8);
+        sun.target.position.copy(ci);
+        setChip(`時速 <b>${kmh.toFixed(0)}</b> km/h・著地輪 <b>${ground}</b>/4・${auto ? "自動駕駛" : "手動駕駛"}`);
+      });
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "world.step(1 / 60)・world.broadphase = new CANNON.SAPBroadphase(world)・world.profile",
+    desc: "把方塊與球持續倒進透明容器，逐級加量直到物理運算拖慢畫面；可切換寬相演算法與睡眠，看寬相、窄相、求解各花多少時間。",
+    hint: "按「自動加壓」開始，可切換寬相與睡眠",
+    mount(ctx) {
+      ctx.html(`<div class="stress-view"></div>`);
+      const host = ctx.$(".stress-view");
+      ctx.controls.classList.add("bottom");
+      const S = stage(ctx, { host, fov: 48, bg: 0x07080b, orbit: { autoRotate: true, autoRotateSpeed: 0.4, minDistance: 6, maxDistance: 40, maxPolarAngle: Math.PI * 0.48 } });
+      lights(S, { shadow: 0, pos: [4, 12, 6], hemi: 1.4, sun: 2.2 });
+      camRig(S)({ t: [0, 1.6, 0], d: [0, 0.75, 1], hw: 5.2, hh: 3.2 }, true);
+      const world = newWorld({ allowSleep: true });
+      world.doProfiling = true;
+      const sap = world.broadphase, naive = new CANNON.NaiveBroadphase();
+      naive.setWorld(world);
+      fixed(world, new CANNON.Plane(), V(), PLANE_UP);
+      const HB = 4.5;
+      for (const [x, z, hx, hz] of [[HB + 0.25, 0, 0.25, HB], [-HB - 0.25, 0, 0.25, HB], [0, HB + 0.25, HB, 0.25], [0, -HB - 0.25, HB, 0.25]]) {
+        fixed(world, new CANNON.Box(V(hx, 4, hz)), V(x, 4, z));
+      }
+      floor(S, HB * 2, HB * 2, 0x161b24);
+      const cage = new THREE.LineSegments(S.own(new THREE.EdgesGeometry(new THREE.BoxGeometry(HB * 2, 3.5, HB * 2))), S.own(new THREE.LineBasicMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0.45 })));
+      cage.position.y = 1.75;
+      S.scene.add(cage);
+      const CAP = 4000;
+      const ims = [new THREE.BoxGeometry(0.34, 0.34, 0.34), new THREE.SphereGeometry(0.18, 12, 8)].map((g) => {
+        const im = new THREE.InstancedMesh(S.own(g), S.own(std(0xffffff, { roughness: 0.45 })), CAP);
+        im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        im.frustumCulled = false;
+        im.count = 0;
+        im.setColorAt(0, new THREE.Color());
+        S.scene.add(im);
+        return im;
+      });
+      const shapes = [new CANNON.Box(V(0.17, 0.17, 0.17)), new CANNON.Sphere(0.18)];
+      const all = [], lists = [[], []], col = new THREE.Color();
+      const paint = (r) => ims[r.kind].setColorAt(r.idx, col.setHex(PALETTE[r.idx % 6]).multiplyScalar(r.asleep ? 0.3 : 1));
+      const add = (x, y, z) => {
+        const kind = all.length % 3 === 2 ? 1 : 0; // two boxes per sphere
+        const body = new CANNON.Body({ mass: 1, shape: shapes[kind], position: V(x, y, z), quaternion: Q(rand(0, 3), rand(0, 3), 0), sleepSpeedLimit: 0.15, sleepTimeLimit: 0.5 });
+        world.addBody(body);
+        const r = { body, kind, idx: lists[kind].length, asleep: false };
+        lists[kind].push(body);
+        all.push(r);
+        paint(r);
+      };
+      let ms = 0, awake = 0;
+      const prof = { broadphase: 0, narrowphase: 0, solve: 0 };
+      const m4 = new THREE.Matrix4(), one = new THREE.Vector3(1, 1, 1), p = new THREE.Vector3(), q = new THREE.Quaternion();
+      S.onFrame(() => {
+        const t0 = performance.now();
+        world.step(1 / 60); // exactly one step per frame, so a slow step shows up as a low FPS
+        ms += (performance.now() - t0 - ms) * 0.15;
+        for (const k in prof) prof[k] += (world.profile[k] - prof[k]) * 0.15;
+        awake = 0;
+        let recolor = false;
+        for (const r of all) {
+          const b = r.body, s = b.sleepState === CANNON.Body.SLEEPING;
+          if (!s) awake++;
+          if (s !== r.asleep) { r.asleep = s; paint(r); recolor = true; }
+          ims[r.kind].setMatrixAt(r.idx, m4.compose(p.copy(b.position), q.copy(b.quaternion), one));
+        }
+        for (const im of ims) { im.instanceMatrix.needsUpdate = true; if (recolor) im.instanceColor.needsUpdate = true; }
+      });
+      ctx.group(["SAP 寬相", "Naive 寬相"], 0, (i) => { world.broadphase = i ? naive : sap; });
+      ctx.toggle("允許睡眠", true, (v) => { world.allowSleep = v; if (!v) for (const r of all) r.body.wakeUp(); });
+      ctx.ramp({
+        label: "剛體數", unit: "個",
+        steps: [100, 250, 500, 1000, 1500, 2000, 3000, 4000],
+        minFps: 30,
+        apply(n) {
+          while (all.length > n) { const r = all.pop(); world.removeBody(r.body); lists[r.kind].pop(); }
+          let top = 0;
+          for (const r of all) top = Math.max(top, r.body.position.y);
+          // new bodies go on a 0.5 m lattice above the current pile, 289 per layer
+          for (let k = 0, need = n - all.length; k < need; k++) {
+            const s = ((k % 289) * 97) % 289, layer = Math.floor(k / 289); // 97 is coprime to 289: spreads a partial layer over the floor
+            add(-4 + (s % 17) * 0.5 + rand(-0.04, 0.04), top + 0.6 + layer * 0.5, -4 + Math.floor(s / 17) * 0.5 + rand(-0.04, 0.04));
+          }
+          ims[0].count = lists[0].length; ims[1].count = lists[1].length;
+          for (const im of ims) im.instanceColor.needsUpdate = true;
+        },
+        metrics: () => ({
+          物理每步: `${ms.toFixed(1)} ms`, 寬相: `${prof.broadphase.toFixed(1)} ms`, 窄相: `${prof.narrowphase.toFixed(1)} ms`,
+          求解: `${prof.solve.toFixed(1)} ms`, 接觸數: world.contacts.length, 醒著: awake,
+        }),
+        note: "每格只跑一次 world.step(1/60) 並量 JS 耗時，所以物理一慢 FPS 就跟著掉。寬相找出可能相撞的配對：SAP 沿座標軸排序後掃描，Naive 兩兩比對是 O(n²)；窄相計算實際接觸點；求解器以 GaussSeidel 迭代所有接觸與約束，接觸數越多越慢。開啟睡眠時靜止的物體（變暗）不參與求解，關掉可看全部醒著的成本。繪圖只用兩個 InstancedMesh，瓶頸在 CPU 端的物理。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

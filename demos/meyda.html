@@ -3,335 +3,713 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Meyda 示範：音訊特徵擷取與色度圖</title>
+<title>Meyda 示範：7 個場景看懂音訊特徵擷取與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"]}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio","mic"],"scenes":["色度與和弦","頻譜形狀","響度與感知","MFCC 音色指紋","視窗長度與窗函數","麥克風即時分析","極限測試"],"note":"音源是頁內合成訊號與站內的 loop.mp3；按下播放才出聲。麥克風只在按下「開始」後請求，拒絕或沒有裝置時改用合成人聲。"}</script>
 <style>
-  .wrap {
-    position: fixed; inset: 0; display: grid; gap: 10px 14px; padding: 12px 16px 44px;
-    grid-template-columns: minmax(0, 1fr) 220px; grid-template-rows: auto minmax(0, 1fr);
+  .board { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 12px calc(var(--sc-ctl-b, 0px) + 10px); min-height: 0; }
+  .md-split { height: 100%; display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr) 280px; max-width: 1200px; margin: 0 auto; }
+  .md-col, .md-side { display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; }
+  .md-grow { flex: 1 1 0; }
+  .md-panel { position: relative; display: block; min-height: 0; min-width: 0; overflow: hidden; border-radius: 12px; border: 1px solid var(--line); background: radial-gradient(120% 90% at 30% 0%, #1b2029, #0f1115); }
+  .md-panel > canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .md-tag { position: absolute; left: 10px; top: 6px; z-index: 2; pointer-events: none; font-size: 11.5px; color: rgba(236, 235, 230, 0.8); background: rgba(15, 17, 21, 0.62); padding: 1px 6px; border-radius: 6px; max-width: calc(100% - 20px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .md-vals { flex: none; display: grid; grid-template-columns: auto minmax(30px, 1fr) auto; gap: 4px 8px; align-items: center; font-size: 12.5px; padding: 8px 10px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); }
+  .md-vals span { color: var(--muted); white-space: nowrap; }
+  .md-vals span.on { color: var(--accent); font-weight: 600; }
+  .md-vals i { display: block; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+  .md-vals i b { display: block; height: 100%; width: 0; background: var(--c2); border-radius: 3px; }
+  .md-vals em { font-style: normal; font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  .md-msg { flex: 1 1 auto; min-height: 0; overflow: auto; font-size: 12.5px; line-height: 1.55; color: var(--muted); scrollbar-width: thin; }
+  .md-msg b { color: var(--fg); font-weight: 600; }
+  .md-msg .warn { color: var(--c5); }
+  @media (max-width: 760px) {
+    .md-split { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+    .md-side.md-row { flex-direction: row; }
+    .md-side.md-row > * { flex: 1 1 0; }
+    .md-vals { font-size: 11.5px; gap: 2px 6px; padding: 6px 8px; }
+    .md-msg { flex: none; max-height: 4.8em; font-size: 12px; }
   }
-  header { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; }
-  header h1 { margin: 0; font-size: 17px; }
-  header p { margin: 0; font-size: 12px; color: var(--muted); }
-  .playbtn {
-    width: 44px; height: 44px; border-radius: 50%; border: 0; flex: none; cursor: pointer;
-    background: var(--accent); color: var(--accent-ink); font-size: 17px; font-weight: 700;
-    box-shadow: 0 0 0 5px rgba(247, 223, 30, 0.12);
+  @media (max-height: 560px) { .md-vals { gap: 1px 8px; padding: 5px 9px; font-size: 11.5px; } .md-msg { font-size: 11.5px; } }
+  @media (max-width: 760px) and (max-height: 480px) {
+    .md-msg { display: none; }
+    .md-side:not(.md-row) > .md-vals { grid-template-columns: repeat(2, auto minmax(16px, 1fr) auto); }
   }
-  .chartbox { position: relative; min-height: 0; border-radius: 12px; border: 1px solid var(--line); background: var(--bg-2); }
-  #chart { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
-  .side { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
-  .side .src { font-size: 11px; color: var(--muted); }
-  .meter { background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 7px 10px; }
-  .meter .t { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
-  .meter b { font: 600 13px var(--mono); color: var(--fg); }
-  .meter .m { height: 5px; border-radius: 3px; background: rgba(255,255,255,.08); margin-top: 5px; overflow: hidden; }
-  .meter .m i { display: block; height: 100%; width: 0; border-radius: 3px; background: var(--mc); transition: width .08s; }
-  #blob { flex: 1; min-height: 60px; width: 100%; border-radius: 10px; background: var(--bg-2); border: 1px solid var(--line); }
-  @media (max-width: 620px) {
-    .wrap { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr) auto; padding: 10px 12px 40px; gap: 8px; }
-    header h1 { font-size: 14px; }
-    header p { display: none; }
-    .playbtn { width: 38px; height: 38px; font-size: 15px; }
-    .side { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-    .side .src, #blob { display: none; }
-    .meter { padding: 5px 8px; }
-  }
+  .md-stress { position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px); display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  @media (min-width: 761px) { .md-stress { left: 350px; } }
+  .md-head b { display: block; font-size: 14px; line-height: 1.4; }
+  .md-head small { display: block; font-size: 12px; line-height: 1.45; color: var(--muted); }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <button class="playbtn" id="play" aria-label="播放">▶</button>
-    <div>
-      <h1>Meyda 音訊特徵：色度、音色、響度</h1>
-      <p>離線逐格擷取整首循環的特徵，播放時再即時分析</p>
-    </div>
-  </header>
-  <div class="chartbox"><canvas id="chart"></canvas></div>
-  <div class="side">
-    <div class="src" id="src">游標所在時間點的特徵</div>
-    <div class="meter" style="--mc:#f7df1e"><div class="t">響度 RMS <b id="v-rms">0.000</b></div><div class="m"><i id="m-rms"></i></div></div>
-    <div class="meter" style="--mc:#4cc9f0"><div class="t">頻譜質心 <b id="v-cen">0 Hz</b></div><div class="m"><i id="m-cen"></i></div></div>
-    <div class="meter" style="--mc:#9d8cff"><div class="t">頻譜平坦度 <b id="v-flat">0.00</b></div><div class="m"><i id="m-flat"></i></div></div>
-    <div class="meter" style="--mc:#f72585"><div class="t">過零率 <b id="v-zcr">0</b></div><div class="m"><i id="m-zcr"></i></div></div>
-    <canvas id="blob"></canvas>
-  </div>
-</div>
-<div class="hint">滑過圖表看各時間點的特徵，按播放看即時分析</div>
-<audio id="audio" src="_shared/audio/loop.mp3" loop preload="auto"></audio>
-
-<script src="_shared/gate.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/meyda@5.6.3/dist/web/meyda.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Meyda: offline feature extraction over the whole track (Meyda.extract) for the heatmaps,
-// plus a live MeydaAnalyzer on the <audio> element for the meters while playing.
-const URL_ = "_shared/audio/loop.mp3";
-const N = 4096, HOP = 2048, BAR = 2.4;
+(() => {
+const { fmt, fmtMs, fmtCompact } = Showcase;
+const css = getComputedStyle(document.documentElement);
+const FONT = css.getPropertyValue("--font").trim() || "sans-serif";
+const MONO = css.getPropertyValue("--mono").trim() || "monospace";
+const SR = 44100;
 const NOTES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-const FEATS = ["chroma", "mfcc", "rms", "spectralCentroid", "spectralFlatness", "zcr"];
-let frames = [], chords = [], sr = 44100, hover = -1, live = null;
-
-const $ = (id) => document.getElementById(id);
-const audio = $("audio");
-const cv = $("chart"), g = cv.getContext("2d");
-const blob = $("blob"), bg = blob.getContext("2d");
-
-// Colour map: deep navy -> violet -> pink -> yellow
 const STOPS = [[14, 16, 30], [70, 40, 140], [200, 50, 140], [255, 140, 66], [247, 223, 30]];
+// spectralFlux is listed by Meyda 5.6.3 but throws without a previous frame, so it stays out of every set.
+const ALL = Meyda.listAvailableFeatureExtractors().filter((f) => f !== "spectralFlux");
+const VOWELS = { a: [800, 1150, 2900], i: [270, 2300, 3000], u: [325, 700, 2530], e: [400, 2000, 2550], o: [450, 800, 2830] };
+
+// ---------- drawing helpers ----------
 function cmap(v) {
-  v = Math.max(0, Math.min(1, v)) * (STOPS.length - 1);
+  v = Math.max(0, Math.min(1, v || 0)) * (STOPS.length - 1);
   const i = Math.min(STOPS.length - 2, Math.floor(v)), f = v - i;
   return STOPS[i].map((c, k) => Math.round(c + (STOPS[i + 1][k] - c) * f));
 }
-
-async function analyse() {
-  const s = demoStatus("Meyda 正在逐格分析音訊特徵…");
-  try {
-    const buf = await (await fetch(URL_)).arrayBuffer();
-    const ab = await new OfflineAudioContext(1, 44100, 44100).decodeAudioData(buf);
-    sr = ab.sampleRate;
-    const mono = new Float32Array(ab.length);
-    for (let c = 0; c < ab.numberOfChannels; c++) {
-      const d = ab.getChannelData(c);
-      for (let i = 0; i < d.length; i++) mono[i] += d[i] / ab.numberOfChannels;
-    }
-    Meyda.bufferSize = N;
-    Meyda.sampleRate = sr;
-    const total = Math.floor((mono.length - N) / HOP);
-    for (let k = 0; k <= total; k++) {
-      frames.push(Meyda.extract(FEATS, mono.slice(k * HOP, k * HOP + N)));
-      if (k % 60 === 0) { s.progress(k / total); await new Promise(requestAnimationFrame); }
-    }
-    chords = detectChords();
-    s.done();
-    draw();
-  } catch (err) {
-    s.error("音訊分析失敗：" + err.message);
-    console.error(err);
+function fitCanvas(cv) {
+  const dpr = Math.min(2, devicePixelRatio || 1), W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  return { g, W, H };
+}
+// cols x rows heat map (row 0 at the bottom) painted once into a small canvas, later stretched with blit().
+function heatCanvas(cols, rows, val) {
+  const c = document.createElement("canvas"); c.width = cols; c.height = rows;
+  const g = c.getContext("2d"), img = g.createImageData(cols, rows);
+  for (let x = 0; x < cols; x++) for (let y = 0; y < rows; y++) {
+    const p = cmap(val(x, y)), i = ((rows - 1 - y) * cols + x) * 4;
+    img.data[i] = p[0]; img.data[i + 1] = p[1]; img.data[i + 2] = p[2]; img.data[i + 3] = 255;
   }
+  g.putImageData(img, 0, 0);
+  return c;
+}
+function blit(g, src, x, y, w, h) { g.imageSmoothingEnabled = false; g.drawImage(src, x, y, w, h); g.imageSmoothingEnabled = true; }
+function text(g, s, x, y, { size = 11, color = "rgba(236,235,230,.72)", align = "left", base = "middle", mono = false, bold = false } = {}) {
+  g.font = `${bold ? "600 " : ""}${size}px ${mono ? MONO : FONT}`; g.fillStyle = color; g.textAlign = align; g.textBaseline = base; g.fillText(s, x, y);
+}
+const fmtHz = (f) => (f >= 1000 ? `${fmt(f / 1000, f >= 10000 ? 1 : 2)} kHz` : `${fmt(f)} Hz`);
+const clamp01 = (v) => Math.max(0, Math.min(1, v || 0));
+// Rows of label / bar / value inside a .md-vals box; returns set(i, fraction, text, highlight).
+function meters(el, labels) {
+  el.innerHTML = labels.map((l) => `<span>${l}</span><i><b></b></i><em>…</em>`).join("");
+  const sp = [...el.querySelectorAll("span")], bs = [...el.querySelectorAll("b")], es = [...el.querySelectorAll("em")];
+  return (i, frac, txt, on = false) => { bs[i].style.width = `${clamp01(frac) * 100}%`; es[i].textContent = txt; sp[i].classList.toggle("on", on); };
 }
 
-// Template-match each bar's mean chroma against the 24 major / minor triads.
-function detectChords() {
-  const fps = sr / HOP, out = [];
-  const bars = Math.round(frames.length / fps / BAR);
-  for (let b = 0; b < bars; b++) {
-    const a = Math.floor(b * BAR * fps), z = Math.min(frames.length, Math.floor((b + 1) * BAR * fps));
-    const mean = new Array(12).fill(0);
-    for (let f = a; f < z; f++) frames[f].chroma.forEach((v, i) => { mean[i] += v; });
-    let best = { s: -1, name: "" };
-    for (let r = 0; r < 12; r++) {
-      for (const [third, suffix] of [[4, ""], [3, "m"]]) {
-        const sc = mean[r] + mean[(r + third) % 12] + mean[(r + 7) % 12];
-        if (sc > best.s) best = { s: sc, name: NOTES[r] + suffix };
-      }
-    }
-    out.push(best.name);
+// ---------- signals ----------
+const tone = (f, len, a = 0.5) => Float32Array.from({ length: len }, (_, i) => a * Math.sin((2 * Math.PI * f * i) / SR));
+function noise(len, pink = false) {
+  const d = new Float32Array(len); let b0 = 0, b1 = 0, b2 = 0;
+  for (let i = 0; i < len; i++) {
+    const w = Math.random() * 2 - 1;
+    if (!pink) { d[i] = w * 0.5; continue; }
+    b0 = 0.99765 * b0 + w * 0.099046; b1 = 0.963 * b1 + w * 0.2965164; b2 = 0.57 * b2 + w * 1.0526913;
+    d[i] = (b0 + b1 + b2 + w * 0.1848) * 0.1;
   }
-  return out;
+  return d;
 }
-
-function layout() {
-  const W = cv.width, H = cv.height, dpr = W / cv.clientWidth;
-  const L = 40 * dpr, R = 10 * dpr, top = 30 * dpr, gap = 22 * dpr;
-  const avail = H - top - gap * 2 - 10 * dpr;
-  const chromaH = avail * 0.5, mfccH = avail * 0.3, rmsH = avail * 0.2;
-  return { W, H, dpr, L, R, top, gap, chromaH, mfccH, rmsH, plotW: W - L - R };
+function norm(d, rms) { const r = Math.sqrt(d.reduce((s, v) => s + v * v, 0) / d.length) || 1; return d.map((v) => (v * rms) / r); }
+function bufferOf(ac, data) { const b = ac.createBuffer(1, data.length, SR); b.copyToChannel(data, 0); return b; }
+function loopSource(ac, buf, dest) { const s = ac.createBufferSource(); s.buffer = buf; s.loop = true; s.connect(dest); s.start(); return s; }
+// Render a graph built by build(ctx, destination) offline, so every scene has numbers before any sound plays.
+async function render(build, sec) {
+  const oc = new OfflineAudioContext(1, Math.round(SR * sec), SR);
+  build(oc, oc.destination);
+  return (await oc.startRendering()).getChannelData(0);
 }
-
-function heat(x, y, w, h, rows, valueAt) {
-  const n = frames.length;
-  const img = g.createImageData(n, rows);
-  for (let f = 0; f < n; f++) {
-    for (let r = 0; r < rows; r++) {
-      const [cr, cg, cb] = cmap(valueAt(f, r));
-      const p = ((rows - 1 - r) * n + f) * 4;
-      img.data[p] = cr; img.data[p + 1] = cg; img.data[p + 2] = cb; img.data[p + 3] = 255;
-    }
-  }
-  const tmp = document.createElement("canvas");
-  tmp.width = n; tmp.height = rows;
-  tmp.getContext("2d").putImageData(img, 0, 0);
-  g.imageSmoothingEnabled = false;
-  g.drawImage(tmp, x, y, w, h);
-}
-
-let mfccNorm = null;
-function draw() {
-  const dpr = Math.min(devicePixelRatio || 1, 2);
-  cv.width = cv.clientWidth * dpr;
-  cv.height = cv.clientHeight * dpr;
-  const Lo = layout();
-  g.clearRect(0, 0, Lo.W, Lo.H);
-  if (!frames.length) return;
-  const font = (px, w = 500) => `${w} ${px * dpr}px "Noto Sans TC", "Microsoft JhengHei", sans-serif`;
-  const n = frames.length;
-  const xOf = (f) => Lo.L + (f / n) * Lo.plotW;
-
-  // Chord labels per bar
-  g.font = font(12, 700);
-  g.textAlign = "center";
-  g.textBaseline = "middle";
-  const fps = sr / HOP;
-  chords.forEach((c, b) => {
-    const x0 = xOf(b * BAR * fps), x1 = xOf(Math.min(n, (b + 1) * BAR * fps));
-    g.fillStyle = b % 2 ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.09)";
-    g.fillRect(x0 + 1, 6 * dpr, x1 - x0 - 2, 18 * dpr);
-    g.fillStyle = "#f7df1e";
-    g.fillText(c, (x0 + x1) / 2, 15 * dpr);
+function formants(ac, src, out, fs, gains = [4, 2, 1.2]) {
+  return fs.map((f, k) => {
+    const bp = ac.createBiquadFilter(), g = ac.createGain();
+    bp.type = "bandpass"; bp.frequency.value = f; bp.Q.value = 5 + 3 * k; g.gain.value = gains[k];
+    src.connect(bp).connect(g).connect(out);
+    return bp;
   });
-  g.textAlign = "left";
-  g.fillStyle = "#9b998f";
-  g.font = font(10);
-  g.fillText("和弦", 4 * dpr, 15 * dpr);
+}
 
-  // Chroma heatmap
-  let y = Lo.top;
-  heat(Lo.L, y, Lo.plotW, Lo.chromaH, 12, (f, r) => Math.pow(frames[f].chroma[r], 1.6));
-  g.font = font(10);
-  g.textBaseline = "middle";
-  g.textAlign = "right";
-  for (let r = 0; r < 12; r++) {
-    g.fillStyle = NOTES[r].includes("#") ? "#6d6b64" : "#c9c7bf";
-    g.fillText(NOTES[r], Lo.L - 6 * dpr, y + Lo.chromaH - (r + 0.5) * (Lo.chromaH / 12));
+// ---------- Meyda plumbing ----------
+// Meyda keeps filter banks on its global object and only rebuilds the chroma bank when chromaBands changes,
+// so drop every cached bank whenever bufferSize or sampleRate move.
+function cfg(N, sr = SR, win = "hanning") {
+  if (Meyda.bufferSize !== N || Meyda.sampleRate !== sr) Meyda.barkScale = Meyda.melFilterBank = Meyda.chromaFilterBank = undefined;
+  Meyda.bufferSize = N; Meyda.sampleRate = sr; Meyda.windowingFunction = win;
+}
+// MeydaAnalyzer writes its options onto the global Meyda and stop() only flips a flag,
+// so the ScriptProcessor it creates has to be detached by hand.
+function analyzer(ac, source, N, feats, cb, win = "hanning") {
+  cfg(N, ac.sampleRate, win);
+  const an = Meyda.createMeydaAnalyzer({ audioContext: ac, source, bufferSize: N, windowingFunction: win, featureExtractors: feats, callback: cb });
+  const spn = an._m.spn;
+  an.start();
+  return () => { an.stop(); spn.onaudioprocess = null; spn.disconnect(); try { source.disconnect(spn); } catch (e) { /* already detached */ } };
+}
+// Running blend of feature objects (numbers, arrays, nested objects); non-finite values never poison the average.
+function mix(prev, f, k) {
+  if (prev == null) return f;
+  if (typeof f === "number") return !isFinite(prev) ? f : !isFinite(f) ? prev : prev * k + f * (1 - k);
+  if (f && f.length !== undefined) return Array.from(f, (v, i) => mix(prev[i], v, k));
+  if (f && typeof f === "object") { const o = {}; for (const key in f) o[key] = mix(prev[key], f[key], k); return o; }
+  return f;
+}
+function avgExtract(data, N, feats, count = 6, win = "hanning") {
+  cfg(N, SR, win);
+  let acc = null;
+  for (let k = 0; k < count; k++) acc = mix(acc, Meyda.extract(feats, data.subarray((k * N) / 2, (k * N) / 2 + N)), k / (k + 1));
+  return acc;
+}
+
+// ---------- audio lifecycle ----------
+let AC = null;
+async function wake() { AC = AC || new AudioContext(); if (AC.state !== "running") await AC.resume(); return AC; }
+// Primary play/stop button for one scene. start(ac) builds the graph and returns its teardown.
+function transport(ctx, start, label = "▶ 播放") {
+  let stop = null, busy = false;
+  const btn = ctx.button(label, async () => {
+    if (busy) return;
+    if (stop) return halt();
+    busy = true; btn.disabled = true;
+    try {
+      const ac = await wake();
+      const s = ctx.active ? await start(ac) : null;
+      if (!ctx.active) { if (s) s(); return; }
+      if (s) { stop = s; btn.textContent = "■ 停止"; }
+    } catch (e) { console.error(e); ctx.hint(`無法啟動音訊：${e.message}`); } finally { busy = false; btn.disabled = false; }
+  }, { primary: true });
+  function halt() { if (stop) { const s = stop; stop = null; s(); } btn.textContent = label; if (AC && AC.state === "running") AC.suspend(); }
+  ctx.onCleanup(halt);
+  return { get on() { return !!stop; }, async restart() { if (!stop) return; const s = stop; stop = null; s(); stop = await start(AC); } };
+}
+
+// ---------- scene 1 data: loop.mp3 analysed once, cached across visits ----------
+const N1 = 4096, HOP = 2048, BAR = 2.4, F1 = ["chroma", "mfcc", "rms", "spectralCentroid", "spectralFlatness", "zcr"];
+let song = null, songJob = null, songProgress = () => {};
+// Cosine match of a chroma vector against the 24 major / minor triads, best first.
+function triads(c) {
+  const den = Math.hypot(...c) * Math.sqrt(3) || 1, out = [];
+  for (let r = 0; r < 12; r++) for (const [t, s] of [[4, ""], [3, "m"]]) {
+    const notes = [r, (r + t) % 12, (r + 7) % 12];
+    out.push({ name: NOTES[r] + s, notes, s: (c[notes[0]] + c[notes[1]] + c[notes[2]]) / den });
   }
-  const chromaY = y;
-
-  // MFCC heatmap (coefficients 1..12, z-scored per coefficient)
-  y += Lo.chromaH + Lo.gap;
-  if (!mfccNorm) {
-    mfccNorm = [];
-    for (let c = 1; c < 13; c++) {
-      const vals = frames.map((fr) => fr.mfcc[c]);
-      const mean = vals.reduce((a, b) => a + b, 0) / n;
-      const sd = Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / n) || 1;
-      mfccNorm.push({ mean, sd });
+  return out.sort((a, b) => b.s - a.s);
+}
+function loadSong() {
+  songJob = songJob || (async () => {
+    const raw = await (await fetch("_shared/audio/loop.mp3")).arrayBuffer();
+    const buf = await new OfflineAudioContext(1, SR, SR).decodeAudioData(raw);
+    const mono = new Float32Array(buf.length);
+    for (let c = 0; c < buf.numberOfChannels; c++) buf.getChannelData(c).forEach((v, i) => (mono[i] += v / buf.numberOfChannels));
+    const frames = [], total = Math.floor((mono.length - N1) / HOP);
+    for (let k = 0; k <= total; k++) {
+      cfg(N1);
+      frames.push(Meyda.extract(F1, mono.subarray(k * HOP, k * HOP + N1)));
+      if (k % 40 === 0) { songProgress(k / total); await new Promise((z) => setTimeout(z, 0)); }
     }
-  }
-  heat(Lo.L, y, Lo.plotW, Lo.mfccH, 12, (f, r) => 0.5 + (frames[f].mfcc[r + 1] - mfccNorm[r].mean) / mfccNorm[r].sd / 4);
-  g.fillStyle = "#9b998f";
-  g.textAlign = "right";
-  g.fillText("音色", Lo.L - 6 * dpr, y + Lo.mfccH / 2);
-  g.textAlign = "left";
-  g.fillText("MFCC 1 到 12", Lo.L, y - 8 * dpr);
-  g.fillText("色度 Chroma（12 音級）", Lo.L, chromaY - 6 * dpr + 0);
-
-  // RMS area
-  y += Lo.mfccH + Lo.gap;
-  const maxR = Math.max(...frames.map((f) => f.rms)) || 1;
-  const grad = g.createLinearGradient(0, y, 0, y + Lo.rmsH);
-  grad.addColorStop(0, "rgba(247,223,30,0.9)");
-  grad.addColorStop(1, "rgba(247,37,133,0.15)");
-  g.beginPath();
-  g.moveTo(Lo.L, y + Lo.rmsH);
-  frames.forEach((fr, f) => g.lineTo(xOf(f), y + Lo.rmsH - (fr.rms / maxR) * Lo.rmsH));
-  g.lineTo(Lo.L + Lo.plotW, y + Lo.rmsH);
-  g.closePath();
-  g.fillStyle = grad;
-  g.fill();
-  g.fillStyle = "#9b998f";
-  g.textAlign = "right";
-  g.fillText("響度", Lo.L - 6 * dpr, y + Lo.rmsH / 2);
-  g.textAlign = "left";
-  g.fillText("RMS", Lo.L, y - 8 * dpr);
-
-  // Playhead / hover marker
-  const t = !audio.paused ? audio.currentTime : null;
-  const mark = t !== null ? Math.floor((t * sr) / HOP) : hover;
-  if (mark >= 0 && mark < n) {
-    const x = xOf(mark);
-    g.strokeStyle = "#ffffff";
-    g.lineWidth = 2 * dpr;
-    g.beginPath(); g.moveTo(x, Lo.top - 4 * dpr); g.lineTo(x, Lo.H - 6 * dpr); g.stroke();
-    if (!live || audio.paused) showValues(frames[mark], `${((mark * HOP) / sr).toFixed(2)} 秒的特徵`);
-  }
-}
-
-function showValues(f, label) {
-  if (!f) return;
-  $("src").textContent = label;
-  const cenHz = (f.spectralCentroid * sr) / (f.bufSize || N);
-  $("v-rms").textContent = f.rms.toFixed(3);
-  $("m-rms").style.width = `${Math.min(100, f.rms * 300)}%`;
-  $("v-cen").textContent = `${Math.round(cenHz)} Hz`;
-  $("m-cen").style.width = `${Math.min(100, (cenHz / 5000) * 100)}%`;
-  $("v-flat").textContent = f.spectralFlatness.toFixed(2);
-  $("m-flat").style.width = `${Math.min(100, f.spectralFlatness * 250)}%`;
-  const zrate = f.zcr / (f.bufSize || N);
-  $("v-zcr").textContent = `${(zrate * 100).toFixed(1)}%`;
-  $("m-zcr").style.width = `${Math.min(100, zrate * 800)}%`;
-  drawBlob(f, cenHz);
-}
-
-// Sound-driven shape: size from RMS, colour from centroid, wobble from chroma.
-function drawBlob(f, cenHz) {
-  if (!blob.clientWidth) return;
-  const dpr = Math.min(devicePixelRatio || 1, 2);
-  blob.width = blob.clientWidth * dpr;
-  blob.height = blob.clientHeight * dpr;
-  const W = blob.width, H = blob.height, cx = W / 2, cy = H / 2;
-  const base = Math.min(W, H) * (0.18 + Math.min(0.22, f.rms * 1.2));
-  const hue = 300 - Math.min(1, cenHz / 4000) * 250;
-  bg.clearRect(0, 0, W, H);
-  const gr = bg.createRadialGradient(cx, cy, 0, cx, cy, base * 1.6);
-  gr.addColorStop(0, `hsla(${hue}, 95%, 65%, 0.95)`);
-  gr.addColorStop(1, `hsla(${hue + 40}, 95%, 50%, 0)`);
-  bg.fillStyle = gr;
-  bg.beginPath();
-  const chroma = f.chroma || new Array(12).fill(0.5);
-  for (let i = 0; i <= 120; i++) {
-    const a = (i / 120) * Math.PI * 2;
-    const c = chroma[Math.floor((i / 120) * 12) % 12];
-    const r = base * (1 + c * 0.45);
-    const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r;
-    i ? bg.lineTo(x, y) : bg.moveTo(x, y);
-  }
-  bg.fill();
-}
-
-cv.addEventListener("mousemove", (e) => {
-  if (!frames.length) return;
-  const r = cv.getBoundingClientRect();
-  const Lo = layout();
-  const x = (e.clientX - r.left) * Lo.dpr;
-  hover = Math.floor(((x - Lo.L) / Lo.plotW) * frames.length);
-  if (audio.paused) draw();
-});
-cv.addEventListener("click", (e) => {
-  if (hover >= 0) audio.currentTime = (hover * HOP) / sr;
-});
-
-// Live analysis while playing
-let actx = null;
-$("play").addEventListener("click", async () => {
-  if (!actx) {
-    actx = new AudioContext();
-    const src = actx.createMediaElementSource(audio);
-    src.connect(actx.destination);
-    const analyzer = Meyda.createMeydaAnalyzer({
-      audioContext: actx, source: src, bufferSize: 1024,
-      featureExtractors: ["rms", "spectralCentroid", "spectralFlatness", "zcr", "chroma"],
-      callback: (f) => { live = { ...f, bufSize: 1024 }; },
+    const fps = SR / HOP, chords = [], bars = Math.round(frames.length / fps / BAR);
+    for (let b = 0; b < bars; b++) {
+      const mean = new Array(12).fill(0);
+      for (let f = Math.floor(b * BAR * fps); f < Math.min(frames.length, Math.floor((b + 1) * BAR * fps)); f++) frames[f].chroma.forEach((v, i) => (mean[i] += v));
+      chords.push(triads(mean)[0].name);
+    }
+    const mu = [], sd = [];
+    for (let c = 1; c <= 12; c++) {
+      const xs = frames.map((f) => f.mfcc[c]), m = xs.reduce((s, v) => s + v, 0) / xs.length;
+      mu.push(m); sd.push(Math.sqrt(xs.reduce((s, v) => s + (v - m) ** 2, 0) / xs.length) || 1);
+    }
+    return (song = {
+      buf, dur: buf.duration, frames, chords, maxRms: Math.max(...frames.map((f) => f.rms)),
+      chromaImg: heatCanvas(frames.length, 12, (x, y) => Math.pow(frames[x].chroma[y], 1.6)),
+      mfccImg: heatCanvas(frames.length, 12, (x, y) => 0.5 + (frames[x].mfcc[y + 1] - mu[y]) / sd[y] / 4),
     });
-    analyzer.start();
-  }
-  await actx.resume();
-  if (audio.paused) audio.play(); else audio.pause();
-});
-audio.addEventListener("play", () => { $("play").textContent = "❚❚"; loop(); });
-audio.addEventListener("pause", () => { $("play").textContent = "▶"; draw(); });
-function loop() {
-  if (audio.paused) return;
-  draw();
-  if (live) showValues(live, "即時分析中（MeydaAnalyzer）");
-  requestAnimationFrame(loop);
+  })().catch((e) => { songJob = null; throw e; });
+  return songJob;
+}
+function drawWheel(cv, chroma, hi) {
+  const { g, W, H } = fitCanvas(cv);
+  const cx = W / 2, cy = H / 2 + 9, R = Math.max(10, Math.min(W, H - 18) / 2 - 18), mx = Math.max(1e-6, ...chroma);
+  const pt = (i, r) => [cx + Math.cos((i / 12) * 2 * Math.PI - Math.PI / 2) * r, cy + Math.sin((i / 12) * 2 * Math.PI - Math.PI / 2) * r];
+  g.strokeStyle = "rgba(255,255,255,.1)";
+  for (const f of [0.5, 1]) { g.beginPath(); g.arc(cx, cy, R * f, 0, 2 * Math.PI); g.stroke(); }
+  g.beginPath(); hi.forEach((n, j) => { const [x, y] = pt(n, R); j ? g.lineTo(x, y) : g.moveTo(x, y); }); g.closePath();
+  g.strokeStyle = "rgba(247,223,30,.55)"; g.setLineDash([4, 4]); g.stroke(); g.setLineDash([]);
+  g.beginPath(); chroma.forEach((v, i) => { const [x, y] = pt(i, (R * v) / mx); i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.closePath();
+  g.fillStyle = "rgba(76,201,240,.28)"; g.fill(); g.strokeStyle = "#4cc9f0"; g.lineWidth = 1.5; g.stroke(); g.lineWidth = 1;
+  NOTES.forEach((nm, i) => { const [x, y] = pt(i, R + 11); text(g, nm, x, y, { size: 10.5, mono: true, align: "center", color: hi.includes(i) ? "#f7df1e" : "rgba(236,235,230,.6)", bold: hi.includes(i) }); });
 }
 
-window.addEventListener("resize", () => { draw(); if (frames.length) showValues(frames[Math.max(0, hover)], $("src").textContent); });
-analyse().then(() => { hover = Math.floor(frames.length * 0.33); draw(); });
+// ---------- synth builders shared by several scenes ----------
+const WAVES = [["sine", "正弦"], ["triangle", "三角"], ["sawtooth", "鋸齒"], ["square", "方波"]];
+function shapeGraph(ac, dest, s) {
+  const o = ac.createOscillator(), og = ac.createGain(), nz = ac.createBufferSource(), ng = ac.createGain(), lp = ac.createBiquadFilter(), out = ac.createGain();
+  o.frequency.value = 220; nz.buffer = bufferOf(ac, noise(SR)); nz.loop = true; lp.Q.value = 0.7; out.gain.value = 0.45;
+  o.connect(og).connect(lp); nz.connect(ng).connect(lp); lp.connect(out).connect(dest);
+  let first = true;
+  const at = (p, v) => (first ? (p.value = v) : p.setTargetAtTime(v, ac.currentTime, 0.03));
+  const set = (st) => { o.type = st.wave; at(lp.frequency, st.cut); at(og.gain, 1 - st.noise); at(ng.gain, 1.2 * st.noise); first = false; };
+  set(s); o.start(); nz.start();
+  return { out, set, stop() { o.stop(); nz.stop(); out.disconnect(); } };
+}
+const TIM = [["sine", "正弦"], ["triangle", "三角"], ["sawtooth", "鋸齒"], ["square", "方波"], ["noise", "噪音"], ["a", "母音 a"], ["i", "母音 i"], ["u", "母音 u"]];
+function timbre(ac, dest, kind, f0) {
+  const out = ac.createGain(); out.gain.value = 0.35; out.connect(dest);
+  let src;
+  if (kind === "noise") { src = ac.createBufferSource(); src.buffer = bufferOf(ac, noise(SR)); src.loop = true; src.connect(out); }
+  else {
+    src = ac.createOscillator(); src.type = VOWELS[kind] ? "sawtooth" : kind; src.frequency.value = f0;
+    if (VOWELS[kind]) formants(ac, src, out, VOWELS[kind]); else src.connect(out);
+  }
+  src.start();
+  return { out, pitch: (f) => src.frequency && src.frequency.setTargetAtTime(f, ac.currentTime, 0.03), stop() { src.stop(); out.disconnect(); } };
+}
+// Eight syllables of a formant "voice" with sibilant bursts, rendered once and looped as the microphone fallback.
+function speech(ac, dest) {
+  const SYL = [["s", "a"], ["", "i"], ["sh", "u"], ["", "e"], ["", "o"], ["s", "i"], ["", "a"], ["sh", "u"]];
+  const src = ac.createOscillator(), vib = ac.createOscillator(), vg = ac.createGain(), amp = ac.createGain();
+  src.type = "sawtooth"; vib.frequency.value = 5.5; vg.gain.value = 3; amp.gain.value = 0;
+  vib.connect(vg).connect(src.frequency); amp.connect(dest);
+  const bps = formants(ac, src, amp, VOWELS.a, [5, 2.5, 1.4]);
+  const nz = ac.createBufferSource(), hp = ac.createBiquadFilter(), ng = ac.createGain();
+  nz.buffer = bufferOf(ac, noise(SR)); nz.loop = true; hp.type = "highpass"; ng.gain.value = 0;
+  nz.connect(hp).connect(ng).connect(dest);
+  SYL.forEach(([fr, v], i) => {
+    const t = i * 0.6, tv = t + (fr ? 0.16 : 0.02);
+    if (fr) {
+      hp.frequency.setValueAtTime(fr === "s" ? 5000 : 2600, t);
+      ng.gain.setValueAtTime(0, t); ng.gain.linearRampToValueAtTime(0.5, t + 0.05); ng.gain.linearRampToValueAtTime(0, t + 0.16);
+    }
+    VOWELS[v].forEach((f, k) => bps[k].frequency.setValueAtTime(f, tv));
+    src.frequency.setValueAtTime(135 + 35 * Math.sin(i * 1.7), tv); src.frequency.linearRampToValueAtTime(115 + 30 * Math.sin(i * 1.7), tv + 0.38);
+    amp.gain.setValueAtTime(0, tv); amp.gain.linearRampToValueAtTime(0.55, tv + 0.05); amp.gain.setValueAtTime(0.55, tv + 0.3); amp.gain.linearRampToValueAtTime(0, tv + 0.4);
+  });
+  src.start(); vib.start(); nz.start();
+}
+let prints = null, voiceJob = null;
+
+Showcase.run({ scenes: [
+  {
+    id: "chroma", title: "色度與和弦",
+    api: "Meyda.extract(['chroma','mfcc','rms',…], frame)・createMeydaAnalyzer",
+    desc: "先離線逐格分析整段 loop.mp3：上排是 12 個半音的色度圖，中間是 MFCC 音色變化，底下是音量。每 2.4 秒取平均色度，與 24 個大小三和弦做餘弦比對得出和弦名稱。播放時改用 MeydaAnalyzer 即時算色度，右側列出最像的三個和弦。",
+    hint: "按「播放」聽音樂看即時色度；滑過圖可看該時刻特徵，點一下跳到該處",
+    async mount(ctx) {
+      ctx.html(`<div class="board"><div class="md-split"><div class="md-panel"><canvas data-chart></canvas></div>
+        <div class="md-side md-row"><div class="md-panel md-grow"><canvas data-wheel></canvas><span class="md-tag" data-tag>色度輪</span></div><div class="md-vals" data-vals></div></div></div></div>`);
+      const chart = ctx.$("[data-chart]"), wheel = ctx.$("[data-wheel]"), tag = ctx.$("[data-tag]");
+      const set = meters(ctx.$("[data-vals]"), ["第 1 名", "第 2 名", "第 3 名", "音量 RMS", "頻譜質心", "平坦度", "過零率"]);
+      let S = song, hover = -1, offset = 0, t0 = 0, live = null;
+      const tp = transport(ctx, async (ac) => {
+        S = await loadSong();
+        const src = ac.createBufferSource(); src.buffer = S.buf; src.loop = true; src.connect(ac.destination);
+        src.start(0, offset); t0 = ac.currentTime - offset;
+        const off = analyzer(ac, src, N1, ["chroma", "rms", "spectralCentroid", "spectralFlatness", "zcr"], (f) => (live = mix(live, { ...f, sr: ac.sampleRate }, 0.6)));
+        return () => { offset = (ac.currentTime - t0) % S.dur; off(); src.stop(); src.disconnect(); live = null; };
+      });
+      const pos = () => (tp.on ? (AC.currentTime - t0) % S.dur : offset);
+      const frameAt = (t) => Math.max(0, Math.min(S.frames.length - 1, Math.floor((t * SR) / HOP)));
+      const geo = () => { const W = chart.clientWidth, H = chart.clientHeight, L = 34, T = 24; return { W, H, L, T, w: W - L - 6, hC: (H - T) * 0.5, hM: (H - T) * 0.28 }; };
+      const kAt = (e) => { const { L, w } = geo(), x = e.offsetX - L; return S && x >= 0 && x <= w ? Math.min(S.frames.length - 1, Math.floor((x / w) * S.frames.length)) : -1; };
+      ctx.on(chart, "mousemove", (e) => (hover = kAt(e)));
+      ctx.on(chart, "mouseleave", () => (hover = -1));
+      ctx.on(chart, "click", (e) => { const k = kAt(e); if (k < 0) return; offset = (k * HOP) / SR; tp.restart(); });
+      function draw() {
+        const { g } = fitCanvas(chart), { W, H, L, T, w, hC, hM } = geo();
+        if (!S) return;
+        const n = S.frames.length, xOf = (k) => L + (k / n) * w, yR = T + hC + hM + 6, hR = H - yR - 6;
+        blit(g, S.chromaImg, L, T, w, hC - 4); blit(g, S.mfccImg, L, T + hC, w, hM - 4);
+        g.beginPath(); g.moveTo(L, yR + hR);
+        S.frames.forEach((f, k) => g.lineTo(xOf(k), yR + hR - (f.rms / S.maxRms) * hR));
+        g.lineTo(L + w, yR + hR); g.fillStyle = "rgba(76,201,240,.35)"; g.fill();
+        NOTES.forEach((nm, i) => { if (hC > 150 || i % 2 === 0) text(g, nm, L - 5, T + hC - 4 - ((i + 0.5) / 12) * (hC - 4), { size: 10, mono: true, align: "right" }); });
+        text(g, "MFCC", L - 5, T + hC + hM / 2, { size: 10, mono: true, align: "right" });
+        text(g, "音量", L - 5, yR + hR / 2, { size: 10.5, align: "right" });
+        const cur = frameAt(pos()), fb = BAR * (SR / HOP);
+        S.chords.forEach((c, b) => {
+          const x0 = xOf(b * fb), x1 = xOf(Math.min(n, (b + 1) * fb)), on = cur >= b * fb && cur < (b + 1) * fb;
+          g.fillStyle = on ? "rgba(247,223,30,.2)" : "rgba(255,255,255,.05)"; g.fillRect(x0 + 1, 3, x1 - x0 - 2, T - 7);
+          text(g, c, (x0 + x1) / 2, T / 2 - 1, { size: 12, mono: true, bold: true, align: "center", color: on ? "#f7df1e" : "rgba(236,235,230,.75)" });
+        });
+        g.fillStyle = "#fff"; g.fillRect(xOf(cur), T, 1.5, H - T);
+        if (hover >= 0) { g.fillStyle = "rgba(255,255,255,.45)"; g.fillRect(xOf(hover), T, 1, H - T); }
+      }
+      function side() {
+        if (!S) return;
+        const k = hover >= 0 ? hover : frameAt(pos()), f = live || S.frames[k], sr = live ? live.sr : SR;
+        const top = triads(Array.from(f.chroma)), cen = (f.spectralCentroid * sr) / N1, zr = (f.zcr * sr) / N1;
+        top.slice(0, 3).forEach((c, i) => set(i, c.s, `${c.name} ${Math.round(c.s * 100)}%`, i === 0));
+        set(3, f.rms / 0.3, fmt(f.rms, 3)); set(4, Math.log(cen / 50) / Math.log(200), fmtHz(cen));
+        set(5, f.spectralFlatness * 2.5, fmt(f.spectralFlatness, 3)); set(6, zr / 8000, `${fmtCompact(zr)}/秒`);
+        drawWheel(wheel, Array.from(f.chroma), top[0].notes);
+        tag.textContent = live ? `即時：${fmt(pos(), 1)} 秒` : hover >= 0 ? `離線：${fmt((k * HOP) / SR, 2)} 秒` : `離線：${fmt(pos(), 1)} 秒`;
+      }
+      ctx.raf(() => { draw(); side(); });
+      if (!S) {
+        const st = ctx.status("Meyda 正在逐格分析 loop.mp3…");
+        songProgress = (p) => st.progress(p);
+        try { S = await loadSong(); st.done(); } catch (e) { st.error(`音訊分析失敗：${e.message}`); }
+      }
+    },
+  },
+  {
+    id: "shape", title: "頻譜形狀",
+    api: "spectralCentroid・spectralRolloff・spectralSpread・spectralFlatness・spectralCrest・spectralSkewness・spectralKurtosis・zcr",
+    desc: "同一個 220 Hz 音源換波形、調低通濾波、混入噪音，看頻譜形狀描述子怎麼反應。spectralCentroid 與 spectralSpread 回傳的是 FFT 格數，要乘上取樣率除以 bufferSize 才是 Hz；spectralRolloff 直接回傳 Hz。",
+    hint: "按「播放」後拖動「低通」與「噪音」，看質心、滾降與平坦度即時移動",
+    mount(ctx) {
+      ctx.html(`<div class="board"><div class="md-split"><div class="md-panel"><canvas></canvas><span class="md-tag" data-tag></span></div>
+        <div class="md-side"><div class="md-vals" data-vals></div><div class="md-msg"><b>平坦度</b>接近 1 像噪音、接近 0 有明確音高；<b>滾降</b>是 85% 能量落在其下的頻率；<b>波峰因子</b>是最大值除以平均值，純音最高。藍色帶是質心加減展度。</div></div></div></div>`);
+      const cv = ctx.$("canvas"), tag = ctx.$("[data-tag]");
+      const set = meters(ctx.$("[data-vals]"), ["頻譜質心", "滾降 85%", "展度", "平坦度", "波峰因子", "偏度", "峰度", "過零率"]);
+      const F = ["amplitudeSpectrum", "spectralCentroid", "spectralRolloff", "spectralSpread", "spectralFlatness", "spectralCrest", "spectralSkewness", "spectralKurtosis", "zcr", "rms"];
+      const s = { wave: "sawtooth", cut: 3000, noise: 0 };
+      let cur = null, gr = null, job = 0;
+      async function offline() {
+        const my = ++job, data = await render((oc, d) => shapeGraph(oc, d, s), 0.4);
+        if (my === job && ctx.active && !gr) cur = { ...avgExtract(data.subarray(8192), 2048, F, 6), sr: SR };
+      }
+      const tp = transport(ctx, (ac) => {
+        gr = shapeGraph(ac, ac.destination, s); cur = null;
+        const off = analyzer(ac, gr.out, 2048, F, (f) => (cur = mix(cur, { ...f, sr: ac.sampleRate }, 0.75)));
+        return () => { off(); gr.stop(); gr = null; offline(); };
+      });
+      const update = () => (gr ? gr.set(s) : offline());
+      ctx.select("波形", WAVES.map(([value, label]) => ({ value, label })), s.wave, (v) => { s.wave = v; update(); });
+      ctx.slider("低通", { min: 0, max: 1, step: 0.01, value: Math.log(s.cut / 100) / Math.log(160), format: (v) => fmtHz(100 * 160 ** v) }, (v) => { s.cut = 100 * 160 ** v; update(); });
+      ctx.slider("噪音", { min: 0, max: 1, step: 0.01, value: 0, format: (v) => `${Math.round(v * 100)}%` }, (v) => { s.noise = v; update(); });
+      offline();
+      ctx.raf(() => {
+        const { g, W, H } = fitCanvas(cv);
+        if (!cur) return;
+        const sr = cur.sr, hz = (b) => (b * sr) / 2048, lo = 40, B = H - 20, xOf = (f) => (Math.log(Math.max(f, lo) / lo) / Math.log(sr / 2 / lo)) * W;
+        const sp = cur.amplitudeSpectrum, mx = Math.max(...sp) || 1, yOf = (a) => B - clamp01((20 * Math.log10(a / mx + 1e-9) + 80) / 80) * (B - 46);
+        const cen = hz(cur.spectralCentroid), spr = hz(cur.spectralSpread), roll = cur.spectralRolloff, zr = (cur.zcr * sr) / 2048;
+        g.fillStyle = "rgba(76,201,240,.1)"; g.fillRect(xOf(cen - spr), 28, xOf(cen + spr) - xOf(cen - spr), B - 28);
+        g.beginPath(); g.moveTo(0, B);
+        for (let k = 1; k < sp.length; k++) g.lineTo(xOf(hz(k)), yOf(sp[k]));
+        g.lineTo(W, B); g.closePath();
+        const grd = g.createLinearGradient(0, 40, 0, B); grd.addColorStop(0, "rgba(247,223,30,.55)"); grd.addColorStop(1, "rgba(247,37,133,.08)");
+        g.fillStyle = grd; g.fill(); g.strokeStyle = "rgba(247,223,30,.8)"; g.stroke();
+        [[cen, "#4cc9f0", "質心"], [roll, "#f72585", "滾降"]].forEach(([f, c, l], i) => {
+          g.fillStyle = c; g.fillRect(xOf(f), 28, 2, B - 28);
+          text(g, `${l} ${fmtHz(f)}`, xOf(f) + (xOf(f) > W - 110 ? -5 : 5), 38 + i * 15, { size: 11.5, color: c, align: xOf(f) > W - 110 ? "right" : "left" });
+        });
+        [100, 1000, 10000].forEach((f) => { g.fillStyle = "rgba(255,255,255,.12)"; g.fillRect(xOf(f), 28, 1, B - 28); text(g, fmtHz(f), xOf(f) + 3, B + 10, { size: 10, mono: true }); });
+        set(0, xOf(cen) / W, fmtHz(cen)); set(1, xOf(roll) / W, fmtHz(roll)); set(2, spr / 8000, fmtHz(spr));
+        set(3, cur.spectralFlatness, fmt(cur.spectralFlatness, 3)); set(4, cur.spectralCrest / 60, fmt(cur.spectralCrest, 1));
+        set(5, Math.tanh(cur.spectralSkewness / 20), fmt(cur.spectralSkewness, 1)); set(6, Math.tanh(Math.log10(1 + Math.abs(cur.spectralKurtosis)) / 6), fmtCompact(cur.spectralKurtosis));
+        set(7, zr / 20000, `${fmtCompact(zr)}/秒`);
+        tag.textContent = `${gr ? "即時" : "離線算圖"}：amplitudeSpectrum（dB，對數頻率軸）・取樣率 ${fmt(sr)} Hz`;
+      });
+    },
+  },
+  {
+    id: "loud", title: "響度與感知",
+    api: "loudness.specific / loudness.total・perceptualSpread・perceptualSharpness・rms・energy",
+    desc: "四種音源都先調成相同 RMS，再用音量滑桿一起升降。loudness 依 24 個 Bark 頻帶估計人耳響度：同樣 RMS 下，能量分散到很多頻帶的噪音，總響度遠高於只占一兩個頻帶的純音。下圖每條線是一種音源從 −40 dB 到 0 dB 的離線結果。",
+    hint: "切換音源、拖動音量；播放時黃點是即時量到的位置",
+    mount(ctx) {
+      ctx.html(`<div class="board"><div class="md-split"><div class="md-col"><div class="md-panel md-grow"><canvas data-bark></canvas><span class="md-tag">loudness.specific：24 個 Bark 頻帶，低頻在左</span></div>
+        <div class="md-panel md-grow"><canvas data-sc></canvas><span class="md-tag">橫軸 RMS（dBFS），縱軸 loudness.total</span></div></div>
+        <div class="md-side"><div class="md-vals" data-vals></div><div class="md-msg">Meyda 的響度沒有校正到實際音壓，數值只適合相對比較；也沒有套用等響曲線，同樣 RMS 的 100 Hz 與 1 kHz 純音得到相近的數值，但人耳會覺得 100 Hz 小聲得多。<b>感知銳度</b>越高代表能量越偏高頻，<b>感知展度</b>表示響度分布在頻帶間有多寬。</div></div></div></div>`);
+      const SRCS = [["純音 1 kHz", () => tone(1000, SR)], ["低音 100 Hz", () => tone(100, SR)], ["粉紅噪音", () => noise(SR, true)], ["白噪音", () => noise(SR)]];
+      const COL = ["#f7df1e", "#ff8c42", "#f72585", "#4cc9f0"], DBS = [-40, -35, -30, -25, -20, -15, -10, -5, 0];
+      const F = ["rms", "energy", "loudness", "perceptualSpread", "perceptualSharpness"];
+      const sigs = SRCS.map(([, fn]) => norm(fn(), 0.25));
+      const at = (si, db) => avgExtract(sigs[si].subarray(0, 6144).map((v) => v * 10 ** (db / 20)), 2048, F, 4);
+      const curves = sigs.map((_, si) => DBS.map((db) => at(si, db)));
+      const LMAX = Math.max(...curves.flat().map((f) => f.loudness.total)), SMAX = Math.max(...curves.flat().map((f) => Math.max(...f.loudness.specific)));
+      let si = 0, db = -12, cur = at(si, db), live = null, gain = null, trail = [];
+      const set = meters(ctx.$("[data-vals]"), ["總響度", "RMS", "能量", "感知展度", "感知銳度"]);
+      const tp = transport(ctx, (ac) => {
+        gain = ac.createGain(); gain.gain.value = 10 ** (db / 20); gain.connect(ac.destination);
+        const src = loopSource(ac, bufferOf(ac, sigs[si]), gain);
+        const off = analyzer(ac, gain, 2048, F, (f) => { live = mix(live, f, 0.7); trail = [...trail.slice(-50), [live.rms, live.loudness.total]]; });
+        return () => { off(); src.stop(); gain.disconnect(); gain = null; live = null; trail = []; };
+      });
+      ctx.group(SRCS.map((x) => x[0]), si, (i) => { si = i; cur = at(si, db); trail = []; tp.restart(); });
+      ctx.slider("音量", { min: -40, max: 0, step: 1, value: db, format: (v) => `${v} dB` }, (v) => { db = v; cur = at(si, db); if (gain) gain.gain.setTargetAtTime(10 ** (db / 20), AC.currentTime, 0.03); });
+      const bark = ctx.$("[data-bark]"), sc = ctx.$("[data-sc]");
+      ctx.raf(() => {
+        const f = live || cur;
+        let { g, W, H } = fitCanvas(bark);
+        const bw = (W - 20) / 24, B = H - 8;
+        f.loudness.specific.forEach((v, i) => {
+          const h = clamp01(v / SMAX) * (B - 30);
+          g.fillStyle = COL[si]; g.globalAlpha = 0.85; g.fillRect(10 + i * bw + 1, B - h, bw - 2, h); g.globalAlpha = 1;
+        });
+        ({ g, W, H } = fitCanvas(sc));
+        const L = 30, B2 = H - 20, xOf = (r) => L + clamp01((20 * Math.log10(r + 1e-9) + 60) / 55) * (W - L - 12), yOf = (l) => B2 - clamp01(l / LMAX) * (B2 - 30);
+        [-60, -40, -20].forEach((d) => text(g, `${d}`, xOf(10 ** (d / 20)), B2 + 10, { size: 10, mono: true, align: "center" }));
+        [0, 0.5, 1].forEach((p) => text(g, fmt(LMAX * p), L - 4, yOf(LMAX * p), { size: 10, mono: true, align: "right" }));
+        curves.forEach((cv, k) => {
+          g.strokeStyle = COL[k]; g.globalAlpha = k === si ? 1 : 0.45; g.beginPath();
+          cv.forEach((p, j) => (j ? g.lineTo : g.moveTo).call(g, xOf(p.rms), yOf(p.loudness.total))); g.stroke();
+        });
+        g.globalAlpha = 1;
+        // Curve labels sit above each end point, pushed apart so overlapping curves stay readable.
+        const ends = curves.map((cv, k) => ({ k, x: xOf(cv[cv.length - 1].rms) - 4, y: yOf(cv[cv.length - 1].loudness.total) - 8 })).sort((a, b) => a.y - b.y);
+        ends.forEach((e, j) => { e.y = Math.max(e.y, j ? ends[j - 1].y + 13 : 32); text(g, SRCS[e.k][0], e.x, e.y, { size: 11, color: COL[e.k], align: "right", bold: e.k === si }); });
+        trail.forEach(([r, l], j) => { g.fillStyle = `rgba(247,223,30,${(j + 1) / trail.length / 2})`; g.fillRect(xOf(r) - 2, yOf(l) - 2, 4, 4); });
+        g.beginPath(); g.arc(xOf(f.rms), yOf(f.loudness.total), 6, 0, 2 * Math.PI); g.strokeStyle = "#fff"; g.lineWidth = 2; g.stroke(); g.lineWidth = 1;
+        set(0, f.loudness.total / LMAX, fmt(f.loudness.total, 2)); set(1, xOf(f.rms) / W, `${fmt(f.rms, 3)}（${fmt(20 * Math.log10(f.rms + 1e-9), 1)} dB）`);
+        set(2, Math.log10(1 + f.energy) / 3, fmt(f.energy, 2)); set(3, f.perceptualSpread, fmt(f.perceptualSpread, 3)); set(4, f.perceptualSharpness, fmt(f.perceptualSharpness, 3));
+      });
+    },
+  },
+  {
+    id: "mfcc", title: "MFCC 音色指紋",
+    api: "Meyda.extract('mfcc', frame)・numberOfMFCCCoefficients",
+    desc: "8 種音色各離線算出 13 個 MFCC 的平均值當指紋。比對時跳過第 0 個係數（它只反映整體能量），所以音量大小不影響結果。改變音高後再算一次，看最近鄰是否還是同一種音色：這是 MFCC 拿來做音色分類的基本做法，也能看到它的極限。",
+    hint: "選音色、拖動音高；按「播放」改用即時 MFCC 比對",
+    async mount(ctx) {
+      ctx.html(`<div class="board"><div class="md-split"><div class="md-panel"><canvas></canvas><span class="md-tag" data-tag>MFCC 指紋（每欄依係數正規化）</span></div>
+        <div class="md-side"><div class="md-vals" data-vals></div><div class="md-msg" data-msg>計算指紋中…</div></div></div></div>`);
+      const fp = async (kind, f0) => avgExtract((await render((oc, d) => timbre(oc, d, kind, f0), 0.35)).subarray(4096), 2048, ["mfcc"], 8).mfcc;
+      const cv = ctx.$("canvas"), msg = ctx.$("[data-msg]"), tag = ctx.$("[data-tag]");
+      const set = meters(ctx.$("[data-vals]"), TIM.map(([, l]) => l));
+      let ki = 5, f0 = 196, cur = null, tm = null, job = 0;
+      const tp = transport(ctx, (ac) => {
+        tm = timbre(ac, ac.destination, TIM[ki][0], f0); cur = null;
+        const off = analyzer(ac, tm.out, 2048, ["mfcc"], (f) => (cur = mix(cur, Array.from(f.mfcc), 0.8)));
+        return () => { off(); tm.stop(); tm = null; probe(); };
+      });
+      async function probe() { const my = ++job, m = await fp(TIM[ki][0], f0); if (my === job && ctx.active && !tm) cur = m; }
+      ctx.select("音色", TIM.map(([value, label]) => ({ value, label })), TIM[ki][0], (v) => { ki = TIM.findIndex((t) => t[0] === v); if (tm) tp.restart(); else probe(); });
+      ctx.slider("音高", { min: 0, max: 1, step: 0.01, value: Math.log(f0 / 55) / Math.log(16), format: (v) => `${fmt(55 * 16 ** v)} Hz` }, (v) => { f0 = 55 * 16 ** v; if (tm) tm.pitch(f0); else probe(); });
+      prints = prints || (await Promise.all(TIM.map(([k]) => fp(k, 196))));
+      if (!ctx.active) return;
+      probe();
+      const lo = [], hi = [];
+      for (let c = 0; c < 13; c++) { const xs = prints.map((p) => p[c]); lo.push(Math.min(...xs)); hi.push(Math.max(...xs)); }
+      const dist = (a, b) => Math.sqrt(a.slice(1).reduce((s, v, i) => s + (v - b[i + 1]) ** 2, 0));
+      ctx.raf(() => {
+        const { g, W, H } = fitCanvas(cv);
+        const L = 64, T = 46, cw = (W - L - 10) / 13, rh = Math.min(34, (H - T - 14) / 9.4);
+        const rows = [...prints, cur], ds = cur ? prints.map((p) => dist(cur, p)) : null, best = ds ? ds.indexOf(Math.min(...ds)) : -1;
+        for (let c = 0; c < 13; c++) text(g, `c${c}`, L + (c + 0.5) * cw, T - 8, { size: 10, mono: true, align: "center", color: c ? "rgba(236,235,230,.6)" : "rgba(236,235,230,.3)" });
+        rows.forEach((r, j) => {
+          if (!r) return;
+          const y = T + j * rh + (j === 8 ? rh * 0.4 : 0);
+          for (let c = 0; c < 13; c++) { const p = cmap((r[c] - lo[c]) / (hi[c] - lo[c] || 1)); g.fillStyle = `rgb(${p})`; g.globalAlpha = c ? 1 : 0.35; g.fillRect(L + c * cw + 1, y + 1, cw - 2, rh - 2); }
+          g.globalAlpha = 1;
+          const on = j === best || j === 8;
+          text(g, j === 8 ? (tm ? "即時" : "目前") : TIM[j][1], L - 8, y + rh / 2, { size: 11.5, align: "right", bold: on, color: j === 8 ? "#4cc9f0" : on ? "#f7df1e" : "rgba(236,235,230,.72)" });
+          if (j === ki) { g.strokeStyle = "rgba(76,201,240,.8)"; g.strokeRect(L + 0.5, y + 0.5, 13 * cw - 1, rh - 1); }
+          if (j === best) { g.strokeStyle = "#f7df1e"; g.lineWidth = 2; g.strokeRect(L - 1, y - 1, 13 * cw + 2, rh + 2); g.lineWidth = 1; }
+        });
+        if (!ds) return;
+        const dmax = Math.max(...ds) || 1;
+        ds.forEach((d, i) => set(i, 1 - d / dmax, fmt(d, 1), i === best));
+        const ok = best === ki;
+        msg.innerHTML = `${tm ? "即時" : "離線"}輸入：<b>${TIM[ki][1]}・${fmt(f0)} Hz</b>。最近的指紋是 <b>${TIM[best][1]}</b>（距離 ${fmt(ds[best], 1)}），${ok ? "辨識正確。" : `<span class="warn">與實際音色不符</span>，指紋是在 196 Hz 建立的，音高差太多時 MFCC 會跟著偏移。`}`;
+        tag.textContent = `MFCC 指紋（196 Hz 建立）・黃框是最近鄰，藍框是目前音色`;
+      });
+    },
+  },
+  {
+    id: "window", title: "視窗長度與窗函數",
+    api: "bufferSize・windowingFunction：rect / hanning / hamming / blackman / sine・Meyda.windowing()",
+    desc: "測試訊號是 440 Hz 與 466 Hz（差一個半音）兩個強音，加上一個弱 60 dB 的 1200 Hz。bufferSize 越大頻率解析度越細，但每幀涵蓋的時間越長、更新越慢；窗函數決定旁瓣洩漏，矩形窗的洩漏會把弱音淹掉。每一格是一個 FFT bin。",
+    hint: "切換 bufferSize 與窗函數；按「播放」後藍線是 MeydaAnalyzer 即時算出的頻譜",
+    mount(ctx) {
+      ctx.html(`<div class="board"><div class="md-split"><div class="md-panel"><canvas></canvas><span class="md-tag" data-tag></span></div>
+        <div class="md-side"><div class="md-vals" data-vals></div><div class="md-msg"><b>分得開</b>：兩個峰至少相隔兩個 bin，中間凹陷 3 dB 以上。<b>看得見</b>：1200 Hz 那一格要比「拿掉弱音」時的同一格高 6 dB 以上，也就是高過強音洩漏過來的能量。黃格取整秒訊號 8 個位置的平均，避免兩個強音的拍頻造成假凹陷。</div></div></div></div>`);
+      const wave = (weak) => new Float32Array(SR).map((_, i) => 0.42 * Math.sin((2 * Math.PI * 440 * i) / SR) + 0.42 * Math.sin((2 * Math.PI * 466 * i) / SR) + weak * Math.sin((2 * Math.PI * 1200 * i) / SR));
+      const SIG = wave(0.00042), REF = wave(0);
+      const WINS = [["rect", "矩形"], ["hanning", "Hann"], ["hamming", "Hamming"], ["blackman", "Blackman"], ["sine", "正弦"]];
+      const cv = ctx.$("canvas"), tag = ctx.$("[data-tag]");
+      const set = meters(ctx.$("[data-vals]"), ["頻率解析度", "每幀時長", "每秒幀數", "440／466 Hz", "1200 Hz 弱音", "即時回呼"]);
+      let N = 2048, win = "hanning", spec = null, vd = null, liveSp = null, liveSr = SR, calls = 0, rate = 0, again = null;
+      // Magnitude spectra averaged over 8 frames spread across the second, so the 26 Hz beating cannot fake a dip.
+      const avgSpec = (x) => { let acc = null; for (let k = 0; k < 8; k++) { const o = Math.round((k * (SR - N)) / 7); acc = mix(acc, Meyda.extract("amplitudeSpectrum", x.subarray(o, o + N)), k / (k + 1)); } return acc; };
+      const offline = () => { cfg(N, SR, win); spec = avgSpec(SIG); vd = verdict(spec, avgSpec(REF), SR / N); };
+      const tp = transport(ctx, (ac) => {
+        const gn = ac.createGain(); gn.gain.value = 0.3; gn.connect(ac.destination);
+        const src = loopSource(ac, bufferOf(ac, SIG), gn), cb = (f) => { liveSp = f.amplitudeSpectrum; liveSr = ac.sampleRate; calls++; };
+        let off = analyzer(ac, src, N, ["amplitudeSpectrum"], cb, win);
+        again = () => { off(); liveSp = null; offline(); off = analyzer(ac, src, N, ["amplitudeSpectrum"], cb, win); };
+        return () => { off(); src.stop(); gn.disconnect(); liveSp = null; again = null; };
+      });
+      const change = () => (again ? again() : offline());
+      ctx.select("bufferSize", [256, 512, 1024, 2048, 4096, 8192, 16384].map((v) => ({ value: v, label: String(v) })), N, (v) => { N = +v; change(); });
+      ctx.group(WINS.map((w) => w[1]), 1, (i) => { win = WINS[i][0]; change(); });
+      ctx.interval(() => { rate = calls; calls = 0; }, 1000);
+      offline();
+      const F0 = 300, F1 = 1400;
+      function verdict(sp, ref, bw) {
+        const mx = Math.max(...sp) || 1, db = (s, k) => 20 * Math.log10(s[k] / mx + 1e-12);
+        const peak = (f) => { const k = Math.round(f / bw); let b = k; for (let j = k - 1; j <= k + 1; j++) if (sp[j] > sp[b]) b = j; return b; };
+        const a = peak(440), b = peak(466), w = Math.round(1200 / bw), lift = db(sp, w) - db(ref, w);
+        let dip = Infinity; for (let k = a + 1; k < b; k++) dip = Math.min(dip, db(sp, k));
+        return { split: b - a >= 2 && dip < Math.min(db(sp, a), db(sp, b)) - 3, seen: lift > 6, lift };
+      }
+      ctx.raf(() => {
+        const { g, W, H } = fitCanvas(cv);
+        const T = 30, B = H - 20, xOf = (f) => ((f - F0) / (F1 - F0)) * W, yOf = (d) => T + clamp01(-d / 100) * (B - T);
+        for (const d of [0, -20, -40, -60, -80]) { g.fillStyle = "rgba(255,255,255,.07)"; g.fillRect(0, yOf(d), W, 1); text(g, `${d} dB`, W - 4, yOf(d) - 6, { size: 10, mono: true, align: "right", color: "rgba(236,235,230,.45)" }); }
+        const bw = SR / N, mx = Math.max(...spec) || 1;
+        g.fillStyle = "rgba(247,223,30,.6)";
+        for (let k = Math.floor(F0 / bw); k <= Math.ceil(F1 / bw) && k < spec.length; k++) {
+          const y = yOf(20 * Math.log10(spec[k] / mx + 1e-12)), x0 = xOf((k - 0.5) * bw), x1 = xOf((k + 0.5) * bw);
+          g.fillRect(x0 + (x1 - x0 > 4 ? 1 : 0), y, Math.max(1, x1 - x0 - (x1 - x0 > 4 ? 2 : 0)), B - y);
+        }
+        if (liveSp) {
+          const lb = liveSr / N, lm = Math.max(...liveSp) || 1;
+          g.beginPath(); g.strokeStyle = "#4cc9f0"; g.lineWidth = 1.5;
+          for (let k = Math.floor(F0 / lb); k <= F1 / lb && k < liveSp.length; k++) (k === Math.floor(F0 / lb) ? g.moveTo : g.lineTo).call(g, xOf(k * lb), yOf(20 * Math.log10(liveSp[k] / lm + 1e-12)));
+          g.stroke(); g.lineWidth = 1;
+        }
+        [[440, "440"], [466, "466"], [1200, "1200 Hz（−60 dB）"]].forEach(([f, l], i) => {
+          g.fillStyle = "rgba(247,37,133,.7)"; g.fillRect(xOf(f), T - 4, 1, B - T + 4);
+          const left = i === 0 || xOf(f) > W - 120;
+          text(g, l, xOf(f) + (left ? -4 : 4), B + 10, { size: 10.5, mono: true, align: left ? "right" : "left", color: "#f72585" });
+        });
+        const wv = Meyda.windowing(new Float32Array(64).fill(1), win), wx = W - 130, wy = T + 10;
+        g.fillStyle = "rgba(15,17,21,.7)"; g.fillRect(wx - 6, wy - 4, 124, 58);
+        g.beginPath(); wv.forEach((v, i) => (i ? g.lineTo : g.moveTo).call(g, wx + (i / 63) * 112, wy + 46 - v * 42)); g.strokeStyle = "#7bd389"; g.stroke();
+        text(g, "窗形狀", wx, wy + 4, { size: 10.5, color: "#7bd389" });
+        const v = vd, fps = SR / N;
+        set(0, 1 - Math.log2(bw / 2.5) / 7, `${fmt(bw, bw < 10 ? 2 : 1)} Hz`); set(1, Math.log2(N / 128) / 7, fmtMs((N / SR) * 1000));
+        set(2, fps / 172, `${fmt(fps, 1)} 幀`); set(3, v.split ? 1 : 0, v.split ? "分得開" : "分不開", v.split);
+        set(4, v.seen ? 1 : 0, v.seen ? `看得見（高出洩漏 ${fmt(v.lift, 0)} dB）` : "被洩漏淹沒", v.seen);
+        set(5, rate / 172, tp.on ? `${rate} 次/秒` : "未播放");
+        tag.textContent = `黃格：離線 amplitudeSpectrum（N=${N}，${WINS.find((w) => w[0] === win)[1]} 窗，8 幀平均）${liveSp ? "・藍線：即時單幀" : ""}`;
+      });
+    },
+  },
+  {
+    id: "mic", title: "麥克風即時分析",
+    api: "getUserMedia → createMediaStreamSource → createMeydaAnalyzer({ featureExtractors: ['melBands','rms','zcr',…] })",
+    desc: "把麥克風接進 MeydaAnalyzer，每 1024 個樣本算一次 26 個梅爾頻帶、音量、過零率與頻譜質心，畫成捲動的梅爾頻譜。右側用很簡單的規則判斷靜音、有聲（母音）或擦音。沒有麥克風或拒絕權限時，改用頁內合成的人聲。",
+    hint: "按「開始」並允許麥克風；說「ㄙ」與「啊」比較過零率的差別",
+    async mount(ctx) {
+      ctx.html(`<div class="board"><div class="md-split"><div class="md-panel"><canvas></canvas><span class="md-tag" data-tag>梅爾頻譜（melBands）・黃線音量・藍線過零率</span></div>
+        <div class="md-side"><div class="md-vals" data-vals></div><div class="md-msg" data-msg>畫面先顯示合成人聲的離線分析。按「開始」後瀏覽器會詢問麥克風權限；麥克風的聲音只做分析，不會從喇叭播出。</div></div></div></div>`);
+      const cv = ctx.$("canvas"), msg = ctx.$("[data-msg]");
+      const set = meters(ctx.$("[data-vals]"), ["音量", "頻譜質心", "過零率", "判斷", "來源"]);
+      const COLS = 360, F = ["melBands", "rms", "zcr", "spectralCentroid"], spec = document.createElement("canvas");
+      spec.width = COLS; spec.height = 26;
+      const sg = spec.getContext("2d"), rmsH = [], zcrH = [];
+      let peak = 1e-9, cur = null, mode = 0, from = "合成人聲（離線）";
+      function push(f, sr) {
+        peak = Math.max(peak * 0.999, ...f.melBands);
+        sg.drawImage(spec, -1, 0);
+        const col = sg.createImageData(1, 26);
+        f.melBands.forEach((v, i) => { const p = cmap((10 * Math.log10(v / peak + 1e-12) + 45) / 45), j = (25 - i) * 4; col.data[j] = p[0]; col.data[j + 1] = p[1]; col.data[j + 2] = p[2]; col.data[j + 3] = 255; });
+        sg.putImageData(col, COLS - 1, 0);
+        rmsH.push(f.rms); zcrH.push((f.zcr * sr) / 1024);
+        if (rmsH.length > COLS) { rmsH.shift(); zcrH.shift(); }
+        cur = { ...f, sr };
+      }
+      const tp = transport(ctx, async (ac) => {
+        let node = null, stream = null, kill = null;
+        if (mode === 0) {
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+            node = ac.createMediaStreamSource(stream); from = "麥克風";
+            msg.innerHTML = "<b>麥克風已開啟。</b>對著麥克風說話、吹氣或彈指，看梅爾頻譜與判斷結果。聲音不會從喇叭播出。";
+          } catch (e) { msg.innerHTML = `<span class="warn">未取得麥克風（${e.name || e.message}），改用合成人聲。</span>`; }
+        }
+        if (!node) {
+          node = loopSource(ac, bufferOf(ac, await voiceJob), ac.destination); kill = () => node.stop(); from = "合成人聲";
+          if (mode === 1) msg.innerHTML = "<b>播放合成人聲：</b>鋸齒波經過三個共振峰濾波器組成母音，夾雜高通噪音模擬「ㄙ」「ㄕ」。";
+        }
+        const off = analyzer(ac, node, 1024, F, (f) => push(f, ac.sampleRate));
+        return () => { off(); if (kill) kill(); node.disconnect(); if (stream) stream.getTracks().forEach((t) => t.stop()); from = `${from}（已停止）`; };
+      }, "▶ 開始");
+      ctx.group(["麥克風", "合成人聲"], 0, (i) => { mode = i; tp.restart(); });
+      ctx.raf(() => {
+        const { g, W, H } = fitCanvas(cv);
+        const T = 28, hS = (H - T) * 0.64, yL = T + hS + 8, hL = H - yL - 8;
+        blit(g, spec, 0, T, W, hS);
+        text(g, "高", 6, T + 8, { size: 10 }); text(g, "低", 6, T + hS - 8, { size: 10 });
+        g.fillStyle = "rgba(255,255,255,.05)"; g.fillRect(0, yL, W, hL);
+        const off = COLS - rmsH.length;
+        [[rmsH, (v) => (20 * Math.log10(v + 1e-6) + 60) / 60, "#f7df1e"], [zcrH, (v) => v / 10000, "#4cc9f0"]].forEach(([arr, f, c]) => {
+          g.beginPath(); arr.forEach((v, i) => (i ? g.lineTo : g.moveTo).call(g, ((off + i) / (COLS - 1)) * W, yL + hL - clamp01(f(v)) * hL)); g.strokeStyle = c; g.lineWidth = 1.5; g.stroke(); g.lineWidth = 1;
+        });
+        if (!cur) return;
+        const db = 20 * Math.log10(cur.rms + 1e-6), cen = (cur.spectralCentroid * cur.sr) / 1024, zr = (cur.zcr * cur.sr) / 1024;
+        const state = cur.rms < 0.01 ? "靜音" : zr > 3000 && cen > 2500 ? "擦音／氣音" : "有聲（母音）";
+        set(0, (db + 60) / 60, `${fmt(db, 1)} dBFS`); set(1, Math.log(Math.max(cen, 50) / 50) / Math.log(200), isFinite(cen) ? fmtHz(cen) : "無訊號");
+        set(2, zr / 10000, `${fmtCompact(zr)}/秒`); set(3, state === "靜音" ? 0 : 1, state, state !== "靜音"); set(4, tp.on ? 1 : 0, from);
+      });
+      // Normalise the rendered voice to a 0.7 peak; the stacked formant gains can otherwise push it to full scale.
+      voiceJob = voiceJob || render(speech, 4.8).then((d) => { const m = d.reduce((s, v) => Math.max(s, Math.abs(v)), 0) || 1; return d.map((v) => (v * 0.7) / m); });
+      const data = await voiceJob;
+      if (!ctx.active || tp.on) return;
+      cfg(1024);
+      for (let k = 0; k + 1024 <= data.length && k < 512 * 400; k += 512) push(Meyda.extract(F, data.subarray(k, k + 1024)), SR);
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "Meyda.extract(features, frame) 逐幀計算",
+    desc: "模擬同時分析很多聲道：每個聲道是 1 秒的音訊，以半個 bufferSize 為步距逐幀呼叫 Meyda.extract。全部聲道在 1 秒內算完就代表跟得上即時。上方是每個特徵在一幀上的額外成本，下方疊加每次測試的曲線。",
+    hint: "選 bufferSize 與特徵組合後按「開始測試」；換設定再測一次可疊加比較",
+    mount(ctx) {
+      ctx.html(`<div class="md-stress"><div class="md-head"><b>特徵成本與聲道數（只計算，不發聲）</b><small data-sub>準備中…</small></div><div class="md-panel md-grow"><canvas></canvas></div></div>`);
+      const cv = ctx.$("canvas"), sub = ctx.$("[data-sub]"), SRC = noise(SR * 2).map((v, i) => v * 0.3 + 0.4 * Math.sin(i * 0.0627));
+      const SETS = [["輕量 3 項", ["rms", "zcr", "energy"]], ["頻譜 8 項", ["rms", "zcr", "spectralCentroid", "spectralFlatness", "spectralRolloff", "spectralSpread", "spectralCrest", "loudness"]], [`全部 ${ALL.length} 項`, ALL]];
+      const COL = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389"];
+      let N = 1024, si = 2, costs = [], base = 0, series = [], curS = null;
+      function measureCosts() {
+        cfg(N); const fr = SRC.subarray(0, N);
+        const time = (f) => { Meyda.extract(f, fr); let k = 0; const t0 = performance.now(); do { Meyda.extract(f, fr); k++; } while (performance.now() - t0 < 5); return (performance.now() - t0) / k; };
+        base = time("buffer");
+        costs = ALL.filter((f) => f !== "buffer").map((f) => ({ f, ms: Math.max(0, time(f) - base) })).sort((a, b) => b.ms - a.ms);
+        const tot = costs.reduce((s, c) => s + c.ms, 0) + base;
+        sub.innerHTML = `N=<span class="md-m">${N}</span>：基本開銷 <span class="md-m">${fmtMs(base)}</span>，全部特徵合計約 <span class="md-m">${fmtMs(tot)}</span>／幀；步距 ${N / 2} 樣本時單聲道即時倍率約 <span class="md-m">${fmt((N / 2 / SR) * 1000 / tot, 0)}</span>×`;
+        draw();
+      }
+      function draw() {
+        const { g, W, H } = fitCanvas(cv);
+        const hT = Math.min(H * 0.46, 250), rows = [{ f: "基本開銷（buffer）", ms: base }, ...costs.slice(0, 8)], rh = (hT - 26) / rows.length, mx = Math.max(...rows.map((r) => r.ms)) || 1;
+        text(g, `每幀成本（N=${N}，扣除基本開銷後的前 8 名）`, 10, 13, { size: 11.5, color: "rgba(236,235,230,.85)" });
+        rows.forEach((r, i) => {
+          const y = 24 + i * rh, w = (r.ms / mx) * (W - 230);
+          text(g, r.f, 150, y + rh / 2, { size: 10.5, mono: true, align: "right" });
+          g.fillStyle = i ? "#4cc9f0" : "#ff8c42"; g.fillRect(156, y + 2, Math.max(1, w), Math.max(2, rh - 4));
+          text(g, fmtMs(r.ms), 162 + w, y + rh / 2, { size: 10, mono: true });
+        });
+        const L = 44, T = hT + 26, B = H - 22, R = W - 12, ns = [1, 4, 16, 64, 256];
+        const xOf = (n) => L + (Math.log(n) / Math.log(256)) * (R - L), yOf = (ms) => B - clamp01(Math.log10(Math.max(ms, 1)) / 4.3) * (B - T);
+        text(g, "下：全部聲道算完 1 秒音訊的時間（橫軸聲道數，縱軸對數）", 10, hT + 10, { size: 11.5, color: "rgba(236,235,230,.85)" });
+        ns.forEach((n) => text(g, String(n), xOf(n), B + 11, { size: 10, mono: true, align: "center" }));
+        [1, 10, 100, 1000, 10000].forEach((ms) => { g.fillStyle = ms === 1000 ? "rgba(247,37,133,.6)" : "rgba(255,255,255,.07)"; g.fillRect(L, yOf(ms), R - L, 1); text(g, ms >= 1000 ? `${ms / 1000} 秒` : `${ms} ms`, L - 4, yOf(ms), { size: 9.5, mono: true, align: "right" }); });
+        text(g, "即時上限", R - 4, yOf(1000) - 8, { size: 10.5, align: "right", color: "#f72585" });
+        series.forEach((s, k) => {
+          g.strokeStyle = COL[k % 4]; g.fillStyle = COL[k % 4]; g.lineWidth = 2; g.beginPath();
+          s.pts.forEach((p, j) => (j ? g.lineTo : g.moveTo).call(g, xOf(p.n), yOf(p.ms))); g.stroke(); g.lineWidth = 1;
+          s.pts.forEach((p) => g.fillRect(xOf(p.n) - 2.5, yOf(p.ms) - 2.5, 5, 5));
+          text(g, s.label, L + 8, T + 8 + k * 15, { size: 10.5, color: COL[k % 4] });
+        });
+      }
+      ctx.onResize(draw);
+      ctx.controls.classList.add("bottom");
+      ctx.select("bufferSize", [512, 1024, 2048, 4096].map((v) => ({ value: v, label: String(v) })), N, (v) => { N = +v; measureCosts(); });
+      ctx.group(SETS.map((s) => s[0]), si, (i) => (si = i));
+      ctx.bench({
+        label: "同時分析的聲道", unit: "聲道", sizes: [1, 4, 16, 64, 256], format: fmt, target: 1000, budget: 2000,
+        prepare: (n) => { if (n === 1) { curS = { label: `N=${N}・${SETS[si][0]}`, pts: [] }; series = [...series.slice(-3), curS]; } },
+        run: async (n) => {
+          cfg(N);
+          const feats = SETS[si][1], hop = N / 2, frames = Math.floor((SR - N) / hop) + 1, t0 = performance.now();
+          let tY = t0;
+          for (let s = 0; s < n; s++) {
+            const o = (s * 4099) % SR;
+            for (let k = 0; k < frames; k++) Meyda.extract(feats, SRC.subarray(o + k * hop, o + k * hop + N));
+            if (performance.now() - tY > 120) { await new Promise((z) => setTimeout(z, 0)); if (!ctx.active) return ""; tY = performance.now(); }
+          }
+          const ms = performance.now() - t0;
+          curS.pts.push({ n, ms }); draw();
+          return `每幀 ${fmtMs(ms / (n * frames))}・約 ${fmt(Math.floor((n * 1000) / ms))} 聲道可即時`;
+        },
+        note: "只量 Meyda.extract 的純 JavaScript 計算。MeydaAnalyzer 另外靠已淘汰的 ScriptProcessor 在主執行緒回呼，畫面忙碌時回呼會延遲，實際可即時的聲道數會更少。",
+      });
+      measureCosts();
+    },
+  },
+] });
+})();
 </script>
 </body>
 </html>

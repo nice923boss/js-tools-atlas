@@ -3,171 +3,1222 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PixiJS 示範：數萬顆發光粒子的霓虹漩渦</title>
+<title>PixiJS 示範：8 個場景看懂 WebGL 2D 渲染與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["霓虹漩渦","Sprite 批次","向量繪圖","濾鏡","文字渲染","互動事件","渲染材質","極限測試"]}</script>
 <style>
-  body { background: #07080d; }
-  canvas { position: fixed; inset: 0; display: block; }
-  .stats {
-    position: fixed; left: 12px; top: 12px; z-index: 50;
-    padding: 8px 12px; font-size: 12px; line-height: 1.5;
+  .px { position: absolute; inset: 0; overflow: hidden; }
+  .px canvas, .stress-box canvas { position: absolute; left: 0; top: 0; }
+  .sc-scene.neon { background: #07080d; }
+  .sc-scene.studio { background: radial-gradient(70% 90% at 50% 40%, #20232c, #0e1013); }
+  .btn[disabled] { opacity: .4; cursor: default; }
+  .readout {
+    position: absolute; left: 10px; bottom: 10px; z-index: 20; max-width: calc(100% - 20px); padding: 6px 10px; border-radius: 8px;
+    background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(6px); pointer-events: none;
+    font: 500 11.5px/1.45 var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .stats b { color: var(--accent); font-family: var(--mono); font-size: 15px; }
-  .sep { width: 1px; background: var(--line); margin: 0 2px; }
-  @media (max-width: 560px) { .stats { top: auto; bottom: 52px; } }
+  .readout b { color: var(--accent); font-weight: 600; }
+  .dock { position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 20; display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none; }
+  .dock > * { pointer-events: auto; }
+  .dock .readout { position: static; max-width: 100%; pointer-events: none; }
+  .chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 5px; max-width: 660px; }
+  .chips .btn { padding: 4px 10px; font-size: 12px; }
+  .chips .btn[aria-pressed="true"]::after { content: attr(data-n); margin-left: 5px; font: 700 10px/1 var(--mono); color: var(--accent); }
+  .atlas {
+    position: absolute; right: 10px; bottom: 10px; z-index: 20; display: flex; flex-direction: column; gap: 5px; padding: 7px 9px;
+    border-radius: 8px; background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(6px); pointer-events: none;
+    font: 500 11px/1.3 var(--font); color: var(--muted);
+  }
+  .atlas canvas { display: block; width: 192px; height: 72px; border-radius: 4px; background: repeating-conic-gradient(rgba(255,255,255,.07) 0 25%, transparent 0 50%) 0 0 / 12px 12px; }
+  @media (max-width: 700px) { .atlas { display: none; } }
+  @media (min-width: 701px) { .has-atlas .readout { max-width: calc(100% - 236px); } }
+  .evlog {
+    position: absolute; right: 10px; top: calc(var(--sc-ctl-h, 46px) + 10px); bottom: 10px; width: 250px; z-index: 20;
+    display: flex; flex-direction: column; padding: 8px 10px; border-radius: 10px; overflow: hidden;
+    background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(6px);
+  }
+  .evlog h3 { margin: 0 0 6px; font: 600 12px/1.3 var(--font); color: var(--accent); }
+  .evlog ul { list-style: none; margin: 0; padding: 0; flex: 1; min-height: 0; overflow: hidden; font: 500 11.5px/1.6 var(--font); }
+  .evlog li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+  .evlog li.cap { color: var(--c2); }
+  .evlog li.tgt { color: var(--c1); }
+  .evlog li.bub { color: var(--c4); }
+  .evlog li.stop { color: var(--c3); }
+  .evlog li.sep { margin-top: 5px; padding-top: 5px; border-top: 1px dashed var(--line); font-size: 11px; }
+  .evlog li.sep:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+  .evlog li.old { opacity: .45; }
+  .evlog.tight { left: 10px; right: 10px; width: auto; top: auto; height: 126px; }
+  .stress-box {
+    position: absolute; top: 8px; right: 8px; bottom: calc(var(--sc-ctl-b, 0px) + 8px); left: 350px;
+    border-radius: 12px; border: 1px solid var(--line); background: rgba(255,255,255,.02); overflow: hidden;
+  }
+  @media (max-width: 760px) { .stress-box { left: 8px; } }
 </style>
 </head>
 <body>
-<div class="panel stats">
-  <div><b id="count">0</b> 個粒子</div>
-  <div class="muted"><span class="mono" id="fps">0</span> fps・<span id="renderer">WebGL</span> 批次渲染</div>
-</div>
-<div class="controls">
-  <button class="btn" data-n="10000">1 萬</button>
-  <button class="btn" data-n="30000" aria-pressed="true">3 萬</button>
-  <button class="btn" data-n="60000">6 萬</button>
-  <span class="sep"></span>
-  <button class="btn" id="mode">模式：漩渦</button>
-</div>
-<div class="hint">移動滑鼠捲起漩渦・點擊引爆衝擊波</div>
-
 <script src="https://cdn.jsdelivr.net/npm/pixi.js@8.22.0/dist/pixi.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Tens of thousands of glowing sprites in a single ParticleContainer (one draw call, additive blend).
-// Physics runs in typed arrays; each frame we only copy x/y into the Particle objects.
-const PALETTE = [0xf7df1e, 0x4cc9f0, 0xf72585, 0x7bd389, 0xff8c42, 0x9d8cff];
+// PixiJS showcase: eight scenes from the original neon vortex to a bunnymark stress ramp.
+const rootCss = getComputedStyle(document.documentElement);
+const cssVar = (name, fallback) => rootCss.getPropertyValue(name).trim() || fallback;
+const C = {
+  c1: cssVar("--c1", "#f7df1e"), c2: cssVar("--c2", "#4cc9f0"), c3: cssVar("--c3", "#f72585"),
+  c4: cssVar("--c4", "#7bd389"), c5: cssVar("--c5", "#ff8c42"), c6: cssVar("--c6", "#9d8cff"),
+};
+const COLORS = [C.c1, C.c2, C.c3, C.c4, C.c5, C.c6];
+const HEX = COLORS.map((c) => new PIXI.Color(c).toNumber());
+const COLOR_NAMES = ["黃", "青", "桃紅", "綠", "橘", "紫"];
+const FONT = ["Microsoft JhengHei", "PingFang TC", "Noto Sans TC", "sans-serif"];
+const MONO = ["JetBrains Mono", "Consolas", "monospace"];
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const rnd = (lo, hi) => lo + Math.random() * (hi - lo);
+const fmtN = (n) => n.toLocaleString("en-US");
+// Y just below the top-right control cluster, so scene content starts under the buttons.
+const belowControls = (ctx) => ctx.controls.offsetHeight + 20;
+const PHOTO = (i) => `_shared/img/photo-${i}.jpg`;
+const unmounted = () => new DOMException("Scene unmounted", "AbortError");
 
-(async () => {
+function canvas2d(w, h, draw) {
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  draw(c.getContext("2d"), w, h);
+  return c;
+}
+// Soft white dot; tinted per sprite or particle.
+function glowCanvas(s) {
+  return canvas2d(s, s, (g) => {
+    const r = s / 2, grd = g.createRadialGradient(r, r, 0, r, r, r);
+    grd.addColorStop(0, "rgba(255,255,255,1)");
+    grd.addColorStop(0.25, "rgba(255,255,255,0.75)");
+    grd.addColorStop(1, "rgba(255,255,255,0)");
+    g.fillStyle = grd;
+    g.fillRect(0, 0, s, s);
+  });
+}
+// Decoded photo as an uncached texture; null when the scene left while loading.
+async function photoTexture(ctx, url) {
+  const img = new Image();
+  img.src = url;
+  await img.decode();
+  return ctx.active ? PIXI.Texture.from(img, true) : null;
+}
+// Status line in the bottom-left corner; returns a setter that takes HTML.
+function readout(ctx, parent = ctx.el) {
+  const el = document.createElement("div");
+  el.className = "readout";
+  parent.append(el);
+  return (html) => { el.innerHTML = html; };
+}
+
+// Pixi v8 Application that fills `box` and follows its size. init() is async, so the scene may
+// already be gone when it resolves: destroy right away and abort. Owned resources (textures,
+// filters, gradients) are destroyed after the app, objects on the stage go with app.destroy().
+async function pixiIn(ctx, box, opts = {}) {
+  const owned = [];
+  ctx.onCleanup(() => { while (owned.length) owned.pop()(); });
   const app = new PIXI.Application();
-  await app.init({ resizeTo: window, background: "#07080d", preference: "webgl", antialias: false });
-  document.body.prepend(app.canvas);
-  document.getElementById("renderer").textContent = app.renderer.type === 2 ? "WebGPU" : "WebGL";
+  let ready = false;
+  ctx.onCleanup(() => { if (ready) app.destroy({ removeView: true }, { children: true }); });
+  await app.init({
+    width: Math.max(1, box.clientWidth), height: Math.max(1, box.clientHeight),
+    resolution: Math.min(2, devicePixelRatio || 1), autoDensity: true, preference: "webgl",
+    antialias: true, background: "#0e1013", ...opts,
+  });
+  if (!ctx.active) { app.destroy({ removeView: true }, { children: true }); throw unmounted(); }
+  ready = true;
+  box.append(app.canvas);
+  const sizeFns = [];
+  let pending = 0;
+  const ro = new ResizeObserver(() => {
+    cancelAnimationFrame(pending);
+    pending = requestAnimationFrame(() => {
+      const w = Math.max(1, box.clientWidth), h = Math.max(1, box.clientHeight);
+      if (!ctx.active || (w === app.screen.width && h === app.screen.height)) return;
+      app.renderer.resize(w, h);
+      sizeFns.forEach((fn) => fn(w, h));
+    });
+  });
+  ro.observe(box);
+  ctx.onCleanup(() => { ro.disconnect(); cancelAnimationFrame(pending); });
+  const own = (x, ...args) => {
+    if (ctx.active) owned.push(() => x.destroy(...args)); else x.destroy(...args);
+    return x;
+  };
+  return { app, own, onSize: (fn) => sizeFns.push(fn) };
+}
 
-  // Soft round glow texture drawn once on a 2D canvas
-  const g = document.createElement("canvas");
-  g.width = g.height = 32;
-  const gx = g.getContext("2d");
-  const rg = gx.createRadialGradient(16, 16, 0, 16, 16, 16);
-  rg.addColorStop(0, "rgba(255,255,255,1)");
-  rg.addColorStop(0.25, "rgba(255,255,255,0.75)");
-  rg.addColorStop(1, "rgba(255,255,255,0)");
-  gx.fillStyle = rg;
-  gx.fillRect(0, 0, 32, 32);
-  const texture = PIXI.Texture.from(g);
+// FPS plus WebGL draw calls per frame, counted by wrapping the context's draw functions.
+const DRAWS = ["drawElements", "drawArrays", "drawElementsInstanced", "drawArraysInstanced"];
+function frameStats(ctx, app) {
+  const gl = app.renderer.gl;
+  let calls = 0, frames = 0, fps = 0, dc = 0, last = performance.now();
+  if (gl) {
+    for (const n of DRAWS) {
+      const orig = gl[n];
+      if (typeof orig !== "function") continue;
+      gl[n] = function (...a) { calls++; return orig.apply(gl, a); };
+    }
+    ctx.onCleanup(() => DRAWS.forEach((n) => delete gl[n]));
+  }
+  ctx.raf((t) => {
+    frames++;
+    if (t - last >= 500) { fps = (frames * 1000) / (t - last); dc = calls / frames; frames = 0; calls = 0; last = t; }
+  });
+  return {
+    fps: () => fps.toFixed(0),
+    dc: () => (!gl ? "不適用" : dc < 10 ? dc.toFixed(1) : dc.toFixed(0)),
+    api: gl ? (typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext ? "WebGL 2" : "WebGL 1") : "WebGPU",
+  };
+}
 
-  const container = new PIXI.ParticleContainer({ texture, dynamicProperties: { position: true } });
-  container.blendMode = "add";
-  app.stage.addChild(container);
+// 384 x 144 sprite sheet drawn in code: 8 frames each of a spinning coin, a hopping blob and a flapping bird.
+function critterAtlas() {
+  const dot = (g, x, y, r, fill) => { g.fillStyle = fill; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); };
+  return canvas2d(384, 144, (g) => {
+    for (let f = 0; f < 8; f++) {
+      const x = f * 48 + 24;
+      g.save();
+      g.translate(x, 24);
+      g.scale(Math.max(0.08, Math.abs(Math.cos((2 * Math.PI * f) / 8))), 1);
+      dot(g, 0, 0, 17, C.c1);
+      g.lineWidth = 3; g.strokeStyle = "#b8860b"; g.stroke();
+      g.fillStyle = "#8a6508"; g.font = "bold 18px sans-serif"; g.textAlign = "center"; g.textBaseline = "middle";
+      g.fillText("$", 0, 1);
+      g.restore();
+      const up = Math.sin((Math.PI * f) / 8), sy = 0.78 + 0.32 * up, by = 92 - 15 * sy - up * 10;
+      g.save();
+      g.translate(x, by);
+      g.scale(1.25 - 0.35 * up, sy);
+      dot(g, 0, 0, 15, C.c4);
+      g.restore();
+      dot(g, x - 5, by - 3, 2.6, "#0e1013");
+      dot(g, x + 5, by - 3, 2.6, "#0e1013");
+      const wy = 120;
+      g.fillStyle = C.c2; g.beginPath(); g.ellipse(x, wy, 14, 11, 0, 0, Math.PI * 2); g.fill();
+      g.fillStyle = C.c5; g.beginPath(); g.moveTo(x + 12, wy - 3); g.lineTo(x + 21, wy); g.lineTo(x + 12, wy + 3); g.closePath(); g.fill();
+      dot(g, x + 6, wy - 4, 3.2, "#ffffff");
+      dot(g, x + 7, wy - 4, 1.6, "#0e1013");
+      g.save();
+      g.translate(x - 3, wy - 2);
+      g.rotate(Math.sin((2 * Math.PI * f) / 8) * 0.9);
+      g.fillStyle = C.c6; g.beginPath(); g.ellipse(-8, 0, 11, 5, 0, 0, Math.PI * 2); g.fill();
+      g.restore();
+    }
+  });
+}
+// 192 x 32 strip with six coloured bunnies for the stress test.
+function bunnyAtlas() {
+  const blob = (g, x, y, rx, ry, rot) => { g.beginPath(); g.ellipse(x, y, rx, ry, rot, 0, Math.PI * 2); g.fill(); };
+  return canvas2d(192, 32, (g) => {
+    for (let i = 0; i < 6; i++) {
+      const x = i * 32 + 16;
+      g.fillStyle = COLORS[i];
+      blob(g, x - 4, 9, 2.6, 7, -0.15);
+      blob(g, x + 3, 8, 2.6, 7, 0.2);
+      blob(g, x, 23, 9, 7.5, 0);
+      blob(g, x + 1, 16, 6, 6, 0);
+      g.fillStyle = "#0e1013";
+      blob(g, x + 3, 15, 1.3, 1.3, 0);
+    }
+  });
+}
 
-  let N = 0, px, py, vx, vy;
-  const attractor = { x: innerWidth / 2, y: innerHeight / 2, tx: 0, ty: 0, active: false };
-  let mode = "vortex";
+// Custom filter fragment: blocky horizontal glitch bands plus RGB split, clamped to the input area.
+const GLITCH_FRAG = `in vec2 vTextureCoord;
+out vec4 finalColor;
+uniform sampler2D uTexture;
+uniform highp vec4 uInputSize;
+uniform vec4 uInputClamp;
+uniform float uTime;
+float hash(float n) { return fract(sin(n) * 43758.5453); }
+void main() {
+  vec2 px = vTextureCoord * uInputSize.xy;
+  float band = floor(px.y / 18.0 + floor(uTime * 6.0) * 7.0);
+  vec2 uv = vTextureCoord;
+  if (hash(band) > 0.86) uv.x += (hash(band + 1.0) - 0.5) * 0.08;
+  vec2 off = vec2(6.0 * uInputSize.z, 0.0);
+  vec2 lo = uInputClamp.xy, hi = uInputClamp.zw;
+  vec4 c = texture(uTexture, clamp(uv, lo, hi));
+  float r = texture(uTexture, clamp(uv + off, lo, hi)).r;
+  float b = texture(uTexture, clamp(uv - off, lo, hi)).b;
+  c.rgb = vec3(r, c.g, b) * (0.82 + 0.18 * sin(px.y * 1.6));
+  finalColor = c;
+}`;
 
-  function populate(n) {
-    container.removeParticles();
-    N = n;
-    px = new Float32Array(n); py = new Float32Array(n);
-    vx = new Float32Array(n); vy = new Float32Array(n);
-    const w = app.screen.width, h = app.screen.height;
-    const list = new Array(n);
-    for (let i = 0; i < n; i++) {
-      px[i] = Math.random() * w;
-      py[i] = Math.random() * h;
-      const big = Math.random() < 0.03;
-      const s = big ? 0.55 + Math.random() * 0.3 : 0.12 + Math.random() * 0.22;
-      list[i] = new PIXI.Particle({
-        texture, x: px[i], y: py[i], anchorX: 0.5, anchorY: 0.5,
-        scaleX: s, scaleY: s, tint: PALETTE[i % PALETTE.length], alpha: big ? 0.9 : 0.55,
+let fontSeq = 0;
+
+Showcase.run({ scenes: [
+  {
+    id: "vortex", title: "霓虹漩渦",
+    api: "new PIXI.ParticleContainer({ texture, dynamicProperties })・new PIXI.Particle()・addParticle()・removeParticles()・blendMode = 'add'",
+    desc: "原本的招牌示範升級版：最多 6 萬顆發光粒子放進 ParticleContainer，每格只把位置（打開速度上色時再加顏色）上傳 GPU，以加法混合疊出霓虹光暈；滑鼠周圍的力場把粒子捲成漩渦或推開。",
+    hint: "移動滑鼠捲起漩渦・點擊引爆衝擊波・切換粒子數、排斥模式或「速度上色」",
+    async mount(ctx) {
+      ctx.el.classList.add("neon");
+      ctx.html(`<div class="px"></div>`);
+      const show = readout(ctx);
+      const { app, own, onSize } = await pixiIn(ctx, ctx.$(".px"), { background: "#07080d", antialias: false });
+      const tex = own(PIXI.Texture.from(glowCanvas(32), true), true);
+      const MAX = 60000;
+      const px = new Float32Array(MAX), py = new Float32Array(MAX), vx = new Float32Array(MAX), vy = new Float32Array(MAX);
+      // Packed particle colour (bgr + alpha << 24) can be negative, so keep it in a Float64Array.
+      const base = new Float64Array(MAX);
+      const STOPS = [[0, 0x9d8cff], [0.35, 0x4cc9f0], [0.7, 0xf7df1e], [1, 0xffffff]];
+      const LUT = Array.from({ length: 64 }, (_, i) => {
+        const f = i / 63;
+        let s = 0;
+        while (s < STOPS.length - 2 && f > STOPS[s + 1][0]) s++;
+        const [f0, a] = STOPS[s], [f1, b] = STOPS[s + 1], u = (f - f0) / (f1 - f0);
+        const ch = (sh) => Math.round(((a >> sh) & 255) + (((b >> sh) & 255) - ((a >> sh) & 255)) * u);
+        return ((ch(0) << 16) | (ch(8) << 8) | ch(16)) + (((0.4 * 255) | 0) << 24);
       });
-    }
-    // Add in chunks to stay well under the engine's argument-count limit
-    for (let i = 0; i < n; i += 5000) container.addParticle(...list.slice(i, i + 5000));
-    document.getElementById("count").textContent = n.toLocaleString("zh-TW");
-  }
+      let pc = null, count = 0, mode = 0, tinted = false, time = 0, pointer = null;
+      let tx = app.screen.width / 2, ty = app.screen.height / 2;
 
-  function burst(x, y) {
-    for (let i = 0; i < N; i++) {
-      const dx = px[i] - x, dy = py[i] - y;
-      const d2 = dx * dx + dy * dy + 400;
-      const k = 9000 / d2;
-      const d = Math.sqrt(d2);
-      vx[i] += (dx / d) * k;
-      vy[i] += (dy / d) * k;
-    }
-  }
+      function makeParticle(i) {
+        const big = Math.random() < 0.03, s = big ? rnd(0.55, 0.85) : rnd(0.12, 0.34);
+        const p = new PIXI.Particle({ texture: tex, x: px[i], y: py[i], anchorX: 0.5, anchorY: 0.5, scaleX: s, scaleY: s, tint: HEX[i % 6], alpha: big ? 0.6 : 0.28 });
+        base[i] = p.color;
+        return p;
+      }
+      const addChunked = (list) => { for (let i = 0; i < list.length; i += 5000) pc.addParticle(...list.slice(i, i + 5000)); };
+      // dynamicProperties are fixed at construction, so toggling colour upload rebuilds the container.
+      function build() {
+        const old = pc ? pc.particleChildren.slice() : [];
+        if (pc) { pc.removeParticles(); pc.destroy(); }
+        pc = new PIXI.ParticleContainer({ texture: tex, dynamicProperties: { position: true, color: tinted } });
+        pc.blendMode = "add";
+        app.stage.addChildAt(pc, 0);
+        dim();
+        if (!tinted) old.forEach((p, i) => { p.color = base[i]; });
+        addChunked(old);
+      }
+      function populate(n) {
+        const have = pc.particleChildren.length, W = app.screen.width, H = app.screen.height;
+        if (n < have) pc.removeParticles(n, have);
+        const list = [];
+        for (let i = have; i < n; i++) {
+          px[i] = Math.random() * W; py[i] = Math.random() * H; vx[i] = 0; vy[i] = 0;
+          list.push(makeParticle(i));
+        }
+        addChunked(list);
+        count = n;
+        dim();
+      }
+      // Additive glow saturates to white when particles get dense (small screens, 6 萬),
+      // so the container alpha falls with particles per pixel. It multiplies into every particle.
+      function dim() {
+        if (pc) pc.alpha = clamp(Math.sqrt((0.032 * app.screen.width * app.screen.height) / Math.max(1, count)), 0.3, 1);
+      }
+      const ring = (w) => { const g = new PIXI.Graphics().circle(0, 0, 100).stroke({ width: w, color: 0xffffff }); g.blendMode = "add"; g.alpha = 0; app.stage.addChild(g); return g; };
+      const rings = [ring(1.5), ring(1.5), ring(1.5), ring(1.5)];
+      const shock = ring(3);
+      function burst(x, y) {
+        for (let i = 0; i < count; i++) {
+          const dx = px[i] - x, dy = py[i] - y, d2 = dx * dx + dy * dy + 400, d = Math.sqrt(d2), k = 9000 / d2;
+          vx[i] += (dx / d) * k; vy[i] += (dy / d) * k;
+        }
+        shock.position.set(x, y);
+        shock.scale.set(0.05);
+        shock.alpha = 1;
+        shock.tint = HEX[(Math.random() * 6) | 0];
+      }
+      build();
+      populate(30000);
+      onSize(dim);
 
-  let time = 0;
-  app.ticker.add((tk) => {
-    const dt = Math.min(2, tk.deltaTime);
-    time += 0.01 * dt;
-    const w = app.screen.width, h = app.screen.height;
-    // Idle attractor drifts on a Lissajous path so the scene is alive without input
-    if (!attractor.active) {
-      attractor.tx = w * (0.5 + 0.3 * Math.cos(time * 0.7));
-      attractor.ty = h * (0.5 + 0.28 * Math.sin(time * 1.1));
-    }
-    attractor.x += (attractor.tx - attractor.x) * 0.1;
-    attractor.y += (attractor.ty - attractor.y) * 0.1;
-    const ax = attractor.x, ay = attractor.y;
-    const R = Math.min(w, h) * 0.45;
-    const sign = mode === "vortex" ? 1 : -1;
-    const ps = container.particleChildren;
-    for (let i = 0; i < N; i++) {
-      let x = px[i], y = py[i];
-      // Gentle flow field from layered sines
-      const ang = (Math.sin(x * 0.0042 + time) + Math.cos(y * 0.0047 - time * 0.8) + Math.sin((x - y) * 0.0021 + time * 0.5)) * 2.1;
-      let fx = Math.cos(ang) * 0.06, fy = Math.sin(ang) * 0.06;
-      const dx = x - ax, dy = y - ay;
-      const d = Math.sqrt(dx * dx + dy * dy) + 1;
-      if (d < R) {
-        const f = (1 - d / R);
-        if (sign > 0) {
-          // Swirl: tangential spin plus a slight pull toward the centre
-          fx += (-dy / d) * f * 0.9 - (dx / d) * f * 0.35;
-          fy += (dx / d) * f * 0.9 - (dy / d) * f * 0.35;
+      app.ticker.add((tk) => {
+        const dt = Math.min(2, tk.deltaTime), W = app.screen.width, H = app.screen.height, repel = mode === 1;
+        time += 0.01 * dt;
+        const gx = pointer ? pointer.x : W * (0.5 + 0.3 * Math.cos(time * 0.7));
+        const gy = pointer ? pointer.y : H * (0.5 + 0.28 * Math.sin(time * 1.1));
+        tx += (gx - tx) * 0.1; ty += (gy - ty) * 0.1;
+        const R = Math.min(W, H) * 0.45, kids = pc.particleChildren;
+        for (let i = 0; i < count; i++) {
+          let x = px[i], y = py[i];
+          const a = (Math.sin(x * 0.0042 + time) + Math.cos(y * 0.0047 - time * 0.8) + Math.sin((x - y) * 0.0021 + time * 0.5)) * 2.1;
+          let fx = Math.cos(a) * 0.06, fy = Math.sin(a) * 0.06;
+          const dx = x - tx, dy = y - ty, d = Math.sqrt(dx * dx + dy * dy) + 0.001;
+          if (d < R) {
+            const f = 1 - d / R, ux = dx / d, uy = dy / d;
+            if (repel) { fx += ux * f * 1.4; fy += uy * f * 1.4; }
+            else { fx += -uy * f * 0.9 - ux * f * 0.35; fy += ux * f * 0.9 - uy * f * 0.35; }
+          }
+          const u = (vx[i] + fx * dt) * 0.955, v = (vy[i] + fy * dt) * 0.955;
+          vx[i] = u; vy[i] = v;
+          x += u * dt; y += v * dt;
+          if (x < -10) x = W + 10; else if (x > W + 10) x = -10;
+          if (y < -10) y = H + 10; else if (y > H + 10) y = -10;
+          px[i] = x; py[i] = y;
+          const p = kids[i];
+          p.x = x; p.y = y;
+          if (tinted) p.color = LUT[Math.min(63, (Math.sqrt(u * u + v * v) * 5) | 0)];
+        }
+        rings.forEach((g, j) => {
+          const ph = (time * 0.9 + j / 4) % 1, r = repel ? ph : 1 - ph;
+          g.position.set(tx, ty);
+          g.scale.set(Math.max(0.02, (r * R) / 100));
+          g.alpha = Math.sin(ph * Math.PI) * (pointer ? 0.5 : 0.22);
+          g.tint = HEX[(j + Math.floor(time * 0.5)) % 6];
+        });
+        if (shock.alpha > 0) {
+          shock.scale.set(shock.scale.x + 0.16 * dt);
+          shock.alpha = Math.max(0, shock.alpha - 0.03 * dt);
+        }
+      });
+
+      app.stage.eventMode = "static";
+      app.stage.hitArea = app.screen;
+      app.stage.on("pointermove", (e) => { pointer = { x: e.global.x, y: e.global.y }; });
+      app.stage.on("pointerdown", (e) => { pointer = { x: e.global.x, y: e.global.y }; burst(pointer.x, pointer.y); });
+      ctx.on(app.canvas, "pointerleave", () => { pointer = null; });
+
+      ctx.group(["1 萬", "3 萬", "6 萬"], 1, (i) => populate([10000, 30000, 60000][i]));
+      ctx.group(["漩渦", "排斥"], 0, (i) => { mode = i; });
+      ctx.toggle("速度上色", false, (v) => { tinted = v; build(); });
+      const st = frameStats(ctx, app);
+      const paint = () => show(`粒子 <b>${fmtN(count)}</b>・draw call <b>${st.dc()}</b>・<b>${st.fps()}</b> FPS・${st.api}`);
+      paint();
+      ctx.interval(paint, 500);
+    },
+  },
+  {
+    id: "sprites", title: "Sprite 批次",
+    api: "new PIXI.Spritesheet(texture, data)・await sheet.parse()・new PIXI.AnimatedSprite({ textures })・sprite.blendMode",
+    desc: "用程式畫出 384×144 的圖集，交給 Spritesheet 切成 24 格影格，金幣、果凍、小鳥三種 AnimatedSprite 各自播放動畫。共用同一張圖集的 Sprite 會被合併成一次 draw call；改成 96 張獨立材質（超過 GPU 每批可綁定的材質數）或交錯混合模式，批次就會被打斷。",
+    hint: "拖動「數量」滑桿・切換三種材質模式，看 draw call 與 FPS 的變化",
+    async mount(ctx) {
+      ctx.el.classList.add("studio", "has-atlas");
+      ctx.html(`<div class="px"></div><div class="atlas"><span>SpriteSheet 圖集 384×144</span></div>`);
+      const show = readout(ctx);
+      const { app, own } = await pixiIn(ctx, ctx.$(".px"), { backgroundAlpha: 0 });
+      const atlasCanvas = critterAtlas();
+      ctx.$(".atlas").append(atlasCanvas);
+      const atlasTex = own(PIXI.Texture.from(atlasCanvas, true), true);
+      const KINDS = ["coin", "blob", "bird"], frames = {}, animations = {}, solo = {};
+      KINDS.forEach((kind, row) => {
+        animations[kind] = [];
+        solo[kind] = [[], [], [], []];
+        for (let f = 0; f < 8; f++) {
+          const id = `${kind}${f}`;
+          frames[id] = { frame: { x: f * 48, y: row * 48, w: 48, h: 48 }, sourceSize: { w: 48, h: 48 }, spriteSourceSize: { x: 0, y: 0, w: 48, h: 48 } };
+          animations[kind].push(id);
+          // Each frame copied into 4 canvases: 96 separate texture sources in total,
+          // more than one batch can bind (maxBatchableTextures, usually 16 or 32).
+          for (const set of solo[kind]) {
+            const c = canvas2d(48, 48, (g) => g.drawImage(atlasCanvas, f * 48, row * 48, 48, 48, 0, 0, 48, 48));
+            set.push(own(PIXI.Texture.from(c, true), true));
+          }
+        }
+      });
+      const sheet = own(new PIXI.Spritesheet(atlasTex, { frames, animations, meta: { scale: "1" } }), false);
+      await sheet.parse();
+      if (!ctx.active) return;
+
+      const layer = new PIXI.Container();
+      app.stage.addChild(layer);
+      const vel = [];
+      let mode = 0;
+      const texturesFor = (kind, i) => (mode === 1 ? solo[kind][Math.floor(i / 3) % 4] : sheet.animations[kind]);
+      function makeSprite(i) {
+        const kind = KINDS[i % 3], W = app.screen.width, H = app.screen.height;
+        const s = new PIXI.AnimatedSprite({ textures: texturesFor(kind, i), animationSpeed: rnd(0.12, 0.3), autoUpdate: false, anchor: 0.5 });
+        s.label = kind;
+        s.position.set(rnd(24, W - 24), rnd(24, H - 24));
+        s.blendMode = mode === 2 && i % 2 ? "add" : "normal";
+        s.gotoAndPlay((Math.random() * 8) | 0);
+        vel[i] = [rnd(0.4, 1.8) * (Math.random() < 0.5 ? -1 : 1), rnd(-1.2, 1.2)];
+        return s;
+      }
+      function setCount(n) {
+        const have = layer.children.length;
+        if (n < have) layer.removeChildren(n, have).forEach((s) => s.destroy());
+        for (let i = have; i < n; i++) layer.addChild(makeSprite(i));
+        vel.length = n;
+      }
+      function setMode(m) {
+        mode = m;
+        layer.children.forEach((s, i) => {
+          const f = s.currentFrame;
+          s.textures = texturesFor(s.label, i);
+          s.blendMode = m === 2 && i % 2 ? "add" : "normal";
+          s.gotoAndPlay(f);
+        });
+      }
+      setCount(400);
+      app.ticker.add((tk) => {
+        const k = Math.min(2, tk.deltaTime), W = app.screen.width, H = app.screen.height, kids = layer.children;
+        for (let i = 0; i < kids.length; i++) {
+          const s = kids[i], v = vel[i];
+          s.x += v[0] * k; s.y += v[1] * k;
+          if (s.x < 20) { s.x = 20; v[0] = Math.abs(v[0]); } else if (s.x > W - 20) { s.x = W - 20; v[0] = -Math.abs(v[0]); }
+          if (s.y < 20) { s.y = 20; v[1] = Math.abs(v[1]); } else if (s.y > H - 20) { s.y = H - 20; v[1] = -Math.abs(v[1]); }
+          if (s.label === "bird") s.scale.x = v[0] < 0 ? -1 : 1;
+          s.update(tk);
+        }
+      });
+
+      ctx.slider("數量", { min: 50, max: 3000, step: 50, value: 400 }, setCount);
+      ctx.group(["單一圖集", "96 張獨立材質", "交錯混合模式"], 0, setMode);
+      const st = frameStats(ctx, app), perBatch = app.renderer.limits.maxBatchableTextures;
+      const paint = () => show(`Sprite <b>${fmtN(layer.children.length)}</b>・材質來源 <b>${mode === 1 ? 96 : 1}</b>（每批上限 <b>${perBatch}</b>）・draw call <b>${st.dc()}</b>・<b>${st.fps()}</b> FPS`);
+      paint();
+      ctx.interval(paint, 500);
+    },
+  },
+  {
+    id: "graphics", title: "向量繪圖",
+    api: "Graphics.star()・roundPoly()・chamferRect()・bezierCurveTo()・arc()・cut()・svg()・fill(FillGradient | FillPattern)・stroke()",
+    desc: "Graphics 的內建形狀（矩形、圓角、橢圓、星形、正多邊形、圓角多邊形、切角矩形）、貝茲曲線、圓弧、cut() 挖洞與 svg() 解析 SVG 字串。同一組形狀可以換成純色、FillGradient 線性或放射漸層、只描邊，或 FillPattern 圖樣填色。",
+    hint: "切換「純色、線性漸層、放射漸層、描邊、圖樣」，看同一組形狀換樣式",
+    async mount(ctx) {
+      ctx.el.classList.add("studio");
+      ctx.html(`<div class="px"></div>`);
+      const show = readout(ctx);
+      const { app, own, onSize } = await pixiIn(ctx, ctx.$(".px"), { backgroundAlpha: 0 });
+      const stops = (...cs) => cs.map((color, i) => ({ offset: i / (cs.length - 1), color }));
+      const lin = COLORS.map((c, k) => own(new PIXI.FillGradient({ type: "linear", start: { x: 0, y: 0 }, end: { x: 1, y: 1 }, colorStops: stops(c, COLORS[(k + 2) % 6]) })));
+      const rad = COLORS.map((c, k) => own(new PIXI.FillGradient({ type: "radial", colorStops: [{ offset: 0, color: "#ffffff" }, { offset: 0.45, color: c }, { offset: 1, color: COLORS[(k + 3) % 6] }] })));
+      const stripe = canvas2d(32, 32, (g) => {
+        g.fillStyle = "#ffffff"; g.fillRect(0, 0, 32, 32);
+        g.strokeStyle = "#8a8f98"; g.lineWidth = 7;
+        for (const o of [-32, 0, 32]) { g.beginPath(); g.moveTo(o, 32); g.lineTo(o + 32, 0); g.stroke(); }
+      });
+      // FillPattern.destroy() also destroys its texture.
+      const pattern = own(new PIXI.FillPattern(PIXI.Texture.from(stripe, true), "repeat"));
+      const STYLES = ["純色", "線性漸層", "放射漸層", "描邊", "圖樣"];
+      let style = 0;
+      const fillOf = (k) => (style === 1 ? lin[k] : style === 2 ? rad[k] : style === 4 ? pattern : { color: HEX[k] });
+      const lineOf = (k, width) => ({ width, cap: "round", join: "round", ...(style === 1 ? { fill: lin[k] } : style === 2 ? { fill: rad[k] } : style === 4 ? { fill: pattern } : { color: HEX[k] }) });
+      function paintShape(g, k, path) {
+        g.clear();
+        path(g);
+        if (style === 3) g.fill({ color: HEX[k], alpha: 0.18 }).stroke({ width: 4, color: HEX[k], join: "round" });
+        else g.fill(fillOf(k));
+      }
+      const shape = (name, path) => ({ name, draw: (g, k) => paintShape(g, k, path) });
+      const HEART = `<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 24 C -26 6 -30 -14 -14 -20 C -6 -23 0 -16 0 -10 C 0 -16 6 -23 14 -20 C 30 -14 26 6 0 24 Z" fill="${C.c3}" stroke="#ffffff" stroke-width="3"/></svg>`;
+      const DEFS = [
+        shape("rect()", (g) => g.rect(-46, -34, 92, 68)),
+        shape("roundRect()", (g) => g.roundRect(-46, -34, 92, 68, 16)),
+        shape("circle()", (g) => g.circle(0, 0, 42)),
+        shape("ellipse()", (g) => g.ellipse(0, 0, 50, 30)),
+        shape("star()", (g) => g.star(0, 0, 5, 48, 22)),
+        shape("regularPoly()", (g) => g.regularPoly(0, 0, 46, 6)),
+        shape("roundPoly()", (g) => g.roundPoly(0, 0, 46, 5, 12)),
+        shape("chamferRect()", (g) => g.chamferRect(-46, -36, 92, 72, 16)),
+        {
+          name: "bezierCurveTo()", anim: true,
+          draw(g, k, t) {
+            // Open paths need beginPath(), otherwise the previous fill's last point is reused.
+            g.clear().beginPath().moveTo(-50, 0);
+            for (let i = 0; i < 4; i++) {
+              const x0 = -50 + i * 25, s = (i % 2 ? -26 : 26) * Math.sin(t * 2 + i);
+              g.bezierCurveTo(x0 + 8, s, x0 + 17, s, x0 + 25, 0);
+            }
+            g.stroke(lineOf(k, 7));
+          },
+        },
+        {
+          name: "arc()", anim: true,
+          draw(g, k, t) {
+            const p = (t * 0.25) % 1;
+            g.clear().circle(0, 0, 38).stroke({ width: 10, color: 0xffffff, alpha: 0.08 });
+            g.beginPath().arc(0, 0, 38, -Math.PI / 2, -Math.PI / 2 + Math.max(0.05, p * Math.PI * 2)).stroke(lineOf(k, 10));
+          },
+        },
+        {
+          name: "cut()",
+          draw(g, k) {
+            g.clear().roundRect(-46, -36, 92, 72, 14);
+            if (style === 3) {
+              g.fill({ color: HEX[k], alpha: 0.18 }).star(0, 0, 5, 26, 11).cut();
+              g.roundRect(-46, -36, 92, 72, 14).star(0, 0, 5, 26, 11).stroke({ width: 4, color: HEX[k], join: "round" });
+            } else {
+              g.fill(fillOf(k)).star(0, 0, 5, 26, 11).cut();
+            }
+          },
+        },
+        {
+          name: "svg()", anim: true,
+          draw(g, k, t) {
+            if (!g.__svg) { g.svg(HEART); g.__svg = true; }
+            g.scale.set(1.6 * (1 + 0.07 * Math.abs(Math.sin(t * 3)) ** 6));
+          },
+        },
+      ];
+      const LABEL = new PIXI.TextStyle({ fontFamily: MONO, fontSize: 13, fill: 0x9b998f });
+      const tiles = DEFS.map((def, i) => {
+        const root = new PIXI.Container();
+        const bg = new PIXI.Graphics().roundRect(-66, -70, 132, 140, 14).fill({ color: 0xffffff, alpha: 0.03 }).stroke({ width: 1, color: 0xffffff, alpha: 0.08 });
+        const g = new PIXI.Graphics();
+        g.y = -10;
+        const label = new PIXI.Text({ text: def.name, style: LABEL, anchor: { x: 0.5, y: 0 } });
+        label.y = 46;
+        root.addChild(bg, g, label);
+        app.stage.addChild(root);
+        return { def, g, k: i % 6, root };
+      });
+      const redraw = (t, all) => tiles.forEach((tile) => {
+        if (!all && !tile.def.anim) return;
+        tile.def.draw(tile.g, tile.k, t);
+        tile.g.tint = style === 4 && tile.def.name !== "svg()" ? HEX[tile.k] : 0xffffff;
+      });
+      function layout(W, H) {
+        const top = belowControls(ctx), bottom = 46, U = 150;
+        let best = null;
+        for (const cols of [3, 4, 6]) {
+          const rows = Math.ceil(tiles.length / cols);
+          const k = Math.min(1.15, (W - 20) / (cols * U), (H - top - bottom) / (rows * U));
+          if (!best || k > best.k) best = { cols, rows, k };
+        }
+        const { cols, rows, k } = best;
+        const ox = (W - cols * U * k) / 2, oy = top + (H - top - bottom - rows * U * k) / 2;
+        tiles.forEach((tile, i) => {
+          tile.root.scale.set(k);
+          tile.root.position.set(ox + ((i % cols) + 0.5) * U * k, oy + (Math.floor(i / cols) + 0.5) * U * k);
+        });
+      }
+      ctx.group(STYLES, 0, (i) => { style = i; redraw(performance.now() / 1000, true); paint(); });
+      redraw(performance.now() / 1000, true);
+      layout(app.screen.width, app.screen.height);
+      onSize(layout);
+      app.ticker.add(() => redraw(performance.now() / 1000, false));
+      const st = frameStats(ctx, app);
+      const paint = () => show(`樣式 <b>${STYLES[style]}</b>・Graphics <b>${tiles.length * 2}</b>・Text <b>${tiles.length}</b>・draw call <b>${st.dc()}</b>・<b>${st.fps()}</b> FPS`);
+      paint();
+      ctx.interval(paint, 500);
+    },
+  },
+  {
+    id: "filters", title: "濾鏡",
+    api: "BlurFilter・ColorMatrixFilter().hue()・NoiseFilter・DisplacementFilter({ sprite, scale })・new PIXI.Filter({ glProgram, resources })・container.filters",
+    desc: "左半是原圖，右半套用濾鏡鏈：內建的模糊、色彩矩陣（灰階、復古、色相旋轉、負片）、雜訊、置換扭曲，以及用 GLSL 自己寫的故障效果（水平錯位加 RGB 分離）。濾鏡依點選順序串接，每一層都是一次離屏渲染。",
+    hint: "點濾鏡按鈕組合濾鏡鏈（數字是套用順序）・左右拖曳分隔線・換照片",
+    async mount(ctx) {
+      ctx.el.classList.add("studio");
+      ctx.html(`<div class="px"></div><div class="dock"><div class="chips"></div></div>`);
+      const show = readout(ctx, ctx.$(".dock"));
+      const { app, own, onSize } = await pixiIn(ctx, ctx.$(".px"), { backgroundAlpha: 0 });
+      const PHOTOS = { 水母: 6, 瀑布彩虹: 5, 母獅: 7 };
+      const cache = {};
+      async function photo(name) {
+        if (!cache[name]) {
+          const t = await photoTexture(ctx, PHOTO(PHOTOS[name]));
+          if (!t) return null;
+          cache[name] = own(t, true);
+        }
+        return cache[name];
+      }
+      const first = await photo("水母");
+      if (!first) return;
+
+      // base shows the original; the right half is fx (filtered) clipped by a mask on its parent.
+      const base = new PIXI.Sprite(first), top = new PIXI.Sprite(first);
+      const fx = new PIXI.Container(), clip = new PIXI.Container(), maskG = new PIXI.Graphics();
+      fx.addChild(top);
+      clip.addChild(fx);
+      clip.mask = maskG;
+      const cloud = canvas2d(256, 256, (g) => {
+        g.fillStyle = "rgb(128,128,128)";
+        g.fillRect(0, 0, 256, 256);
+        for (let i = 0; i < 60; i++) {
+          const x = rnd(0, 256), y = rnd(0, 256), r = rnd(20, 64), cr = (Math.random() * 255) | 0, cg = (Math.random() * 255) | 0;
+          for (const ox of [-256, 0, 256]) for (const oy of [-256, 0, 256]) {
+            const grd = g.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, r);
+            grd.addColorStop(0, `rgba(${cr},${cg},128,0.45)`);
+            grd.addColorStop(1, `rgba(${cr},${cg},128,0)`);
+            g.fillStyle = grd;
+            g.fillRect(x + ox - r, y + oy - r, r * 2, r * 2);
+          }
+        }
+      });
+      const cloudTex = own(PIXI.Texture.from(cloud, true), true);
+      cloudTex.source.addressMode = "repeat";
+      const disp = new PIXI.Sprite(cloudTex);
+      disp.scale.set(2);
+      const LBL = { fontFamily: FONT, fontSize: 14, fontWeight: "600", fill: 0xffffff, stroke: { color: 0x000000, width: 4, join: "round" } };
+      const lblA = new PIXI.Text({ text: "原圖", style: LBL, anchor: { x: 1, y: 0.5 } });
+      const lblB = new PIXI.Text({ text: "濾鏡後", style: LBL, anchor: { x: 0, y: 0.5 } });
+      const divider = new PIXI.Graphics();
+      app.stage.addChild(base, clip, maskG, disp, divider, lblA, lblB);
+
+      const gray = own(new PIXI.ColorMatrixFilter()); gray.desaturate();
+      const vint = own(new PIXI.ColorMatrixFilter()); vint.vintage(false);
+      const neg = own(new PIXI.ColorMatrixFilter()); neg.negative(false);
+      const hue = own(new PIXI.ColorMatrixFilter());
+      const noise = own(new PIXI.NoiseFilter({ noise: 0.35 }));
+      const glitch = own(new PIXI.Filter({
+        glProgram: PIXI.GlProgram.from({ vertex: PIXI.defaultFilterVert, fragment: GLITCH_FRAG, name: "glitch-filter" }),
+        resources: { fx: { uTime: { value: 0, type: "f32" } } },
+      }));
+      const FX = [
+        ["blur", "模糊", own(new PIXI.BlurFilter({ strength: 6, quality: 4 }))],
+        ["gray", "灰階", gray], ["vint", "復古", vint], ["hue", "色相旋轉", hue], ["neg", "負片", neg],
+        ["noise", "雜訊", noise], ["disp", "置換扭曲", own(new PIXI.DisplacementFilter({ sprite: disp, scale: 40 }))],
+        ["glitch", "自訂 GLSL", glitch],
+      ];
+      const byId = Object.fromEntries(FX.map(([id, , f]) => [id, f]));
+      const nameOf = Object.fromEntries(FX.map(([id, name]) => [id, name]));
+      let chain = ["disp", "hue"], split = 0.5, auto = true, dragging = false;
+      const btns = {};
+      for (const [id, name] of FX) {
+        const b = document.createElement("button");
+        b.className = "btn"; b.type = "button"; b.textContent = name;
+        b.addEventListener("click", () => {
+          chain = chain.includes(id) ? chain.filter((x) => x !== id) : [...chain, id];
+          applyChain();
+        });
+        ctx.$(".chips").append(b);
+        btns[id] = b;
+      }
+      function applyChain() {
+        fx.filters = chain.map((id) => byId[id]);
+        for (const [id] of FX) {
+          const n = chain.indexOf(id);
+          btns[id].setAttribute("aria-pressed", String(n >= 0));
+          btns[id].dataset.n = n >= 0 ? String(n + 1) : "";
+        }
+        paint();
+      }
+      function drawSplit() {
+        const W = app.screen.width, H = app.screen.height, x = Math.round(W * split), cy = H / 2;
+        maskG.clear().rect(x, 0, W - x, H).fill(0xffffff);
+        divider.clear().moveTo(x, 0).lineTo(x, H).stroke({ width: 2, color: 0xffffff, alpha: 0.9 });
+        divider.circle(x, cy, 18).fill({ color: 0x0e1013, alpha: 0.8 }).stroke({ width: 2, color: 0xffffff });
+        divider.poly([x - 4, cy - 6, x - 10, cy, x - 4, cy + 6]).fill(0xffffff);
+        divider.poly([x + 4, cy - 6, x + 10, cy, x + 4, cy + 6]).fill(0xffffff);
+        lblA.position.set(x - 14, cy - 42);
+        lblB.position.set(x + 14, cy - 42);
+      }
+      function fit() {
+        const W = app.screen.width, H = app.screen.height, tex = base.texture;
+        const k = Math.max(W / tex.width, H / tex.height);
+        for (const s of [base, top]) { s.scale.set(k); s.position.set((W - tex.width * k) / 2, (H - tex.height * k) / 2); }
+        drawSplit();
+      }
+      const setSplit = (gx) => { split = clamp(gx / app.screen.width, 0.03, 0.97); drawSplit(); };
+      app.stage.eventMode = "static";
+      app.stage.hitArea = app.screen;
+      app.stage.cursor = "ew-resize";
+      app.stage.on("pointerdown", (e) => { auto = false; dragging = true; setSplit(e.global.x); });
+      app.stage.on("globalpointermove", (e) => { if (dragging) setSplit(e.global.x); });
+      const release = () => { dragging = false; };
+      app.stage.on("pointerup", release);
+      app.stage.on("pointerupoutside", release);
+      app.ticker.add(() => {
+        const t = performance.now() / 1000;
+        if (auto) { split = 0.5 + 0.18 * Math.sin(t * 0.6); drawSplit(); }
+        if (chain.includes("hue")) hue.hue((t * 60) % 360, false);
+        noise.seed = Math.random();
+        glitch.resources.fx.uniforms.uTime = t;
+        disp.position.set((t * 30) % 512, (t * 18) % 512);
+      });
+      ctx.select("照片", Object.keys(PHOTOS), "水母", async (name) => {
+        const t = await photo(name);
+        if (!t || !ctx.active) return;
+        base.texture = t;
+        top.texture = t;
+        fit();
+      });
+      const st = frameStats(ctx, app);
+      const paint = () => show(`濾鏡鏈 <b>${chain.length ? chain.map((id) => nameOf[id]).join(" → ") : "（無）"}</b>・draw call <b>${st.dc()}</b>・<b>${st.fps()}</b> FPS`);
+      fit();
+      onSize(fit);
+      applyChain();
+      ctx.interval(paint, 500);
+    },
+  },
+  {
+    id: "text", title: "文字渲染",
+    api: "new PIXI.Text({ style: { fill: FillGradient, stroke, dropShadow, tagStyles } })・BitmapFont.install()・BitmapText・HTMLText",
+    desc: "三種文字物件並排：Text 用 Canvas 2D 畫字再上傳成材質，支援漸層、描邊、陰影與 tagStyles 混用樣式；BitmapText 預先把字形烘成圖集，改字只重排頂點；HTMLText 交給瀏覽器排版 HTML 與 CSS。持續更新時兩邊 24 格數字每格都換新值，分開計時比較重畫成本。",
+    hint: "開關「持續更新」，比較 Text 與 BitmapText 每格的渲染耗時",
+    async mount(ctx) {
+      ctx.el.classList.add("studio");
+      ctx.html(`<div class="px"></div>`);
+      const show = readout(ctx);
+      const { app, own, onSize } = await pixiIn(ctx, ctx.$(".px"), { backgroundAlpha: 0, autoStart: false });
+      const fontName = `atlas-mono-${++fontSeq}`;
+      PIXI.BitmapFont.install({ name: fontName, style: { fontFamily: MONO, fontSize: 32, fill: 0xffffff }, chars: [["0", "9"], " .:"], resolution: 2 });
+      const PW = 300, PH = 236;
+      function panel(title) {
+        const root = new PIXI.Container();
+        const bg = new PIXI.Graphics().roundRect(0, 0, PW, PH, 14).fill({ color: 0xffffff, alpha: 0.035 }).stroke({ width: 1, color: 0xffffff, alpha: 0.1 });
+        const head = new PIXI.Text({ text: title, style: { fontFamily: FONT, fontSize: 12, fontWeight: "600", fill: HEX[0] } });
+        head.position.set(14, 12);
+        root.addChild(bg, head);
+        return root;
+      }
+      const cell = (o, i) => { o.position.set(14 + (i % 6) * 46, 112 + Math.floor(i / 6) * 29); return o; };
+
+      const textRoot = panel("Text：每次改字重畫 Canvas 再上傳");
+      const titleFill = own(new PIXI.FillGradient({ type: "linear", start: { x: 0, y: 0 }, end: { x: 0, y: 1 }, colorStops: [{ offset: 0, color: C.c1 }, { offset: 0.55, color: C.c5 }, { offset: 1, color: C.c3 }] }));
+      const title = new PIXI.Text({
+        text: "漸層・描邊・陰影",
+        style: {
+          fontFamily: FONT, fontSize: 30, fontWeight: "800", fill: titleFill,
+          stroke: { color: 0x0e1013, width: 5, join: "round" },
+          dropShadow: { alpha: 0.6, angle: Math.PI / 4, blur: 6, color: 0x000000, distance: 5 },
+        },
+      });
+      title.position.set(12, 32);
+      const tagged = new PIXI.Text({
+        text: "<em>tagStyles</em> 讓 <hi>同一段</hi> 文字<big>混用樣式</big>",
+        style: {
+          fontFamily: FONT, fontSize: 14, fill: 0xd6d3c8,
+          tagStyles: { em: { fill: HEX[1], fontWeight: "bold" }, hi: { fill: HEX[2], fontStyle: "italic" }, big: { fill: HEX[3], fontSize: 18, fontWeight: "bold" } },
+        },
+      });
+      tagged.position.set(14, 78);
+      const STY = HEX.map((c) => new PIXI.TextStyle({ fontFamily: MONO, fontSize: 16, fill: c }));
+      const txt = Array.from({ length: 24 }, (_, i) => cell(new PIXI.Text({ text: "0000", style: STY[i % 6] }), i));
+      textRoot.addChild(title, tagged, ...txt);
+
+      const bmpRoot = panel("BitmapText：字形預先烘成圖集");
+      const clock = new PIXI.BitmapText({ text: "00:00:00.000", style: { fontFamily: fontName, fontSize: 34 } });
+      clock.tint = HEX[1];
+      clock.position.set(14, 40);
+      const bmp = Array.from({ length: 24 }, (_, i) => {
+        const b = cell(new PIXI.BitmapText({ text: "0000", style: { fontFamily: fontName, fontSize: 16 } }), i);
+        b.tint = HEX[i % 6];
+        return b;
+      });
+      bmpRoot.addChild(clock, ...bmp);
+
+      const htmlRoot = panel("HTMLText：交給瀏覽器排版");
+      const html = new PIXI.HTMLText({
+        text: `<b>HTMLText</b> 把 HTML 與 CSS 交給瀏覽器排版：支援 <i>斜體</i>、<span style="color:${C.c2}">行內樣式</span>、<u>底線</u> 與自動換行。<br><br>每次改字都要序列化成 SVG，再非同步轉成圖片上傳，所以這格維持靜態，不參與每格更新。`,
+        style: { fontFamily: FONT.join(", "), fontSize: 14, fill: 0xd6d3c8, lineHeight: 22, wordWrap: true, wordWrapWidth: PW - 28 },
+      });
+      html.position.set(14, 38);
+      htmlRoot.addChild(html);
+
+      const roots = [textRoot, bmpRoot, htmlRoot];
+      // The panels are rendered one by one with renderer.render(), so they live outside the stage.
+      ctx.onCleanup(() => {
+        roots.forEach((r) => r.destroy({ children: true }));
+        STY.forEach((s) => s.destroy());
+        PIXI.BitmapFont.uninstall(fontName);
+      });
+      function layout(W, H) {
+        const top = belowControls(ctx), bottom = 46, gap = 16;
+        let best = null;
+        for (const cols of [1, 2, 3]) {
+          const rows = Math.ceil(3 / cols);
+          const k = Math.min(1.25, (W - 20) / (cols * PW + (cols - 1) * gap), (H - top - bottom) / (rows * PH + (rows - 1) * gap));
+          if (!best || k > best.k) best = { cols, rows, k };
+        }
+        const { cols, rows, k } = best;
+        const gw = (cols * PW + (cols - 1) * gap) * k, gh = (rows * PH + (rows - 1) * gap) * k;
+        const ox = (W - gw) / 2, oy = top + (H - top - bottom - gh) / 2;
+        roots.forEach((r, i) => {
+          r.scale.set(k);
+          r.position.set(ox + (i % cols) * (PW + gap) * k, oy + Math.floor(i / cols) * (PH + gap) * k);
+        });
+      }
+      layout(app.screen.width, app.screen.height);
+      onSize(layout);
+
+      let live = true, tText = 0, tBmp = 0;
+      const pad = (n, w) => String(n).padStart(w, "0");
+      ctx.raf(() => {
+        if (live) {
+          for (let i = 0; i < 24; i++) {
+            const v = pad((Math.random() * 10000) | 0, 4);
+            txt[i].text = v;
+            bmp[i].text = v;
+          }
+          const d = new Date();
+          clock.text = `${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}.${pad(d.getMilliseconds(), 3)}`;
+        }
+        roots.forEach((root, i) => {
+          const t0 = performance.now();
+          app.renderer.render({ container: root, clear: i === 0 });
+          const ms = performance.now() - t0;
+          if (i === 0) tText += (ms - tText) * 0.1;
+          else if (i === 1) tBmp += (ms - tBmp) * 0.1;
+        });
+      });
+      ctx.toggle("持續更新", live, (v) => { live = v; });
+      const st = frameStats(ctx, app);
+      const paint = () => show(`Text 每格 <b>${tText.toFixed(2)} ms</b>・BitmapText 每格 <b>${tBmp.toFixed(2)} ms</b>・HTMLText 靜態・<b>${st.fps()}</b> FPS`);
+      paint();
+      ctx.interval(paint, 500);
+    },
+  },
+  {
+    id: "events", title: "互動事件",
+    api: "eventMode = 'static'・hitArea・addEventListener('pointertap', fn, { capture: true })・e.eventPhase・e.stopPropagation()・globalpointermove",
+    desc: "Pixi 的聯合事件系統仿照 DOM：eventMode 決定誰能接收事件、hitArea 自訂點擊範圍，事件先從 stage 往下捕獲、抵達目標，再一路冒泡回 stage。右側紀錄每次 pointertap 經過的節點與階段；拖曳卡片則用 globalpointermove 追蹤。",
+    hint: "點卡片或愛心看捕獲與冒泡順序・打開「阻止冒泡」再點愛心・拖曳卡片換位置",
+    async mount(ctx) {
+      ctx.el.classList.add("studio");
+      ctx.html(`<div class="px"></div><div class="evlog"><h3>pointertap 傳遞紀錄</h3><ul></ul></div>`);
+      const ul = ctx.$(".evlog ul"), logBox = ctx.$(".evlog");
+      const { app, onSize } = await pixiIn(ctx, ctx.$(".px"), { backgroundAlpha: 0 });
+      let stopBubble = false, showHit = false, suppressTap = false, drag = null, z = 0, taps = 0, pending = null;
+
+      // Lines of one dispatch are buffered and flushed together, newest group on top.
+      function log(cls, text) {
+        if (!pending) { pending = []; queueMicrotask(flush); }
+        pending.push([cls, text]);
+      }
+      function flush() {
+        const lines = pending;
+        pending = null;
+        if (!ctx.active) return;
+        [...ul.children].forEach((li) => li.classList.add("old"));
+        const frag = document.createDocumentFragment();
+        [["sep", `第 ${++taps} 次點擊`], ...lines].forEach(([cls, text]) => {
+          const li = document.createElement("li");
+          li.className = cls;
+          li.textContent = text;
+          frag.append(li);
+        });
+        ul.prepend(frag);
+        while (ul.children.length > 40) ul.lastChild.remove();
+      }
+      function intro() {
+        ul.innerHTML = `<li class="sep">點卡片或愛心，看事件怎麼傳遞</li><li class="cap">藍：捕獲階段（往下）</li><li class="tgt">黃：抵達目標</li><li class="bub">綠：冒泡階段（往上）</li>`;
+      }
+      intro();
+
+      const world = new PIXI.Container();
+      world.sortableChildren = true;
+      app.stage.addChild(world);
+      app.stage.label = "stage";
+      app.stage.eventMode = "static";
+      app.stage.hitArea = app.screen;
+      app.stage.addEventListener("pointertap", (e) => {
+        // A drag that just ended also produces a tap; swallow it before anyone sees it.
+        if (suppressTap) { e.stopImmediatePropagation(); return; }
+        if (e.eventPhase !== 2) log("cap", "捕獲　stage");
+      }, { capture: true });
+      app.stage.addEventListener("pointertap", (e) => {
+        if (e.eventPhase === 2) log("tgt", "目標　stage（點在空白處）");
+        else log("bub", "冒泡　stage");
+      });
+
+      const CITIES = [["台北", "101 夜景與夜市"], ["台中", "審計新村與草悟道"], ["台南", "古蹟、廟宇與小吃"], ["高雄", "駁二藝術特區"]];
+      const hits = [];
+      const heartPath = (g) => g.moveTo(0, 8).bezierCurveTo(-14, -2, -12, -14, -5, -14).bezierCurveTo(-1, -14, 0, -10, 0, -8)
+        .bezierCurveTo(0, -10, 1, -14, 5, -14).bezierCurveTo(12, -14, 14, -2, 0, 8).closePath();
+      CITIES.forEach(([name, desc], i) => {
+        const col = HEX[[1, 3, 4, 5][i]];
+        const card = new PIXI.Container({ label: `卡片 ${name}` });
+        card.eventMode = "static";
+        card.cursor = "grab";
+        card.hitArea = new PIXI.Rectangle(0, 0, 200, 120);
+        card.position.set((i % 2) * 220, Math.floor(i / 2) * 140);
+        const glow = new PIXI.Graphics().roundRect(-4, -4, 208, 128, 15).stroke({ width: 3, color: col, alpha: 0.9 });
+        glow.visible = false;
+        const bg = new PIXI.Graphics().roundRect(0, 0, 200, 120, 12).fill(0x1b1e26).stroke({ width: 1, color: 0xffffff, alpha: 0.12 });
+        bg.rect(0, 16, 4, 88).fill(col);
+        const title = new PIXI.Text({ text: name, style: { fontFamily: FONT, fontSize: 22, fontWeight: "700", fill: 0xffffff } });
+        title.position.set(18, 14);
+        const sub = new PIXI.Text({ text: desc, style: { fontFamily: FONT, fontSize: 13, fill: 0xb5b2a6 } });
+        sub.position.set(18, 52);
+        const tip = new PIXI.Text({ text: "拖曳換位置", style: { fontFamily: FONT, fontSize: 11, fill: 0x77756d } });
+        tip.position.set(18, 92);
+        let on = false;
+        const heart = new PIXI.Graphics();
+        heart.label = `愛心（${name}）`;
+        heart.eventMode = "static";
+        heart.cursor = "pointer";
+        heart.hitArea = new PIXI.Circle(0, 0, 17);
+        heart.position.set(170, 30);
+        heart.scale.set(1.4);
+        const drawHeart = () => {
+          heart.clear();
+          heartPath(heart);
+          if (on) heart.fill(HEX[2]); else heart.stroke({ width: 1.6, color: 0xffffff, alpha: 0.75 });
+        };
+        drawHeart();
+        const hit = new PIXI.Graphics().rect(0, 0, 200, 120).stroke({ width: 1.5, color: HEX[0], alpha: 0.8 });
+        hit.circle(170, 30, 24).fill({ color: HEX[0], alpha: 0.18 }).stroke({ width: 1.5, color: HEX[0] });
+        hit.eventMode = "none";
+        hit.visible = showHit;
+        hits.push(hit);
+        card.addChild(glow, bg, title, sub, tip, heart, hit);
+        world.addChild(card);
+
+        card.addEventListener("pointertap", (e) => { if (e.eventPhase !== 2) log("cap", `捕獲　${card.label}`); }, { capture: true });
+        card.addEventListener("pointertap", (e) => log(e.eventPhase === 2 ? "tgt" : "bub", `${e.eventPhase === 2 ? "目標" : "冒泡"}　${card.label}`));
+        heart.addEventListener("pointertap", (e) => {
+          on = !on;
+          drawHeart();
+          log("tgt", `目標　${heart.label}${on ? "，收藏" : "，取消收藏"}`);
+          if (stopBubble) { e.stopPropagation(); log("stop", "stopPropagation()：冒泡到此為止"); }
+        });
+        card.on("pointerenter", () => { glow.visible = true; });
+        card.on("pointerleave", () => { glow.visible = false; });
+        card.on("pointerdown", (e) => {
+          if (e.target !== card) return;
+          const p = world.toLocal(e.global);
+          drag = { card, dx: p.x - card.x, dy: p.y - card.y, sx: e.global.x, sy: e.global.y, moved: false };
+          card.zIndex = ++z;
+          card.cursor = "grabbing";
+        });
+      });
+      app.stage.on("globalpointermove", (e) => {
+        if (!drag) return;
+        if (!drag.moved && Math.hypot(e.global.x - drag.sx, e.global.y - drag.sy) < 4) return;
+        drag.moved = true;
+        const p = world.toLocal(e.global);
+        drag.card.position.set(p.x - drag.dx, p.y - drag.dy);
+      });
+      const endDrag = () => {
+        if (!drag) return;
+        if (drag.moved) { suppressTap = true; queueMicrotask(() => { suppressTap = false; }); }
+        drag.card.cursor = "grab";
+        drag = null;
+      };
+      app.stage.on("pointerup", endDrag);
+      app.stage.on("pointerupoutside", endDrag);
+
+      function layout(W, H) {
+        const tight = W < 640;
+        logBox.classList.toggle("tight", tight);
+        const top = belowControls(ctx), right = tight ? 10 : 270, bottom = tight ? 146 : 20;
+        const aw = W - right - 10, ah = H - top - bottom;
+        const k = Math.max(0.3, Math.min(1.25, aw / 420, ah / 260));
+        world.scale.set(k);
+        world.position.set(10 + (aw - 420 * k) / 2, top + (ah - 260 * k) / 2);
+      }
+      ctx.toggle("阻止冒泡", false, (v) => { stopBubble = v; });
+      ctx.toggle("顯示 hitArea", false, (v) => { showHit = v; hits.forEach((h) => { h.visible = v; }); });
+      ctx.button("清除紀錄", () => { taps = 0; intro(); });
+      layout(app.screen.width, app.screen.height);
+      onSize(layout);
+    },
+  },
+  {
+    id: "rendertexture", title: "渲染材質",
+    api: "RenderTexture.create()・renderer.render({ container, target, clear: false })・new PIXI.MeshPlane()・new PIXI.PerspectiveMesh()・extract.download()",
+    desc: "筆刷每格把一批 Sprite 以 clear: false 疊畫進 RenderTexture，畫作會一直累積；同一張 RenderTexture 同時當作 MeshPlane 的材質做頂點波浪，或貼到 PerspectiveMesh 做翻牌透視，也能用 extract 匯出成 PNG。",
+    hint: "在左邊畫布上作畫・切換「波浪、透視」・換筆刷顏色與大小・下載 PNG",
+    async mount(ctx) {
+      ctx.el.classList.add("studio");
+      ctx.html(`<div class="px"></div>`);
+      const show = readout(ctx);
+      const { app, own, onSize } = await pixiIn(ctx, ctx.$(".px"), { backgroundAlpha: 0 });
+      const RW = 512, RH = 384;
+      const rt = own(PIXI.RenderTexture.create({ width: RW, height: RH }), true);
+
+      // Off-stage layers that are only ever rendered into the RenderTexture.
+      const baseLayer = new PIXI.Container(), brushLayer = new PIXI.Container();
+      ctx.onCleanup(() => { baseLayer.destroy({ children: true }); brushLayer.destroy({ children: true }); });
+      const sky = own(new PIXI.FillGradient({ type: "linear", start: { x: 0, y: 0 }, end: { x: 0, y: 1 }, colorStops: [{ offset: 0, color: "#232a52" }, { offset: 1, color: "#0e1013" }] }));
+      const bgG = new PIXI.Graphics().rect(0, 0, RW, RH).fill(sky);
+      for (let i = 0; i < 70; i++) bgG.circle(rnd(0, RW), rnd(0, RH * 0.7), rnd(0.6, 1.8)).fill({ color: 0xffffff, alpha: rnd(0.2, 0.8) });
+      const mark = new PIXI.Text({ text: "PixiJS", style: { fontFamily: FONT, fontSize: 110, fontWeight: "900", fill: 0xffffff }, anchor: 0.5 });
+      mark.position.set(RW / 2, RH / 2);
+      mark.alpha = 0.06;
+      baseLayer.addChild(bgG, mark);
+      const resetCanvas = () => app.renderer.render({ container: baseLayer, target: rt, clear: true });
+      resetCanvas();
+
+      const brushTex = own(PIXI.Texture.from(glowCanvas(64), true), true);
+      const pool = Array.from({ length: 64 }, () => {
+        const s = new PIXI.Sprite(brushTex);
+        s.anchor.set(0.5);
+        brushLayer.addChild(s);
+        return s;
+      });
+      let used = 0, color = HEX[0], size = 16, last = null, view = 0, auto = true, drawing = false, elapsed = 0;
+      function flush() {
+        if (!used) return;
+        pool.forEach((s, i) => { s.visible = i < used; });
+        app.renderer.render({ container: brushLayer, target: rt, clear: false });
+        used = 0;
+      }
+      function stamp(x, y, col) {
+        if (used === pool.length) flush();
+        const s = pool[used++];
+        s.position.set(x, y);
+        s.scale.set(size / 32);
+        s.tint = col;
+      }
+      function strokeTo(x, y, col) {
+        if (!last) { stamp(x, y, col); last = { x, y }; return; }
+        const dx = x - last.x, dy = y - last.y, d = Math.hypot(dx, dy), step = Math.max(1, size * 0.3);
+        if (d < step) return;
+        for (let s = step; s <= d; s += step) stamp(last.x + (dx * s) / d, last.y + (dy * s) / d, col);
+        last = { x, y };
+      }
+
+      const paintSprite = new PIXI.Sprite(rt);
+      const right = new PIXI.Container();
+      const plane = new PIXI.MeshPlane({ texture: rt, verticesX: 24, verticesY: 18 });
+      const persp = new PIXI.PerspectiveMesh({ texture: rt, verticesX: 20, verticesY: 20, x0: 0, y0: 0, x1: RW, y1: 0, x2: RW, y2: RH, x3: 0, y3: RH });
+      persp.visible = false;
+      right.addChild(plane, persp);
+      const LBL = { fontFamily: FONT, fontSize: 12, fill: 0x9b998f };
+      const lblL = new PIXI.Text({ text: "RenderTexture 畫布", style: LBL });
+      const lblR = new PIXI.Text({ text: "MeshPlane 頂點波浪", style: LBL });
+      app.stage.addChild(paintSprite, right, lblL, lblR);
+      const posBuf = plane.geometry.getBuffer("aPosition"), basePos = Float32Array.from(posBuf.data);
+
+      function layout(W, H) {
+        const top = belowControls(ctx) + 18, bottom = 46, gap = 18;
+        const aw = W - 20, ah = H - top - bottom;
+        // Side by side or stacked, whichever gives the larger panels.
+        const kSide = Math.min(1.2, (aw - gap) / (RW * 2), ah / RH);
+        const kStack = Math.min(1.2, aw / RW, (ah - gap - 18) / (RH * 2));
+        const side = kSide >= kStack, k = side ? kSide : kStack;
+        const gw = side ? RW * 2 * k + gap : RW * k, gh = side ? RH * k : RH * 2 * k + gap + 18;
+        const ox = (W - gw) / 2, oy = top + (ah - gh) / 2;
+        paintSprite.scale.set(k);
+        right.scale.set(k);
+        paintSprite.position.set(ox, oy);
+        if (side) right.position.set(ox + RW * k + gap, oy); else right.position.set(ox, oy + RH * k + gap + 18);
+        lblL.position.set(paintSprite.x, paintSprite.y - 17);
+        lblR.position.set(right.x, right.y - 17);
+      }
+      layout(app.screen.width, app.screen.height);
+      onSize(layout);
+
+      paintSprite.eventMode = "static";
+      paintSprite.cursor = "crosshair";
+      const local = (e) => { const p = paintSprite.toLocal(e.global); return [clamp(p.x, 0, RW), clamp(p.y, 0, RH)]; };
+      paintSprite.on("pointerdown", (e) => { auto = false; drawing = true; last = null; strokeTo(...local(e), color); });
+      app.stage.eventMode = "static";
+      app.stage.hitArea = app.screen;
+      app.stage.on("globalpointermove", (e) => { if (drawing) strokeTo(...local(e), color); });
+      const release = () => { drawing = false; last = null; };
+      app.stage.on("pointerup", release);
+      app.stage.on("pointerupoutside", release);
+
+      app.ticker.add((tk) => {
+        elapsed += tk.deltaMS;
+        const t = elapsed / 1000;
+        // A short Lissajous doodle so the canvas is not empty on arrival.
+        if (auto && elapsed < 2400) strokeTo(RW / 2 + RW * 0.36 * Math.sin(t * 3.1), RH / 2 + RH * 0.34 * Math.sin(t * 4.3 + 0.5), HEX[Math.floor(elapsed / 400) % 6]);
+        else if (auto) { auto = false; last = null; }
+        flush();
+        if (view === 0) {
+          const d = posBuf.data;
+          for (let i = 0; i < d.length; i += 2) {
+            const bx = basePos[i], by = basePos[i + 1];
+            d[i] = bx + Math.sin(by * 0.02 + t * 2.2) * 9;
+            d[i + 1] = by + Math.sin(bx * 0.025 + t * 3) * 12;
+          }
+          posBuf.update();
         } else {
-          fx += (dx / d) * f * 1.4;
-          fy += (dy / d) * f * 1.4;
+          const a = 0.9 * Math.sin(t * 0.8), hw = (RW / 2) * Math.cos(a), inset = Math.abs(Math.sin(a)) * 0.18 * RH;
+          const lx = RW / 2 - hw, rx = RW / 2 + hw, li = a > 0 ? 0 : inset, ri = a > 0 ? inset : 0;
+          persp.setCorners(lx, li, rx, ri, rx, RH - ri, lx, RH - li);
+        }
+      });
+
+      ctx.group(["波浪", "透視"], 0, (i) => {
+        view = i;
+        plane.visible = i === 0;
+        persp.visible = i === 1;
+        lblR.text = i === 0 ? "MeshPlane 頂點波浪" : "PerspectiveMesh 翻牌透視";
+        paint();
+      });
+      ctx.select("顏色", COLOR_NAMES.map((label, i) => ({ value: String(i), label })), "0", (v) => { color = HEX[+v]; });
+      ctx.slider("筆刷", { min: 4, max: 40, step: 1, value: size }, (v) => { size = v; });
+      ctx.button("清空", () => { auto = false; used = 0; resetCanvas(); });
+      ctx.button("下載 PNG", () => app.renderer.extract.download({ target: rt, filename: "pixi-render-texture.png" }));
+      layout(app.screen.width, app.screen.height);
+      const st = frameStats(ctx, app);
+      const paint = () => show(`RenderTexture <b>${RW}×${RH}</b>・${view === 0 ? "MeshPlane <b>24×18</b> 頂點" : "PerspectiveMesh <b>20×20</b> 頂點"}・draw call <b>${st.dc()}</b>・<b>${st.fps()}</b> FPS`);
+      paint();
+      ctx.interval(paint, 500);
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "ParticleContainer({ dynamicProperties: { position: true } })・new PIXI.Particle()・Container＋Sprite・app.render()",
+    desc: "經典 bunnymark：一張 6 隻兔子的圖集，大量兔子受重力彈跳。每格分開計時 JavaScript 更新與 app.render()，逐級增加數量直到掉到 30 FPS 以下；可切換 ParticleContainer 與一般 Container＋Sprite 再測一次比較。",
+    hint: "按「自動加壓」開始・切換「ParticleContainer、Container＋Sprite」再測一次比較",
+    async mount(ctx) {
+      ctx.html(`<div class="stress-box"></div>`);
+      ctx.controls.classList.add("bottom");
+      let mode = 0, holderMode = 0, holder = null, ready = false, upd = 0, drw = 0;
+      ctx.group(["ParticleContainer", "Container＋Sprite"], 0, (i) => { mode = i; if (ready) rebuild(); });
+      const { app, own } = await pixiIn(ctx, ctx.$(".stress-box"), { backgroundAlpha: 0, autoStart: false, antialias: false });
+      const atlasTex = own(PIXI.Texture.from(bunnyAtlas(), true), true);
+      const frames = Array.from({ length: 6 }, (_, i) => own(new PIXI.Texture({ source: atlasTex.source, frame: new PIXI.Rectangle(i * 32, 0, 32, 32) })));
+      const MAX = 400000;
+      const bx = new Float32Array(MAX), by = new Float32Array(MAX), bvx = new Float32Array(MAX), bvy = new Float32Array(MAX);
+      const list = () => (holderMode === 0 ? holder.particleChildren : holder.children);
+
+      function make(i) {
+        const texture = frames[i % 6];
+        if (holderMode === 0) return new PIXI.Particle({ texture, x: bx[i], y: by[i], anchorX: 0.5, anchorY: 1 });
+        const s = new PIXI.Sprite(texture);
+        s.anchor.set(0.5, 1);
+        s.position.set(bx[i], by[i]);
+        return s;
+      }
+      function setCount(n) {
+        const have = list().length;
+        if (n < have) {
+          if (holderMode === 0) holder.removeParticles(n, have);
+          else holder.removeChildren(n, have).forEach((s) => s.destroy());
+          return;
+        }
+        const W = app.screen.width, H = app.screen.height;
+        for (let start = have; start < n; start += 5000) {
+          const chunk = [];
+          for (let i = start; i < Math.min(n, start + 5000); i++) {
+            if (i >= have) { bx[i] = Math.random() * W; by[i] = Math.random() * H * 0.5; bvx[i] = rnd(-5, 5); bvy[i] = rnd(-5, 0); }
+            chunk.push(make(i));
+          }
+          if (holderMode === 0) holder.addParticle(...chunk); else holder.addChild(...chunk);
         }
       }
-      let u = (vx[i] + fx * dt) * 0.955, v = (vy[i] + fy * dt) * 0.955;
-      x += u * dt; y += v * dt;
-      if (x < -10) x += w + 20; else if (x > w + 10) x -= w + 20;
-      if (y < -10) y += h + 20; else if (y > h + 10) y -= h + 20;
-      px[i] = x; py[i] = y; vx[i] = u; vy[i] = v;
-      const p = ps[i];
-      p.x = x; p.y = y;
-    }
-  });
+      function rebuild() {
+        const n = holder ? list().length : 0;
+        if (holder) holder.destroy(holderMode === 1 ? { children: true } : undefined);
+        holderMode = mode;
+        holder = holderMode === 0 ? new PIXI.ParticleContainer({ texture: atlasTex, dynamicProperties: { position: true } }) : new PIXI.Container();
+        app.stage.addChild(holder);
+        setCount(n);
+      }
+      rebuild();
+      ready = true;
 
-  let frames = 0, last = performance.now();
-  app.ticker.add(() => {
-    frames++;
-    const now = performance.now();
-    if (now - last > 500) {
-      document.getElementById("fps").textContent = Math.round((frames * 1000) / (now - last));
-      frames = 0; last = now;
-    }
-  });
-
-  app.canvas.addEventListener("pointermove", (e) => { attractor.tx = e.clientX; attractor.ty = e.clientY; attractor.active = true; });
-  app.canvas.addEventListener("pointerleave", () => { attractor.active = false; });
-  app.canvas.addEventListener("pointerdown", (e) => burst(e.clientX, e.clientY));
-
-  document.querySelectorAll("[data-n]").forEach((b) => b.addEventListener("click", () => {
-    document.querySelectorAll("[data-n]").forEach((x) => x.setAttribute("aria-pressed", x === b));
-    populate(Number(b.dataset.n));
-  }));
-  const modeBtn = document.getElementById("mode");
-  modeBtn.addEventListener("click", () => {
-    mode = mode === "vortex" ? "repel" : "vortex";
-    modeBtn.textContent = mode === "vortex" ? "模式：漩渦" : "模式：排斥";
-  });
-
-  populate(30000);
-})();
+      ctx.raf((t, dt) => {
+        const W = app.screen.width, H = app.screen.height, k = dt / 16.7, items = list(), n = items.length;
+        const t0 = performance.now();
+        for (let i = 0; i < n; i++) {
+          let x = bx[i] + bvx[i] * k, y = by[i] + bvy[i] * k;
+          bvy[i] += 0.75 * k;
+          if (x > W) { bvx[i] = -Math.abs(bvx[i]); x = W; } else if (x < 0) { bvx[i] = Math.abs(bvx[i]); x = 0; }
+          if (y > H) { bvy[i] *= -0.85; y = H; if (Math.random() > 0.5) bvy[i] -= Math.random() * 6; } else if (y < 0) { bvy[i] = 0; y = 0; }
+          bx[i] = x; by[i] = y;
+          const o = items[i];
+          o.x = x; o.y = y;
+        }
+        const t1 = performance.now();
+        app.render();
+        const t2 = performance.now();
+        upd += (t1 - t0 - upd) * 0.1;
+        drw += (t2 - t1 - drw) * 0.1;
+      });
+      const st = frameStats(ctx, app);
+      ctx.ramp({
+        label: "兔子", unit: "隻", steps: [1000, 5000, 10000, 25000, 50000, 100000, 200000, 400000], minFps: 30,
+        apply: setCount,
+        metrics: () => ({
+          更新: `${upd.toFixed(1)} ms`,
+          繪製: `${drw.toFixed(1)} ms`,
+          "draw call": st.dc(),
+          模式: holderMode === 0 ? "ParticleContainer" : "Container＋Sprite",
+        }),
+        note: "每格先用 JavaScript 更新所有兔子的位置（更新），再呼叫一次 app.render()（繪製），兩段分開計時。ParticleContainer 只把位置設為動態屬性，每格只上傳位置，材質座標、縮放等靜態屬性只在數量改變時上傳，粒子也不參與場景樹的變形計算。Container＋Sprite 每個 Sprite 都要更新變形矩陣，再由批次渲染器逐一組裝頂點，CPU 成本高很多。繪製時間量的是 CPU 送出指令的時間，GPU 是非同步執行，實際瓶頸也可能在顯示卡。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

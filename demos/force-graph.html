@@ -3,210 +3,702 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>force-graph 示範：大學社團社群網絡</title>
+<title>force-graph 示範：八個場景看懂 2D 力導向圖與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","note":"人名與關係為隨機產生的示意資料"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["社團網絡","力學參數","DAG 階層","自繪節點","箭頭與粒子","鏡頭控制","動態增刪","極限測試"],"note":"人名、課程關係與物流量皆為隨機或簡化的示意資料"}</script>
 <style>
-  #graph { position: fixed; inset: 0; }
-  #card { position: fixed; left: 12px; top: 12px; z-index: 40; width: 220px; font-size: 13px; padding: 12px 14px; }
-  #card h3 { margin: 0 0 2px; font-size: 16px; }
-  #card .sub { color: var(--muted); margin-bottom: 8px; }
-  #card .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; font-size: 12px; color: var(--muted); }
-  #card .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
-  #card .friends { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-  #card .friends span { font-size: 12px; padding: 0 7px; border-radius: 999px; background: rgba(255,255,255,.07); }
-  @media (max-width: 520px) {
-    #card { width: auto; right: 12px; top: auto; bottom: 46px; padding: 8px 10px; }
-    #card .legend { display: none; }
-    .controls { top: 12px; }
+  .fg-box { position: absolute; left: 0; right: 0; top: var(--sc-ctl-h, 0px); bottom: var(--sc-ctl-b, 0px); overflow: hidden; }
+  .float-tooltip-kap { font: 12.5px/1.5 var(--font) !important; background: rgba(23, 26, 31, .95) !important; border: 1px solid var(--line); border-radius: 8px !important; padding: 5px 9px !important; }
+
+  /* bottom-left readout shared by several scenes */
+  .fg-tag { position: absolute; z-index: 5; right: 10px; bottom: calc(var(--sc-ctl-b, 0px) + 10px); max-width: calc(100% - 20px);
+    padding: 5px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); font: 12px/1.5 var(--font); pointer-events: none; }
+  .fg-tag b { font-family: var(--mono); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .fg-tag i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin: 0 4px 0 8px; }
+  .fg-tag i:first-child { margin-left: 0; }
+  .fg-tag.top { top: calc(var(--sc-ctl-h, 0px) + 4px); bottom: auto; left: 10px; right: auto; }
+
+  /* 1. club card */
+  .fg-card { position: absolute; z-index: 5; left: 10px; top: calc(var(--sc-ctl-h, 0px) + 4px); width: 220px; font-size: 13px; padding: 10px 12px; pointer-events: none; }
+  .fg-card h3 { margin: 0 0 2px; font-size: 15px; }
+  .fg-card .sub { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+  .fg-card .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; font-size: 12px; color: var(--muted); }
+  .fg-card .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; }
+  .fg-card .friends { display: flex; flex-wrap: wrap; gap: 4px; }
+  .fg-card [hidden] { display: none; }
+  .fg-card .friends span { font-size: 12px; padding: 0 7px; border-radius: 999px; background: rgba(255, 255, 255, .07); }
+  @media (max-width: 680px), (max-height: 480px) {
+    .fg-card { top: auto; bottom: 8px; right: 10px; width: auto; padding: 6px 10px; }
+    .fg-card.idle, .fg-card .legend, .fg-card .friends { display: none; }
+    .fg-card .sub { margin: 0; }
   }
+
+  /* 8. stress */
+  .fg-stress { position: absolute; left: 8px; right: 8px; top: 8px; bottom: calc(var(--sc-ctl-b, 0px) + 8px); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .fg-stress .fg-box { top: 0; bottom: 0; }
+  @media (min-width: 761px) { .fg-stress { left: 350px; } }
 </style>
 </head>
 <body>
-<div id="graph"></div>
-<div id="card" class="panel">
-  <h3 id="who">校園社團網絡</h3>
-  <div class="sub" id="sub">72 位同學、5 個社團，光點是正在傳遞的訊息</div>
-  <div class="legend" id="legend"></div>
-  <div class="friends" id="friends"></div>
-</div>
-<div class="controls">
-  <button class="btn" id="flow" aria-pressed="true">訊息流動</button>
-  <button class="btn" id="shake">重新散開</button>
-  <button class="btn" id="fit">全覽</button>
-</div>
-<div class="hint">拖曳節點・滑過看好友圈・點人物拉近</div>
-
 <script src="https://cdn.jsdelivr.net/npm/force-graph@1.52.0/dist/force-graph.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Seeded random so every reload shows the same fictional network.
-let seed = 20261003;
-const rand = () => ((seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296);
-const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+// force-graph showcase: eight scenes from the original club network to a node-count stress ramp.
+const COLORS = ["#4cc9f0", "#7bd389", "#f7df1e", "#f72585", "#9d8cff", "#ff8c42"];
+const FONT = '"Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif';
+const BG = "#0e1013";
+const { fmt } = Showcase;
 
+// Seeded LCG so every visit shows the same fictional data.
+function rng(seed) {
+  return () => ((seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296);
+}
+// d3-force-3d is the engine force-graph runs on; extra forces (collide) come from the same package.
+let d3fLoad = null;
+const d3f = () => (d3fLoad ||= import("https://cdn.jsdelivr.net/npm/d3-force-3d@3.0.6/+esm"));
+
+// One graph per scene inside a box that follows its own size; torn down on scene exit.
+function makeGraph(ctx, box, { refit = null } = {}) {
+  const g = new ForceGraph(box);
+  const fit = () => {
+    g.width(box.clientWidth).height(box.clientHeight);
+    const n = g.graphData().nodes;
+    if (refit != null && n.length && n[0].x != null) g.zoomToFit(0, refit);
+  };
+  fit();
+  const ro = new ResizeObserver(() => ctx.active && fit());
+  ro.observe(box);
+  ctx.onCleanup(() => { ro.disconnect(); g._destructor(); box.replaceChildren(); });
+  return g;
+}
+
+// Outlined text in graph coordinates; px is the on-screen size.
+function label(c, str, x, y, px, scale, { color = "#ecebe6", weight = 500, align = "center", base = "middle", alpha = 1 } = {}) {
+  const fs = px / scale;
+  c.globalAlpha = alpha;
+  c.font = `${weight} ${fs}px ${FONT}`;
+  c.textAlign = align; c.textBaseline = base;
+  c.lineJoin = "round"; c.lineWidth = 3 / scale; c.strokeStyle = BG;
+  c.strokeText(str, x, y);
+  c.fillStyle = color;
+  c.fillText(str, x, y);
+  c.globalAlpha = 1;
+}
+
+// Mix two #rrggbb colours (t = share of a).
+function mix(a, b, t) {
+  const p = (s, i) => parseInt(s.slice(i, i + 2), 16);
+  const ch = (i) => Math.round(p(a, i) * t + p(b, i) * (1 - t)).toString(16).padStart(2, "0");
+  return `#${ch(1)}${ch(3)}${ch(5)}`;
+}
+
+// Groups of nodes: a random tree inside each group, extra inner links and a few bridges.
+function communities(r, groups, per, { extra = 0.4, bridges = 0.06 } = {}) {
+  const nodes = [], links = [];
+  for (let gi = 0; gi < groups; gi++) {
+    const base = nodes.length, size = typeof per === "function" ? per(gi) : per;
+    for (let i = 0; i < size; i++) {
+      nodes.push({ id: nodes.length, g: gi, v: 1 + Math.floor(r() * r() * 8) });
+      if (i) links.push({ source: base + i, target: base + Math.floor(r() * i) });
+      if (i > 2 && r() < extra) links.push({ source: base + i, target: base + Math.floor(r() * i) });
+    }
+  }
+  for (let k = 0; k < nodes.length * bridges; k++) {
+    const a = nodes[Math.floor(r() * nodes.length)], b = nodes[Math.floor(r() * nodes.length)];
+    if (a.g !== b.g) links.push({ source: a.id, target: b.id, bridge: true });
+  }
+  return { nodes, links };
+}
+
+// ---------- scene data ----------
 const CLUBS = [
-  { name: "攝影社", color: "#4cc9f0" },
-  { name: "登山社", color: "#7bd389" },
-  { name: "程式設計社", color: "#f7df1e" },
-  { name: "熱舞社", color: "#f72585" },
-  { name: "桌遊社", color: "#9d8cff" },
+  { name: "攝影社", color: "#4cc9f0" }, { name: "登山社", color: "#7bd389" }, { name: "程式設計社", color: "#f7df1e" },
+  { name: "熱舞社", color: "#f72585" }, { name: "桌遊社", color: "#9d8cff" },
 ];
 const SURNAMES = "陳林黃張李王吳劉蔡楊許鄭謝洪郭邱曾廖賴徐周葉蘇莊呂江何蕭羅高".split("");
 const GIVEN = ["怡君", "雅婷", "家豪", "冠宇", "宗翰", "承恩", "思妤", "品妍", "宥廷", "柏翰", "子晴", "欣妤",
   "俊傑", "佳穎", "建宏", "詩涵", "彥廷", "郁婷", "昱安", "語彤", "冠廷", "芷瑜", "博文", "芸萱", "哲瑋", "沛恩"];
 
-const nodes = [];
-const links = [];
-const used = new Set();
-const newName = () => {
-  let n;
-  do n = pick(SURNAMES) + pick(GIVEN); while (used.has(n));
-  used.add(n);
-  return n;
-};
-CLUBS.forEach((club, ci) => {
-  const size = 12 + Math.floor(rand() * 5);
-  const members = [];
-  for (let i = 0; i < size; i++) {
-    const node = { id: newName(), club: ci, leader: i === 0 };
-    members.push(node);
-    nodes.push(node);
-  }
-  members.slice(1).forEach((m, i) => {
-    if (rand() < 0.75) links.push({ source: members[0].id, target: m.id });
-    const other = members[1 + Math.floor(rand() * (size - 1))];
-    if (other !== m) links.push({ source: m.id, target: other.id });
-    if (i % 3 === 0) links.push({ source: m.id, target: pick(members).id });
+function clubData() {
+  const r = rng(20261003), pick = (arr) => arr[Math.floor(r() * arr.length)];
+  const nodes = [], links = [], used = new Set();
+  const newName = () => { let n; do n = pick(SURNAMES) + pick(GIVEN); while (used.has(n)); used.add(n); return n; };
+  CLUBS.forEach((club, ci) => {
+    const size = 12 + Math.floor(r() * 5), members = [];
+    for (let i = 0; i < size; i++) members.push({ id: newName(), club: ci, leader: i === 0 });
+    nodes.push(...members);
+    members.slice(1).forEach((m, i) => {
+      if (r() < 0.75) links.push({ source: members[0].id, target: m.id });
+      const other = members[1 + Math.floor(r() * (size - 1))];
+      if (other !== m) links.push({ source: m.id, target: other.id });
+      if (i % 3 === 0) links.push({ source: m.id, target: pick(members).id });
+    });
   });
-});
-// A few bridges between clubs: students who joined two clubs.
-for (let i = 0; i < 14; i++) {
-  const a = pick(nodes);
-  const b = pick(nodes);
-  if (a.club !== b.club) links.push({ source: a.id, target: b.id, bridge: true });
-}
-const clean = links.filter((l) => l.source !== l.target);
-
-// Neighbour index for hover highlighting.
-const byId = new Map(nodes.map((n) => [n.id, Object.assign(n, { neighbors: new Set(), links: new Set() })]));
-clean.forEach((l) => {
-  const a = byId.get(l.source);
-  const b = byId.get(l.target);
-  a.neighbors.add(b); b.neighbors.add(a);
-  a.links.add(l); b.links.add(l);
-});
-
-let hoverNode = null;
-const hiNodes = new Set();
-const hiLinks = new Set();
-let flowing = true;
-
-const el = document.getElementById("graph");
-const graph = new ForceGraph(el)
-  .backgroundColor("#0e1013")
-  .graphData({ nodes, links: clean })
-  .nodeRelSize(4)
-  .nodeVal((n) => (n.leader ? 6 : 1 + n.neighbors.size * 0.35))
-  .nodeLabel(() => "")
-  .linkColor((l) => (hiLinks.has(l) ? "rgba(247,223,30,.9)" : l.bridge ? "rgba(255,255,255,.28)" : "rgba(255,255,255,.12)"))
-  .linkWidth((l) => (hiLinks.has(l) ? 2.4 : l.bridge ? 1.2 : 0.8))
-  .linkLineDash((l) => (l.bridge ? [3, 3] : null))
-  .linkDirectionalParticles((l) => (hiLinks.has(l) ? 4 : 1))
-  .linkDirectionalParticleWidth((l) => (hiLinks.has(l) ? 3.5 : 2))
-  .linkDirectionalParticleSpeed(() => (flowing ? 0.006 : 0))
-  .linkDirectionalParticleColor((l) => CLUBS[(typeof l.source === "object" ? l.source : byId.get(l.source)).club].color)
-  .nodeCanvasObject((node, ctx, scale) => {
-    const r = Math.sqrt(graph.nodeVal()(node)) * 4;
-    const dim = hoverNode && !hiNodes.has(node);
-    ctx.globalAlpha = dim ? 0.18 : 1;
-    ctx.beginPath();
-    ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
-    ctx.fillStyle = CLUBS[node.club].color;
-    ctx.fill();
-    if (node.leader || node === hoverNode) {
-      ctx.lineWidth = 2 / scale;
-      ctx.strokeStyle = "#ffffff";
-      ctx.stroke();
-    }
-    // Labels: leaders always, others once zoomed in or highlighted.
-    if (node.leader || scale > 2.2 || hiNodes.has(node)) {
-      const fs = (node.leader ? 13 : 11) / scale;
-      ctx.font = `${node.leader ? 700 : 500} ${fs}px "Noto Sans TC", "Microsoft JhengHei", sans-serif`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "top";
-      const label = node.leader ? `${node.id}（${CLUBS[node.club].name}社長）` : node.id;
-      ctx.lineWidth = 3 / scale;
-      ctx.strokeStyle = "#0e1013";
-      ctx.strokeText(label, node.x, node.y + r + 2 / scale);
-      ctx.fillStyle = "#ecebe6";
-      ctx.fillText(label, node.x, node.y + r + 2 / scale);
-    }
-    ctx.globalAlpha = 1;
-  })
-  .nodePointerAreaPaint((node, color, ctx) => {
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(node.x, node.y, Math.sqrt(graph.nodeVal()(node)) * 4 + 2, 0, 2 * Math.PI);
-    ctx.fill();
-  })
-  .onNodeHover((node) => {
-    hiNodes.clear(); hiLinks.clear();
-    if (node) {
-      hiNodes.add(node);
-      node.neighbors.forEach((n) => hiNodes.add(n));
-      node.links.forEach((l) => hiLinks.add(l));
-    }
-    hoverNode = node || null;
-    el.style.cursor = node ? "pointer" : "";
-    showCard(node);
-  })
-  .onNodeClick((node) => {
-    graph.centerAt(node.x, node.y, 800);
-    graph.zoom(3, 800);
-  })
-  .onBackgroundClick(() => graph.zoomToFit(600, 40));
-
-graph.d3Force("charge").strength(-60);
-graph.d3Force("link").distance((l) => (l.bridge ? 110 : 34));
-
-function showCard(node) {
-  const who = document.getElementById("who");
-  const sub = document.getElementById("sub");
-  const friends = document.getElementById("friends");
-  if (!node) {
-    who.textContent = "校園社團網絡";
-    sub.textContent = `${nodes.length} 位同學、${CLUBS.length} 個社團，光點是正在傳遞的訊息`;
-    friends.innerHTML = "";
-    document.getElementById("legend").style.display = "";
-    return;
+  // Bridges: students who joined two clubs.
+  for (let i = 0; i < 14; i++) {
+    const a = pick(nodes), b = pick(nodes);
+    if (a.club !== b.club) links.push({ source: a.id, target: b.id, bridge: true });
   }
-  document.getElementById("legend").style.display = "none";
-  who.textContent = node.id;
-  who.style.color = CLUBS[node.club].color;
-  sub.textContent = `${CLUBS[node.club].name}${node.leader ? "社長" : "社員"}，好友 ${node.neighbors.size} 人`;
-  friends.innerHTML = [...node.neighbors].map((n) => `<span style="color:${CLUBS[n.club].color}">${n.id}</span>`).join("");
+  const clean = links.filter((l) => l.source !== l.target);
+  const byId = new Map(nodes.map((n) => [n.id, Object.assign(n, { neighbors: new Set(), links: new Set() })]));
+  clean.forEach((l) => {
+    const a = byId.get(l.source), b = byId.get(l.target);
+    a.neighbors.add(b); b.neighbors.add(a); a.links.add(l); b.links.add(l);
+  });
+  return { nodes, links: clean };
 }
-document.getElementById("legend").innerHTML = CLUBS.map((c) => `<span><i style="background:${c.color}"></i>${c.name}</span>`).join("");
-showCard(null);
 
-function resize() { graph.width(innerWidth).height(innerHeight); }
-addEventListener("resize", resize);
-resize();
-graph.cooldownTime(4000);
-setTimeout(() => graph.zoomToFit(600, 40), 1600);
+const FIELDS = ["程式基礎", "數學", "系統", "人工智慧", "應用"];
+const COURSES = [
+  ["計算機概論", 0], ["微積分", 1], ["線性代數", 1], ["離散數學", 1],
+  ["程式設計（一）", 0, "計算機概論"], ["程式設計（二）", 0, "程式設計（一）"],
+  ["資料結構", 0, "程式設計（二）", "離散數學"], ["演算法", 0, "資料結構", "離散數學"],
+  ["機率與統計", 1, "微積分"], ["數位邏輯", 2, "計算機概論"], ["計算機組織", 2, "數位邏輯", "程式設計（一）"],
+  ["作業系統", 2, "計算機組織", "資料結構"], ["計算機網路", 2, "作業系統"], ["編譯器", 2, "演算法", "計算機組織"],
+  ["資訊安全", 2, "計算機網路", "作業系統"], ["分散式系統", 2, "作業系統", "計算機網路"],
+  ["機器學習", 3, "線性代數", "機率與統計", "演算法"], ["深度學習", 3, "機器學習"],
+  ["電腦視覺", 3, "深度學習"], ["自然語言處理", 3, "深度學習"], ["大數據分析", 3, "資料庫系統", "機器學習"],
+  ["資料庫系統", 4, "資料結構"], ["軟體工程", 4, "資料結構"], ["網頁程式設計", 4, "程式設計（二）"],
+  ["人機互動", 4, "網頁程式設計"], ["雲端運算", 4, "計算機網路", "資料庫系統"],
+  ["畢業專題", 4, "軟體工程", "資料庫系統", "網頁程式設計"],
+];
 
-document.getElementById("flow").addEventListener("click", (e) => {
-  flowing = !flowing;
-  e.currentTarget.setAttribute("aria-pressed", String(flowing));
-  graph.linkDirectionalParticleSpeed(graph.linkDirectionalParticleSpeed());
-});
-document.getElementById("shake").addEventListener("click", () => {
-  nodes.forEach((n) => { n.fx = undefined; n.fy = undefined; n.vx = (rand() - 0.5) * 30; n.vy = (rand() - 0.5) * 30; });
-  graph.d3ReheatSimulation();
-  setTimeout(() => graph.zoomToFit(600, 40), 1500);
-});
-document.getElementById("fit").addEventListener("click", () => graph.zoomToFit(600, 40));
+const LIBS = [
+  ["框架", ["React", "Vue", "Svelte", "Angular", "Solid", "Preact"]],
+  ["建置", ["Vite", "webpack", "esbuild", "Rollup", "Babel", "TypeScript"]],
+  ["視覺化", ["D3", "Chart.js", "ECharts", "Three.js", "force-graph", "G6"]],
+  ["動畫", ["GSAP", "anime.js", "Motion", "Lottie"]],
+  ["後端", ["Node.js", "Express", "Fastify", "Koa"]],
+  ["測試", ["Jest", "Vitest", "Playwright", "Cypress"]],
+];
+const LIB_LINKS = ("React~Vite React~Babel React~Jest Vue~Vite Svelte~Vite Solid~Vite Preact~Vite Angular~TypeScript Angular~webpack " +
+  "Vite~esbuild Vite~Rollup Vite~Vitest webpack~Babel Jest~Babel TypeScript~esbuild D3~force-graph Three.js~force-graph React~Motion " +
+  "React~Three.js Vue~ECharts React~Chart.js GSAP~Three.js Lottie~React Node.js~Express Node.js~Fastify Node.js~Koa Express~Jest " +
+  "Playwright~Vite Cypress~React Node.js~TypeScript G6~React anime.js~Svelte D3~ECharts Vitest~TypeScript Rollup~Babel Motion~Vue").split(" ");
+
+const CITIES = [
+  ["基隆", 121.74, 25.13, "r"], ["台北", 121.56, 25.04, "t"], ["桃園", 121.30, 24.99, "l"], ["新竹", 120.97, 24.80, "l"],
+  ["苗栗", 120.82, 24.56, "l"], ["台中", 120.68, 24.14, "r"], ["彰化", 120.54, 24.08, "l"], ["雲林", 120.43, 23.71, "l"],
+  ["嘉義", 120.45, 23.48, "l"], ["台南", 120.21, 22.99, "l"], ["高雄", 120.30, 22.63, "l"], ["屏東", 120.49, 22.67, "r"],
+  ["宜蘭", 121.75, 24.76, "r"], ["花蓮", 121.60, 23.98, "r"], ["台東", 121.15, 22.76, "r"],
+];
+const ROUTES = ["基隆~台北", "台北~桃園", "台北~宜蘭", "桃園~新竹", "新竹~苗栗", "苗栗~台中", "台中~彰化", "彰化~雲林",
+  "雲林~嘉義", "嘉義~台南", "台南~高雄", "高雄~屏東", "宜蘭~花蓮", "花蓮~台東", "台東~屏東", "台北~高雄", "台北~台中"];
+
+const DEPTS = ["資工系", "電機系", "企管系", "外文系", "設計系", "物理系", "法律系"];
+
+Showcase.run({ scenes: [
+  {
+    id: "club", title: "社團網絡",
+    api: "new ForceGraph(el).nodeCanvasObject(fn).linkDirectionalParticles(fn).onNodeHover(fn)",
+    desc: "五個社團、六十多位同學的友誼網絡：nodeCanvasObject 自繪節點與名字，滑過節點高亮好友圈，連線上的光點是 linkDirectionalParticles，社團間的虛線用 linkLineDash。",
+    hint: "滑過節點看好友圈・點人物拉近・點空白處全覽",
+    mount(ctx) {
+      ctx.html(`<div class="fg-box"></div>
+        <div class="fg-card panel"><h3></h3><div class="sub"></div><div class="legend"></div><div class="friends"></div></div>`);
+      const { nodes, links } = clubData();
+      const hiNodes = new Set(), hiLinks = new Set();
+      let hover = null, flowing = true;
+      const radius = (n) => Math.sqrt(n.leader ? 6 : 1 + n.neighbors.size * 0.35) * 4;
+
+      ctx.toggle("訊息流動", true, (v) => { flowing = v; g.linkDirectionalParticleSpeed(g.linkDirectionalParticleSpeed()); });
+      ctx.button("重新散開", () => {
+        nodes.forEach((n) => { n.fx = n.fy = undefined; n.vx = (Math.random() - 0.5) * 30; n.vy = (Math.random() - 0.5) * 30; });
+        g.d3ReheatSimulation();
+        ctx.timeout(() => g.zoomToFit(600, 40), 1500);
+      });
+      ctx.button("全覽", () => g.zoomToFit(600, 40));
+
+      const g = makeGraph(ctx, ctx.$(".fg-box"))
+        .graphData({ nodes, links })
+        .nodeRelSize(4)
+        .nodeVal((n) => (n.leader ? 6 : 1 + n.neighbors.size * 0.35))
+        .nodeLabel(() => "")
+        .linkColor((l) => (hiLinks.has(l) ? "rgba(247,223,30,.9)" : l.bridge ? "rgba(255,255,255,.28)" : "rgba(255,255,255,.12)"))
+        .linkWidth((l) => (hiLinks.has(l) ? 2.4 : l.bridge ? 1.2 : 0.8))
+        .linkLineDash((l) => (l.bridge ? [3, 3] : null))
+        .linkDirectionalParticles((l) => (hiLinks.has(l) ? 4 : 1))
+        .linkDirectionalParticleWidth((l) => (hiLinks.has(l) ? 3.5 : 2))
+        .linkDirectionalParticleSpeed(() => (flowing ? 0.006 : 0))
+        .linkDirectionalParticleColor((l) => CLUBS[l.source.club].color)
+        .nodeCanvasObject((n, c, s) => {
+          const r = radius(n);
+          c.globalAlpha = hover && !hiNodes.has(n) ? 0.18 : 1;
+          c.beginPath(); c.arc(n.x, n.y, r, 0, 2 * Math.PI);
+          c.fillStyle = CLUBS[n.club].color; c.fill();
+          if (n.leader || n === hover) { c.lineWidth = 2 / s; c.strokeStyle = "#fff"; c.stroke(); }
+          // Labels: leaders always, others once zoomed in or highlighted.
+          if (n !== hover && (n.leader || s > 2.2 || hiNodes.has(n))) {
+            label(c, n.leader ? `${n.id}（${CLUBS[n.club].name}社長）` : n.id, n.x, n.y + r + 2 / s, n.leader ? 13 : 11, s,
+              { weight: n.leader ? 700 : 500, base: "top", alpha: c.globalAlpha });
+          }
+          c.globalAlpha = 1;
+        })
+        .nodePointerAreaPaint((n, color, c) => { c.fillStyle = color; c.beginPath(); c.arc(n.x, n.y, radius(n) + 2, 0, 2 * Math.PI); c.fill(); })
+        .onNodeHover((n) => {
+          hiNodes.clear(); hiLinks.clear();
+          if (n) { hiNodes.add(n); n.neighbors.forEach((x) => hiNodes.add(x)); n.links.forEach((l) => hiLinks.add(l)); }
+          hover = n || null;
+          card(hover);
+        })
+        // The hovered name is drawn last so neighbours' labels never cover it.
+        .onRenderFramePost((c, s) => hover && label(c, hover.leader ? `${hover.id}（${CLUBS[hover.club].name}社長）` : hover.id,
+          hover.x, hover.y + radius(hover) + 2 / s, 14, s, { weight: 700, base: "top", color: CLUBS[hover.club].color }))
+        .onNodeClick((n) => { g.centerAt(n.x, n.y, 800); g.zoom(3, 800); })
+        .onBackgroundClick(() => g.zoomToFit(600, 40))
+        .cooldownTime(4000);
+      g.d3Force("charge").strength(-60);
+      g.d3Force("link").distance((l) => (l.bridge ? 110 : 34));
+      ctx.timeout(() => g.zoomToFit(600, 40), 1200);
+
+      const [h3, sub, legend, friends] = ["h3", ".sub", ".legend", ".friends"].map((s) => ctx.$(`.fg-card ${s}`));
+      legend.innerHTML = CLUBS.map((c) => `<span><i style="background:${c.color}"></i>${c.name}</span>`).join("");
+      function card(n) {
+        legend.hidden = !!n;
+        ctx.$(".fg-card").classList.toggle("idle", !n);
+        if (!n) {
+          h3.textContent = "校園社團網絡"; h3.style.color = "";
+          sub.textContent = `${nodes.length} 位同學、${CLUBS.length} 個社團，光點是傳遞中的訊息`;
+          friends.innerHTML = "";
+          return;
+        }
+        h3.textContent = n.id; h3.style.color = CLUBS[n.club].color;
+        sub.textContent = `${CLUBS[n.club].name}${n.leader ? "社長" : "社員"}，好友 ${n.neighbors.size} 人`;
+        friends.innerHTML = [...n.neighbors].map((x) => `<span style="color:${CLUBS[x.club].color}">${x.id}</span>`).join("");
+      }
+      card(null);
+    },
+  },
+  {
+    id: "forces", title: "力學參數",
+    api: "g.d3Force('charge').strength(v)・d3Force('link').distance(v)・d3Force('collide', forceCollide(r))",
+    desc: "六個群組、約 150 個節點。三支滑桿即時改 d3-force 的斥力、連結長度與碰撞間距，每次調整都呼叫 d3ReheatSimulation 讓佈局重新收斂。",
+    hint: "拖動滑桿後看佈局重新收斂・節點大小代表權重・可拖曳節點",
+    async mount(ctx) {
+      ctx.html(`<div class="fg-box"></div><div class="fg-tag"></div>`);
+      const { forceCollide } = await d3f();
+      const p = { charge: -30, dist: 30, pad: 0 };
+      const data = communities(rng(7), 6, (i) => 18 + i * 3, { extra: 0.35, bridges: 0.05 });
+      const radius = (n) => Math.sqrt(n.v) * 3;
+      const tag = ctx.$(".fg-tag");
+      let ticks = 0;
+      const g = makeGraph(ctx, ctx.$(".fg-box"))
+        .graphData(data)
+        .nodeRelSize(3)
+        .nodeVal("v")
+        .nodeColor((n) => COLORS[n.g])
+        .nodeLabel(() => "")
+        .linkColor((l) => (l.bridge ? "rgba(255,255,255,.4)" : "rgba(255,255,255,.15)"))
+        .cooldownTime(6000)
+        .onEngineTick(() => { if (++ticks % 5 === 0) show(true); })
+        .onEngineStop(() => { show(false); g.zoomToFit(500, 30); });
+      const show = (running) => {
+        tag.innerHTML = `模擬 tick <b>${fmt(ticks)}</b>・${running ? "收斂中" : "已停止（cooldownTime 到期）"}`;
+      };
+      let fitTimer = 0;
+      const reheat = () => {
+        ticks = 0; g.d3ReheatSimulation();
+        clearTimeout(fitTimer); fitTimer = ctx.timeout(() => g.zoomToFit(600, 30), 1200);
+      };
+      const setCollide = () => g.d3Force("collide", p.pad > 0 ? forceCollide((n) => radius(n) + p.pad) : null);
+      ctx.slider("斥力", { min: -200, max: 0, step: 5, value: p.charge }, (v) => { g.d3Force("charge").strength(v); reheat(); });
+      ctx.slider("連結距離", { min: 5, max: 120, step: 1, value: p.dist }, (v) => { g.d3Force("link").distance(v); reheat(); });
+      ctx.slider("碰撞間距", { min: 0, max: 20, step: 1, value: p.pad, format: (v) => (v ? `${v}` : "關") }, (v) => { p.pad = v; setCollide(); reheat(); });
+      ctx.timeout(() => g.zoomToFit(500, 30), 900);
+      ctx.timeout(() => g.zoomToFit(500, 30), 2400);
+      show(true);
+    },
+  },
+  {
+    id: "dag", title: "DAG 階層",
+    api: "g.dagMode('td' | 'lr' | 'radialout' | null).dagLevelDistance(px)",
+    desc: "資工系課程先修關係是有向無環圖：dagMode 依深度把節點排成上到下、左到右或放射狀，關閉後回到一般力導向。滑過課程會高亮整條先修與後續路徑。",
+    hint: "切換排列方式・滑過課程看先修鏈・拖動層距",
+    async mount(ctx) {
+      ctx.html(`<div class="fg-box"></div><div class="fg-tag"></div>`);
+      const { forceCollide } = await d3f();
+      const nodes = COURSES.map(([id, f]) => ({ id, f, pre: [], post: [] }));
+      const by = new Map(nodes.map((n) => [n.id, n]));
+      const links = [];
+      COURSES.forEach(([id, , ...pre]) => pre.forEach((p) => {
+        links.push({ source: p, target: id });
+        by.get(id).pre.push(by.get(p)); by.get(p).post.push(by.get(id));
+      }));
+      let focus = null;
+      const walk = (n, key, set) => { set.add(n); n[key].forEach((x) => walk(x, key, set)); return set; };
+      const lit = (n) => !focus || focus.has(n);
+      const radius = (n) => Math.sqrt(1 + n.post.length * 0.6) * 4;
+      const g = makeGraph(ctx, ctx.$(".fg-box"), { refit: 40 })
+        .graphData({ nodes, links })
+        .dagMode("td").dagLevelDistance(48)
+        .nodeRelSize(4)
+        .nodeVal((n) => 1 + n.post.length * 0.6)
+        .nodeColor((n) => (lit(n) ? COLORS[n.f] : "#2a2e35"))
+        .nodeLabel((n) => (n.pre.length ? `先修：${n.pre.map((x) => x.id).join("、")}` : "入門課，無先修"))
+        .nodeCanvasObjectMode(() => "after")
+        // Label size follows the zoom between 8 and 12 px so same-level names stay apart when zoomed out.
+        .nodeCanvasObject((n, c, s) => label(c, n.id, n.x, n.y + radius(n) + 2 / s, Math.max(8, Math.min(12, 13 * s)), s, { base: "top", alpha: lit(n) ? 1 : 0.25 }))
+        .linkColor((l) => (focus && focus.has(l.source) && focus.has(l.target) ? "rgba(247,223,30,.8)" : "rgba(255,255,255,.18)"))
+        .linkDirectionalParticles(2)
+        .linkDirectionalParticleWidth(2.2)
+        .linkDirectionalParticleSpeed(0.006)
+        .linkDirectionalParticleColor((l) => COLORS[l.source.f])
+        .d3VelocityDecay(0.3)
+        .cooldownTime(5000)
+        .onNodeHover((n) => { focus = n ? new Set([...walk(n, "pre", new Set()), ...walk(n, "post", new Set())]) : null; })
+        .onEngineStop(() => g.zoomToFit(500, 40));
+      g.d3Force("charge").strength(-80);
+      // Wide collide radius keeps same-level course names from overlapping.
+      g.d3Force("collide", forceCollide(34));
+      const MODES = ["td", "lr", "radialout", null];
+      let mode = 0, gap = 48;
+      // Left-to-right gets longer level gaps because the labels sit under the nodes.
+      const apply = () => { g.dagMode(MODES[mode]).dagLevelDistance(mode === 1 ? gap * 1.8 : gap); g.d3ReheatSimulation(); ctx.timeout(() => g.zoomToFit(600, 40), 900); };
+      ctx.group(["上到下", "左到右", "放射", "關閉"], 0, (i) => { mode = i; apply(); });
+      ctx.slider("層距", { min: 24, max: 90, step: 2, value: gap }, (v) => { gap = v; apply(); });
+      ctx.$(".fg-tag").innerHTML = FIELDS.map((f, i) => `<i style="background:${COLORS[i]}"></i>${f}`).join("");
+      ctx.timeout(() => g.zoomToFit(500, 40), 900);
+      ctx.timeout(() => g.zoomToFit(500, 40), 2400);
+    },
+  },
+  {
+    id: "draw", title: "自繪節點",
+    api: "g.nodeCanvasObject((node, ctx, scale) => …)・nodePointerAreaPaint(fn)・onRenderFramePre(fn)",
+    desc: "同一份 JS 生態圖切換三種畫法：文字膠囊、依類別換幾何圖形、預設圓點。群組外框在 onRenderFramePre 裡算凸包畫在節點底下，nodePointerAreaPaint 讓滑鼠命中範圍跟著形狀走；同類聚在一起靠的是用 d3Force 掛上的自訂力。",
+    hint: "切換畫法・開關群組外框・拖曳節點",
+    async mount(ctx) {
+      ctx.html(`<div class="fg-box"></div>`);
+      const { forceCollide } = await d3f();
+      const nodes = [], links = [];
+      LIBS.forEach(([cat, names], ci) => names.forEach((name, i) => {
+        nodes.push({ id: name, cat: ci, deg: 0 });
+        if (i) links.push({ source: names[i - 1], target: name, inner: true });
+      }));
+      LIB_LINKS.forEach((s) => { const [a, b] = s.split("~"); links.push({ source: a, target: b }); });
+      const by = new Map(nodes.map((n) => [n.id, n]));
+      links.forEach((l) => { by.get(l.source).deg++; by.get(l.target).deg++; });
+      // Pre-measure every capsule once; sizes are in graph units so they scale with zoom.
+      const meter = document.createElement("canvas").getContext("2d");
+      nodes.forEach((n) => {
+        n.fs = 6 + n.deg * 0.45;
+        meter.font = `600 ${n.fs}px ${FONT}`;
+        n.w = meter.measureText(n.id).width + n.fs * 1.1;
+        n.h = n.fs * 1.7;
+        n.r = 3 + n.deg * 0.7;
+      });
+      let mode = 0, hull = true;
+      const capsule = (n, c) => {
+        c.beginPath(); c.roundRect(n.x - n.w / 2, n.y - n.h / 2, n.w, n.h, n.h / 2);
+        c.fillStyle = "#171a1f"; c.fill();
+        c.lineWidth = Math.max(0.6, n.fs * 0.12); c.strokeStyle = COLORS[n.cat]; c.stroke();
+        c.font = `600 ${n.fs}px ${FONT}`; c.textAlign = "center"; c.textBaseline = "middle";
+        c.fillStyle = "#ecebe6"; c.fillText(n.id, n.x, n.y + n.fs * 0.05);
+      };
+      // One polygon per category: circle, square, triangle, diamond, hexagon, star.
+      const SHAPES = [[0], [4, Math.PI / 4], [3, -Math.PI / 2], [4, 0], [6, 0], [10, -Math.PI / 2, 0.5]];
+      const glyph = (n, c, s) => {
+        const [sides, rot = 0, inner = 1] = SHAPES[n.cat], r = n.r * (sides === 3 ? 1.3 : sides === 10 ? 1.4 : 1.1);
+        c.beginPath();
+        if (!sides) c.arc(n.x, n.y, n.r, 0, 2 * Math.PI);
+        else for (let i = 0; i < sides; i++) {
+          const a = rot + (i * 2 * Math.PI) / sides, rr = i % 2 ? r * inner : r;
+          c[i ? "lineTo" : "moveTo"](n.x + Math.cos(a) * rr, n.y + Math.sin(a) * rr);
+        }
+        c.closePath(); c.fillStyle = COLORS[n.cat]; c.fill();
+        if (s > 0.9 || n.deg > 5) label(c, n.id, n.x, n.y + r + 2 / s, 10, s, { base: "top" });
+      };
+      const pointer = (n, color, c) => {
+        c.fillStyle = color; c.beginPath();
+        if (mode === 0) c.rect(n.x - n.w / 2, n.y - n.h / 2, n.w, n.h); else c.arc(n.x, n.y, mode === 1 ? n.r * 1.4 : 5, 0, 2 * Math.PI);
+        c.fill();
+      };
+      // Monotone-chain convex hull, padded by a thick round stroke of the same opaque colour.
+      const convex = (pts) => {
+        pts.sort((a, b) => a.x - b.x || a.y - b.y);
+        const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+        const half = (list) => { const out = []; for (const p of list) { while (out.length > 1 && cross(out[out.length - 2], out[out.length - 1], p) <= 0) out.pop(); out.push(p); } out.pop(); return out; };
+        return [...half(pts), ...half([...pts].reverse())];
+      };
+      const FILL = COLORS.map((c) => mix(c, BG, 0.16));
+      const g = makeGraph(ctx, ctx.$(".fg-box"))
+        .graphData({ nodes, links })
+        .nodeColor((n) => COLORS[n.cat])
+        .nodeLabel((n) => `<b>${n.id}</b>・${LIBS[n.cat][0]}・關聯 ${n.deg}`)
+        .nodeCanvasObject(capsule)
+        .nodePointerAreaPaint(pointer)
+        .linkColor((l) => (l.inner ? "rgba(255,255,255,.22)" : "rgba(255,255,255,.12)"))
+        .onRenderFramePre((c, s) => {
+          if (!hull || nodes[0].x == null) return;
+          const pad = mode === 0 ? 12 : 14;
+          LIBS.forEach(([cat], ci) => {
+            const pts = nodes.filter((n) => n.cat === ci).map((n) => ({ x: n.x, y: n.y }));
+            const poly = convex(pts);
+            c.beginPath(); poly.forEach((p, i) => c[i ? "lineTo" : "moveTo"](p.x, p.y)); c.closePath();
+            c.fillStyle = c.strokeStyle = FILL[ci]; c.lineWidth = pad * 2; c.lineJoin = c.lineCap = "round";
+            c.fill(); c.stroke();
+            const top = poly.reduce((m, p) => (p.y < m.y ? p : m), poly[0]);
+            label(c, cat, top.x, top.y - pad - 2 / s, 12, s, { color: COLORS[ci], weight: 700, base: "bottom" });
+          });
+        })
+        .cooldownTime(5000)
+        .onEngineStop(() => g.zoomToFit(500, 30));
+      g.d3Force("charge").strength(-90);
+      g.d3Force("link").distance((l) => (l.inner ? 22 : 60)).strength((l) => (l.inner ? 0.6 : 0.04));
+      g.d3Force("collide", forceCollide((n) => (mode === 0 ? n.w / 2 + 2 : n.r + 4)));
+      // Custom force: pull each category toward its own anchor on a ring so the hulls stay apart.
+      const anchor = LIBS.map((_, i) => [Math.cos((i / LIBS.length) * 2 * Math.PI) * 120, Math.sin((i / LIBS.length) * 2 * Math.PI) * 120]);
+      g.d3Force("cluster", (alpha) => nodes.forEach((n) => {
+        n.vx += (anchor[n.cat][0] - n.x) * 0.15 * alpha;
+        n.vy += (anchor[n.cat][1] - n.y) * 0.15 * alpha;
+      }));
+      ctx.group(["文字膠囊", "幾何圖形", "預設圓點"], 0, (i) => {
+        mode = i;
+        g.nodeCanvasObject([capsule, glyph, null][i]).nodeRelSize(4).nodeVal((n) => 1 + n.deg * 0.3);
+        g.d3Force("collide").radius((n) => (mode === 0 ? n.w / 2 + 2 : n.r + 4));
+        g.d3ReheatSimulation();
+      });
+      ctx.toggle("群組外框", true, (v) => { hull = v; });
+      ctx.timeout(() => g.zoomToFit(500, 30), 1000);
+      ctx.timeout(() => g.zoomToFit(500, 30), 2400);
+    },
+  },
+  {
+    id: "flow", title: "箭頭與粒子",
+    api: "g.linkCurvature(c).linkDirectionalArrowLength(px).linkDirectionalParticles(n)・emitParticle(link)",
+    desc: "城市間雙向物流：節點用 fx／fy 固定在地理位置，linkCurvature 讓往返兩條線分開、自環畫成圈，箭頭標出方向，粒子數代表流量。點城市用 emitParticle 從該城市送出一批包裹。",
+    hint: "點城市送出包裹・關掉常態粒子只看 emitParticle・拖動曲率",
+    mount(ctx) {
+      ctx.html(`<div class="fg-box"></div><div class="fg-tag top"><i style="background:#f7df1e"></i>南下<i style="background:#4cc9f0"></i>北上<i style="background:#7bd389"></i>市內・線寬＝流量（示意）</div>`);
+      const r = rng(1203), K = 120;
+      const nodes = CITIES.map(([id, lon, lat, side]) => {
+        const x = (lon - 121) * K, y = -(lat - 23.8) * K * 1.09;
+        return { id, side, x, y, fx: x, fy: y, vol: 0 };
+      });
+      const by = new Map(nodes.map((n) => [n.id, n]));
+      const links = [];
+      ROUTES.forEach((s) => {
+        const [a, b] = s.split("~");
+        links.push({ source: a, target: b, vol: 1 + Math.floor(r() * 4) }, { source: b, target: a, vol: 1 + Math.floor(r() * 4) });
+      });
+      links.push({ source: "台北", target: "台北", vol: 4 }, { source: "高雄", target: "高雄", vol: 3 }, { source: "台中", target: "台中", vol: 2 });
+      links.forEach((l) => { by.get(l.source).vol += l.vol; by.get(l.target).vol += l.vol; });
+      const color = (l) => {
+        const a = l.source.id ? l.source : by.get(l.source), b = l.target.id ? l.target : by.get(l.target);
+        return a === b ? "#7bd389" : b.y > a.y ? "#f7df1e" : "#4cc9f0";
+      };
+      let regular = true, curve = 0.25;
+      const radius = (n) => Math.sqrt(n.vol / 4) * 3;
+      const g = makeGraph(ctx, ctx.$(".fg-box"), { refit: 36 })
+        .graphData({ nodes, links })
+        .enableNodeDrag(false)
+        .cooldownTicks(0)
+        .nodeRelSize(3)
+        .nodeVal((n) => n.vol / 4)
+        .nodeColor(() => "#ecebe6")
+        .nodeLabel((n) => `${n.id}：點一下送出包裹`)
+        .nodeCanvasObjectMode(() => "after")
+        .nodeCanvasObject((n, c, s) => {
+          const d = radius(n) + 3 / s;
+          const [dx, dy, align, base] = { l: [-d, 0, "right", "middle"], r: [d, 0, "left", "middle"], t: [0, -d, "center", "bottom"] }[n.side];
+          label(c, n.id, n.x + dx, n.y + dy, 12, s, { align, base, weight: 600 });
+        })
+        .linkCurvature(() => curve)
+        .linkColor((l) => color(l) + "88")
+        .linkWidth((l) => l.vol * 0.7)
+        .linkDirectionalArrowLength(5)
+        .linkDirectionalArrowRelPos(1)
+        .linkDirectionalArrowColor(color)
+        .linkDirectionalParticles((l) => (regular ? l.vol : 0))
+        .linkDirectionalParticleWidth(3)
+        .linkDirectionalParticleSpeed((l) => 0.004 + 0.002 * l.vol)
+        .linkDirectionalParticleColor(color)
+        .onNodeClick((n) => links.filter((l) => l.source === n).forEach((l) => {
+          for (let i = 0; i < 3; i++) ctx.timeout(() => g.emitParticle(l), i * 160);
+        }));
+      ctx.toggle("常態粒子", true, (v) => { regular = v; g.linkDirectionalParticles(g.linkDirectionalParticles()); });
+      ctx.slider("曲率", { min: 0, max: 0.8, step: 0.05, value: curve }, (v) => { curve = v; g.linkCurvature(g.linkCurvature()); });
+      ctx.button("全部發送", () => links.forEach((l) => g.emitParticle(l)));
+      ctx.timeout(() => g.zoomToFit(0, 36), 60);
+    },
+  },
+  {
+    id: "camera", title: "鏡頭控制",
+    api: "g.zoomToFit(ms, px, nodeFilter)・centerAt(x, y, ms)・zoom(k, ms)・onZoom(fn)",
+    desc: "七個科系、約 180 人的校園網絡。自動導覽用 zoomToFit 的節點篩選參數依序框住每個科系；點節點用 centerAt 加 zoom 飛過去，onZoom 即時回報縮放倍率與中心點。科系名稱在 onRenderFramePost 疊畫。",
+    hint: "點節點拉近・點空白處全覽・關掉自動導覽後可自由拖曳縮放",
+    mount(ctx) {
+      ctx.html(`<div class="fg-box"></div><div class="fg-tag"></div>`);
+      const data = communities(rng(42), DEPTS.length, 26, { extra: 0.45, bridges: 0.05 });
+      const tag = ctx.$(".fg-tag");
+      let focus = -1, picked = null, tour = true, step = 0, hold = 0, view = { k: 1 };
+      const show = () => {
+        const c = g.centerAt();
+        tag.innerHTML = `縮放 <b>${view.k.toFixed(2)}×</b>・中心 <b>(${Math.round(c.x)}, ${Math.round(c.y)})</b>${focus >= 0 ? `・框住 ${DEPTS[focus]}` : ""}`;
+      };
+      const g = makeGraph(ctx, ctx.$(".fg-box"))
+        .graphData(data)
+        .warmupTicks(160)
+        .cooldownTicks(80)
+        .nodeRelSize(3)
+        .nodeVal("v")
+        .nodeLabel((n) => `${DEPTS[n.g]}・第 ${n.id} 號`)
+        .nodeColor((n) => (n === picked ? "#ffffff" : focus < 0 || n.g === focus ? COLORS[n.g % 6] : "#2a2e35"))
+        .linkColor(() => "rgba(255,255,255,.14)")
+        .minZoom(0.2).maxZoom(12)
+        .onZoom((t) => { view = t; show(); })
+        .onRenderFramePost((c, s) => {
+          DEPTS.forEach((name, gi) => {
+            let x = 0, y = 0, k = 0;
+            for (const n of data.nodes) if (n.g === gi) { x += n.x; y += n.y; k++; }
+            label(c, name, x / k, y / k, 14, s, { color: COLORS[gi % 6], weight: 700, alpha: focus < 0 || focus === gi ? 0.95 : 0.3 });
+          });
+        })
+        .onNodeClick((n) => fly(n))
+        .onBackgroundClick(() => { hold = performance.now() + 6000; picked = null; focus = -1; g.zoomToFit(800, 30); });
+      g.d3Force("charge").strength(-45);
+      function fly(n) {
+        hold = performance.now() + 6000;
+        picked = n; focus = n.g;
+        g.centerAt(n.x, n.y, 900); g.zoom(3.5, 900);
+      }
+      ctx.toggle("自動導覽", true, (v) => { tour = v; if (!v) { focus = -1; picked = null; g.zoomToFit(800, 30); } });
+      ctx.button("全覽", () => { hold = performance.now() + 6000; picked = null; focus = -1; g.zoomToFit(800, 30); });
+      ctx.button("隨機節點", () => fly(data.nodes[Math.floor(Math.random() * data.nodes.length)]));
+      g.zoomToFit(0, 30);
+      ctx.interval(() => {
+        if (!tour || performance.now() < hold) return;
+        // Every third stop shows the whole campus, the others frame one department.
+        const i = step++ % (DEPTS.length + 1);
+        picked = null; focus = i < DEPTS.length ? i : -1;
+        g.zoomToFit(900, 40, focus < 0 ? undefined : (n) => n.g === focus);
+      }, 2200);
+      ctx.timeout(() => tour && step === 0 && (step++, focus = 0, g.zoomToFit(900, 40, (n) => n.g === 0)), 900);
+      show();
+    },
+  },
+  {
+    id: "dynamic", title: "動態增刪",
+    api: "g.graphData({ nodes: [...nodes, n], links: [...links, l] })",
+    desc: "網絡從一個節點開始長大：新節點優先接到連結多的節點（偏好連結），再用 graphData 傳入新陣列；既有節點保留位置與速度，只有新節點從父節點旁冒出。點節點會把它和相連的線一起移除。",
+    hint: "點節點刪除・按「＋20」一次加一批・拖曳節點",
+    mount(ctx) {
+      ctx.html(`<div class="fg-box"></div><div class="fg-tag"></div>`);
+      const LIMIT = 300;
+      let nodes = [{ id: 0, g: 0, born: performance.now() }], links = [], nextId = 1, grow = true, added = 0;
+      const tag = ctx.$(".fg-tag");
+      const show = () => { tag.innerHTML = `節點 <b>${nodes.length}</b>・連結 <b>${links.length}</b>${nodes.length >= LIMIT ? "・已達上限" : ""}`; };
+      const push = () => { g.graphData({ nodes: [...nodes], links: [...links] }); show(); };
+      function add(k) {
+        for (let i = 0; i < k && nodes.length < LIMIT; i++) {
+          if (!nodes.length) { nodes.push({ id: nextId++, g: Math.floor(Math.random() * 6), born: performance.now(), x: 0, y: 0 }); continue; }
+          // Preferential attachment: picking a link end favours well-connected nodes.
+          const parent = links.length && Math.random() < 0.7 ? links[Math.floor(Math.random() * links.length)][Math.random() < 0.5 ? "source" : "target"]
+            : nodes[Math.floor(Math.random() * nodes.length)];
+          const p = typeof parent === "object" ? parent : nodes.find((n) => n.id === parent);
+          const n = { id: nextId++, g: Math.random() < 0.88 ? p.g : (p.g + 1 + Math.floor(Math.random() * 5)) % 6, born: performance.now(),
+            x: (p.x || 0) + (Math.random() - 0.5) * 8, y: (p.y || 0) + (Math.random() - 0.5) * 8 };
+          nodes.push(n); links.push({ source: p, target: n });
+        }
+        push();
+        if ((added += k) >= 12) { added = 0; ctx.timeout(() => g.zoomToFit(600, 50), 400); }
+      }
+      const g = makeGraph(ctx, ctx.$(".fg-box"))
+        .graphData({ nodes, links })
+        .nodeRelSize(4)
+        .nodeColor((n) => COLORS[n.g])
+        .nodeLabel(() => "點一下刪除")
+        .nodeCanvasObjectMode(() => "after")
+        .nodeCanvasObject((n, c, s) => {
+          const age = (performance.now() - n.born) / 1400;
+          if (age >= 1) return;
+          c.beginPath(); c.arc(n.x, n.y, 4 + age * 10, 0, 2 * Math.PI);
+          c.globalAlpha = 1 - age; c.lineWidth = 1.6 / s; c.strokeStyle = "#fff"; c.stroke(); c.globalAlpha = 1;
+        })
+        .linkColor(() => "rgba(255,255,255,.2)")
+        .onNodeClick((n) => {
+          nodes = nodes.filter((x) => x !== n);
+          links = links.filter((l) => l.source !== n && l.target !== n);
+          push();
+        });
+      g.zoom(3, 0);
+      ctx.toggle("自動成長", true, (v) => { grow = v; });
+      ctx.button("＋20", () => add(20));
+      ctx.button("重設", () => {
+        nodes = [{ id: 0, g: Math.floor(Math.random() * 6), born: performance.now() }]; links = []; nextId = 1;
+        push(); g.centerAt(0, 0, 400); g.zoom(3, 400);
+      });
+      // A quick first burst, then one node per tick.
+      ctx.interval(() => grow && nodes.length < LIMIT && add(nodes.length < 40 ? 3 : 1), 260);
+      show();
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "g.graphData(n 個節點).d3AlphaMin(0).autoPauseRedraw(false)",
+    desc: "隨機樹狀網絡逐級加到五萬個節點，力模擬不停止、每格都重畫。分開計時 d3-force 模擬與 Canvas 繪圖，可加上連線粒子或節點文字比較額外成本。",
+    hint: "按「自動加壓」開始・切換粒子、文字或模擬後再測一次",
+    mount(ctx) {
+      ctx.html(`<div class="fg-stress"><div class="fg-box"></div></div>`);
+      ctx.controls.classList.add("bottom");
+      let particles = false, texts = false, sim = true, linkCount = 0, simMs = 0, paintMs = 0, t0 = 0, t1 = 0, ticked = false;
+      const drawText = (n, c, s) => { c.font = `${10 / s}px ${FONT}`; c.fillStyle = "#ecebe6"; c.fillText(`節點${n.id}`, n.x + 3 / s, n.y); };
+      ctx.toggle("粒子", false, (v) => { particles = v; g.linkDirectionalParticles(v ? 1 : 0); });
+      ctx.toggle("文字", false, (v) => { texts = v; g.nodeCanvasObject(v ? drawText : null); });
+      ctx.toggle("模擬", true, (v) => { sim = v; g.cooldownTicks(v ? Infinity : 0); if (v) g.d3ReheatSimulation(); });
+      const g = makeGraph(ctx, ctx.$(".fg-stress .fg-box"))
+        .enablePointerInteraction(false)
+        .autoPauseRedraw(false)
+        .d3AlphaMin(0).cooldownTicks(Infinity).cooldownTime(Infinity)
+        .nodeRelSize(2.5)
+        .nodeColor((n) => COLORS[n.g])
+        .nodeCanvasObjectMode(() => "after")
+        .linkColor(() => "rgba(255,255,255,.12)")
+        .linkDirectionalParticleWidth(2)
+        .linkDirectionalParticleSpeed(0.01)
+        .linkDirectionalParticleColor((l) => COLORS[l.source.g])
+        .onRenderFramePre(() => { t0 = performance.now(); ticked = false; })
+        .onEngineTick(() => { t1 = performance.now(); ticked = true; })
+        .onRenderFramePost(() => {
+          const t2 = performance.now();
+          simMs += ((ticked ? t1 - t0 : 0) - simMs) * 0.1;
+          paintMs += (t2 - (ticked ? t1 : t0) - paintMs) * 0.1;
+        });
+      // Random tree (each node joins an earlier one, inheriting its colour) plus 20% shortcut links.
+      function build(n) {
+        const r = rng(n), nodes = [], links = [];
+        for (let i = 0; i < n; i++) {
+          const p = i ? Math.floor(r() * i) : -1;
+          nodes.push({ id: i, g: i < 6 ? i : nodes[p].g });
+          if (i) links.push({ source: i, target: p });
+        }
+        for (let k = 0; k < n * 0.2; k++) {
+          const a = Math.floor(r() * n), b = Math.floor(r() * n);
+          if (a !== b) links.push({ source: a, target: b });
+        }
+        linkCount = links.length;
+        return { nodes, links };
+      }
+      ctx.interval(() => g.graphData().nodes.length && g.zoomToFit(400, 12), 1500);
+      ctx.ramp({
+        label: "節點", unit: "個", steps: [500, 1000, 2000, 4000, 8000, 12000, 20000, 30000, 50000], initial: 1, minFps: 30,
+        apply(n) {
+          g.graphData(build(n));
+          if (!sim) g.cooldownTicks(0);
+          ctx.timeout(() => g.zoomToFit(300, 12), 300);
+        },
+        metrics: () => ({
+          連結: linkCount,
+          模擬: `${simMs.toFixed(1)} ms`,
+          繪圖: `${paintMs.toFixed(1)} ms`,
+          模式: [sim ? "模擬" : "靜止", particles && "粒子", texts && "文字"].filter(Boolean).join("＋"),
+        }),
+        note: "每格先跑一次 d3-force 模擬（Barnes-Hut 斥力約 O(n log n)，再加上連結力），接著用 Canvas 2D 畫所有連線與節點，兩段分開計時。關「模擬」只量繪圖；開「粒子」每條連線多一顆移動光點；開「文字」每個節點多一次 fillText。為了單純量繪圖，已關閉滑鼠命中偵測用的影子畫布（enablePointerInteraction(false)）。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

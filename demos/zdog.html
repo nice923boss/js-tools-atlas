@@ -3,158 +3,721 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Zdog 示範：可拖曳旋轉的漂浮小島</title>
+<title>Zdog 示範：八個場景看懂偽 3D 引擎</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["漂浮小島","基本圖形","階層關節","路徑指令","Canvas 與 SVG","拖曳與緩動","複製圖形","極限測試"]}</script>
 <style>
-  body { background: linear-gradient(#7fd0f5, #c9ecff 60%, #fff3dc); transition: background .6s; }
-  body.night { background: linear-gradient(#070b24, #1b2459 65%, #3a2e6e); }
-  #zc { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
-  #zc:active { cursor: grabbing; }
-  .sep { width: 1px; background: var(--line); margin: 0 2px; }
+  .stage { position: absolute; left: 0; right: 0; top: var(--sc-ctl-h, 0px); bottom: var(--sc-ctl-b, 0px); }
+  .stage > canvas, .stage > svg, .box > canvas, .box > svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+  .stage > canvas:active, .box > canvas:active, .box > svg:active { cursor: grabbing; }
+
+  /* 1. island sky */
+  .sky { position: absolute; inset: 0; background: linear-gradient(#7fd0f5, #c9ecff 60%, #fff3dc); transition: background .6s; }
+  .sky.night { background: linear-gradient(#070b24, #1b2459 65%, #3a2e6e); }
+
+  /* 2. primitive gallery */
+  .gallery { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 6px) 10px calc(var(--sc-ctl-b, 0px) + 10px);
+    display: grid; gap: 8px; grid-template-columns: repeat(5, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+  .cell { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 6px 8px; }
+  .cell .name { font: 600 12.5px/1.3 var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cell .name code { font: 500 10.5px var(--mono); color: var(--muted); margin-left: 4px; }
+  .cell .box { position: relative; flex: 1; min-height: 0; }
+  @media (max-width: 520px) { .gallery { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(4, minmax(0, 1fr)); gap: 6px; } }
+
+  /* 3. hierarchy tree */
+  .tree { position: absolute; left: 10px; bottom: calc(var(--sc-ctl-b, 0px) + 10px); margin: 0; padding: 8px 12px; font: 500 11.5px/1.6 var(--mono); color: var(--muted); white-space: pre; pointer-events: none; }
+  .tree span { transition: color .2s; }
+  .tree span.on { color: var(--accent); }
+  @media (max-width: 620px) { .tree { display: none; } }
+
+  /* 5. canvas vs svg */
+  .split { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 8px) 10px calc(var(--sc-ctl-b, 0px) + 10px); display: grid; gap: 8px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .pane { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 8px 10px; }
+  .pane h2 { margin: 0 0 4px; font: 600 12.5px/1.3 var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pane h2 code { font: 500 11.5px var(--mono); color: var(--accent); margin-left: 6px; }
+  .pane .box { position: relative; flex: 1; min-height: 0; }
+  .pane .meta { font: 500 11px/1.4 var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 4px; }
+  @media (max-width: 560px) { .split { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); } }
+
+  /* 6. easing curve + readout */
+  .curve { position: absolute; left: 10px; bottom: calc(var(--sc-ctl-b, 0px) + 10px); width: 132px; padding: 8px 10px 6px; pointer-events: none; }
+  .curve svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .curve .axis { fill: none; stroke: var(--line); stroke-width: 1.5; }
+  .curve polyline { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; }
+  .curve circle { fill: var(--c3); }
+  .curve div { margin-top: 4px; font: 500 10.5px var(--mono); color: var(--muted); white-space: nowrap; }
+  .curve b { color: var(--fg); }
+  .readout { position: absolute; right: 10px; bottom: calc(var(--sc-ctl-b, 0px) + 10px); padding: 6px 10px; font: 500 11.5px/1.5 var(--mono); color: var(--muted); pointer-events: none; max-width: calc(100% - 20px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .readout b { color: var(--fg); font-weight: 600; }
+  @media (max-width: 520px) { .curve { width: 104px; } .readout { bottom: calc(var(--sc-ctl-b, 0px) + 10px); right: 8px; } }
+
+  /* 8. stress */
+  .stress-stage { position: absolute; inset: 8px 8px 8px 350px; border-radius: 10px; background: #12151a; border: 1px solid var(--line); overflow: hidden; }
+  .stress-stage > canvas, .stress-stage > svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  @media (max-width: 760px) { .stress-stage { inset: 8px; } }
 </style>
 </head>
 <body>
-<canvas id="zc"></canvas>
-<div class="controls">
-  <button class="btn" id="spin" aria-pressed="true">自動旋轉</button>
-  <button class="btn" id="night">切換夜晚</button>
-</div>
-<div class="hint">拖曳畫面任意旋轉小島・切換日夜看窗戶亮燈</div>
-
 <script src="https://cdn.jsdelivr.net/npm/zdog@1.1.3/dist/zdog.dist.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Pseudo-3D island built only from Zdog primitives (Cylinder, Cone, Box, Shape, Ellipse, Rect).
-// Ground renders first, then the props group is z-sorted, so objects never sink into the grass.
+// Zdog showcase: flat-shaded pseudo-3D. Every scene builds a scene graph with addTo and renders it via Illustration.
 const TAU = Zdog.TAU;
-let auto = true, night = false;
-const spinBtn = document.getElementById("spin");
+const css = getComputedStyle(document.documentElement);
+const C = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6"].map((v) => css.getPropertyValue(v).trim());
+const FG = css.getPropertyValue("--fg").trim() || "#ecebe6";
+const MUTED = css.getPropertyValue("--muted").trim() || "#9b998f";
+const FONT = css.getPropertyValue("--font").trim() || "sans-serif";
 
-const illo = new Zdog.Illustration({
-  element: "#zc",
-  dragRotate: true,
-  resize: true,
-  rotate: { x: -0.42, y: 0.5 },
-  onDragStart() { auto = false; spinBtn.setAttribute("aria-pressed", "false"); },
-  onResize(w, h) { this.zoom = Math.min(w / 430, h / 470); },
-});
-
-const world = new Zdog.Group({ addTo: illo, translate: { y: 30 } });
-const ground = new Zdog.Group({ addTo: world });
-const props = new Zdog.Group({ addTo: world, updateSort: true });
-const TOP = -21;
-
-// Ground layers: rocky cone, dirt slab, grass slab, pond and stepping stones
-new Zdog.Cone({ addTo: ground, diameter: 200, length: 120, translate: { y: 12 }, rotate: { x: -TAU / 4 }, color: "#7a4a2e", backface: "#6b4128", stroke: false });
-new Zdog.Cylinder({ addTo: ground, diameter: 206, length: 24, rotate: { x: TAU / 4 }, color: "#a8693f", frontFace: "#8a5634", backface: "#6b4128", stroke: false });
-new Zdog.Cylinder({ addTo: ground, diameter: 216, length: 10, translate: { y: -16 }, rotate: { x: TAU / 4 }, color: "#5fae4f", frontFace: "#8fd16b", backface: "#5fae4f", stroke: false });
-new Zdog.Ellipse({ addTo: ground, diameter: 62, quarters: 4, translate: { x: 48, y: TOP - 0.5, z: 38 }, rotate: { x: TAU / 4 }, color: "#4cc9f0", fill: true, stroke: 3 });
-new Zdog.Ellipse({ addTo: ground, diameter: 30, translate: { x: 42, y: TOP - 0.8, z: 32 }, rotate: { x: TAU / 4 }, color: "#a6e8ff", fill: true, stroke: false });
-[[-10, 44], [-2, 62], [10, 80]].forEach(([x, z]) =>
-  new Zdog.Ellipse({ addTo: ground, diameter: 12, translate: { x, y: TOP - 0.6, z }, rotate: { x: TAU / 4 }, color: "#d9d4c7", fill: true, stroke: 2 }));
-
-// House
-const house = new Zdog.Anchor({ addTo: props, translate: { x: -38, y: TOP, z: -12 }, rotate: { y: 0.35 } });
-new Zdog.Box({ addTo: house, width: 60, height: 46, depth: 50, translate: { y: -23 }, stroke: false, color: "#fff3d6", leftFace: "#f2dcb0", rightFace: "#f2dcb0", rearFace: "#f7e7c4", topFace: false, bottomFace: false });
-new Zdog.Shape({ addTo: house, path: [{ x: -35, y: -45, z: 29 }, { x: 35, y: -45, z: 29 }, { x: 35, y: -74, z: 0 }, { x: -35, y: -74, z: 0 }], fill: true, stroke: 2, color: "#ef476f" });
-new Zdog.Shape({ addTo: house, path: [{ x: -35, y: -45, z: -29 }, { x: 35, y: -45, z: -29 }, { x: 35, y: -74, z: 0 }, { x: -35, y: -74, z: 0 }], fill: true, stroke: 2, color: "#c9365a" });
-[30, -30].forEach((x) => new Zdog.Shape({ addTo: house, path: [{ x, y: -46, z: 25 }, { x, y: -46, z: -25 }, { x, y: -72, z: 0 }], fill: true, stroke: false, color: "#f2dcb0" }));
-new Zdog.Box({ addTo: house, width: 10, height: 20, depth: 10, translate: { x: 16, y: -70, z: -10 }, stroke: false, color: "#8d6e63", leftFace: "#795548", rightFace: "#795548", topFace: "#5d4037" });
-new Zdog.Rect({ addTo: house, width: 14, height: 24, translate: { x: -6, y: -12, z: 25.5 }, fill: true, stroke: 1, color: "#8b5a3c" });
-const windows = [
-  new Zdog.Rect({ addTo: house, width: 12, height: 12, translate: { x: 15, y: -26, z: 25.5 }, fill: true, stroke: 2, color: "#bde6ff" }),
-  new Zdog.Rect({ addTo: house, width: 14, height: 12, translate: { x: 30.5, y: -25 }, rotate: { y: TAU / 4 }, fill: true, stroke: 2, color: "#bde6ff" }),
-  new Zdog.Rect({ addTo: house, width: 14, height: 12, translate: { x: -30.5, y: -25 }, rotate: { y: TAU / 4 }, fill: true, stroke: 2, color: "#bde6ff" }),
-];
-
-// Trees
-function pine(x, z, s) {
-  const a = new Zdog.Anchor({ addTo: props, translate: { x, y: TOP, z }, scale: s });
-  new Zdog.Cylinder({ addTo: a, diameter: 8, length: 16, translate: { y: -8 }, rotate: { x: TAU / 4 }, color: "#8b5a3c", stroke: false });
-  new Zdog.Cone({ addTo: a, diameter: 44, length: 40, translate: { y: -14 }, rotate: { x: TAU / 4 }, color: "#2a9d8f", backface: "#1f7a6f", stroke: false });
-  new Zdog.Cone({ addTo: a, diameter: 32, length: 32, translate: { y: -36 }, rotate: { x: TAU / 4 }, color: "#3fb59e", backface: "#2a9d8f", stroke: false });
-}
-pine(52, -48, 1);
-pine(78, -14, 0.75);
-pine(-6, -78, 0.85);
-const round = new Zdog.Anchor({ addTo: props, translate: { x: -78, y: TOP, z: 44 } });
-new Zdog.Cylinder({ addTo: round, diameter: 8, length: 20, translate: { y: -10 }, rotate: { x: TAU / 4 }, color: "#8b5a3c", stroke: false });
-new Zdog.Shape({ addTo: round, translate: { y: -34 }, stroke: 40, color: "#7bd389" });
-new Zdog.Shape({ addTo: round, translate: { x: 9, y: -42, z: 8 }, stroke: 22, color: "#9be38a" });
-
-// Windmill with spinning blades
-const mill = new Zdog.Anchor({ addTo: props, translate: { x: 84, y: TOP, z: 36 } });
-new Zdog.Cylinder({ addTo: mill, diameter: 5, length: 64, translate: { y: -32 }, rotate: { x: TAU / 4 }, color: "#ecebe6", stroke: false });
-const blades = new Zdog.Anchor({ addTo: mill, translate: { y: -64, z: 4 } });
-[0, 1, 2, 3].forEach((i) => new Zdog.Shape({
-  addTo: blades, rotate: { z: (i * TAU) / 4 },
-  path: [{ x: 0, y: 0 }, { x: 6, y: -6 }, { x: 4, y: -30 }, { x: -2, y: -30 }],
-  fill: true, stroke: 2, color: i % 2 ? "#f7df1e" : "#ffffff",
-}));
-new Zdog.Shape({ addTo: blades, stroke: 7, color: "#ff8c42" });
-
-// Flowers on the grass
-const FLOWERS = ["#f72585", "#f7df1e", "#ffffff", "#9d8cff"];
-for (let i = 0; i < 26; i++) {
-  const a = (i / 26) * TAU + Math.sin(i * 3.1) * 0.15;
-  const r = 82 + Math.sin(i * 7.3) * 14;
-  new Zdog.Shape({ addTo: props, translate: { x: Math.cos(a) * r, y: TOP - 3, z: Math.sin(a) * r }, stroke: 5, color: FLOWERS[i % FLOWERS.length] });
-}
-
-// Sky: clouds orbiting the island, sun or moon, stars at night
-const sky = new Zdog.Anchor({ addTo: illo });
-function cloud(angle, r, y, s) {
-  const c = new Zdog.Group({ addTo: sky, translate: { x: Math.cos(angle) * r, y, z: Math.sin(angle) * r }, scale: s });
-  new Zdog.Shape({ addTo: c, stroke: 34, color: "#ffffff" });
-  new Zdog.Shape({ addTo: c, translate: { x: -22, y: 6 }, stroke: 24, color: "#f1f6ff" });
-  new Zdog.Shape({ addTo: c, translate: { x: 22, y: 5 }, stroke: 26, color: "#f1f6ff" });
-}
-cloud(0.4, 170, -120, 1);
-cloud(2.6, 160, -90, 0.8);
-cloud(4.4, 175, -140, 0.9);
-// Point shapes read as circles from every angle, so the glow never turns into a tilted ring
-const sunGroup = new Zdog.Group({ addTo: illo, translate: { x: -140, y: -140, z: -60 } });
-const halo = new Zdog.Shape({ addTo: sunGroup, stroke: 84, color: "rgba(255,250,225,0.55)" });
-const sun = new Zdog.Shape({ addTo: sunGroup, stroke: 54, color: "#ffd166" });
-const stars = new Zdog.Group({ addTo: illo, visible: false });
-for (let i = 0; i < 90; i++) {
-  const t = Math.random() * TAU, p = Math.acos(Math.random() * 1.6 - 1);
-  new Zdog.Shape({ addTo: stars, translate: { x: Math.cos(t) * Math.sin(p) * 320, y: Math.cos(p) * 320 - 60, z: Math.sin(t) * Math.sin(p) * 320 }, stroke: Math.random() < 0.2 ? 4 : 2.5, color: "#fff7d6" });
-}
-const fireflies = new Zdog.Group({ addTo: world, visible: false });
-const flies = [];
-for (let i = 0; i < 10; i++) flies.push({ s: new Zdog.Shape({ addTo: fireflies, stroke: 4, color: "#f7df1e" }), a: Math.random() * TAU, r: 50 + Math.random() * 60, h: 20 + Math.random() * 40 });
-
-document.getElementById("night").addEventListener("click", (e) => {
-  night = !night;
-  document.body.classList.toggle("night", night);
-  e.currentTarget.textContent = night ? "切換白天" : "切換夜晚";
-  sun.color = night ? "#eef2ff" : "#ffd166";
-  halo.color = night ? "rgba(220,230,255,0.35)" : "rgba(255,250,225,0.55)";
-  windows.forEach((w) => { w.color = night ? "#ffd166" : "#bde6ff"; });
-  stars.visible = night;
-  fireflies.visible = night;
-});
-spinBtn.addEventListener("click", () => { auto = !auto; spinBtn.setAttribute("aria-pressed", auto); });
-
-let t = 0;
-function frame() {
-  t += 0.016;
-  if (auto) illo.rotate.y += 0.0055;
-  // Keep the camera above the island so the ground always draws underneath the props
-  illo.rotate.x = Math.max(-1.2, Math.min(-0.12, illo.rotate.x));
-  world.translate.y = 30 + Math.sin(t * 1.4) * 6;
-  sky.rotate.y = t * 0.12;
-  blades.rotate.z = t * 2.4;
-  flies.forEach((f, i) => {
-    const a = f.a + t * (0.4 + i * 0.03);
-    f.s.translate.set({ x: Math.cos(a) * f.r, y: TOP - f.h - Math.sin(t * 2 + i) * 8, z: Math.sin(a) * f.r });
+// Redraw hook for an element's box size (window resize, control bar wrapping).
+function watch(ctx, el, fn) {
+  let raf = 0, lw = -1, lh = -1;
+  const ro = new ResizeObserver(() => {
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() => {
+      if (!ctx.active) return;
+      const w = el.clientWidth, h = el.clientHeight;
+      if (!w || !h || (w === lw && h === lh)) return;
+      lw = w; lh = h;
+      fn(w, h);
+    });
   });
-  illo.updateRenderGraph();
-  requestAnimationFrame(frame);
+  ro.observe(el);
+  ctx.onCleanup(() => { ro.disconnect(); cancelAnimationFrame(raf); });
 }
-frame();
+// Illustration.setSize() uses the raw devicePixelRatio; cap the canvas backing store at 2x.
+function sizeIllo(illo, w, h) {
+  illo.setSize(w, h);
+  if (illo.isCanvas && illo.pixelRatio > 2) {
+    illo.pixelRatio = 2;
+    illo.element.width = illo.canvasWidth = Math.round(w) * 2;
+    illo.element.height = illo.canvasHeight = Math.round(h) * 2;
+  }
+}
+const deg = (d) => (d * Math.PI) / 180;
+
+// ---------- scene 1: floating island (ported from the original demo) ----------
+function buildIsland(illo) {
+  const world = new Zdog.Group({ addTo: illo, translate: { y: 30 } });
+  const ground = new Zdog.Group({ addTo: world });
+  const props = new Zdog.Group({ addTo: world, updateSort: true });
+  const TOP = -21;
+  new Zdog.Cone({ addTo: ground, diameter: 200, length: 120, translate: { y: 12 }, rotate: { x: -TAU / 4 }, color: "#7a4a2e", backface: "#6b4128", stroke: false });
+  new Zdog.Cylinder({ addTo: ground, diameter: 206, length: 24, rotate: { x: TAU / 4 }, color: "#a8693f", frontFace: "#8a5634", backface: "#6b4128", stroke: false });
+  new Zdog.Cylinder({ addTo: ground, diameter: 216, length: 10, translate: { y: -16 }, rotate: { x: TAU / 4 }, color: "#5fae4f", frontFace: "#8fd16b", backface: "#5fae4f", stroke: false });
+  new Zdog.Ellipse({ addTo: ground, diameter: 62, translate: { x: 48, y: TOP - 0.5, z: 38 }, rotate: { x: TAU / 4 }, color: "#4cc9f0", fill: true, stroke: 3 });
+  new Zdog.Ellipse({ addTo: ground, diameter: 30, translate: { x: 42, y: TOP - 0.8, z: 32 }, rotate: { x: TAU / 4 }, color: "#a6e8ff", fill: true, stroke: false });
+  [[-10, 44], [-2, 62], [10, 80]].forEach(([x, z]) =>
+    new Zdog.Ellipse({ addTo: ground, diameter: 12, translate: { x, y: TOP - 0.6, z }, rotate: { x: TAU / 4 }, color: "#d9d4c7", fill: true, stroke: 2 }));
+
+  const house = new Zdog.Anchor({ addTo: props, translate: { x: -38, y: TOP, z: -12 }, rotate: { y: 0.35 } });
+  new Zdog.Box({ addTo: house, width: 60, height: 46, depth: 50, translate: { y: -23 }, stroke: false, color: "#fff3d6", leftFace: "#f2dcb0", rightFace: "#f2dcb0", rearFace: "#f7e7c4", topFace: false, bottomFace: false });
+  new Zdog.Shape({ addTo: house, path: [{ x: -35, y: -45, z: 29 }, { x: 35, y: -45, z: 29 }, { x: 35, y: -74, z: 0 }, { x: -35, y: -74, z: 0 }], fill: true, stroke: 2, color: "#ef476f" });
+  new Zdog.Shape({ addTo: house, path: [{ x: -35, y: -45, z: -29 }, { x: 35, y: -45, z: -29 }, { x: 35, y: -74, z: 0 }, { x: -35, y: -74, z: 0 }], fill: true, stroke: 2, color: "#c9365a" });
+  [30, -30].forEach((x) => new Zdog.Shape({ addTo: house, path: [{ x, y: -46, z: 25 }, { x, y: -46, z: -25 }, { x, y: -72, z: 0 }], fill: true, stroke: false, color: "#f2dcb0" }));
+  new Zdog.Box({ addTo: house, width: 10, height: 20, depth: 10, translate: { x: 16, y: -70, z: -10 }, stroke: false, color: "#8d6e63", leftFace: "#795548", rightFace: "#795548", topFace: "#5d4037" });
+  new Zdog.Rect({ addTo: house, width: 14, height: 24, translate: { x: -6, y: -12, z: 25.5 }, fill: true, stroke: 1, color: "#8b5a3c" });
+  const windows = [
+    new Zdog.Rect({ addTo: house, width: 12, height: 12, translate: { x: 15, y: -26, z: 25.5 }, fill: true, stroke: 2, color: "#bde6ff" }),
+    new Zdog.Rect({ addTo: house, width: 14, height: 12, translate: { x: 30.5, y: -25 }, rotate: { y: TAU / 4 }, fill: true, stroke: 2, color: "#bde6ff" }),
+    new Zdog.Rect({ addTo: house, width: 14, height: 12, translate: { x: -30.5, y: -25 }, rotate: { y: TAU / 4 }, fill: true, stroke: 2, color: "#bde6ff" }),
+  ];
+  const pine = (x, z, s) => {
+    const a = new Zdog.Anchor({ addTo: props, translate: { x, y: TOP, z }, scale: s });
+    new Zdog.Cylinder({ addTo: a, diameter: 8, length: 16, translate: { y: -8 }, rotate: { x: TAU / 4 }, color: "#8b5a3c", stroke: false });
+    new Zdog.Cone({ addTo: a, diameter: 44, length: 40, translate: { y: -14 }, rotate: { x: TAU / 4 }, color: "#2a9d8f", backface: "#1f7a6f", stroke: false });
+    new Zdog.Cone({ addTo: a, diameter: 32, length: 32, translate: { y: -36 }, rotate: { x: TAU / 4 }, color: "#3fb59e", backface: "#2a9d8f", stroke: false });
+  };
+  pine(52, -48, 1); pine(78, -14, 0.75); pine(-6, -78, 0.85);
+  const round = new Zdog.Anchor({ addTo: props, translate: { x: -78, y: TOP, z: 44 } });
+  new Zdog.Cylinder({ addTo: round, diameter: 8, length: 20, translate: { y: -10 }, rotate: { x: TAU / 4 }, color: "#8b5a3c", stroke: false });
+  new Zdog.Shape({ addTo: round, translate: { y: -34 }, stroke: 40, color: "#7bd389" });
+  new Zdog.Shape({ addTo: round, translate: { x: 9, y: -42, z: 8 }, stroke: 22, color: "#9be38a" });
+  const mill = new Zdog.Anchor({ addTo: props, translate: { x: 84, y: TOP, z: 36 } });
+  new Zdog.Cylinder({ addTo: mill, diameter: 5, length: 64, translate: { y: -32 }, rotate: { x: TAU / 4 }, color: "#ecebe6", stroke: false });
+  const blades = new Zdog.Anchor({ addTo: mill, translate: { y: -64, z: 4 } });
+  [0, 1, 2, 3].forEach((i) => new Zdog.Shape({
+    addTo: blades, rotate: { z: (i * TAU) / 4 },
+    path: [{ x: 0, y: 0 }, { x: 6, y: -6 }, { x: 4, y: -30 }, { x: -2, y: -30 }],
+    fill: true, stroke: 2, color: i % 2 ? "#f7df1e" : "#ffffff",
+  }));
+  new Zdog.Shape({ addTo: blades, stroke: 7, color: "#ff8c42" });
+  const FLOWERS = ["#f72585", "#f7df1e", "#ffffff", "#9d8cff"];
+  for (let i = 0; i < 26; i++) {
+    const a = (i / 26) * TAU + Math.sin(i * 3.1) * 0.15, r = 82 + Math.sin(i * 7.3) * 14;
+    new Zdog.Shape({ addTo: props, translate: { x: Math.cos(a) * r, y: TOP - 3, z: Math.sin(a) * r }, stroke: 5, color: FLOWERS[i % FLOWERS.length] });
+  }
+  const sky = new Zdog.Anchor({ addTo: illo });
+  const cloud = (angle, r, y, s) => {
+    const c = new Zdog.Group({ addTo: sky, translate: { x: Math.cos(angle) * r, y, z: Math.sin(angle) * r }, scale: s });
+    new Zdog.Shape({ addTo: c, stroke: 34, color: "#ffffff" });
+    new Zdog.Shape({ addTo: c, translate: { x: -22, y: 6 }, stroke: 24, color: "#f1f6ff" });
+    new Zdog.Shape({ addTo: c, translate: { x: 22, y: 5 }, stroke: 26, color: "#f1f6ff" });
+    // extra puffs along z keep the cloud wide from every viewing angle
+    new Zdog.Shape({ addTo: c, translate: { y: 6, z: -20 }, stroke: 24, color: "#f1f6ff" });
+    new Zdog.Shape({ addTo: c, translate: { y: 5, z: 20 }, stroke: 24, color: "#f1f6ff" });
+  };
+  cloud(0.4, 170, -120, 1); cloud(2.6, 160, -90, 0.8); cloud(4.4, 175, -140, 0.9);
+  const sunGroup = new Zdog.Group({ addTo: illo, translate: { x: -140, y: -140, z: -60 } });
+  const halo = new Zdog.Shape({ addTo: sunGroup, stroke: 84, color: "rgba(255,250,225,0.55)" });
+  const sun = new Zdog.Shape({ addTo: sunGroup, stroke: 54, color: "#ffd166" });
+  const stars = new Zdog.Group({ addTo: illo, visible: false });
+  for (let i = 0; i < 90; i++) {
+    const t = Math.random() * TAU, p = Math.acos(Math.random() * 1.6 - 1);
+    new Zdog.Shape({ addTo: stars, translate: { x: Math.cos(t) * Math.sin(p) * 320, y: Math.cos(p) * 320 - 60, z: Math.sin(t) * Math.sin(p) * 320 }, stroke: Math.random() < 0.2 ? 4 : 2.5, color: "#fff7d6" });
+  }
+  const fireflies = new Zdog.Group({ addTo: world, visible: false });
+  const flies = [];
+  for (let i = 0; i < 10; i++) flies.push({ s: new Zdog.Shape({ addTo: fireflies, stroke: 4, color: "#f7df1e" }), a: Math.random() * TAU, r: 50 + Math.random() * 60, h: 20 + Math.random() * 40 });
+  return {
+    setNight(night) {
+      sun.color = night ? "#eef2ff" : "#ffd166";
+      halo.color = night ? "rgba(220,230,255,0.35)" : "rgba(255,250,225,0.55)";
+      windows.forEach((w) => { w.color = night ? "#ffd166" : "#bde6ff"; });
+      stars.visible = night;
+      fireflies.visible = night;
+    },
+    tick(t) {
+      world.translate.y = 30 + Math.sin(t * 1.4) * 6;
+      sky.rotate.y = t * 0.12;
+      blades.rotate.z = t * 2.4;
+      flies.forEach((f, i) => {
+        const a = f.a + t * (0.4 + i * 0.03);
+        f.s.translate.set({ x: Math.cos(a) * f.r, y: TOP - f.h - Math.sin(t * 2 + i) * 8, z: Math.sin(a) * f.r });
+      });
+    },
+  };
+}
+
+// ---------- scene 2: primitive gallery ----------
+const PRIMS = [
+  ["Rect", "矩形"], ["RoundedRect", "圓角矩形"], ["Ellipse", "橢圓"], ["Polygon", "多邊形"], ["Shape", "3D 線段"],
+  ["Shape", "單點＝球"], ["Hemisphere", "半球"], ["Cone", "圓錐"], ["Cylinder", "圓柱"], ["Box", "方塊"],
+];
+function buildPrim(i, addTo, stroke, fill) {
+  const o = { addTo, stroke, fill };
+  switch (i) {
+    case 0: return new Zdog.Rect({ ...o, width: 70, height: 48, color: C[0] });
+    case 1: return new Zdog.RoundedRect({ ...o, width: 70, height: 48, cornerRadius: 16, color: C[1] });
+    case 2: return new Zdog.Ellipse({ ...o, width: 78, height: 50, color: C[2] });
+    case 3: return new Zdog.Polygon({ ...o, radius: 38, sides: 6, color: C[3] });
+    case 4: return new Zdog.Shape({ ...o, fill: false, closed: false, stroke: Math.max(stroke, 4), color: C[4],
+      path: [{ x: -34, y: 20, z: -24 }, { x: -10, y: -26, z: 0 }, { x: 14, y: 22, z: 10 }, { x: 34, y: -18, z: 28 }] });
+    case 5: return new Zdog.Shape({ addTo, stroke: 40 + stroke * 2, color: C[5] });
+    case 6: return new Zdog.Hemisphere({ addTo, stroke, diameter: 70, color: C[0], backface: C[4] });
+    case 7: return new Zdog.Cone({ addTo, stroke, diameter: 56, length: 60, color: C[1], backface: "#2a8fb3" });
+    case 8: return new Zdog.Cylinder({ addTo, stroke, diameter: 50, length: 56, color: C[2], frontFace: C[0], backface: "#a3164f" });
+    default: return new Zdog.Box({ addTo, stroke, width: 48, height: 48, depth: 48, color: C[3], leftFace: C[1], rightFace: C[4], topFace: C[0], bottomFace: C[5], rearFace: C[2] });
+  }
+}
+
+// ---------- scene 4: path commands ----------
+function pathItems() {
+  const star = Array.from({ length: 10 }, (_, i) => {
+    const a = -TAU / 4 + (i * TAU) / 10, r = i % 2 ? 18 : 42;
+    return { x: Math.cos(a) * r, y: Math.sin(a) * r, z: i % 2 ? -14 : 14 };
+  });
+  // arc spiral: 8 quarter turns, shrinking radius, rising z
+  const spiral = [{ x: 0, y: -42, z: -28 }], spiralCtl = [];
+  for (let k = 0; k < 8; k++) {
+    const prev = spiral[spiral.length - 1].arc ? spiral[spiral.length - 1].arc[1] : spiral[0];
+    const a = -TAU / 4 + ((k + 1) * TAU) / 4, r = 42 - (k + 1) * 3.6, z = -28 + (k + 1) * 7;
+    const end = { x: Math.round(Math.cos(a) * r * 100) / 100, y: Math.round(Math.sin(a) * r * 100) / 100, z };
+    const corner = { x: prev.x + end.x, y: prev.y + end.y, z: (prev.z + z) / 2 };
+    spiral.push({ arc: [corner, end] });
+    spiralCtl.push(corner);
+  }
+  const heart = [
+    { x: 0, y: -14 },
+    { bezier: [{ x: 0, y: -36 }, { x: -42, y: -36 }, { x: -42, y: -8 }] },
+    { bezier: [{ x: -42, y: 14 }, { x: -12, y: 26 }, { x: 0, y: 42 }] },
+    { bezier: [{ x: 12, y: 26 }, { x: 42, y: 14 }, { x: 42, y: -8 }] },
+    { bezier: [{ x: 42, y: -36 }, { x: 0, y: -36 }, { x: 0, y: -14 }] },
+  ];
+  const ring = [];
+  for (let i = 0; i < 12; i++) {
+    const a0 = (i * TAU) / 12, a1 = a0 + TAU / 20, z0 = Math.sin(a0 * 3) * 12, z1 = Math.sin(a1 * 3) * 12;
+    ring.push({ move: { x: Math.cos(a0) * 40, y: Math.sin(a0) * 40, z: z0 } }, { line: { x: Math.cos(a1) * 40, y: Math.sin(a1) * 40, z: z1 } });
+  }
+  return [
+    { cmd: "line", zh: "直線，點可帶 z", path: star, closed: true, fillable: true, color: C[0], dots: star, handles: [] },
+    { cmd: "arc", zh: "四分之一圓弧", path: spiral, closed: false, color: C[1], dots: [spiral[0], ...spiral.slice(1).map((p) => p.arc[1])], ctl: spiralCtl, handles: [] },
+    { cmd: "bezier", zh: "三次貝茲曲線", path: heart, closed: true, fillable: true, color: C[2],
+      dots: [heart[0], ...heart.slice(1).map((p) => p.bezier[2])], ctl: heart.slice(1).flatMap((p) => p.bezier.slice(0, 2)),
+      handles: heart.slice(1).flatMap((p, i) => { const start = i === 0 ? heart[0] : heart[i].bezier[2]; return [[start, p.bezier[0]], [p.bezier[2], p.bezier[1]]]; }) },
+    { cmd: "move", zh: "移動筆尖分段", path: ring, closed: false, color: C[3], dots: ring.map((p) => p.move || p.line), handles: [] },
+  ];
+}
+
+// ---------- scene 5: rocket ----------
+function buildRocket(addTo) {
+  const r = new Zdog.Anchor({ addTo });
+  new Zdog.Ellipse({ addTo: r, diameter: 210, rotate: { x: TAU / 4 }, stroke: 1.5, color: "rgba(236,235,230,0.25)" });
+  const moon = new Zdog.Shape({ addTo: r, stroke: 24, color: C[5], translate: { x: 105 } });
+  new Zdog.Cylinder({ addTo: r, diameter: 48, length: 88, rotate: { x: TAU / 4 }, color: "#ecebe6", frontFace: "#ffffff", backface: "#c9c7bd", stroke: false });
+  new Zdog.Cone({ addTo: r, diameter: 48, length: 44, translate: { y: -44 }, rotate: { x: TAU / 4 }, color: C[2], backface: "#b81d63", stroke: false });
+  new Zdog.Ellipse({ addTo: r, diameter: 20, translate: { y: -12, z: 24.5 }, stroke: 4, color: "#4b5160", fill: true });
+  new Zdog.Ellipse({ addTo: r, diameter: 13, translate: { y: -12, z: 25 }, stroke: 0.5, color: C[1], fill: true });
+  for (let k = 0; k < 3; k++) {
+    const fa = new Zdog.Anchor({ addTo: r, rotate: { y: (k * TAU) / 3 } });
+    new Zdog.Shape({ addTo: fa, path: [{ x: 22, y: 14 }, { x: 44, y: 46 }, { x: 44, y: 58 }, { x: 22, y: 42 }], fill: true, stroke: 3, color: C[2] });
+  }
+  new Zdog.Cylinder({ addTo: r, diameter: 28, length: 10, translate: { y: 48 }, rotate: { x: TAU / 4 }, color: "#6b7080", backface: "#4b5160", stroke: false });
+  const flame = new Zdog.Group({ addTo: r, translate: { y: 62 } });
+  const outer = new Zdog.Shape({ addTo: flame, path: [{ y: 0 }, { y: 18 }], stroke: 22, color: C[4] });
+  const inner = new Zdog.Shape({ addTo: flame, path: [{ y: 0 }, { y: 10 }], stroke: 12, color: C[0] });
+  return {
+    tick(t) {
+      moon.translate.set({ x: Math.cos(t * 0.8) * 105, z: Math.sin(t * 0.8) * 105 });
+      outer.path[1].y = 14 + Math.sin(t * 23) * 5; outer.updatePath();
+      inner.path[1].y = 8 + Math.sin(t * 31) * 3; inner.updatePath();
+    },
+  };
+}
+
+// ---------- scene 6: dice built from Groups ----------
+const PIPS = {
+  1: [[0, 0]], 2: [[-1, -1], [1, 1]], 3: [[-1, -1], [0, 0], [1, 1]], 4: [[-1, -1], [1, -1], [-1, 1], [1, 1]],
+  5: [[-1, -1], [1, -1], [0, 0], [-1, 1], [1, 1]], 6: [[-1, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [1, 1]],
+};
+function buildDice(addTo, S) {
+  const dice = new Zdog.Anchor({ addTo });
+  const h = S / 2, g = S * 0.27;
+  const faces = [
+    [1, { z: h }, {}], [6, { z: -h }, { y: TAU / 2 }], [3, { x: h }, { y: -TAU / 4 }],
+    [4, { x: -h }, { y: TAU / 4 }], [2, { y: -h }, { x: TAU / 4 }], [5, { y: h }, { x: -TAU / 4 }],
+  ];
+  // Zdog has no lighting: give each face its own tint so the edges read as 3D
+  const TINT = ["#f7f3ea", "#e3dccb", "#ece6d6", "#d9d1bd", "#fbf8f1", "#cfc6b0"];
+  faces.forEach(([v, translate, rotate], fi) => {
+    // Group renders its children in order, so the pips always paint on top of their own face
+    const face = new Zdog.Group({ addTo: dice, translate, rotate });
+    new Zdog.Rect({ addTo: face, width: S, height: S, stroke: 14, fill: true, color: TINT[fi] });
+    PIPS[v].forEach(([x, y]) => new Zdog.Shape({ addTo: face, translate: { x: x * g, y: y * g, z: 1 }, stroke: S * 0.17, color: v === 1 ? C[2] : "#1b1e24" }));
+  });
+  return dice;
+}
+
+// ---------- scene 7: copyGraph models ----------
+function treeModels() {
+  const pine = new Zdog.Anchor();
+  new Zdog.Cylinder({ addTo: pine, diameter: 3, length: 8, translate: { y: -4 }, rotate: { x: TAU / 4 }, color: "#8b5a3c", stroke: false });
+  new Zdog.Cone({ addTo: pine, diameter: 14, length: 22, translate: { y: -7 }, rotate: { x: TAU / 4 }, color: "#2a9d8f", stroke: false });
+  const round = new Zdog.Anchor();
+  new Zdog.Cylinder({ addTo: round, diameter: 3, length: 10, translate: { y: -5 }, rotate: { x: TAU / 4 }, color: "#8b5a3c", stroke: false });
+  new Zdog.Shape({ addTo: round, translate: { y: -14 }, stroke: 14, color: "#7bd389" });
+  const rock = new Zdog.Anchor();
+  new Zdog.Hemisphere({ addTo: rock, diameter: 10, rotate: { x: TAU / 4 }, color: "#b9b5aa", backface: "#8c887e", stroke: false });
+  const house = new Zdog.Anchor();
+  new Zdog.Box({ addTo: house, width: 10, height: 8, depth: 9, translate: { y: -4 }, stroke: false, color: "#fff3d6", leftFace: "#f2dcb0", rightFace: "#f2dcb0", topFace: false });
+  new Zdog.Shape({ addTo: house, path: [{ x: -6, y: -8, z: 5.5 }, { x: 6, y: -8, z: 5.5 }, { x: 6, y: -14, z: 0 }, { x: -6, y: -14, z: 0 }, { x: -6, y: -8, z: -5.5 }, { x: 6, y: -8, z: -5.5 }, { x: 6, y: -14, z: 0 }], fill: true, stroke: 1, color: C[2] });
+  return [
+    { model: pine, weight: 0.45, colors: ["#2a9d8f", "#3fb59e", "#1f7a6f"], recolor: 1 },
+    { model: round, weight: 0.3, colors: ["#7bd389", "#9be38a", "#f7df1e", "#ff8c42"], recolor: 1 },
+    { model: rock, weight: 0.15, colors: null },
+    { model: house, weight: 0.1, colors: [C[2], C[1], C[4]], recolor: 1 },
+  ];
+}
+
+Showcase.run({ scenes: [
+  {
+    id: "island", title: "漂浮小島",
+    api: "new Zdog.Illustration({ element, dragRotate: true })",
+    desc: "整座島只用 Cylinder、Cone、Box、Shape、Ellipse、Rect 組成；地面群組先畫、道具群組用 updateSort 依深度排序，物件不會陷進草地。",
+    hint: "拖曳畫面任意旋轉小島・切換夜晚看窗戶亮燈與螢火蟲",
+    mount(ctx) {
+      ctx.html(`<div class="sky"></div><div class="stage"><canvas aria-label="可拖曳旋轉的 Zdog 漂浮小島"></canvas></div>`);
+      const sky = ctx.$(".sky"), stage = ctx.$(".stage");
+      let auto = true;
+      const illo = new Zdog.Illustration({
+        element: ctx.$("canvas"), dragRotate: true, rotate: { x: -0.42, y: 0.5 },
+        onDragStart() { auto = false; spinBtn.setAttribute("aria-pressed", "false"); },
+      });
+      const island = buildIsland(illo);
+      const spinBtn = ctx.toggle("自動旋轉", auto, (v) => { auto = v; });
+      ctx.toggle("夜晚", false, (v) => { sky.classList.toggle("night", v); island.setNight(v); });
+      watch(ctx, stage, (w, h) => { illo.zoom = Math.min(w / 400, h / 420); sizeIllo(illo, w, h); });
+      ctx.raf((t, dt) => {
+        if (auto) illo.rotate.y += dt * 0.00033;
+        illo.rotate.x = Math.max(-1.2, Math.min(-0.12, illo.rotate.x));
+        island.tick(t / 1000);
+        illo.updateRenderGraph();
+      });
+    },
+  },
+  {
+    id: "primitives", title: "基本圖形",
+    api: "Rect / RoundedRect / Ellipse / Polygon / Shape / Hemisphere / Cone / Cylinder / Box",
+    desc: "Zdog 的十種內建圖形各放一格。stroke 是 Zdog 的立體感來源：描邊越粗，平面圖形越像圓潤的實體，單一點加粗描邊就是一顆球。",
+    hint: "每格都能拖曳旋轉・拉動描邊粗細・關掉填色看線框",
+    mount(ctx) {
+      ctx.html(`<div class="gallery">${PRIMS.map(([cls, zh]) =>
+        `<div class="panel cell"><div class="name">${zh}<code>${cls}</code></div><div class="box"><canvas></canvas></div></div>`).join("")}</div>`);
+      let stroke = 6, fill = true, auto = true;
+      const cells = ctx.$$(".cell").map((cell, i) => {
+        const illo = new Zdog.Illustration({ element: cell.querySelector("canvas"), dragRotate: true, rotate: { x: -0.35 } });
+        const holder = new Zdog.Anchor({ addTo: illo });
+        return { i, illo, holder, box: cell.querySelector(".box"), model: buildPrim(i, holder, stroke, fill) };
+      });
+      const rebuild = () => cells.forEach((c) => { c.model.remove(); c.model = buildPrim(c.i, c.holder, stroke, fill); });
+      ctx.slider("描邊粗細", { min: 1, max: 24, step: 1, value: stroke, format: (v) => `stroke ${v}` }, (v) => { stroke = v; rebuild(); });
+      ctx.toggle("填色", fill, (v) => { fill = v; rebuild(); });
+      ctx.toggle("自動旋轉", auto, (v) => { auto = v; });
+      watch(ctx, ctx.$(".gallery"), () => cells.forEach((c) => {
+        const w = c.box.clientWidth, h = c.box.clientHeight;
+        if (!w || !h) return;
+        c.illo.zoom = Math.min(w, h) / 112;
+        sizeIllo(c.illo, w, h);
+      }));
+      ctx.raf((t, dt) => cells.forEach((c, k) => {
+        if (auto) { c.holder.rotate.y += dt * 0.0009; c.holder.rotate.x = Math.sin(t / 1400 + k) * 0.35; }
+        c.illo.updateRenderGraph();
+      }));
+    },
+  },
+  {
+    id: "hierarchy", title: "階層關節",
+    api: "new Zdog.Anchor({ addTo: parent, translate, rotate })",
+    desc: "機械手臂每一節都 addTo 上一節：轉台轉動時整隻手臂跟著轉，肩膀彎曲時手肘、手腕、夾爪一起移動，子物件只需管自己相對父物件的角度。",
+    hint: "拖動關節滑桿，看下游節點一起動・拖曳畫面旋轉視角",
+    mount(ctx) {
+      ctx.html(`<div class="stage"><canvas aria-label="可調整關節的機械手臂"></canvas></div><pre class="panel tree"></pre>`);
+      const stage = ctx.$(".stage"), tree = ctx.$(".tree");
+      const LINES = [
+        ["illo", "Illustration"], ["  └ base", "底座 Cylinder"], ["    └ turret", "轉台 rotate.y"], ["      └ shoulder", "肩 rotate.z"],
+        ["        └ elbow", "肘 rotate.z"], ["          └ wrist", "腕 rotate.z"], ["            └ fingers", "夾爪 ×2"],
+      ];
+      tree.innerHTML = LINES.map(([a, b], i) => `<span data-i="${i}">${a}  ${b}</span>`).join("\n");
+      const mark = (i) => ctx.$$(".tree span").forEach((s) => s.classList.toggle("on", +s.dataset.i >= i && i > 0));
+      const illo = new Zdog.Illustration({ element: ctx.$("canvas"), dragRotate: true, rotate: { x: -0.3, y: 0.5 } });
+      const base = new Zdog.Anchor({ addTo: illo, translate: { y: 120 } });
+      new Zdog.Ellipse({ addTo: base, diameter: 250, rotate: { x: TAU / 4 }, stroke: 2, color: "rgba(236,235,230,0.18)" });
+      new Zdog.Ellipse({ addTo: base, diameter: 160, rotate: { x: TAU / 4 }, stroke: 2, color: "rgba(236,235,230,0.12)" });
+      new Zdog.Cylinder({ addTo: base, diameter: 104, length: 18, translate: { y: -9 }, rotate: { x: TAU / 4 }, color: "#3a3f4b", frontFace: "#555c6c", backface: "#2a2e37", stroke: false });
+      const turret = new Zdog.Anchor({ addTo: base, translate: { y: -18 } });
+      new Zdog.Cylinder({ addTo: turret, diameter: 58, length: 24, translate: { y: -12 }, rotate: { x: TAU / 4 }, color: C[0], frontFace: "#fff07a", backface: "#c9b000", stroke: false });
+      const shoulder = new Zdog.Anchor({ addTo: turret, translate: { y: -34 } });
+      new Zdog.Cylinder({ addTo: shoulder, diameter: 32, length: 34, color: "#d9d6cc", frontFace: "#f4f1e8", backface: "#b8b5ab", stroke: false });
+      new Zdog.Shape({ addTo: shoulder, path: [{ y: 0 }, { y: -96 }], stroke: 20, color: C[0] });
+      const elbow = new Zdog.Anchor({ addTo: shoulder, translate: { y: -96 } });
+      new Zdog.Cylinder({ addTo: elbow, diameter: 26, length: 28, color: "#d9d6cc", frontFace: "#f4f1e8", backface: "#b8b5ab", stroke: false });
+      new Zdog.Shape({ addTo: elbow, path: [{ y: 0 }, { y: -78 }], stroke: 15, color: C[1] });
+      const wrist = new Zdog.Anchor({ addTo: elbow, translate: { y: -78 } });
+      new Zdog.Shape({ addTo: wrist, stroke: 20, color: "#d9d6cc" });
+      new Zdog.Shape({ addTo: wrist, path: [{ x: -16, y: -12 }, { x: 16, y: -12 }], stroke: 9, color: C[1] });
+      const fingers = [-1, 1].map((sx) => {
+        const f = new Zdog.Anchor({ addTo: wrist, translate: { x: sx * 14, y: -12 } });
+        new Zdog.Shape({ addTo: f, path: [{ y: 0 }, { x: sx * 5, y: -16 }, { x: 0, y: -30 }], closed: false, stroke: 6, color: C[2] });
+        return { f, sx };
+      });
+      const pose = { yaw: 0, shoulder: 20, elbow: -50, wrist: 30, grip: 0.3 };
+      let auto = true, autoT = 0;
+      const POSES = [[20, -50, 30], [-35, 70, -20], [40, 95, 50], [-10, -100, -60], [55, -30, 80]];
+      const apply = () => {
+        turret.rotate.y = pose.yaw;
+        shoulder.rotate.z = deg(pose.shoulder);
+        elbow.rotate.z = deg(pose.elbow);
+        wrist.rotate.z = deg(pose.wrist);
+        fingers.forEach(({ f, sx }) => { f.rotate.z = -sx * pose.grip; });
+      };
+      const fmtDeg = (v) => `${Math.round(v)}°`;
+      const setSlider = (input, v) => { input.value = v; input.nextElementSibling.textContent = fmtDeg(v); };
+      const manual = (key, i) => (v) => { pose[key] = v; mark(i); if (auto) { auto = false; autoBtn.setAttribute("aria-pressed", "false"); } };
+      const sS = ctx.slider("肩", { min: -80, max: 80, value: pose.shoulder, format: fmtDeg }, manual("shoulder", 3));
+      const sE = ctx.slider("肘", { min: -130, max: 130, value: pose.elbow, format: fmtDeg }, manual("elbow", 4));
+      const sW = ctx.slider("腕", { min: -100, max: 100, value: pose.wrist, format: fmtDeg }, manual("wrist", 5));
+      const autoBtn = ctx.toggle("自動示範", auto, (v) => { auto = v; mark(v ? 2 : 0); });
+      mark(2);
+      watch(ctx, stage, (w, h) => { illo.zoom = Math.min(w / 420, h / 390); sizeIllo(illo, w, h); });
+      ctx.raf((t, dt) => {
+        if (auto) {
+          autoT += dt / 1000;
+          pose.yaw += dt * 0.0005;
+          const seg = 2.2, k = Math.floor(autoT / seg), a = Math.min(1, (autoT % seg) / 1.5);
+          const from = POSES[k % POSES.length], to = POSES[(k + 1) % POSES.length], e = Zdog.easeInOut(a, 3);
+          pose.shoulder = Zdog.lerp(from[0], to[0], e);
+          pose.elbow = Zdog.lerp(from[1], to[1], e);
+          pose.wrist = Zdog.lerp(from[2], to[2], e);
+          pose.grip = 0.15 + Math.abs(Math.sin(autoT * 1.4)) * 0.45;
+          setSlider(sS, pose.shoulder); setSlider(sE, pose.elbow); setSlider(sW, pose.wrist);
+        }
+        apply();
+        illo.rotate.x = Math.max(-1.1, Math.min(0.2, illo.rotate.x));
+        illo.updateRenderGraph();
+      });
+    },
+  },
+  {
+    id: "paths", title: "路徑指令",
+    api: "path: [{ x, y, z }, { arc: [corner, end] }, { bezier: [c1, c2, end] }, { move: {…} }]",
+    desc: "Shape 的 path 支援 line、arc、bezier、move 四種指令，而且每個點都能帶 z：星形頂點前後交錯，圓弧一路往前爬成螺旋，move 讓一條路徑斷成多段。",
+    hint: "打開控制點看 arc 的轉角點與 bezier 把手・拖曳旋轉看 z 方向",
+    mount(ctx) {
+      ctx.html(`<div class="stage"><canvas aria-label="Zdog 路徑指令示範"></canvas></div>`);
+      const stage = ctx.$(".stage");
+      const items = pathItems();
+      let W = 0, H = 0, cols = 4, auto = true, labels = [], sway = 0;
+      // dragRotate takes any Anchor: drag a detached proxy, then copy its angle to each shape so the grid layout never turns
+      const spin = new Zdog.Anchor({ rotate: { x: -0.25 } });
+      const illo = new Zdog.Illustration({
+        element: ctx.$("canvas"), dragRotate: spin,
+        onDragStart() { auto = false; autoBtn.setAttribute("aria-pressed", "false"); },
+        onPrerender(g) {
+          // labels are drawn flat before the graph, under the shapes
+          // the context is already scaled by zoom, so divide to keep text at a fixed screen size
+          const z = illo.zoom;
+          g.textAlign = "center";
+          for (const l of labels) {
+            g.font = `600 ${14 / z}px ${FONT}`;
+            g.fillStyle = FG;
+            g.fillText(l.cmd, l.x, l.y);
+            g.font = `500 ${11.5 / z}px ${FONT}`;
+            g.fillStyle = MUTED;
+            g.fillText(l.zh, l.x, l.y + 17 / z);
+          }
+        },
+      });
+      const holders = items.map((it) => {
+        const a = new Zdog.Anchor({ addTo: illo });
+        const shape = new Zdog.Shape({ addTo: a, path: it.path, closed: it.closed, stroke: 5, fill: !!it.fillable, color: it.color });
+        const guides = new Zdog.Group({ addTo: a, visible: false });
+        (it.handles || []).forEach(([p, q]) => new Zdog.Shape({ addTo: guides, path: [p, q], stroke: 1, color: MUTED, closed: false }));
+        (it.ctl || []).forEach((p) => new Zdog.Shape({ addTo: guides, translate: p, stroke: 6, color: MUTED }));
+        it.dots.forEach((p) => new Zdog.Shape({ addTo: guides, translate: p, stroke: 7, color: FG }));
+        return { a, shape, guides, it };
+      });
+      const layout = () => {
+        cols = W < 520 ? 2 : 4;
+        const rows = 4 / cols, cw = 120, ch = 150;
+        illo.zoom = Math.min(W / (cols * cw), H / (rows * ch));
+        labels = holders.map((h, i) => {
+          const x = ((i % cols) - (cols - 1) / 2) * cw, y = (Math.floor(i / cols) - (rows - 1) / 2) * ch - 10;
+          h.a.translate.set({ x, y });
+          return { x, y: y + 66, cmd: h.it.cmd, zh: h.it.zh };
+        });
+        sizeIllo(illo, W, H);
+      };
+      ctx.toggle("控制點", false, (v) => holders.forEach((h) => { h.guides.visible = v; }));
+      ctx.toggle("填色", true, (v) => holders.forEach((h) => { if (h.it.fillable) h.shape.fill = v; }));
+      ctx.slider("描邊", { min: 1, max: 14, step: 1, value: 5 }, (v) => holders.forEach((h) => { h.shape.stroke = v; }));
+      const autoBtn = ctx.toggle("自動旋轉", auto, (v) => { auto = v; });
+      watch(ctx, stage, (w, h) => { W = w; H = h; layout(); });
+      ctx.raf((t) => {
+        if (auto) sway = t / 1600;
+        holders.forEach((h, i) => { h.a.rotate.set({ x: spin.rotate.x, y: spin.rotate.y + Math.sin(sway + i * 0.7) * 0.9 }); });
+        illo.updateRenderGraph();
+      });
+    },
+  },
+  {
+    id: "renderers", title: "Canvas 與 SVG",
+    api: "new Zdog.Illustration({ element: 'canvas' | 'svg' })",
+    desc: "同一段建模程式各 addTo 一個 Illustration：左邊畫在 canvas 點陣，右邊輸出成 SVG <path>。拖曳任一邊，兩邊同步旋轉；下方即時顯示兩種渲染器每格的耗時。",
+    hint: "拖曳任一邊旋轉火箭・調整 zoom 比較兩邊的縮放方式",
+    mount(ctx) {
+      ctx.html(`<div class="split">
+        <div class="panel pane"><h2>Canvas 渲染<code>element: canvas</code></h2><div class="box"><canvas></canvas></div><div class="meta" data-k="c">…</div></div>
+        <div class="panel pane"><h2>SVG 渲染<code>element: svg</code></h2><div class="box"><svg width="10" height="10"></svg></div><div class="meta" data-k="s">…</div></div></div>`);
+      const [boxC, boxS] = ctx.$$(".box"), metaC = ctx.$('[data-k="c"]'), metaS = ctx.$('[data-k="s"]');
+      let auto = true, dragging = null, zoom = 1, msC = 0, msS = 0;
+      const opts = (element) => ({
+        element, dragRotate: true, rotate: { x: -0.3, y: 0.6 },
+        onDragStart() { dragging = this; auto = false; autoBtn.setAttribute("aria-pressed", "false"); },
+        onDragEnd() { dragging = null; },
+      });
+      const illoC = new Zdog.Illustration(opts(ctx.$("canvas")));
+      const illoS = new Zdog.Illustration(opts(ctx.$("svg")));
+      const rockets = [buildRocket(illoC), buildRocket(illoS)];
+      const fit = (illo, box) => {
+        const w = box.clientWidth, h = box.clientHeight;
+        if (!w || !h) return;
+        illo.zoom = (Math.min(w, h) / 270) * zoom;
+        sizeIllo(illo, w, h);
+      };
+      const fitAll = () => { fit(illoC, boxC); fit(illoS, boxS); };
+      const autoBtn = ctx.toggle("自動旋轉", auto, (v) => { auto = v; });
+      ctx.slider("zoom", { min: 0.6, max: 1.6, step: 0.05, value: zoom, format: (v) => `×${v.toFixed(2)}` }, (v) => { zoom = v; fitAll(); });
+      watch(ctx, ctx.$(".split"), fitAll);
+      ctx.interval(() => {
+        metaC.textContent = `繪製 ${msC.toFixed(2)} ms・點陣 ${illoC.canvasWidth}×${illoC.canvasHeight}・DOM 節點 1 個`;
+        metaS.textContent = `繪製 ${msS.toFixed(2)} ms・<path> ${illoS.element.childElementCount} 個，每格清空重插`;
+      }, 400);
+      ctx.raf((t, dt) => {
+        const src = dragging || illoC;
+        if (!dragging && auto) src.rotate.y += dt * 0.0005;
+        (src === illoC ? illoS : illoC).rotate.set(src.rotate);
+        rockets.forEach((r) => r.tick(t / 1000));
+        const t0 = performance.now(); illoC.updateRenderGraph();
+        const t1 = performance.now(); illoS.updateRenderGraph();
+        const t2 = performance.now();
+        msC = msC * 0.9 + (t1 - t0) * 0.1;
+        msS = msS * 0.9 + (t2 - t1) * 0.1;
+      });
+    },
+  },
+  {
+    id: "dragger", title: "拖曳與緩動",
+    api: "new Zdog.Dragger({ startElement, onDragMove }) + Zdog.easeInOut(t, power)",
+    desc: "骰子不用 dragRotate，而是自己接 Zdog.Dragger 把拖曳量換成角度；放開後用 Zdog.easeInOut 與 Zdog.lerp 吸附到最近的 90 度。每一面是一個 Group，點數永遠畫在面上。",
+    hint: "拖曳骰子後放開會自動對齊・按擲骰子看緩動・換緩動次方比較曲線",
+    mount(ctx) {
+      ctx.html(`<div class="stage"><canvas aria-label="可拖曳的 Zdog 骰子"></canvas></div>
+        <div class="panel curve"><svg viewBox="-4 -4 108 108"><path class="axis" d="M0 0 V100 H100"/><polyline/><circle r="5" cx="0" cy="100"/></svg><div>easeInOut(t, <b>3</b>)</div></div>
+        <div class="panel readout"></div>`);
+      const stage = ctx.$(".stage"), canvas = ctx.$("canvas"), line = ctx.$(".curve polyline"), dot = ctx.$(".curve circle"), powEl = ctx.$(".curve b"), readout = ctx.$(".readout");
+      const illo = new Zdog.Illustration({ element: canvas, rotate: { x: -0.5, y: -0.62 } });
+      const dice = buildDice(illo, 84);
+      const Q = TAU / 4;
+      let power = 3, anim = null, W = 1, H = 1;
+      const drawCurve = () => {
+        const pts = [];
+        for (let i = 0; i <= 40; i++) { const a = i / 40; pts.push(`${(a * 100).toFixed(1)},${(100 - Zdog.easeInOut(a, power) * 100).toFixed(1)}`); }
+        line.setAttribute("points", pts.join(" "));
+        powEl.textContent = power;
+      };
+      const animateTo = (x, y, dur) => { anim = { fx: dice.rotate.x, fy: dice.rotate.y, tx: x, ty: y, t0: performance.now(), dur }; };
+      const snap = () => animateTo(Math.round(dice.rotate.x / Q) * Q, Math.round(dice.rotate.y / Q) * Q, 520);
+      let sx = 0, sy = 0;
+      new Zdog.Dragger({
+        startElement: canvas,
+        onDragStart() { anim = null; sx = dice.rotate.x; sy = dice.rotate.y; },
+        onDragMove(pointer, moveX, moveY) {
+          const s = Math.min(W, H);
+          dice.rotate.y = sy - (moveX / s) * TAU * 0.8;
+          dice.rotate.x = sx - (moveY / s) * TAU * 0.8;
+        },
+        onDragEnd() { snap(); },
+      });
+      ctx.button("擲骰子", () => {
+        const k = () => (2 + Math.floor(Math.random() * 4)) * Q * (Math.random() < 0.5 ? -1 : 1);
+        animateTo(Math.round(dice.rotate.x / Q) * Q + k(), Math.round(dice.rotate.y / Q) * Q + k(), 1500);
+      }, { primary: true });
+      ctx.button("左轉 90°", () => animateTo(Math.round(dice.rotate.x / Q) * Q, Math.round(dice.rotate.y / Q) * Q - Q, 700));
+      ctx.button("上翻 90°", () => animateTo(Math.round(dice.rotate.x / Q) * Q + Q, Math.round(dice.rotate.y / Q) * Q, 700));
+      ctx.select("緩動次方", [1, 2, 3, 4, 5].map((p) => ({ value: p, label: p === 1 ? "1（線性）" : String(p) })), power, (v) => { power = +v; drawCurve(); });
+      drawCurve();
+      watch(ctx, stage, (w, h) => { W = w; H = h; illo.zoom = Math.min(w, h) / 230; sizeIllo(illo, w, h); });
+      const pi = (v) => `${(v / Math.PI).toFixed(2)}π`;
+      ctx.raf(() => {
+        let a = 1;
+        if (anim) {
+          a = Math.min(1, (performance.now() - anim.t0) / anim.dur);
+          const e = Zdog.easeInOut(a, power);
+          dice.rotate.x = Zdog.lerp(anim.fx, anim.tx, e);
+          dice.rotate.y = Zdog.lerp(anim.fy, anim.ty, e);
+          dot.setAttribute("cx", (a * 100).toFixed(1));
+          dot.setAttribute("cy", (100 - e * 100).toFixed(1));
+          if (a >= 1) anim = null;
+        }
+        readout.innerHTML = `rotate.x <b>${pi(dice.rotate.x)}</b>・rotate.y <b>${pi(dice.rotate.y)}</b>`;
+        illo.updateRenderGraph();
+      });
+    },
+  },
+  {
+    id: "copy", title: "複製圖形",
+    api: "model.copyGraph({ addTo, translate, scale })",
+    desc: "先建好松樹、圓樹、石頭、小屋四個模型（不加入畫面），再用 copyGraph() 連同子物件整組複製到星球表面；每份複本可覆寫位置、縮放與顏色。",
+    hint: "拉動數量重新種植・拖曳轉動小星球",
+    mount(ctx) {
+      ctx.html(`<div class="stage"><canvas aria-label="以 copyGraph 種滿樹的小星球"></canvas></div><div class="panel readout"></div>`);
+      const stage = ctx.$(".stage"), readout = ctx.$(".readout");
+      const R = 90, models = treeModels();
+      let auto = true, count = 120;
+      const illo = new Zdog.Illustration({
+        element: ctx.$("canvas"), dragRotate: true, rotate: { x: -0.35 },
+        onDragStart() { auto = false; autoBtn.setAttribute("aria-pressed", "false"); },
+      });
+      new Zdog.Shape({ addTo: illo, stroke: R * 2, color: "#2f6f55" });
+      new Zdog.Ellipse({ addTo: illo, diameter: R * 2 + 70, rotate: { x: TAU / 4 + 0.35, z: 0.2 }, stroke: 3, color: "rgba(247,223,30,0.45)" });
+      const forest = new Zdog.Anchor({ addTo: illo });
+      const pick = () => { let r = Math.random(); for (const m of models) { if ((r -= m.weight) <= 0) return m; } return models[0]; };
+      const plant = () => {
+        forest.children.slice().forEach((c) => c.remove());
+        for (let i = 0; i < count; i++) {
+          const m = pick();
+          // rotate.z tilts away from the north pole, rotate.y spins around it: uniform on the sphere
+          const spot = new Zdog.Anchor({ addTo: forest, rotate: { z: Math.acos(1 - 2 * Math.random()), y: Math.random() * TAU } });
+          const clone = m.model.copyGraph({ addTo: spot, translate: { y: -R + 1 }, scale: 0.8 + Math.random() * 0.7, rotate: { y: Math.random() * TAU } });
+          if (m.colors) clone.children[m.recolor].color = m.colors[Math.floor(Math.random() * m.colors.length)];
+        }
+        illo.updateGraph();
+        readout.innerHTML = `4 個模型 × copyGraph() <b>${count}</b> 次・繪製清單 <b>${Showcase.fmt(illo.flatGraph.length)}</b> 項`;
+      };
+      ctx.slider("數量", { min: 10, max: 400, step: 10, value: count }, (v) => { count = v; plant(); });
+      ctx.button("重新種植", plant, { primary: true });
+      const autoBtn = ctx.toggle("自動旋轉", auto, (v) => { auto = v; });
+      plant();
+      watch(ctx, stage, (w, h) => { illo.zoom = Math.min(w, h) / 320; sizeIllo(illo, w, h); });
+      ctx.raf((t, dt) => {
+        if (auto) illo.rotate.y += dt * 0.0003;
+        illo.updateRenderGraph();
+      });
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "illo.updateRenderGraph()  // 投影 + z 排序 + 繪製",
+    desc: "一群持續旋轉的 Zdog 圖形，每格都要重新投影、依深度排序、再整批繪製；逐級加量直到掉到 30 FPS 以下。可切換 Canvas 或 SVG 渲染器、球或方塊再測一次。",
+    hint: "按「自動加壓」開始；切換渲染器或形狀後再測一次比較",
+    mount(ctx) {
+      ctx.html(`<div class="stress-stage"><canvas></canvas><svg width="10" height="10" style="display:none"></svg></div>`);
+      const box = ctx.$(".stress-stage"), canvas = ctx.$("canvas"), svg = ctx.$("svg");
+      const illoC = new Zdog.Illustration({ element: canvas, rotate: { x: -0.4 } });
+      const illoS = new Zdog.Illustration({ element: svg, rotate: { x: -0.4 } });
+      const swarm = new Zdog.Anchor({ addTo: illoC });
+      const pools = { ball: [], box: [] };
+      let illo = illoC, kind = "ball", n = 100, upMs = 0, drawMs = 0;
+      const make = (i) => {
+        const r = 230 * Math.cbrt(Math.random()), a = Math.random() * TAU, p = Math.acos(2 * Math.random() - 1);
+        const translate = { x: r * Math.sin(p) * Math.cos(a), y: r * Math.cos(p), z: r * Math.sin(p) * Math.sin(a) };
+        return kind === "ball"
+          ? new Zdog.Shape({ translate, stroke: 12, color: C[i % 6] })
+          : new Zdog.Box({ translate, width: 12, height: 12, depth: 12, stroke: false, color: C[i % 6], leftFace: "#555c6c", rightFace: C[(i + 1) % 6], topFace: "#ffffff" });
+      };
+      const fill = () => {
+        const pool = pools[kind];
+        while (pool.length < n) pool.push(make(pool.length));
+        // addChild/remove use indexOf (O(n) each); swapping the children array is O(n) total
+        swarm.children = pool.slice(0, n);
+      };
+      const fit = () => {
+        const w = box.clientWidth, h = box.clientHeight;
+        if (!w || !h) return;
+        illo.zoom = Math.min(w, h) / 520;
+        sizeIllo(illo, w, h);
+      };
+      watch(ctx, box, fit);
+      ctx.raf((t, dt) => {
+        swarm.rotate.y += dt * 0.0004;
+        swarm.rotate.x = Math.sin(t / 3000) * 0.3;
+        const t0 = performance.now(); illo.updateGraph();
+        const t1 = performance.now(); illo.renderGraph();
+        const t2 = performance.now();
+        upMs = upMs * 0.85 + (t1 - t0) * 0.15;
+        drawMs = drawMs * 0.85 + (t2 - t1) * 0.15;
+      });
+      ctx.group(["Canvas", "SVG"], 0, (i) => {
+        illo = i ? illoS : illoC;
+        illo.addChild(swarm);
+        canvas.style.display = i ? "none" : "";
+        svg.style.display = i ? "" : "none";
+        illoC.renderGraph(); fit();
+      });
+      ctx.select("形狀", [{ value: "ball", label: "球（1 個繪製項）" }, { value: "box", label: "方塊（6 面）" }], kind, (v) => { kind = v; fill(); });
+      ctx.controls.classList.add("bottom");
+      ctx.ramp({
+        label: "圖形", unit: "個", steps: [100, 250, 500, 1000, 2000, 4000, 8000, 16000], minFps: 30,
+        apply(count) { n = count; fill(); },
+        metrics: () => ({ "渲染器": illo.isCanvas ? "Canvas" : "SVG", "投影排序": `${upMs.toFixed(1)} ms`, "繪製": `${drawMs.toFixed(1)} ms` }),
+        note: "Zdog 沒有 GPU 加速，也沒有遮蔽剔除：每個圖形每格都要做 3D 變換、整份清單排序，再逐一呼叫 Canvas 2D 或改寫 SVG。方塊一個算 6 面，成本約是球的數倍。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

@@ -3,382 +3,1434 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ammo.js 示範：果凍彈跳床（布料與軟體）</title>
+<title>ammo.js 示範：八個場景看懂 Bullet 物理引擎與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","note":"ammo.js 是 Bullet 物理引擎的 WebAssembly 版，布料與果凍都是 btSoftBody，3D 繪圖使用 three.js 0.186.1"}</script>
-<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"}}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["果凍彈跳床","形狀圖鑑","關節約束","布料與繩索","射線車輛","射線與接觸點","連續碰撞偵測","極限測試"],"note":"ammo.js 是 Bullet 物理引擎編譯成的 WebAssembly 版，八個場景共用同一份 WASM 實例；3D 繪圖使用 three.js 0.186.1"}</script>
 <style>
-  body { background: radial-gradient(circle at 50% 30%, #2a1f3a 0%, #0d0b14 75%); }
-  #stage { position: fixed; inset: 0; touch-action: none; }
-  #stage canvas { display: block; }
-  .heading { position: fixed; left: 16px; top: 14px; z-index: 40; pointer-events: none; }
-  .heading h1 { margin: 0; font-size: clamp(18px, 4vw, 26px); letter-spacing: .06em; }
-  .heading p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
-  .stats { position: fixed; right: 12px; bottom: 12px; z-index: 40; padding: 5px 10px; border-radius: 999px; font-size: 12px; pointer-events: none; }
-  @media (max-width: 600px) { .heading { top: 96px; } .heading p { max-width: 230px; } .stats { bottom: 46px; } }
+  .sc-scene canvas.am-gl { position: absolute; left: 0; top: 0; display: block; touch-action: none; }
+  .am-labels { position: absolute; left: 0; top: 0; pointer-events: none; }
+  .am-lab { font: 600 12px/1.35 var(--font); font-variant-numeric: tabular-nums; color: var(--fg); text-align: center; padding: 3px 8px;
+    border-radius: 7px; background: var(--panel); border: 1px solid var(--line); white-space: nowrap; }
+  .am-lab small { display: block; color: var(--muted); font: 500 10.5px/1.35 var(--mono); }
+  .am-lab small.zh { font-family: var(--font); }
+  .am-compact .am-lab small:not(.zh) { display: none; }
+  .am-chip { position: absolute; left: 10px; top: calc(var(--sc-ctl-h, 0px) + 10px); z-index: 105; max-width: min(460px, calc(100% - 20px));
+    padding: 6px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(6px);
+    font: 500 12px/1.5 var(--font); color: var(--fg); pointer-events: none; }
+  .am-chip b { color: var(--accent); font: 600 12px/1.5 var(--mono); }
+  .am-legend { position: absolute; right: 10px; bottom: calc(var(--sc-ctl-b, 0px) + 10px); z-index: 105; display: flex; flex-wrap: wrap; gap: 4px 12px;
+    max-width: calc(100% - 20px); padding: 5px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line);
+    font: 500 11.5px/1.4 var(--font); color: var(--fg); pointer-events: none; }
+  .am-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .am-legend i { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .am-compact .am-legend span:not(.keep) { display: none; }
+  .am-compact .am-legend:not(:has(.keep)) { display: none; }
+  .am-compact .am-legend { bottom: calc(var(--sc-ctl-b, 0px) + 44px); }
+  .am-view { position: absolute; inset: 8px; border-radius: 10px; overflow: hidden; background: #07080b; }
+  @media (min-width: 761px) { .am-view { inset: 8px 8px 8px 350px; } }
 </style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
 </head>
 <body>
-<div id="stage"></div>
-<div class="heading"><h1>果凍彈跳床</h1><p>彈跳床是 Bullet 布料，果凍是有內壓的軟體，鐵球是剛體</p></div>
-<div class="controls">
-  <button class="btn primary" id="jelly">丟果凍</button>
-  <button class="btn" id="steel">丟鐵球</button>
-  <button class="btn" id="reset">重置</button>
-  <button class="btn" id="auto" aria-pressed="true">自動</button>
-</div>
-<div class="panel stats mono" id="stats">載入中</div>
-<div class="hint">拖曳旋轉視角・點畫面朝該處丟鐵球</div>
-
 <script src="https://cdn.jsdelivr.net/gh/kripken/ammo.js@79190a1f03845794b1bba1777f30037349967658/builds/ammo.wasm.js"></script>
+<script src="_shared/showcase.js"></script>
 <script type="module">
+// ammo.js showcase: eight scenes on one shared Bullet WASM instance, rendered with three.js.
+// Every scene builds its own physics world and frees it with Ammo.destroy on unmount;
+// every renderer is released with dispose() + forceContextLoss().
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-import { mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
+import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
+import { ConvexGeometry } from "three/addons/geometries/ConvexGeometry.js";
+import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
+import { mergeVertices, mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 
-const A = await Ammo();
+const { h } = Showcase;
+const PALETTE = [0xf7df1e, 0x4cc9f0, 0xf72585, 0x7bd389, 0xff8c42, 0x9d8cff];
+const UP = new THREE.Vector3(0, 1, 0), AXIS_Z = new THREE.Vector3(0, 0, 1);
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const smoothstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+function rng(seed) { let s = seed % 2147483647 || 1; return () => (s = (s * 16807) % 2147483647) / 2147483647; }
+const ema = (prev, v) => (prev ? prev * 0.9 + v * 0.1 : v);
 
-const SIZE = 5, SEG = 22, BED_Y = 1.7;       // trampoline bed
-const MAX_JELLY = 7, MAX_STEEL = 6;
-const JELLY_COLORS = [0xf72585, 0x7bd389, 0x4cc9f0, 0xff8c42, 0x9d8cff, 0xf7df1e];
-
-// --- three.js scene ---------------------------------------------------------------------
-const stage = document.getElementById("stage");
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.shadowMap.enabled = true;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-stage.appendChild(renderer.domElement);
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0d0b14);
-scene.fog = new THREE.Fog(0x0d0b14, 14, 30);
-const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-scene.environmentIntensity = 0.45;
-const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.autoRotate = true;
-controls.autoRotateSpeed = 0.5;
-controls.maxPolarAngle = Math.PI * 0.47;
-controls.minDistance = 4;
-controls.maxDistance = 20;
-controls.enablePan = false;
-
-scene.add(new THREE.HemisphereLight(0xfff0f6, 0x221a2c, 1.1));
-const sun = new THREE.DirectionalLight(0xffffff, 2.4);
-sun.position.set(4, 10, 5);
-sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-Object.assign(sun.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6, near: 1, far: 30 });
-sun.shadow.bias = -0.0005;
-scene.add(sun);
-
-const floor = new THREE.Mesh(new THREE.CircleGeometry(16, 64), new THREE.MeshStandardMaterial({ color: 0x241c30, roughness: 0.9 }));
-floor.rotation.x = -Math.PI / 2;
-floor.receiveShadow = true;
-scene.add(floor);
-
-// Trampoline frame (visual only; the bed's edge nodes are pinned in the physics world).
-{
-  const metal = new THREE.MeshStandardMaterial({ color: 0x3a3f4b, metalness: 0.8, roughness: 0.35 });
-  const pad = new THREE.MeshStandardMaterial({ color: 0x4cc9f0, roughness: 0.5 });
-  const h = SIZE / 2;
-  for (const [x, z] of [[-h, -h], [h, -h], [-h, h], [h, h]]) {
-    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, BED_Y, 12), metal);
-    leg.position.set(x, BED_Y / 2, z);
-    leg.castShadow = true;
-    scene.add(leg);
+// ---------- one shared WASM instance ----------
+let A = null, ammoP = null, HELP = null, TUNING = null, NODE = null;
+async function boot(ctx) {
+  if (!A) {
+    const s = ctx.status("載入 ammo.js（Bullet 物理引擎，WebAssembly）…");
+    try { A = await (ammoP ??= Ammo()); }
+    catch (e) { ammoP = null; s.error("ammo.js 載入失敗：" + (e?.message || e)); throw e; }
+    s.done();
   }
-  for (const [x, z, ry] of [[0, -h, 0], [0, h, 0], [-h, 0, Math.PI / 2], [h, 0, Math.PI / 2]]) {
-    const bar = new THREE.Mesh(new THREE.BoxGeometry(SIZE + 0.3, 0.12, 0.3), pad);
-    bar.position.set(x, BED_Y - 0.02, z);
-    bar.rotation.y = ry;
-    bar.castShadow = true;
-    scene.add(bar);
+  HELP ??= new A.btSoftBodyHelpers();
+  TUNING ??= new A.btVehicleTuning();   // NoDelete class in this build, kept for the page lifetime
+  if (!ctx.active) throw new DOMException("Scene unmounted", "AbortError");
+}
+// This build has a fixed heap; HEAP32[7852] is the sbrk high-water mark (validated before use).
+function wasmMB() {
+  const top = A.HEAP32[7852];
+  return top > 5e6 && top <= A.HEAP8.length ? top / 1048576 : null;
+}
+const heapTotal = () => Math.round(A.HEAP8.length / 1048576);
+const heapText = () => { const m = wasmMB(); return m == null ? "無法讀取" : `${m.toFixed(1)}／${heapTotal()} MB`; };
+const heapHtml = () => { const m = wasmMB(); return m == null ? "無法讀取" : `<b>${m.toFixed(1)}</b>／${heapTotal()} MB`; };
+
+// btTransform in the heap: 3 basis rows of 4 floats, then the origin.
+function heapToMatrix(e, F, p, o = 0) {
+  e[o] = F[p]; e[o + 1] = F[p + 4]; e[o + 2] = F[p + 8]; e[o + 3] = 0;
+  e[o + 4] = F[p + 1]; e[o + 5] = F[p + 5]; e[o + 6] = F[p + 9]; e[o + 7] = 0;
+  e[o + 8] = F[p + 2]; e[o + 9] = F[p + 6]; e[o + 10] = F[p + 10]; e[o + 11] = 0;
+  e[o + 12] = F[p + 12]; e[o + 13] = F[p + 13]; e[o + 14] = F[p + 14]; e[o + 15] = 1;
+}
+
+// ---------- physics world wrapper ----------
+function physics(ctx, o = {}) {
+  const soft = !!o.soft;
+  const cfg = soft ? new A.btSoftBodyRigidBodyCollisionConfiguration() : new A.btDefaultCollisionConfiguration();
+  const disp = new A.btCollisionDispatcher(cfg);
+  const bp = new A.btDbvtBroadphase();
+  const solver = new A.btSequentialImpulseConstraintSolver();
+  const softSolver = soft ? new A.btDefaultSoftBodySolver() : null;
+  const world = soft ? new A.btSoftRigidDynamicsWorld(disp, bp, solver, cfg, softSolver) : new A.btDiscreteDynamicsWorld(disp, bp, solver, cfg);
+  const gv = new A.btVector3(0, o.gravity ?? -9.8, 0);
+  world.setGravity(gv);
+  if (soft) world.getWorldInfo().set_m_gravity(gv);
+
+  const vs = Array.from({ length: 8 }, () => new A.btVector3()); let vi = 0;
+  const ts = [new A.btTransform(), new A.btTransform(), new A.btTransform()]; let ti = 0;
+  const qt = new A.btQuaternion(0, 0, 0, 1), inertia = new A.btVector3();
+  const v3 = (x = 0, y = 0, z = 0) => { const v = vs[vi = (vi + 1) & 7]; v.setValue(x, y, z); return v; };
+  const T = (x = 0, y = 0, z = 0, q) => {
+    const t = ts[ti = (ti + 1) % 3];
+    t.setIdentity(); t.setOrigin(v3(x, y, z));
+    if (q) { qt.setValue(q.x, q.y, q.z, q.w); t.setRotation(qt); }
+    return t;
+  };
+  const bodies = new Set(), byPtr = new Map(), shapes = [], joints = [], actions = [], softs = [], owned = [];
+  const P = {
+    world, disp, v3, T, bodies, byPtr, ms: 0,
+    shape(s, margin) { if (margin != null) s.setMargin(margin); shapes.push(s); return s; },
+    body(shape, mass, pos, b = {}) {
+      const ms = new A.btDefaultMotionState(T(pos[0], pos[1], pos[2], b.q));
+      inertia.setValue(0, 0, 0);
+      if (mass > 0) shape.calculateLocalInertia(mass, inertia);
+      const info = new A.btRigidBodyConstructionInfo(mass, ms, shape, inertia);
+      info.set_m_friction(b.friction ?? 0.6);
+      if (b.restitution != null) info.set_m_restitution(b.restitution);
+      if (b.rolling != null) info.set_m_rollingFriction(b.rolling);
+      if (b.damping) { info.set_m_linearDamping(b.damping[0]); info.set_m_angularDamping(b.damping[1]); }
+      const body = new A.btRigidBody(info);
+      A.destroy(info);
+      if (b.kinematic) { body.setCollisionFlags(body.getCollisionFlags() | 2); body.setActivationState(4); }
+      else if (b.awake) body.setActivationState(4);
+      if (b.group != null) world.addRigidBody(body, b.group, b.mask ?? -1); else world.addRigidBody(body);
+      const rec = { b: body, ms, mass, kin: !!b.kinematic, ptr: A.getPointer(body),
+        gp: A.getPointer(ms.get_m_graphicsWorldTrans()) >> 2, mesh: b.mesh || null, data: b.data || null };
+      bodies.add(rec); byPtr.set(rec.ptr, rec);
+      if (rec.mesh) { rec.mesh.matrixAutoUpdate = false; P.sync(rec); }
+      return rec;
+    },
+    sync(r) { heapToMatrix(r.mesh.matrix.elements, A.HEAPF32, r.gp); r.mesh.matrixWorldNeedsUpdate = true; },
+    syncAll() { for (const r of bodies) if (r.mesh && (r.mass > 0 || r.kin)) P.sync(r); },
+    pos(r, out) { const F = A.HEAPF32; return out.set(F[r.gp + 12], F[r.gp + 13], F[r.gp + 14]); },
+    remove(r) {
+      if (!bodies.delete(r)) return;
+      byPtr.delete(r.ptr); world.removeRigidBody(r.b); A.destroy(r.b); A.destroy(r.ms);
+      if (r.mesh) r.mesh.removeFromParent();
+    },
+    joint(c, noCollide = true) { world.addConstraint(c, noCollide); joints.push(c); return c; },
+    action(a) { world.addAction(a); actions.push(a); return a; },
+    soft(sb, g = 1, m = -1) { world.addSoftBody(sb, g, m); softs.push(sb); return sb; },
+    removeSoft(sb) { const i = softs.indexOf(sb); if (i < 0) return; softs.splice(i, 1); world.removeSoftBody(sb); A.destroy(sb); },
+    own(fn) { owned.push(fn); },
+    ray(a, b) {
+      const from = new A.btVector3(a.x, a.y, a.z), to = new A.btVector3(b.x, b.y, b.z);
+      const cb = new A.ClosestRayResultCallback(from, to);
+      world.rayTest(from, to, cb);
+      let out = null;
+      if (cb.hasHit()) {
+        const p = cb.get_m_hitPointWorld(), n = cb.get_m_hitNormalWorld();
+        out = { rec: byPtr.get(A.getPointer(cb.get_m_collisionObject())) || null,
+          point: new THREE.Vector3(p.x(), p.y(), p.z()), normal: new THREE.Vector3(n.x(), n.y(), n.z()) };
+      }
+      A.destroy(cb); A.destroy(from); A.destroy(to);
+      return out;
+    },
+    time(fn) { const t0 = performance.now(); fn(); P.ms = ema(P.ms, performance.now() - t0); },
+    step(dt, maxSub = 4, fixed = 1 / 120) { P.time(() => world.stepSimulation(dt, maxSub, fixed)); },
+  };
+  ctx.onCleanup(() => {
+    for (const c of joints) { world.removeConstraint(c); A.destroy(c); }
+    for (const a of actions) { world.removeAction(a); A.destroy(a); }
+    for (const sb of softs) { world.removeSoftBody(sb); A.destroy(sb); }
+    for (const r of bodies) { world.removeRigidBody(r.b); A.destroy(r.b); A.destroy(r.ms); }
+    for (const s of shapes.reverse()) A.destroy(s);
+    for (const fn of owned.reverse()) fn();
+    A.destroy(world); if (softSolver) A.destroy(softSolver);
+    A.destroy(solver); A.destroy(bp); A.destroy(disp); A.destroy(cfg);
+    for (const x of [...vs, ...ts, qt, inertia, gv]) A.destroy(x);
+    bodies.clear(); byPtr.clear();
+  });
+  return P;
+}
+
+// Static triangle mesh collider from a three.js geometry (degenerate triangles skipped).
+function triShape(P, geo) {
+  const tm = new A.btTriangleMesh(true, true);
+  const pos = geo.attributes.position, idx = geo.index, n = idx ? idx.count : pos.count;
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), u = new THREE.Vector3(), w = new THREE.Vector3();
+  const va = new A.btVector3(), vb = new A.btVector3(), vc = new A.btVector3();
+  for (let i = 0; i < n; i += 3) {
+    const ia = idx ? idx.getX(i) : i, ib = idx ? idx.getX(i + 1) : i + 1, ic = idx ? idx.getX(i + 2) : i + 2;
+    a.fromBufferAttribute(pos, ia); b.fromBufferAttribute(pos, ib); c.fromBufferAttribute(pos, ic);
+    if (u.subVectors(b, a).cross(w.subVectors(c, a)).lengthSq() < 4e-16) continue;
+    va.setValue(a.x, a.y, a.z); vb.setValue(b.x, b.y, b.z); vc.setValue(c.x, c.y, c.z);
+    tm.addTriangle(va, vb, vc, false);
   }
+  A.destroy(va); A.destroy(vb); A.destroy(vc);
+  P.own(() => A.destroy(tm));
+  return P.shape(new A.btBvhTriangleMeshShape(tm, true, true));
 }
 
-// --- ammo.js soft/rigid world -----------------------------------------------------------
-const collisionConfig = new A.btSoftBodyRigidBodyCollisionConfiguration();
-const dispatcher = new A.btCollisionDispatcher(collisionConfig);
-const broadphase = new A.btDbvtBroadphase();
-const solver = new A.btSequentialImpulseConstraintSolver();
-const softSolver = new A.btDefaultSoftBodySolver();
-const world = new A.btSoftRigidDynamicsWorld(dispatcher, broadphase, solver, collisionConfig, softSolver);
-const gravity = new A.btVector3(0, -9.8, 0);
-world.setGravity(gravity);
-world.getWorldInfo().set_m_gravity(gravity);
-const helpers = new A.btSoftBodyHelpers();
-const tmpTrans = new A.btTransform();
-
-function rigidBody(shape, mass, x, y, z) {
-  const t = new A.btTransform();
-  t.setIdentity();
-  t.setOrigin(new A.btVector3(x, y, z));
-  const inertia = new A.btVector3(0, 0, 0);
-  if (mass > 0) shape.calculateLocalInertia(mass, inertia);
-  const info = new A.btRigidBodyConstructionInfo(mass, new A.btDefaultMotionState(t), shape, inertia);
-  const body = new A.btRigidBody(info);
-  world.addRigidBody(body);
-  return body;
+// Soft body nodes are read straight from the heap; stride and m_x offset are measured once at runtime.
+function softRec(sb, geo) {
+  const nodes = sb.get_m_nodes();
+  if (!NODE) {
+    const p0 = A.getPointer(nodes.at(0)), p1 = A.getPointer(nodes.at(1)), px = A.getPointer(nodes.at(0).get_m_x());
+    NODE = { stride: (p1 - p0) >> 2, x: (px - p0) >> 2 };
+  }
+  return { sb, geo, base: A.getPointer(nodes.at(0)) >> 2, n: nodes.size() };
+}
+function syncSoft(r) {
+  const F = A.HEAPF32, pos = r.geo.attributes.position.array, st = NODE.stride;
+  for (let i = 0, p = r.base + NODE.x; i < r.n; i++, p += st) { pos[i * 3] = F[p]; pos[i * 3 + 1] = F[p + 1]; pos[i * 3 + 2] = F[p + 2]; }
+  r.geo.attributes.position.needsUpdate = true;
+  r.geo.computeVertexNormals();
 }
 
-// Static ground
-{
-  const shape = new A.btBoxShape(new A.btVector3(16, 0.5, 16));
-  shape.setMargin(0.05);
-  const g = rigidBody(shape, 0, 0, -0.5, 0);
-  g.setFriction(0.8);
+// ---------- three.js helpers ----------
+function disposeAll(root, extra) {
+  const seen = new Set();
+  const free = (x) => { if (x && !seen.has(x) && typeof x.dispose === "function") { seen.add(x); x.dispose(); } };
+  const freeMat = (m) => { if (!m) return; for (const v of Object.values(m)) if (v && v.isTexture) free(v); free(m); };
+  root.traverse((o) => {
+    free(o.geometry);
+    [].concat(o.material || []).forEach(freeMat);
+    if (o.isInstancedMesh) free(o);
+  });
+  for (const t of [root.background, root.environment]) if (t && t.isTexture) free(t);
+  for (const x of extra) (x && x.isMaterial ? freeMat : free)(x);
 }
-
-// Trampoline bed: a btSoftBody patch with every border node pinned (mass 0).
-const bedTex = (() => {
-  const c = document.createElement("canvas");
-  c.width = c.height = 512;
-  const g = c.getContext("2d");
+function stage(ctx, o = {}) {
+  const host = o.host || ctx.el;
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = o.exposure ?? 1;
+  if (o.shadows) { renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; }
+  const canvas = renderer.domElement;
+  canvas.className = "am-gl";
+  host.append(canvas);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(o.bg ?? 0x0e1013);
+  const fov = o.fov ?? 45;
+  const camera = new THREE.PerspectiveCamera(fov, 1, 0.1, o.far ?? 300);
+  camera.position.set(...(o.pos || [0, 2, 8]));
+  let controls = null;
+  if (o.orbit !== false) {
+    controls = new OrbitControls(camera, canvas);
+    controls.target.set(...(o.target || [0, 0, 0]));
+    controls.enableDamping = true;
+    controls.enablePan = false;
+    Object.assign(controls, o.orbit || {});
+  }
+  let labels = null;
+  if (o.labels) {
+    labels = new CSS2DRenderer();
+    labels.domElement.className = "am-labels";
+    host.append(labels.domElement);
+  }
+  const frameFns = [], sizeFns = [], extra = [];
+  const S = {
+    renderer, scene, camera, controls, canvas, host, width: 1, height: 1, availH: 1, full: 1,
+    render: () => renderer.render(scene, camera),
+    onFrame(fn) { frameFns.push(fn); },
+    onSize(fn) { sizeFns.push(fn); fn(S.width, S.height); },
+    own(...xs) { extra.push(...xs); return xs[0]; },
+  };
+  let lastKey = "";
+  const fit = () => {
+    const w = Math.max(1, host.clientWidth), hh = Math.max(1, host.clientHeight);
+    const top = parseFloat(ctx.el.style.getPropertyValue("--sc-ctl-h")) || 0;
+    const bot = parseFloat(ctx.el.style.getPropertyValue("--sc-ctl-b")) || 0;
+    const key = `${w}x${hh}:${top}:${bot}`;
+    if (key === lastKey) return;
+    lastKey = key;
+    ctx.el.classList.toggle("am-compact", w < 640);
+    const d = Math.max(-hh * 0.4, Math.min(hh * 0.4, top - bot));
+    S.width = w; S.height = hh; S.full = hh + Math.abs(d); S.availH = hh - Math.abs(d);
+    renderer.setSize(w, hh);
+    if (labels) labels.setSize(w, hh);
+    camera.aspect = w / S.full;
+    camera.fov = o.portraitFov && w < hh ? o.portraitFov : fov;
+    if (d) camera.setViewOffset(w, S.full, 0, d < 0 ? -d : 0, w, hh); else camera.clearViewOffset();
+    camera.updateProjectionMatrix();
+    for (const fn of sizeFns) fn(w, hh);
+  };
+  fit();
+  const timer = new THREE.Timer();
+  ctx.raf((t) => {
+    fit();
+    timer.update(t);
+    // rAF timestamps can trail performance.now(), so the very first delta may be negative.
+    const dt = clamp(timer.getDelta(), 0, 0.1), time = Math.max(0, timer.getElapsed());
+    for (const fn of frameFns) fn(dt, time);
+    if (controls) controls.update(dt);
+    S.render();
+    if (labels) labels.render(scene, camera);
+  });
+  ctx.onCleanup(() => {
+    if (controls) controls.dispose();
+    timer.dispose();
+    disposeAll(scene, extra);
+    renderer.dispose();
+    renderer.forceContextLoss();
+    canvas.remove();
+    if (labels) labels.domElement.remove();
+  });
+  return S;
+}
+function fitDistance(S, halfW, halfH, margin = 1.12) {
+  const tanV = Math.tan(THREE.MathUtils.degToRad(S.camera.fov) / 2);
+  const dv = (halfH * S.full) / (S.availH * tanV);
+  const dh = halfW / (tanV * S.camera.aspect);
+  return Math.max(dv, dh) * margin;
+}
+// Keep the current viewing direction, but move the camera so a halfW x halfH box fits the free area.
+function autoFit(S, hw, hh, m = 1.12) {
+  const dir = new THREE.Vector3();
+  S.onSize(() => {
+    dir.subVectors(S.camera.position, S.controls.target).normalize();
+    S.camera.position.copy(S.controls.target).addScaledVector(dir, fitDistance(S, hw, hh, m));
+  });
+}
+const setNdc = (S, e, v) => {
+  const r = S.canvas.getBoundingClientRect();
+  return v.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+};
+function onTap(ctx, el, fn) {
+  let d = null;
+  ctx.on(el, "pointerdown", (e) => { d = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+  ctx.on(el, "pointerup", (e) => {
+    if (d && performance.now() - d.t < 300 && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6) fn(e);
+    d = null;
+  });
+}
+function env(S, intensity = 1) {
+  const pm = new THREE.PMREMGenerator(S.renderer), room = new RoomEnvironment();
+  const rt = pm.fromScene(room, 0.04);
+  room.dispose(); pm.dispose();
+  S.scene.environment = rt.texture; S.scene.environmentIntensity = intensity;
+  S.own(rt);
+}
+function sunLight(S, o = {}) {
+  if (o.hemi) S.scene.add(new THREE.HemisphereLight(o.hemi[0], o.hemi[1], o.hemi[2]));
+  const sun = new THREE.DirectionalLight(o.color ?? 0xffffff, o.intensity ?? 2);
+  sun.position.set(...(o.pos || [4, 10, 5]));
+  if (o.shadow !== false) {
+    sun.castShadow = true;
+    const c = sun.shadow.camera, r = o.range ?? 6;
+    c.left = -r; c.right = r; c.top = r; c.bottom = -r; c.near = 0.5; c.far = o.far ?? 30;
+    sun.shadow.mapSize.set(o.size ?? 1024, o.size ?? 1024);
+    sun.shadow.bias = -0.0005;
+  }
+  S.scene.add(sun, sun.target);
+  return sun;
+}
+function label(title, sub, zh) {
+  const small = sub != null ? h("small", { class: zh ? "zh" : null, text: sub }) : null;
+  const obj = new CSS2DObject(h("div", { class: "am-lab" }, h("span", { text: title }), small));
+  obj.sub = small;
+  return obj;
+}
+function hud(ctx, fn) {
+  const el = h("div", { class: "am-chip" });
+  ctx.el.append(el);
+  const upd = () => { el.innerHTML = fn(); };
+  upd(); ctx.interval(upd, 300);
+  return el;
+}
+function legend(ctx, items) {
+  ctx.el.append(h("div", { class: "am-legend" },
+    items.map(([c, t, keep]) => h("span", { class: keep ? "keep" : null }, h("i", { style: `background:${c}` }), t))));
+}
+const std = (color, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.5, ...o });
+function canvasTex(c, aniso = 4) { const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = aniso; return t; }
+function canvas2d(w, hgt) { const c = document.createElement("canvas"); c.width = w; c.height = hgt; return [c, c.getContext("2d")]; }
+function bedTexture() {
+  const [c, g] = canvas2d(512, 512);
   g.fillStyle = "#16131f"; g.fillRect(0, 0, 512, 512);
-  for (let r = 240; r > 0; r -= 30) {
-    g.strokeStyle = r % 60 ? "rgba(247,223,30,0.55)" : "rgba(76,201,240,0.5)";
-    g.lineWidth = 6;
+  g.strokeStyle = "rgba(255,255,255,.08)"; g.lineWidth = 2;
+  for (let i = 0; i <= 512; i += 32) { g.beginPath(); g.moveTo(i, 0); g.lineTo(i, 512); g.moveTo(0, i); g.lineTo(512, i); g.stroke(); }
+  g.lineWidth = 6;
+  for (let r = 240; r >= 30; r -= 30) {
+    g.strokeStyle = r % 60 ? "rgba(247,223,30,.55)" : "rgba(76,201,240,.5)";
     g.beginPath(); g.arc(256, 256, r, 0, Math.PI * 2); g.stroke();
   }
-  g.strokeStyle = "rgba(255,255,255,0.08)"; g.lineWidth = 2;
-  for (let i = 0; i <= 512; i += 32) { g.beginPath(); g.moveTo(i, 0); g.lineTo(i, 512); g.moveTo(0, i); g.lineTo(512, i); g.stroke(); }
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
-  t.anisotropy = 4;
-  return t;
-})();
-const bedGeo = new THREE.PlaneGeometry(SIZE, SIZE, SEG, SEG);
-const bedMesh = new THREE.Mesh(bedGeo, new THREE.MeshStandardMaterial({ map: bedTex, side: THREE.DoubleSide, roughness: 0.7 }));
-bedMesh.castShadow = bedMesh.receiveShadow = true;
-scene.add(bedMesh);
-let bed = null;
-
-function buildBed() {
-  if (bed) world.removeSoftBody(bed);
-  const h = SIZE / 2;
-  // Corner order matches PlaneGeometry's vertex order: row by row from (-x, -z) to (+x, +z).
-  bed = helpers.CreatePatch(
-    world.getWorldInfo(),
-    new A.btVector3(-h, BED_Y, -h), new A.btVector3(h, BED_Y, -h),
-    new A.btVector3(-h, BED_Y, h), new A.btVector3(h, BED_Y, h),
-    SEG + 1, SEG + 1, 0, true,
-  );
-  const cfg = bed.get_m_cfg();
-  cfg.set_viterations(12);
-  cfg.set_piterations(12);
-  cfg.set_collisions(0x11);           // SDF_RS + VF_SS so jellies land on the bed
-  cfg.set_kDF(0.4);
-  cfg.set_kDP(0.002);
-  bed.get_m_materials().at(0).set_m_kLST(0.55);
-  bed.setTotalMass(3, false);
-  for (let iy = 0; iy <= SEG; iy++) for (let ix = 0; ix <= SEG; ix++) {
-    if (ix === 0 || iy === 0 || ix === SEG || iy === SEG) bed.setMass(iy * (SEG + 1) + ix, 0);
-  }
-  A.castObject(bed, A.btCollisionObject).getCollisionShape().setMargin(0.12);
-  world.addSoftBody(bed, 1, -1);
-  bed.setActivationState(4);
+  return canvasTex(c);
+}
+function flagTexture() {
+  const [c, g] = canvas2d(512, 320);
+  const gr = g.createLinearGradient(0, 0, 512, 320);
+  gr.addColorStop(0, "#f72585"); gr.addColorStop(1, "#ff8c42");
+  g.fillStyle = gr; g.fillRect(0, 0, 512, 320);
+  g.fillStyle = "rgba(255,255,255,.14)";
+  for (let i = 0; i < 5; i++) g.fillRect(0, 18 + i * 64, 512, 22);
+  g.fillStyle = "#fff"; g.textAlign = "center"; g.textBaseline = "middle";
+  g.font = "800 96px system-ui, sans-serif"; g.fillText("ammo.js", 256, 140);
+  g.font = "600 36px system-ui, sans-serif"; g.fillText("Bullet + WebAssembly", 256, 236);
+  return canvasTex(c);
+}
+function crateTexture() {
+  const [c, g] = canvas2d(128, 128);
+  g.fillStyle = "#b07a3c"; g.fillRect(0, 0, 128, 128);
+  g.fillStyle = "rgba(0,0,0,.13)";
+  for (let y = 22; y < 128; y += 22) g.fillRect(10, y, 108, 3);
+  g.strokeStyle = "#6e4520"; g.lineWidth = 12; g.strokeRect(6, 6, 116, 116);
+  g.lineWidth = 9; g.beginPath(); g.moveTo(12, 12); g.lineTo(116, 116); g.stroke();
+  return canvasTex(c);
 }
 
-// Jellies: closed meshes turned into pressurised soft volumes.
-let jellies = [];     // { sb, mesh }
-let steels = [];      // { body, mesh }
-let jellyNo = 0;
-
-function makeJellyGeometry(kind) {
+// ---------- scene 1 data (ported from the original page) ----------
+const SIZE = 5, SEG = 22, BED_Y = 1.7, MAX_JELLY = 7, MAX_STEEL = 6;
+const JELLY_COLORS = [0xf72585, 0x7bd389, 0x4cc9f0, 0xff8c42, 0x9d8cff, 0xf7df1e];
+function jellyGeometry(kind) {
   let geo;
   if (kind === 0) geo = new THREE.SphereGeometry(0.55, 18, 12);
   else if (kind === 1) geo = new THREE.BoxGeometry(0.85, 0.85, 0.85, 4, 4, 4);
   else geo = new THREE.CapsuleGeometry(0.32, 0.6, 5, 12);
   geo.deleteAttribute("normal");
   geo.deleteAttribute("uv");
-  return mergeVertices(geo);
+  const merged = mergeVertices(geo);
+  geo.dispose();
+  return merged;
 }
 
-function addJelly(x, y, z) {
-  if (jellies.length >= MAX_JELLY) removeJelly(0);
-  const kind = jellyNo % 3;
-  const geo = makeJellyGeometry(kind);
-  geo.rotateX(Math.random() * Math.PI);
-  geo.rotateY(Math.random() * Math.PI);
-  geo.translate(x, y, z);
-  const verts = Array.from(geo.attributes.position.array);
-  const tris = Array.from(geo.index.array);
-  const sb = helpers.CreateFromTriMesh(world.getWorldInfo(), verts, tris, tris.length / 3, true);
-  const cfg = sb.get_m_cfg();
-  cfg.set_viterations(30);
-  cfg.set_piterations(30);
-  cfg.set_collisions(0x11);
-  cfg.set_kDF(0.3);
-  cfg.set_kDP(0.01);
-  cfg.set_kPR(kind === 1 ? 10 : 14);  // internal pressure keeps the jelly round
-  const mat = sb.get_m_materials().at(0);
-  mat.set_m_kLST(0.8);
-  mat.set_m_kAST(0.8);
-  sb.setTotalMass(2, false);
-  A.castObject(sb, A.btCollisionObject).getCollisionShape().setMargin(0.05);
-  world.addSoftBody(sb, 1, -1);
-  sb.setActivationState(4);
-
-  const color = JELLY_COLORS[jellyNo % JELLY_COLORS.length];
-  const mesh = new THREE.Mesh(geo, new THREE.MeshPhysicalMaterial({
-    color, roughness: 0.18, clearcoat: 1, clearcoatRoughness: 0.1, emissive: color, emissiveIntensity: 0.12,
-  }));
-  mesh.castShadow = true;
-  mesh.frustumCulled = false;
-  scene.add(mesh);
-  jellies.push({ sb, mesh });
-  jellyNo++;
+// ---------- scene 5 terrain ----------
+const TA = 30, TB = 19;   // elliptical road semi-axes
+const hills = (x, z) => 1.5 * Math.sin(x * 0.11 + 1.3) * Math.cos(z * 0.13) + 0.8 * Math.sin(x * 0.23 + z * 0.19 + 0.7);
+function roadDist(x, z) { const n = Math.hypot(x / TA, z / TB); return (Math.abs(n - 1) * Math.hypot(x, z)) / Math.max(n, 1e-3); }
+function heightAt(x, z) {
+  const d = roadDist(x, z), r = Math.hypot(x, z);
+  return hills(x, z) * (0.45 + 0.55 * smoothstep(2, 5, d)) + Math.max(0, r / 44 - 0.85) ** 2 * 70;
 }
-
-function removeJelly(i) {
-  const j = jellies[i];
-  world.removeSoftBody(j.sb);
-  scene.remove(j.mesh);
-  j.mesh.geometry.dispose();
-  j.mesh.material.dispose();
-  jellies.splice(i, 1);
-}
-
-const steelGeo = new THREE.SphereGeometry(0.28, 28, 18);
-const steelMat = new THREE.MeshStandardMaterial({ color: 0xd8dde6, metalness: 1, roughness: 0.18 });
-function addSteel(from, vel) {
-  if (steels.length >= MAX_STEEL) removeSteel(0);
-  const shape = new A.btSphereShape(0.28);
-  shape.setMargin(0.04);
-  const body = rigidBody(shape, 5, from.x, from.y, from.z);
-  body.setLinearVelocity(new A.btVector3(vel.x, vel.y, vel.z));
-  body.setFriction(0.5);
-  body.setRestitution(0.2);
-  body.setActivationState(4);
-  const mesh = new THREE.Mesh(steelGeo, steelMat);
-  mesh.castShadow = true;
-  scene.add(mesh);
-  steels.push({ body, mesh });
-}
-function removeSteel(i) {
-  world.removeRigidBody(steels[i].body);
-  scene.remove(steels[i].mesh);
-  steels.splice(i, 1);
-}
-
-function dropJelly(h = 4.4 + Math.random() * 1.2) {
-  addJelly((Math.random() - 0.5) * 2.4, h, (Math.random() - 0.5) * 2.4);
-}
-function throwSteelAt(p) {
-  const from = new THREE.Vector3(p.x * 0.3, 7, p.z * 0.3 + 0.5);
-  addSteel(from, { x: (p.x - from.x) * 1.2, y: -3, z: (p.z - from.z) * 1.2 });
-}
-
-// --- sync meshes from soft-body nodes ---------------------------------------------------
-function syncSoft(sb, geo) {
-  const nodes = sb.get_m_nodes();
-  const pos = geo.attributes.position.array;
-  const n = nodes.size();
-  for (let i = 0; i < n; i++) {
-    const x = nodes.at(i).get_m_x();
-    pos[i * 3] = x.x(); pos[i * 3 + 1] = x.y(); pos[i * 3 + 2] = x.z();
+function terrainTexture(span) {
+  const N = 1024, [c, g] = canvas2d(N, N), img = g.createImageData(N, N), D = img.data, rnd = rng(11);
+  for (let py = 0; py < N; py++) for (let px = 0; px < N; px++) {
+    const x = -span / 2 + ((px + 0.5) / N) * span, z = -span / 2 + ((py + 0.5) / N) * span;
+    const d = roadDist(x, z), n = (rnd() - 0.5) * 16, i = (py * N + px) * 4;
+    let R, G, B;
+    if (d < 2.75) {
+      R = G = 60 + n; B = 66 + n;
+      if (d > 2.3 && d < 2.55) R = G = B = 228;
+      else if (d < 0.15 && Math.floor(((Math.atan2(z / TB, x / TA) + Math.PI) * 24) / Math.PI) % 2 === 0) { R = 247; G = 223; B = 30; }
+    } else {
+      const k = smoothstep(2.5, 9, heightAt(x, z));
+      R = 76 + 64 * k + n; G = 120 + 8 * k + n; B = 56 + 56 * k + n;
+    }
+    D[i] = R; D[i + 1] = G; D[i + 2] = B; D[i + 3] = 255;
   }
-  geo.attributes.position.needsUpdate = true;
-  geo.computeVertexNormals();
-  geo.computeBoundingSphere();
-  return n;
+  g.putImageData(img, 0, 0);
+  return canvasTex(c, 8);
 }
 
-// --- input & UI -------------------------------------------------------------------------
-let auto = true, nextAuto = 0, autoStep = 0, simTime = 0;
-const autoBtn = document.getElementById("auto");
-const setAuto = (on) => { auto = on; autoBtn.setAttribute("aria-pressed", String(on)); controls.autoRotate = on; };
-autoBtn.addEventListener("click", () => setAuto(!auto));
-document.getElementById("jelly").addEventListener("click", () => dropJelly());
-document.getElementById("steel").addEventListener("click", () => throwSteelAt({ x: (Math.random() - 0.5) * 2, z: (Math.random() - 0.5) * 2 }));
-document.getElementById("reset").addEventListener("click", resetAll);
+// =====================================================================================
+Showcase.run({ scenes: [
+  // 1. Original signature demo: trampoline cloth + pressurised jellies + steel balls.
+  {
+    id: "trampoline", title: "果凍彈跳床",
+    api: "btSoftBodyHelpers.CreatePatch(…)・CreateFromTriMesh(…)・cfg.set_kPR(p)",
+    desc: "原作移植：彈跳床是四邊固定的布料軟體，果凍是靠內壓撐起的封閉軟體，鐵球是剛體。三者在同一個 btSoftRigidDynamicsWorld 裡互相碰撞，每格把軟體節點座標直接從 WASM 記憶體寫回 three.js 網格。",
+    hint: "點畫面在該處上方丟鐵球，拖曳旋轉視角",
+    async mount(ctx) {
+      await boot(ctx);
+      const S = stage(ctx, { shadows: true, fov: 42, portraitFov: 55, bg: 0x0d0b14, pos: [3.4, 6.6, 8.2], target: [0, 1.3, 0],
+        orbit: { autoRotate: true, autoRotateSpeed: 0.5, maxPolarAngle: Math.PI * 0.47, minDistance: 4, maxDistance: 26 } });
+      S.scene.fog = new THREE.Fog(0x0d0b14, 12, 30);
+      env(S, 0.45);
+      sunLight(S, { intensity: 2.4, pos: [4, 10, 5], range: 6, far: 30, size: 2048, hemi: [0xfff0f6, 0x221a2c, 1.1] });
+      const P = physics(ctx, { soft: true });
+      const info = P.world.getWorldInfo(), half = SIZE / 2, E = half + 0.2;
 
-const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
-let down = null;
-renderer.domElement.addEventListener("pointerdown", (e) => { down = [e.clientX, e.clientY]; });
-renderer.domElement.addEventListener("pointerup", (e) => {
-  if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return;
-  ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
-  ray.setFromCamera(ndc, camera);
-  const hit = ray.intersectObjects([bedMesh, floor, ...jellies.map((j) => j.mesh)])[0];
-  if (!hit) return;
-  // Launch from just in front of the camera toward the clicked point.
-  const from = camera.position.clone().addScaledVector(ray.ray.direction, 1.2);
-  const dir = hit.point.clone().sub(from);
-  const t = Math.max(0.35, dir.length() / 14);
-  addSteel(from, { x: dir.x / t, y: dir.y / t + 4.9 * t, z: dir.z / t });
-  setAuto(false);
-});
+      const floor = new THREE.Mesh(new THREE.CircleGeometry(16, 64).rotateX(-Math.PI / 2), std(0x241c30, { roughness: 0.95 }));
+      floor.receiveShadow = true; S.scene.add(floor);
+      P.body(P.shape(new A.btBoxShape(P.v3(16, 0.5, 16))), 0, [0, -0.5, 0], { friction: 0.8 });
+      const metal = std(0xb9c0cc, { metalness: 1, roughness: 0.3 }), padMat = std(0x4cc9f0, { roughness: 0.55 });
+      const legGeo = new THREE.CylinderGeometry(0.07, 0.07, BED_Y, 12);
+      for (const [sx, sz] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+        const leg = new THREE.Mesh(legGeo, metal); leg.position.set(sx * E, BED_Y / 2, sz * E); leg.castShadow = true; S.scene.add(leg);
+      }
+      const barX = P.shape(new A.btBoxShape(P.v3(E + 0.15, 0.1, 0.15))), barZ = P.shape(new A.btBoxShape(P.v3(0.15, 0.1, E + 0.15)));
+      const geoX = new THREE.BoxGeometry((E + 0.15) * 2, 0.2, 0.3), geoZ = new THREE.BoxGeometry(0.3, 0.2, (E + 0.15) * 2);
+      for (const s of [1, -1]) {
+        const a = new THREE.Mesh(geoX, padMat), b = new THREE.Mesh(geoZ, padMat);
+        a.castShadow = b.castShadow = true; S.scene.add(a, b);
+        P.body(barX, 0, [0, BED_Y, s * E], { mesh: a }); P.body(barZ, 0, [s * E, BED_Y, 0], { mesh: b });
+      }
 
-function resetAll() {
-  while (jellies.length) removeJelly(jellies.length - 1);
-  while (steels.length) removeSteel(steels.length - 1);
-  buildBed();
-  jellyNo = 0;
-  autoStep = 0;
-  nextAuto = simTime + 0.2;
-}
+      // Corner order matches PlaneGeometry's vertex order (row by row), so node i == vertex i.
+      const bedGeo = new THREE.PlaneGeometry(SIZE, SIZE, SEG, SEG);
+      const bedMesh = new THREE.Mesh(bedGeo, std(0xffffff, { map: bedTexture(), side: THREE.DoubleSide, roughness: 0.7 }));
+      bedMesh.castShadow = bedMesh.receiveShadow = true; bedMesh.frustumCulled = false; S.scene.add(bedMesh);
+      const bed = HELP.CreatePatch(info, P.v3(-half, BED_Y, -half), P.v3(half, BED_Y, -half), P.v3(-half, BED_Y, half), P.v3(half, BED_Y, half), SEG + 1, SEG + 1, 0, true);
+      const bc = bed.get_m_cfg();
+      bc.set_viterations(12); bc.set_piterations(12); bc.set_collisions(0x11); bc.set_kDF(0.4); bc.set_kDP(0.002);
+      bed.get_m_materials().at(0).set_m_kLST(0.55);
+      bed.setTotalMass(3, false);
+      for (let iy = 0; iy <= SEG; iy++) for (let ix = 0; ix <= SEG; ix++) {
+        if (ix === 0 || iy === 0 || ix === SEG || iy === SEG) bed.setMass(iy * (SEG + 1) + ix, 0);
+      }
+      A.castObject(bed, A.btCollisionObject).getCollisionShape().setMargin(0.12);
+      P.soft(bed, 1, -1); bed.setActivationState(4);
+      const bedR = softRec(bed, bedGeo);
+      syncSoft(bedR);
 
-function resize() {
-  const w = innerWidth, h = innerHeight;
-  renderer.setSize(w, h);
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
-  const dist = 10 / Math.min(1, camera.aspect * 1.05);
-  const dir = camera.position.clone().sub(controls.target);
-  if (dir.lengthSq() < 0.01) dir.set(0.35, 0.55, 0.76);
-  camera.position.copy(controls.target).addScaledVector(dir.normalize(), dist);
-  controls.update();
-}
+      const jellies = [], steels = [];
+      let jellyNo = 0;
+      function removeJelly(j) {
+        jellies.splice(jellies.indexOf(j), 1);
+        P.removeSoft(j.sb); j.mesh.removeFromParent(); j.geo.dispose(); j.mesh.material.dispose();
+      }
+      function addJelly(x, y, z) {
+        if (jellies.length >= MAX_JELLY) removeJelly(jellies[0]);
+        const kind = jellyNo % 3, geo = jellyGeometry(kind);
+        geo.rotateX(Math.random() * Math.PI); geo.rotateY(Math.random() * Math.PI); geo.translate(x, y, z);
+        const sb = HELP.CreateFromTriMesh(info, Array.from(geo.attributes.position.array), Array.from(geo.index.array), geo.index.count / 3, true);
+        const c = sb.get_m_cfg();
+        c.set_viterations(30); c.set_piterations(30); c.set_collisions(0x11); c.set_kDF(0.3); c.set_kDP(0.01);
+        c.set_kPR(kind === 1 ? 10 : 14);   // internal pressure keeps the jelly round
+        const m = sb.get_m_materials().at(0); m.set_m_kLST(0.8); m.set_m_kAST(0.8);
+        sb.setTotalMass(2, false);
+        A.castObject(sb, A.btCollisionObject).getCollisionShape().setMargin(0.05);
+        P.soft(sb, 1, -1); sb.setActivationState(4);
+        const color = JELLY_COLORS[jellyNo++ % JELLY_COLORS.length];
+        const mesh = new THREE.Mesh(geo, new THREE.MeshPhysicalMaterial({ color, roughness: 0.18, clearcoat: 1, clearcoatRoughness: 0.1, emissive: color, emissiveIntensity: 0.12 }));
+        mesh.castShadow = true; mesh.frustumCulled = false; S.scene.add(mesh);
+        const j = { ...softRec(sb, geo), mesh };
+        syncSoft(j); jellies.push(j);
+      }
+      const dropJelly = (y = 4.4 + Math.random() * 1.2) => addJelly((Math.random() - 0.5) * 2.4, y, (Math.random() - 0.5) * 2.4);
+      const steelShape = P.shape(new A.btSphereShape(0.28), 0.04);
+      const steelGeo = S.own(new THREE.SphereGeometry(0.28, 28, 18)), steelMat = S.own(std(0xd8dde6, { metalness: 1, roughness: 0.18 }));
+      function throwSteelAt(p) {
+        if (steels.length >= MAX_STEEL) P.remove(steels.shift());
+        const fx = p.x * 0.3, fy = 7, fz = p.z * 0.3 + 0.5;
+        const mesh = new THREE.Mesh(steelGeo, steelMat); mesh.castShadow = true; S.scene.add(mesh);
+        const r = P.body(steelShape, 5, [fx, fy, fz], { friction: 0.5, restitution: 0.2, awake: true, mesh });
+        r.b.setLinearVelocity(P.v3((p.x - fx) * 1.2, -3, (p.z - fz) * 1.2));
+        steels.push(r);
+      }
+      const randBed = () => new THREE.Vector3((Math.random() - 0.5) * 3.2, BED_Y, (Math.random() - 0.5) * 3.2);
 
-// --- loop -------------------------------------------------------------------------------
-const statsEl = document.getElementById("stats");
-let last = performance.now(), frameNo = 0;
-function frame(now) {
-  const dt = Math.min(1 / 30, (now - last) / 1000);
-  last = now;
-  world.stepSimulation(dt, 4, 1 / 120);
-  simTime += dt;
+      let auto = true, nextAuto = 1.3, autoN = 0, simT = 0;
+      const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+      onTap(ctx, S.canvas, (e) => {
+        setAuto(false);
+        setNdc(S, e, ndc); ray.setFromCamera(ndc, S.camera);
+        bedGeo.computeBoundingSphere(); jellies.forEach((j) => j.geo.computeBoundingSphere());
+        const hit = ray.intersectObjects([bedMesh, floor, ...jellies.map((j) => j.mesh)], false)[0];
+        throwSteelAt(hit ? hit.point : randBed());
+      });
+      ctx.button("丟果凍", () => dropJelly(), { primary: true });
+      ctx.button("丟鐵球", () => throwSteelAt(randBed()));
+      ctx.button("重置", () => {
+        while (jellies.length) removeJelly(jellies[0]);
+        while (steels.length) P.remove(steels.pop());
+        autoN = 0; nextAuto = simT + 0.4;
+      });
+      const autoTg = ctx.toggle("自動", true, (v) => { auto = v; nextAuto = simT + 0.5; });
+      const setAuto = (v) => { auto = v; autoTg.setAttribute("aria-pressed", String(v)); };
+      dropJelly(3.4);
 
-  // Auto show: three jellies first, then alternate between jellies and steel balls.
-  if (auto && simTime > nextAuto) {
-    if (autoStep < 3) { dropJelly(autoStep === 0 ? 2.9 : undefined); nextAuto = simTime + 0.6; }
-    else if (autoStep % 2) { throwSteelAt({ x: (Math.random() - 0.5) * 1.6, z: (Math.random() - 0.5) * 1.6 }); nextAuto = simTime + 2.6; }
-    else { dropJelly(); nextAuto = simTime + 2.6; }
-    autoStep++;
-  }
+      S.onFrame((dt) => {
+        simT += dt;
+        if (auto && simT >= nextAuto) {
+          autoN++;
+          if (autoN <= 3 || autoN % 2 === 1) dropJelly(); else throwSteelAt(randBed());
+          nextAuto = simT + (autoN < 3 ? 1.3 : 2.6);
+        }
+        P.step(dt, 4, 1 / 120);
+        const F = A.HEAPF32;
+        for (const j of [...jellies]) if (F[j.base + NODE.x + 1] < -4) removeJelly(j);
+        for (const r of [...steels]) if (F[r.gp + 13] < -4) { steels.splice(steels.indexOf(r), 1); P.remove(r); }
+        syncSoft(bedR); jellies.forEach(syncSoft); P.syncAll();
+        const d = S.camera.position.distanceTo(S.controls.target);
+        S.scene.fog.near = d + 2; S.scene.fog.far = d + 18;
+      });
+      autoFit(S, 4, 3.4, 1.1);
+      hud(ctx, () => {
+        const nodes = bedR.n + jellies.reduce((s, j) => s + j.n, 0);
+        return `軟體 <b>${jellies.length + 1}</b>・節點 <b>${nodes}</b>・鐵球 <b>${steels.length}</b>・物理 <b>${P.ms.toFixed(1)}</b> ms・WASM ${heapHtml()}`;
+      });
+    },
+  },
 
-  let nodeCount = syncSoft(bed, bedGeo);
-  for (let i = jellies.length - 1; i >= 0; i--) {
-    nodeCount += syncSoft(jellies[i].sb, jellies[i].mesh.geometry);
-    if (jellies[i].mesh.geometry.boundingSphere.center.y < -4) removeJelly(i);
-  }
-  for (let i = steels.length - 1; i >= 0; i--) {
-    const s = steels[i];
-    s.body.getMotionState().getWorldTransform(tmpTrans);
-    const p = tmpTrans.getOrigin(), q = tmpTrans.getRotation();
-    s.mesh.position.set(p.x(), p.y(), p.z());
-    s.mesh.quaternion.set(q.x(), q.y(), q.z(), q.w());
-    if (p.y() < -4) removeSteel(i);
-  }
-  if (frameNo++ % 10 === 0) statsEl.textContent = "軟體 " + (jellies.length + 1) + " 個・節點 " + nodeCount + "・鐵球 " + steels.length;
+  // 2. Collision shapes, compound, convex hull, triangle mesh, sleeping.
+  {
+    id: "shapes", title: "形狀圖鑑",
+    api: "btBoxShape・btConeShape・btCompoundShape・btConvexHullShape・btBvhTriangleMeshShape・isActive()",
+    desc: "七種碰撞形狀落進一個三角網格碗：基本形狀、啞鈴（btCompoundShape 組合）與凸包岩石（btConvexHullShape）。靜止約兩秒的剛體會進入休眠、跳過求解，畫面以變暗標示；「震一下」用運動學剛體搖晃碗，把它們全部喚醒。",
+    hint: "點剛體施加衝量，點碗內空處丟入目前形狀",
+    async mount(ctx) {
+      await boot(ctx);
+      const S = stage(ctx, { shadows: true, fov: 45, portraitFov: 60, bg: 0x10131a, pos: [0, 6.5, 9.5], target: [0, 0.8, 0],
+        orbit: { autoRotate: true, autoRotateSpeed: 0.35, maxPolarAngle: Math.PI * 0.48, minDistance: 4, maxDistance: 30 } });
+      env(S, 0.5);
+      sunLight(S, { intensity: 2.2, pos: [5, 12, 4], range: 7, far: 34, size: 2048, hemi: [0xe8f0ff, 0x1a1d24, 0.9] });
+      const P = physics(ctx);
+      const floor = new THREE.Mesh(new THREE.CircleGeometry(22, 64).rotateX(-Math.PI / 2), std(0x161a22, { roughness: 0.95 }));
+      floor.receiveShadow = true; S.scene.add(floor);
+      P.body(P.shape(new A.btBoxShape(P.v3(24, 0.5, 24))), 0, [0, -0.5, 0], { friction: 0.8 });
+      const prof = [[0, 0], [2.4, 0.04], [3.5, 0.3], [4.3, 0.85], [4.85, 1.55], [5.15, 2.2]].map(([x, y]) => new THREE.Vector2(x, y));
+      const bowlGeo = new THREE.LatheGeometry(prof, 48);
+      const bowlMesh = new THREE.Mesh(bowlGeo, std(0x2b3446, { metalness: 0.25, side: THREE.DoubleSide }));
+      bowlMesh.receiveShadow = true; S.scene.add(bowlMesh);
+      const bowl = P.body(triShape(P, bowlGeo), 0, [0, 0, 0], { kinematic: true, friction: 0.7, rolling: 0.05, mesh: bowlMesh });
 
-  controls.update();
-  renderer.render(scene, camera);
-  requestAnimationFrame(frame);
-}
+      const ball = P.shape(new A.btSphereShape(0.26)), bar = P.shape(new A.btCylinderShapeX(P.v3(0.42, 0.09, 0.09)));
+      const dumbbell = P.shape(new A.btCompoundShape());
+      dumbbell.addChildShape(P.T(-0.42, 0, 0), ball); dumbbell.addChildShape(P.T(0.42, 0, 0), ball); dumbbell.addChildShape(P.T(), bar);
+      const rnd = rng(7), pts = [];
+      for (let i = 0; i < 16; i++) {
+        const u = rnd() * 2 - 1, th = rnd() * Math.PI * 2, r = 0.32 + rnd() * 0.14, s = Math.sqrt(1 - u * u);
+        pts.push(new THREE.Vector3(r * s * Math.cos(th), r * u * 0.8, r * s * Math.sin(th)));
+      }
+      const hull = new A.btConvexHullShape();
+      for (const p of pts) hull.addPoint(P.v3(p.x, p.y, p.z), true);
+      P.shape(hull, 0.02);
+      const dbGeo = mergeGeometries([
+        new THREE.SphereGeometry(0.26, 20, 14).translate(-0.42, 0, 0), new THREE.SphereGeometry(0.26, 20, 14).translate(0.42, 0, 0),
+        new THREE.CylinderGeometry(0.09, 0.09, 0.84, 14).rotateZ(Math.PI / 2)]);
+      const KINDS = [
+        { name: "方塊", shape: P.shape(new A.btBoxShape(P.v3(0.32, 0.32, 0.32))), geo: new RoundedBoxGeometry(0.64, 0.64, 0.64, 3, 0.06), mass: 1 },
+        { name: "球體", shape: P.shape(new A.btSphereShape(0.34)), geo: new THREE.SphereGeometry(0.34, 24, 16), mass: 1 },
+        { name: "圓柱", shape: P.shape(new A.btCylinderShape(P.v3(0.3, 0.34, 0.3))), geo: new THREE.CylinderGeometry(0.3, 0.3, 0.68, 24), mass: 1 },
+        { name: "圓錐", shape: P.shape(new A.btConeShape(0.36, 0.8)), geo: new THREE.ConeGeometry(0.36, 0.8, 24), mass: 1 },
+        { name: "膠囊", shape: P.shape(new A.btCapsuleShape(0.22, 0.5)), geo: new THREE.CapsuleGeometry(0.22, 0.5, 6, 16), mass: 1 },
+        { name: "啞鈴（複合）", shape: dumbbell, geo: dbGeo, mass: 1.5 },
+        { name: "凸包岩石", shape: hull, geo: new ConvexGeometry(pts), mass: 1.2 },
+      ];
+      KINDS.forEach((k) => S.own(k.geo));
+      const mats = PALETTE.map((c) => S.own(std(c, { roughness: 0.45, metalness: 0.1 })));
+      const dims = PALETTE.map((c) => S.own(std(new THREE.Color(c).multiplyScalar(0.3), { roughness: 0.8 })));
 
-controls.target.set(0, 1.3, 0);
-camera.position.set(3.4, 6.6, 8.2);
-addEventListener("resize", resize);
-resize();
-resetAll();
-requestAnimationFrame(frame);
+      const items = [];
+      let kindSel = "r", auto = true, simT = 0, nextSpawn = 0.4, nextQuake = 9, quakeT = -1;
+      const pickKind = () => (kindSel === "r" ? Math.floor(Math.random() * KINDS.length) : +kindSel);
+      const q = new THREE.Quaternion(), eul = new THREE.Euler();
+      function spawn(k, pos) {
+        if (items.length >= 48) P.remove(items.shift());
+        const K = KINDS[k], ci = Math.floor(Math.random() * PALETTE.length);
+        const mesh = new THREE.Mesh(K.geo, mats[ci]); mesh.castShadow = mesh.receiveShadow = true; S.scene.add(mesh);
+        q.setFromEuler(eul.set(Math.random() * 3, Math.random() * 3, Math.random() * 3));
+        items.push(P.body(K.shape, K.mass, pos, { q, restitution: 0.2, rolling: 0.02, mesh, data: { mat: mats[ci], dim: dims[ci] } }));
+      }
+      const randPos = (y) => [(Math.random() - 0.5) * 3.2, y, (Math.random() - 0.5) * 3.2];
+      function quake() { for (const r of items) r.b.activate(); quakeT = 0; }
+      for (let i = 0; i < 12; i++) spawn(pickKind(), randPos(1.4 + i * 0.7));
+
+      const flash = new THREE.Mesh(new THREE.RingGeometry(0.12, 0.2, 32),
+        new THREE.MeshBasicMaterial({ color: 0xf7df1e, transparent: true, side: THREE.DoubleSide, depthTest: false }));
+      flash.renderOrder = 10; flash.visible = false; S.scene.add(flash);
+      let flashT = 0;
+      const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), far = new THREE.Vector3(), bp = new THREE.Vector3();
+      onTap(ctx, S.canvas, (e) => {
+        setNdc(S, e, ndc); ray.setFromCamera(ndc, S.camera);
+        const hit = P.ray(ray.ray.origin, ray.ray.at(80, far));
+        if (!hit) return;
+        flash.position.copy(hit.point); flash.lookAt(far.copy(hit.point).add(hit.normal)); flash.visible = true; flashT = 0;
+        if (hit.rec && hit.rec.mass > 0) {
+          const m = hit.rec.mass, d = ray.ray.direction; P.pos(hit.rec, bp);
+          hit.rec.b.activate();
+          hit.rec.b.applyImpulse(P.v3(d.x * 6 * m, (d.y * 6 + 2) * m, d.z * 6 * m), P.v3(hit.point.x - bp.x, hit.point.y - bp.y, hit.point.z - bp.z));
+        } else if (Math.hypot(hit.point.x, hit.point.z) < 5) spawn(pickKind(), [hit.point.x, hit.point.y + 2.5, hit.point.z]);
+      });
+      ctx.select("形狀", [{ value: "r", label: "隨機" }, ...KINDS.map((k, i) => ({ value: String(i), label: k.name }))], "r", (v) => { kindSel = v; });
+      ctx.button("丟一把", () => { for (let i = 0; i < 8; i++) spawn(pickKind(), randPos(3.5 + i * 0.75)); }, { primary: true });
+      ctx.button("震一下", quake);
+      ctx.button("清空", () => { while (items.length) P.remove(items.pop()); nextSpawn = simT + 1.5; });
+      ctx.toggle("自動", true, (v) => { auto = v; });
+
+      const bt = new THREE.Vector3();
+      S.onFrame((dt) => {
+        simT += dt;
+        if (auto && items.length < 36 && simT >= nextSpawn) { spawn(pickKind(), randPos(4.5)); nextSpawn = simT + 0.35; }
+        if (auto && simT >= nextQuake) { quake(); nextQuake = simT + 9; }
+        if (quakeT >= 0) {
+          quakeT += dt;
+          const k = Math.max(0, 1 - quakeT / 1.4), w = quakeT * Math.PI * 2;
+          bowl.ms.setWorldTransform(quakeT > 1.4 ? P.T() : P.T(0.28 * k * Math.sin(w * 3), 0.06 * k * Math.sin(w * 5), 0.18 * k * Math.sin(w * 2.3)));
+          if (quakeT > 1.4) quakeT = -1;
+        }
+        P.step(dt, 4, 1 / 120);
+        for (const r of [...items]) {
+          P.pos(r, bt);
+          if (bt.y < -5 || Math.hypot(bt.x, bt.z) > 14) { items.splice(items.indexOf(r), 1); P.remove(r); continue; }
+          const m = r.b.isActive() ? r.data.mat : r.data.dim;
+          if (r.mesh.material !== m) r.mesh.material = m;
+        }
+        P.syncAll();
+        if (flash.visible) {
+          flashT += dt; const k = flashT / 0.45;
+          flash.scale.setScalar(1 + k * 2.5); flash.material.opacity = 1 - k;
+          if (k >= 1) flash.visible = false;
+        }
+      });
+      autoFit(S, 5.4, 2.8, 1.05);
+      legend(ctx, [["#4cc9f0", "活動（參與求解）"], ["#3c4250", "休眠（跳過求解）", true]]);
+      hud(ctx, () => {
+        const act = items.reduce((s, r) => s + (r.b.isActive() ? 1 : 0), 0);
+        return `剛體 <b>${items.length}</b>・活動 <b>${act}</b>・休眠 <b>${items.length - act}</b>・物理 <b>${P.ms.toFixed(1)}</b> ms`;
+      });
+    },
+  },
+
+  // 3. Four constraint rigs, each in its own collision group.
+  {
+    id: "joints", title: "關節約束",
+    api: "btHingeConstraint・btPoint2PointConstraint・btSliderConstraint・btGeneric6DofSpringConstraint",
+    desc: "四組約束各自一個碰撞群組：鉸鏈馬達帶動槳輪攪動小球、點對點鏈條吊著重球、滑軌台車掛單擺、六自由度彈簧吊著方塊。全部交給同一個循序脈衝求解器，求解迭代提高到 20 次讓鏈條更穩。",
+    hint: "用滑桿改馬達轉速與彈簧剛性，拖曳旋轉視角",
+    async mount(ctx) {
+      await boot(ctx);
+      const S = stage(ctx, { shadows: true, labels: true, fov: 42, portraitFov: 52, bg: 0x0e1116, pos: [0, 4.8, 15], target: [0, 2, 0],
+        orbit: { maxPolarAngle: Math.PI * 0.49, minDistance: 5, maxDistance: 40 } });
+      const wide = S.width >= S.height * 1.1;
+      if (!wide) { S.camera.position.set(0, 6.5, 15); S.controls.target.set(0, 4.2, 0); }
+      env(S, 0.5);
+      sunLight(S, { intensity: 2, pos: [4, 12, 8], range: 10, far: 40, size: 2048, hemi: [0xe8f0ff, 0x1a1d24, 0.9] });
+      const P = physics(ctx);
+      P.world.getSolverInfo().set_m_numIterations(20);
+      const ground = new THREE.Mesh(new THREE.PlaneGeometry(24, 14).rotateX(-Math.PI / 2), std(0x171b23, { roughness: 0.95 }));
+      ground.receiveShadow = true; S.scene.add(ground);
+      const grid = new THREE.GridHelper(24, 24, 0x2a3140, 0x20252f); grid.position.y = 0.002; S.scene.add(grid);
+      P.body(P.shape(new A.btBoxShape(P.v3(12, 0.5, 7))), 0, [0, -0.5, 0]);
+      const frameMat = S.own(std(0x8a94a6, { metalness: 0.8, roughness: 0.35 })), metal = S.own(std(0xc8ced8, { metalness: 1, roughness: 0.25 }));
+      const glassMat = S.own(new THREE.MeshStandardMaterial({ color: 0x9fd8ff, transparent: true, opacity: 0.1, depthWrite: false, roughness: 0.1 }));
+      const pal = PALETTE.map((c) => S.own(std(c, { roughness: 0.4 })));
+      const box = (hx, hy, hz, mat, round) => {
+        const m = new THREE.Mesh(round ? new RoundedBoxGeometry(hx * 2, hy * 2, hz * 2, 2, Math.min(hx, hy, hz) * 0.3) : new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2), mat);
+        m.castShadow = m.receiveShadow = mat !== glassMat; S.scene.add(m); return m;
+      };
+      const stat = (hx, hy, hz, pos, mat, q) => P.body(P.shape(new A.btBoxShape(P.v3(hx, hy, hz))), 0, pos, { q, mesh: box(hx, hy, hz, mat) });
+      const G = (k) => ({ group: 1 << (k + 3), mask: (1 << (k + 3)) | 2 });
+      const spots = wide ? [[-6.9, 0], [-2.3, 0], [2.3, 0], [6.9, 0]] : [[-2.4, 4.4], [2.4, 4.4], [-2.4, 0], [2.4, 0]];
+      if (!wide) stat(5, 0.1, 1.2, [0, 4.3, 0], frameMat);
+      const addLabel = ([bx, by], t, sub) => { const o = label(t, sub); o.position.set(bx, by + 3.8, 0); S.scene.add(o); };
+      const qz = new THREE.Quaternion();
+
+      // A: motorised paddle wheel inside a glass box
+      const [ax, ay] = spots[0], gA = G(0);
+      for (const s of [-1, 1]) {
+        stat(0.05, 1.3, 0.42, [ax + s * 1.25, ay + 1.3, 0], frameMat);
+        stat(1.3, 1.3, 0.05, [ax, ay + 1.3, s * 0.42], glassMat);
+        stat(0.35, 0.35, 0.37, [ax + s * 1.2, ay, 0], frameMat, qz.setFromAxisAngle(AXIS_Z, Math.PI / 4));
+      }
+      stat(1.3, 0.05, 0.42, [ax, ay + 2.65, 0], glassMat);
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(2.6, 2.7, 0.94)), new THREE.LineBasicMaterial({ color: 0x9fd8ff, transparent: true, opacity: 0.5 }));
+      edges.position.set(ax, ay + 1.35, 0); S.scene.add(edges);
+      const paddle = P.shape(new A.btBoxShape(P.v3(1.05, 0.05, 0.3))), hub = P.shape(new A.btCylinderShapeZ(P.v3(0.15, 0.15, 0.32)));
+      const wheelShape = P.shape(new A.btCompoundShape());
+      const wheelG = new THREE.Group(), padGeo = new THREE.BoxGeometry(2.1, 0.1, 0.6);
+      for (let k = 0; k < 4; k++) {
+        qz.setFromAxisAngle(AXIS_Z, (k * Math.PI) / 4);
+        wheelShape.addChildShape(P.T(0, 0, 0, qz), paddle);
+        const m = new THREE.Mesh(padGeo, pal[1]); m.quaternion.copy(qz); m.castShadow = true; wheelG.add(m);
+      }
+      wheelShape.addChildShape(P.T(), hub);
+      const hubM = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 0.64, 20).rotateX(Math.PI / 2), metal); wheelG.add(hubM);
+      S.scene.add(wheelG);
+      const wheel = P.body(wheelShape, 3, [ax, ay + 1.15, 0], { ...gA, awake: true, mesh: wheelG });
+      const hinge = P.joint(new A.btHingeConstraint(wheel.b, P.T(), false));
+      hinge.enableAngularMotor(true, 2.5, 60);
+      const smallShape = P.shape(new A.btSphereShape(0.13)), smallGeo = S.own(new THREE.SphereGeometry(0.13, 16, 12));
+      const smalls = [];
+      for (let i = 0; i < 14; i++) {
+        const m = new THREE.Mesh(smallGeo, pal[[0, 2, 3, 4][i % 4]]); m.castShadow = true; S.scene.add(m);
+        smalls.push(P.body(smallShape, 0.2, [ax - 1.1 + i * 0.17, ay + 2.4, (Math.random() - 0.5) * 0.4], { ...gA, restitution: 0.3, mesh: m }));
+      }
+      addLabel(spots[0], "A 鉸鏈＋馬達", "btHingeConstraint");
+
+      // B: point-to-point chain holding a heavy ball
+      const [cx, cy] = spots[1], gB = G(1), top = cy + 3.1;
+      stat(0.06, 1.65, 0.06, [cx - 1.7, cy + 1.65, 0], frameMat); stat(0.06, 1.65, 0.06, [cx + 1.7, cy + 1.65, 0], frameMat);
+      stat(1.76, 0.06, 0.06, [cx, cy + 3.3, 0], frameMat);
+      const hook = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.16, 8), metal); hook.position.set(cx, top + 0.08, 0); S.scene.add(hook);
+      const linkShape = P.shape(new A.btCapsuleShape(0.05, 0.28)), linkGeo = new THREE.CapsuleGeometry(0.05, 0.28, 4, 10);
+      let prev = null;
+      for (let i = 0; i < 5; i++) {
+        const m = new THREE.Mesh(linkGeo, metal); m.castShadow = true; S.scene.add(m);
+        const L = P.body(linkShape, 0.3, [cx, top - 0.19 - i * 0.38, 0], { ...gB, damping: [0.05, 0.2], mesh: m });
+        P.joint(prev ? new A.btPoint2PointConstraint(prev.b, L.b, P.v3(0, -0.19, 0), P.v3(0, 0.19, 0)) : new A.btPoint2PointConstraint(L.b, P.v3(0, 0.19, 0)));
+        prev = L;
+      }
+      const bobM = new THREE.Mesh(new THREE.SphereGeometry(0.32, 28, 20), pal[2]); bobM.castShadow = true; S.scene.add(bobM);
+      const heavy = P.body(P.shape(new A.btSphereShape(0.32)), 3, [cx, top - 1.9 - 0.32, 0], { ...gB, mesh: bobM });
+      P.joint(new A.btPoint2PointConstraint(prev.b, heavy.b, P.v3(0, -0.19, 0), P.v3(0, 0.32, 0)));
+      addLabel(spots[1], "B 點對點鏈條", "btPoint2PointConstraint");
+
+      // C: trolley on a slider, pendulum hinged below it
+      const [sx, sy] = spots[2], gC = G(2), ry = sy + 2.6;
+      stat(0.05, 1.35, 0.05, [sx - 1.65, sy + 1.35, 0], frameMat); stat(0.05, 1.35, 0.05, [sx + 1.65, sy + 1.35, 0], frameMat);
+      const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 3.3, 10).rotateZ(Math.PI / 2), metal); rail.position.set(sx, ry, 0); S.scene.add(rail);
+      const trolley = P.body(P.shape(new A.btBoxShape(P.v3(0.3, 0.1, 0.15))), 4, [sx, ry, 0], { ...gC, awake: true, damping: [0.05, 0.05], mesh: box(0.3, 0.1, 0.15, pal[0], true) });
+      const slider = P.joint(new A.btSliderConstraint(trolley.b, P.T(), true));
+      slider.setLowerLinLimit(-1.2); slider.setUpperLinLimit(1.2); slider.setLowerAngLimit(0); slider.setUpperAngLimit(0);
+      const bobShape = P.shape(new A.btSphereShape(0.22)), rodShape = P.shape(new A.btBoxShape(P.v3(0.025, 0.6, 0.025)));
+      const pendShape = P.shape(new A.btCompoundShape());
+      pendShape.addChildShape(P.T(), bobShape); pendShape.addChildShape(P.T(0, 0.66, 0), rodShape);
+      const pendG = new THREE.Group();
+      const pb = new THREE.Mesh(new THREE.SphereGeometry(0.22, 24, 16), pal[5]), pr = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1.2, 0.05), metal);
+      pr.position.y = 0.66; pb.castShadow = pr.castShadow = true; pendG.add(pb, pr); S.scene.add(pendG);
+      const pend = P.body(pendShape, 1.5, [sx, ry - 0.12 - 1.3, 0], { ...gC, awake: true, mesh: pendG });
+      P.joint(new A.btHingeConstraint(trolley.b, pend.b, P.T(0, -0.12, 0), P.T(0, 1.3, 0), true));
+      addLabel(spots[2], "C 滑軌＋單擺", "btSliderConstraint");
+
+      // D: 6-DOF spring (x and y springs, rotation locked)
+      const [dx, dy] = spots[3], gD = G(3), anchorY = dy + 3.4;
+      stat(0.05, 1.75, 0.05, [dx - 1.1, dy + 1.75, 0], frameMat); stat(0.05, 1.75, 0.05, [dx + 1.1, dy + 1.75, 0], frameMat);
+      stat(1.16, 0.06, 0.06, [dx, dy + 3.52, 0], frameMat);
+      const block = P.body(P.shape(new A.btBoxShape(P.v3(0.3, 0.3, 0.3))), 2, [dx, dy + 2.0, 0], { ...gD, awake: true, damping: [0.22, 0.5], mesh: box(0.3, 0.3, 0.3, pal[3], true) });
+      const spring = P.joint(new A.btGeneric6DofSpringConstraint(block.b, P.T(0, 1.4, 0), true));
+      spring.setLinearLowerLimit(P.v3(-0.8, -1.4, 0)); spring.setLinearUpperLimit(P.v3(0.8, 0.9, 0));
+      spring.setAngularLowerLimit(P.v3(0, 0, 0)); spring.setAngularUpperLimit(P.v3(0, 0, 0));
+      for (const i of [0, 1]) { spring.enableSpring(i, true); spring.setStiffness(i, 60); spring.setEquilibriumPoint(i); }
+      class Helix extends THREE.Curve {
+        getPoint(t, out = new THREE.Vector3()) { const a = t * Math.PI * 16; return out.set(Math.cos(a) * 0.22, t, Math.sin(a) * 0.22); }
+      }
+      const coil = new THREE.Mesh(new THREE.TubeGeometry(new Helix(), 320, 0.022, 6, false), metal); coil.castShadow = true; S.scene.add(coil);
+      addLabel(spots[3], "D 六自由度彈簧", "btGeneric6DofSpringConstraint");
+
+      let drive = true, simT = 0, nextPush = 2;
+      function pushAll() {
+        const s = Math.random() < 0.5 ? 1 : -1;
+        for (const [r, x, y, z] of [[heavy, 7.5 * s, 0, 2], [block, 3 * s, -6, 0], [pend, 2.5 * -s, 0, 0]]) { r.b.activate(); r.b.applyCentralImpulse(P.v3(x, y, z)); }
+        for (const r of smalls) { r.b.activate(); r.b.applyCentralImpulse(P.v3((Math.random() - 0.5) * 0.3, 0.5, 0)); }
+      }
+      ctx.button("推一下", pushAll, { primary: true });
+      ctx.slider("馬達", { min: -6, max: 6, step: 0.5, value: 2.5, format: (v) => `${v} rad/s` }, (v) => { hinge.enableAngularMotor(true, v, 60); wheel.b.activate(); });
+      ctx.slider("彈簧", { min: 20, max: 200, step: 5, value: 60, format: (v) => `${v} N/m` }, (k) => { spring.setStiffness(0, k); spring.setStiffness(1, k); block.b.activate(); });
+      ctx.toggle("台車往返", true, (v) => { drive = v; trolley.b.activate(); });
+
+      const bpos = new THREE.Vector3(), dir = new THREE.Vector3();
+      S.onFrame((dt) => {
+        simT += dt;
+        if (simT >= nextPush) { pushAll(); nextPush = simT + 9; }
+        if (drive) {
+          const x = A.HEAPF32[trolley.gp + 12] - sx;
+          trolley.b.setLinearVelocity(P.v3(0.9 * 2 * Math.cos(2 * simT) + 3 * (0.9 * Math.sin(2 * simT) - x), 0, 0));
+        }
+        P.step(dt, 4, 1 / 120);
+        P.syncAll();
+        P.pos(block, bpos); bpos.y += 0.3;
+        dir.set(dx - bpos.x, anchorY - bpos.y, -bpos.z);
+        const len = dir.length();
+        coil.position.copy(bpos); coil.quaternion.setFromUnitVectors(UP, dir.multiplyScalar(1 / len)); coil.scale.set(1, len, 1);
+      });
+      if (wide) autoFit(S, 9.4, 2.5, 1.04); else autoFit(S, 4.8, 4.6, 1.04);
+      hud(ctx, () => `約束 <b>10</b>・剛體 <b>${P.bodies.size}</b>・求解迭代 <b>20</b>・物理 <b>${P.ms.toFixed(1)}</b> ms`);
+    },
+  },
+
+  // 4. Cloth flag in wind, rope swing anchored to a rigid seat.
+  {
+    id: "cloth", title: "布料與繩索",
+    api: "CreatePatch(…)・CreateRope(…)・appendAnchor(node, body)・addAeroForceToNode(wind, i)",
+    desc: "旗子是 425 個節點的布料，每個物理子步對每個節點呼叫 addAeroForceToNode 施加風力；鞦韆的兩條繩子是 CreateRope 產生的一維軟體，以 appendAnchor 把末端綁在剛體座椅上。丟出的球會同時撞到布料、繩子與座椅。",
+    hint: "點畫面朝該處丟球，拖曳旋轉視角",
+    async mount(ctx) {
+      await boot(ctx);
+      const S = stage(ctx, { shadows: true, fov: 42, portraitFov: 58, bg: 0x87a9c9, pos: [2, 3.6, 10.5], target: [-0.4, 2.4, 0],
+        orbit: { maxPolarAngle: Math.PI * 0.49, minDistance: 3, maxDistance: 30 } });
+      S.scene.fog = new THREE.Fog(0x87a9c9, 18, 45);
+      env(S, 0.3);
+      sunLight(S, { intensity: 2.6, pos: [6, 10, 6], range: 6, far: 30, size: 2048, hemi: [0xdfefff, 0x5f7a4a, 1.2] });
+      const P = physics(ctx, { soft: true });
+      const info = P.world.getWorldInfo();
+      const grass = new THREE.Mesh(new THREE.CircleGeometry(30, 64).rotateX(-Math.PI / 2), std(0x5f8a4e, { roughness: 1 }));
+      grass.receiveShadow = true; S.scene.add(grass);
+      P.body(P.shape(new A.btBoxShape(P.v3(20, 0.5, 20))), 0, [0, -0.5, 0], { friction: 0.8 });
+      const metal = S.own(std(0xd8dde6, { metalness: 1, roughness: 0.3 })), wood = S.own(std(0x8a5a2b, { roughness: 0.7 }));
+      const poleM = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 4.6, 16), metal); poleM.castShadow = true; S.scene.add(poleM);
+      P.body(P.shape(new A.btCylinderShape(P.v3(0.06, 2.3, 0.06))), 0, [-3.48, 2.3, 0], { group: 4, mask: -1, mesh: poleM });
+      const knob = new THREE.Mesh(new THREE.SphereGeometry(0.11, 16, 12), std(0xf7df1e, { metalness: 1, roughness: 0.2 }));
+      knob.position.set(-3.48, 4.66, 0); S.scene.add(knob);
+
+      const flagGeo = new THREE.PlaneGeometry(3.2, 2, 24, 16);
+      const flagM = new THREE.Mesh(flagGeo, std(0xffffff, { map: flagTexture(), side: THREE.DoubleSide, roughness: 0.8 }));
+      flagM.castShadow = true; flagM.frustumCulled = false; S.scene.add(flagM);
+      const flag = HELP.CreatePatch(info, P.v3(-3.4, 4.2, 0), P.v3(-0.2, 4.2, 0), P.v3(-3.4, 2.2, 0), P.v3(-0.2, 2.2, 0), 25, 17, 0, true);
+      const fc = flag.get_m_cfg();
+      fc.set_viterations(10); fc.set_piterations(10); fc.set_kLF(0.05); fc.set_kDG(0.01); fc.set_kDP(0.005);
+      const fm = flag.get_m_materials().at(0); fm.set_m_kLST(0.9);
+      flag.generateBendingConstraints(2, fm);
+      flag.setTotalMass(0.8, false);
+      for (let iy = 0; iy < 17; iy++) flag.setMass(iy * 25, 0);
+      A.castObject(flag, A.btCollisionObject).getCollisionShape().setMargin(0.05);
+      P.soft(flag, 1, -1 ^ 4); flag.setActivationState(4);
+      const flagR = softRec(flag, flagGeo); syncSoft(flagR);
+
+      // swing: A-frame visual, rigid seat, two rope soft bodies anchored to it
+      const SX = 2.4;
+      const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 2.1, 12).rotateX(Math.PI / 2), wood); beam.position.set(SX, 4.45, 0); beam.castShadow = true; S.scene.add(beam);
+      for (const z of [-1.02, 1.02]) for (const s of [-1, 1]) {
+        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 4.7, 10), wood);
+        leg.position.set(SX + s * 0.6, 2.22, z); leg.rotation.z = s * 0.14; leg.castShadow = true; S.scene.add(leg);
+      }
+      const seat = P.body(P.shape(new A.btBoxShape(P.v3(0.28, 0.05, 0.55))), 2, [SX, 1.5, 0],
+        { group: 16, mask: -1 ^ 8, awake: true, damping: [0.02, 0.1], mesh: (() => { const m = new THREE.Mesh(new RoundedBoxGeometry(0.56, 0.1, 1.1, 2, 0.03), wood); m.castShadow = true; S.scene.add(m); return m; })() });
+      const ropes = [];
+      for (const z of [-0.45, 0.45]) {
+        const rope = HELP.CreateRope(info, P.v3(SX, 4.4, z), P.v3(SX, 1.55, z), 12, 1);
+        rope.get_m_cfg().set_piterations(20);
+        rope.get_m_materials().at(0).set_m_kLST(1);
+        rope.setTotalMass(0.5, false);
+        A.castObject(rope, A.btCollisionObject).getCollisionShape().setMargin(0.05);
+        P.soft(rope, 8, 1);
+        rope.appendAnchor(13, seat.b, true, 1);
+        rope.setActivationState(4);
+        ropes.push(softRec(rope, null));
+      }
+      const ropeMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.022, 0.022, 1, 6), S.own(std(0xe8dcc0, { roughness: 0.9 })), 26);
+      ropeMesh.castShadow = true; ropeMesh.frustumCulled = false; S.scene.add(ropeMesh);
+      const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), SC = new THREE.Vector3(), ra = new THREE.Vector3(), rb = new THREE.Vector3(), mid = new THREE.Vector3();
+      function drawRopes() {
+        const F = A.HEAPF32, st = NODE.stride; let k = 0;
+        for (const r of ropes) for (let i = 0; i < r.n - 1; i++) {
+          const p = r.base + NODE.x + i * st;
+          ra.set(F[p], F[p + 1], F[p + 2]); rb.set(F[p + st], F[p + st + 1], F[p + st + 2]);
+          mid.addVectors(ra, rb).multiplyScalar(0.5); rb.sub(ra);
+          const len = rb.length() || 1e-4;
+          Q.setFromUnitVectors(UP, rb.multiplyScalar(1 / len));
+          ropeMesh.setMatrixAt(k++, M.compose(mid, Q, SC.set(1, len, 1)));
+        }
+        ropeMesh.instanceMatrix.needsUpdate = true;
+      }
+
+      const ballShape = P.shape(new A.btSphereShape(0.18)), ballGeo = S.own(new THREE.SphereGeometry(0.18, 20, 14));
+      const ballMat = S.own(std(0x4cc9f0, { roughness: 0.35 }));
+      const balls = [];
+      function throwBall(dirV) {
+        if (balls.length >= 8) P.remove(balls.shift());
+        const c = S.camera.position, m = new THREE.Mesh(ballGeo, ballMat); m.castShadow = true; S.scene.add(m);
+        const r = P.body(ballShape, 1, [c.x + dirV.x, c.y + dirV.y, c.z + dirV.z], { restitution: 0.3, mesh: m });
+        r.b.setLinearVelocity(P.v3(dirV.x * 16, dirV.y * 16 + 1.5, dirV.z * 16));
+        balls.push(r);
+      }
+      const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+      onTap(ctx, S.canvas, (e) => { setNdc(S, e, ndc); ray.setFromCamera(ndc, S.camera); throwBall(ray.ray.direction.clone()); });
+
+      let wind = 12, boost = 0, acc = 0, simT = 0, swingSign = 1;
+      const H = 1 / 120, wv = new A.btVector3(); P.own(() => A.destroy(wv));
+      const flagCenter = new THREE.Vector3(-1.8, 3.2, 0);
+      ctx.slider("風速", { min: 0, max: 25, step: 1, value: 12, format: (v) => `${v} m/s` }, (v) => { wind = v; });
+      ctx.button("陣風", () => { boost = 1.2; }, { primary: true });
+      ctx.button("推鞦韆", () => { seat.b.activate(); seat.b.applyCentralImpulse(P.v3(5 * swingSign, 0, 0)); swingSign = -swingSign; });
+      ctx.button("丟球", () => throwBall(flagCenter.clone().sub(S.camera.position).normalize()));
+
+      S.onFrame((dt) => {
+        acc = Math.min(acc + dt, 4 * H);
+        boost *= Math.exp(-dt * 0.8);
+        P.time(() => {
+          while (acc >= H) {
+            acc -= H; simT += H;
+            const gust = 1 + 0.25 * Math.sin(simT * 1.3) + 0.15 * Math.sin(simT * 3.1) + boost;
+            wv.setValue(wind * gust, 0, (4 * Math.sin(0.7 * simT) * wind) / 12);
+            for (let i = 0; i < flagR.n; i++) flag.addAeroForceToNode(wv, i);
+            P.world.stepSimulation(H, 0);
+          }
+        });
+        for (const r of [...balls]) if (A.HEAPF32[r.gp + 13] < -3) { balls.splice(balls.indexOf(r), 1); P.remove(r); }
+        syncSoft(flagR); drawRopes(); P.syncAll();
+      });
+      autoFit(S, 3.9, 2.4, 1.08);
+      hud(ctx, () => `風速 <b>${wind}</b> m/s・旗子節點 <b>${flagR.n}</b>・繩節點 <b>${ropes[0].n + ropes[1].n}</b>・物理 <b>${P.ms.toFixed(1)}</b> ms`);
+    },
+  },
+
+  // 5. Raycast vehicle on a heightfield.
+  {
+    id: "vehicle", title: "射線車輛",
+    api: "btHeightfieldTerrainShape・btRaycastVehicle・addWheel(…)・applyEngineForce(f, i)",
+    desc: "btRaycastVehicle 用四條向下的射線模擬懸吊，車子在 64×64 高度場地形上沿橢圓道路自動行駛，撞開三堆木箱。藍線是懸吊射線，粉紅點是輪胎接地點；翻車或卡住會自動放回路上。",
+    hint: "WASD 或方向鍵手動駕駛（空白鍵煞車），拖曳畫面自由觀看",
+    async mount(ctx) {
+      await boot(ctx);
+      const S = stage(ctx, { shadows: true, fov: 55, portraitFov: 70, bg: 0x9cc3e6, pos: [0, 12, -40], target: [0, 0, 0], far: 400,
+        orbit: { maxPolarAngle: Math.PI * 0.48, minDistance: 4, maxDistance: 120 } });
+      S.scene.fog = new THREE.Fog(0x9cc3e6, 70, 170);
+      env(S, 0.35);
+      const sun = sunLight(S, { intensity: 2.6, pos: [20, 30, 12], range: 14, far: 80, size: 2048, hemi: [0xdfefff, 0x4a5a3a, 1.1] });
+      const P = physics(ctx);
+
+      const W = 64, SPAN = 96, SP = SPAN / (W - 1);
+      const hd = new Float32Array(W * W); let lo = Infinity, hi = -Infinity;
+      for (let j = 0; j < W; j++) for (let i = 0; i < W; i++) {
+        const y = heightAt(-SPAN / 2 + i * SP, -SPAN / 2 + j * SP);
+        hd[j * W + i] = y; lo = Math.min(lo, y); hi = Math.max(hi, y);
+      }
+      const ptr = A._malloc(4 * W * W); A.HEAPF32.set(hd, ptr >> 2); P.own(() => A._free(ptr));
+      const hf = P.shape(new A.btHeightfieldTerrainShape(W, W, ptr, 1, lo, hi, 1, A.PHY_FLOAT, false));
+      hf.setLocalScaling(P.v3(SP, 1, SP));
+      P.body(hf, 0, [0, (lo + hi) / 2, 0], { friction: 0.9 });
+      const tGeo = new THREE.PlaneGeometry(SPAN, SPAN, W - 1, W - 1).rotateX(-Math.PI / 2);
+      for (let k = 0; k < W * W; k++) tGeo.attributes.position.setY(k, hd[k]);
+      tGeo.computeVertexNormals();
+      const terrain = new THREE.Mesh(tGeo, std(0xffffff, { map: terrainTexture(SPAN), roughness: 0.95 }));
+      terrain.receiveShadow = true; S.scene.add(terrain);
+
+      const crateShape = P.shape(new A.btBoxShape(P.v3(0.45, 0.45, 0.45))), crateGeo = S.own(new RoundedBoxGeometry(0.9, 0.9, 0.9, 2, 0.04));
+      const crateMat = S.own(std(0xffffff, { map: crateTexture(), roughness: 0.75 }));
+      let crates = [];
+      const cq = new THREE.Quaternion();
+      function buildCrates() {
+        for (const r of crates) P.remove(r);
+        crates = [];
+        for (const phi of [0.95, 2.55, 4.25]) {
+          const x0 = TA * Math.cos(phi), z0 = TB * Math.sin(phi);
+          let nx = TB * Math.cos(phi), nz = TA * Math.sin(phi); const nl = Math.hypot(nx, nz); nx /= nl; nz /= nl;
+          cq.setFromAxisAngle(UP, Math.atan2(-TA * Math.sin(phi), TB * Math.cos(phi)));
+          const g = P.ray({ x: x0, y: 80, z: z0 }, { x: x0, y: -80, z: z0 });
+          const gy = g ? g.point.y : heightAt(x0, z0);
+          for (const [s, row] of [[-1, 0], [0, 0], [1, 0], [-0.5, 1], [0.5, 1], [0, 2]]) {
+            const m = new THREE.Mesh(crateGeo, crateMat); m.castShadow = m.receiveShadow = true; S.scene.add(m);
+            crates.push(P.body(crateShape, 30, [x0 + nx * s * 0.92, gy + 0.47 + row * 0.9, z0 + nz * s * 0.92], { q: cq, friction: 0.7, mesh: m }));
+          }
+        }
+      }
+      buildCrates();
+
+      // chassis + four raycast wheels
+      const chassis = P.shape(new A.btCompoundShape());
+      chassis.addChildShape(P.T(), P.shape(new A.btBoxShape(P.v3(0.9, 0.3, 2))));
+      chassis.addChildShape(P.T(0, 0.55, -0.2), P.shape(new A.btBoxShape(P.v3(0.75, 0.25, 0.9))));
+      const carG = new THREE.Group();
+      const bodyM = new THREE.Mesh(new RoundedBoxGeometry(1.8, 0.6, 4, 3, 0.12), std(0xf7df1e, { metalness: 0.3, roughness: 0.4 }));
+      const cabM = new THREE.Mesh(new RoundedBoxGeometry(1.5, 0.5, 1.8, 3, 0.1), std(0x1d2633, { metalness: 0.5, roughness: 0.2 }));
+      cabM.position.set(0, 0.55, -0.2);
+      for (const s of [-0.6, 0.6]) {
+        const l = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.14, 0.05), std(0xffffff, { emissive: 0xfff3c0, emissiveIntensity: 1.2 }));
+        l.position.set(s, 0.05, 2.01); carG.add(l);
+      }
+      bodyM.castShadow = cabM.castShadow = true; carG.add(bodyM, cabM); S.scene.add(carG);
+      const car = P.body(chassis, 800, [0, 8, 0], { friction: 0.5, awake: true, damping: [0.05, 0.2], mesh: carG });
+      const caster = new A.btDefaultVehicleRaycaster(P.world); P.own(() => A.destroy(caster));
+      const veh = P.action(new A.btRaycastVehicle(TUNING, car.b, caster));
+      veh.setCoordinateSystem(0, 1, 2);
+      const tireMat = S.own(std(0x1b1d22, { roughness: 0.9 })), rimMat = S.own(std(0xc8ced8, { metalness: 0.9, roughness: 0.3 }));
+      const wheels = [];
+      for (const [x, y, z, r, front] of [[1, 0.3, 1.7, 0.35, true], [-1, 0.3, 1.7, 0.35, true], [1, 0.3, -1, 0.4, false], [-1, 0.3, -1, 0.4, false]]) {
+        const wi = veh.addWheel(P.v3(x, y, z), P.v3(0, -1, 0), P.v3(-1, 0, 0), 0.6, r, TUNING, front);
+        wi.set_m_suspensionStiffness(20); wi.set_m_wheelsDampingRelaxation(2.3); wi.set_m_wheelsDampingCompression(4.4);
+        wi.set_m_frictionSlip(1000); wi.set_m_rollInfluence(0.2);
+        const g = new THREE.Group();
+        const tire = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.3, 24).rotateZ(Math.PI / 2), tireMat);
+        const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.31, r * 1.5, r * 0.3), rimMat);
+        tire.castShadow = true; g.add(tire, spoke); g.matrixAutoUpdate = false; S.scene.add(g);
+        wheels.push({ g });
+      }
+      wheels.forEach((w, i) => { w.info = veh.getWheelInfo(i); w.tp = A.getPointer(veh.getWheelTransformWS(i)) >> 2; });
+
+      const lpos = new Float32Array(24), lgeo = new THREE.BufferGeometry();
+      lgeo.setAttribute("position", new THREE.BufferAttribute(lpos, 3));
+      const susp = new THREE.LineSegments(lgeo, new THREE.LineBasicMaterial({ color: 0x4cc9f0, depthTest: false }));
+      susp.renderOrder = 10; susp.frustumCulled = false; S.scene.add(susp);
+      const dotGeo = S.own(new THREE.SphereGeometry(0.09, 12, 8)), dotMat = S.own(new THREE.MeshBasicMaterial({ color: 0xf72585, depthTest: false }));
+      const dots = wheels.map(() => { const m = new THREE.Mesh(dotGeo, dotMat); m.renderOrder = 11; S.scene.add(m); return m; });
+
+      const carQ = new THREE.Quaternion();
+      function placeCar(phi) {
+        const x = TA * Math.cos(phi), z = TB * Math.sin(phi);
+        carQ.setFromAxisAngle(UP, Math.atan2(-TA * Math.sin(phi), TB * Math.cos(phi)));
+        const t = P.T(x, heightAt(x, z) + 1.4, z, carQ);
+        car.b.setWorldTransform(t); car.ms.setWorldTransform(t);
+        car.b.setLinearVelocity(P.v3()); car.b.setAngularVelocity(P.v3());
+        veh.resetSuspension(); car.b.activate();
+        tFlip = 0; tSlow = 0;
+      }
+      const carPhi = () => { const F = A.HEAPF32; return Math.atan2(F[car.gp + 14] / TB, F[car.gp + 12] / TA); };
+      let auto = true, chase = true, steer = 0, tFlip = 0, tSlow = 0, grounded = 0, speed = 0;
+      placeCar(-0.4);
+
+      const keys = new Set();
+      const KEYMAP = { KeyW: "f", ArrowUp: "f", KeyS: "b", ArrowDown: "b", KeyA: "l", ArrowLeft: "l", KeyD: "r", ArrowRight: "r", Space: "x" };
+      ctx.on(window, "keydown", (e) => {
+        const k = KEYMAP[e.code];
+        if (!k || e.target?.closest?.("input,select,textarea,button")) return;
+        e.preventDefault(); keys.add(k);
+        if (auto) setAuto(false);
+      });
+      ctx.on(window, "keyup", (e) => { const k = KEYMAP[e.code]; if (k) keys.delete(k); });
+      const autoTg = ctx.toggle("自動駕駛", true, (v) => { auto = v; });
+      const setAuto = (v) => { auto = v; autoTg.setAttribute("aria-pressed", String(v)); };
+      const chaseTg = ctx.toggle("追車視角", true, (v) => { chase = v; });
+      S.controls.addEventListener("start", () => { if (chase) { chase = false; chaseTg.setAttribute("aria-pressed", "false"); } });
+      ctx.button("重置車輛", () => placeCar(carPhi()));
+      ctx.button("重排木箱", buildCrates);
+
+      const camGoal = new THREE.Vector3(), tgtGoal = new THREE.Vector3();
+      let first = true;
+      S.onFrame((dt) => {
+        const F = A.HEAPF32, p = car.gp;
+        speed = veh.getCurrentSpeedKmHour();
+        let engine = 0, brake = 0, want = 0;
+        if (auto) {
+          const px = F[p + 12], pz = F[p + 14], tp = Math.atan2(pz / TB, px / TA) + 0.28;
+          const tx = TA * Math.cos(tp) - px, tz = TB * Math.sin(tp) - pz, fx = F[p + 2], fz = F[p + 10];
+          want = clamp(1.5 * Math.atan2(fz * tx - fx * tz, fx * tx + fz * tz), -0.5, 0.5);
+          engine = speed < 40 ? 1200 : 0; brake = speed > 50 ? 20 : 0;
+          tSlow = Math.abs(speed) < 3 ? tSlow + dt : 0;
+        } else {
+          want = (keys.has("l") ? 0.5 : 0) - (keys.has("r") ? 0.5 : 0);
+          if (keys.has("f")) engine = 1600;
+          if (keys.has("b")) { if (speed > 2) brake = 25; else engine = -900; }
+          if (keys.has("x")) brake = 60;
+          tSlow = 0;
+        }
+        steer += clamp(want - steer, -2.5 * dt, 2.5 * dt);
+        veh.setSteeringValue(steer, 0); veh.setSteeringValue(steer, 1);
+        veh.applyEngineForce(engine, 2); veh.applyEngineForce(engine, 3);
+        for (let i = 0; i < 4; i++) veh.setBrake(brake, i);
+        P.step(Math.min(dt, 1 / 20), 6, 1 / 120);
+        tFlip = F[p + 5] < 0.3 ? tFlip + dt : 0;
+        if (tFlip > 2 || tSlow > 4 || F[p + 13] < -20) placeCar(carPhi());
+        P.syncAll();
+        grounded = 0;
+        wheels.forEach((w, i) => {
+          // read the raycast result first: updateWheelTransform() clears m_isInContact
+          const ri = w.info.get_m_raycastInfo(), hp = ri.get_m_hardPointWS(), cp = ri.get_m_contactPointWS(), on = ri.get_m_isInContact();
+          lpos.set([hp.x(), hp.y(), hp.z(), cp.x(), cp.y(), cp.z()], i * 6);
+          dots[i].visible = on; if (on) { dots[i].position.set(cp.x(), cp.y(), cp.z()); grounded++; }
+          veh.updateWheelTransform(i, true);
+          heapToMatrix(w.g.matrix.elements, F, w.tp); w.g.matrixWorldNeedsUpdate = true;
+        });
+        lgeo.attributes.position.needsUpdate = true;
+        const cx = F[p + 12], cy = F[p + 13], cz = F[p + 14];
+        if (chase) {
+          const fx = F[p + 2], fz = F[p + 10], fl = Math.hypot(fx, fz) || 1;
+          tgtGoal.set(cx, cy + 1, cz); camGoal.set(cx - (fx / fl) * 9, cy + 4.2, cz - (fz / fl) * 9);
+          const k = first ? 1 : 1 - Math.exp(-3 * dt);
+          S.camera.position.lerp(camGoal, k); S.controls.target.lerp(tgtGoal, k);
+          first = false;
+        }
+        sun.position.set(cx + 20, cy + 30, cz + 12); sun.target.position.set(cx, cy, cz);
+      });
+      legend(ctx, [["#4cc9f0", "懸吊射線"], ["#f72585", "輪胎接地點"]]);
+      hud(ctx, () => `時速 <b>${Math.abs(speed).toFixed(0)}</b> km/h・著地 <b>${grounded}</b>／4・物理 <b>${P.ms.toFixed(1)}</b> ms・WASM ${heapHtml()}`);
+    },
+  },
+
+  // 6. Many rayTest queries per frame plus live contact manifolds.
+  {
+    id: "raycast", title: "射線與接觸點",
+    api: "world.rayTest(from, to, ClosestRayResultCallback)・dispatcher.getManifoldByIndexInternal(i)",
+    desc: "每格從中心發出數十到上百條 rayTest 射線，命中剛體的射線變黃並讓剛體發光；紅點是碰撞分派器裡每個接觸流形的接觸點，隨運動學掃臂推動即時更新。射線回呼物件只建立一次、重複使用。",
+    hint: "滑桿調整射線數量，拖曳旋轉視角",
+    async mount(ctx) {
+      await boot(ctx);
+      const S = stage(ctx, { shadows: true, fov: 45, portraitFov: 60, bg: 0x0b0d12, pos: [0, 9.5, 10.5], target: [0, 0, 0],
+        orbit: { maxPolarAngle: Math.PI * 0.45, minDistance: 6, maxDistance: 40 } });
+      env(S, 0.35);
+      sunLight(S, { intensity: 1.6, pos: [4, 12, 6], range: 9, far: 34, size: 2048, hemi: [0xdfe8ff, 0x15171d, 0.8] });
+      const P = physics(ctx);
+      const fl = new THREE.Mesh(new THREE.PlaneGeometry(15.2, 15.2).rotateX(-Math.PI / 2), std(0x161a22, { roughness: 0.95 }));
+      fl.receiveShadow = true; S.scene.add(fl);
+      const grid = new THREE.GridHelper(15, 15, 0x252b36, 0x1d222b); grid.position.y = 0.002; S.scene.add(grid);
+      P.body(P.shape(new A.btBoxShape(P.v3(7.6, 0.5, 7.6))), 0, [0, -0.5, 0]);
+      const wallMat = S.own(std(0x2c3444, { transparent: true, opacity: 0.55 }));
+      const wallX = P.shape(new A.btBoxShape(P.v3(7.6, 0.6, 0.2))), wallZ = P.shape(new A.btBoxShape(P.v3(0.2, 0.6, 7.6)));
+      for (const s of [-1, 1]) {
+        P.body(wallX, 0, [0, 0.6, s * 7.4], { mesh: S.scene.add(new THREE.Mesh(new THREE.BoxGeometry(15.2, 1.2, 0.4), wallMat)).children.at(-1) });
+        P.body(wallZ, 0, [s * 7.4, 0.6, 0], { mesh: S.scene.add(new THREE.Mesh(new THREE.BoxGeometry(0.4, 1.2, 15.2), wallMat)).children.at(-1) });
+      }
+      const armM = new THREE.Mesh(new RoundedBoxGeometry(5.2, 0.44, 0.24, 2, 0.06), std(0xff8c42, { roughness: 0.4 })); armM.castShadow = true; S.scene.add(armM);
+      const arm = P.body(P.shape(new A.btBoxShape(P.v3(2.6, 0.22, 0.12))), 0, [3.2, 0.25, 0], { kinematic: true, mesh: armM });
+      const rnd = rng(5), objs = [];
+      for (let i = 0; i < 14; i++) {
+        const s = 0.32 + rnd() * 0.23, kind = i % 3, color = PALETTE[i % PALETTE.length];
+        const mat = S.own(std(color, { roughness: 0.4, emissive: color, emissiveIntensity: 0 }));
+        const shape = P.shape(kind === 0 ? new A.btBoxShape(P.v3(s, s, s)) : kind === 1 ? new A.btSphereShape(s) : new A.btCylinderShape(P.v3(s, s, s)));
+        const geo = kind === 0 ? new RoundedBoxGeometry(s * 2, s * 2, s * 2, 2, s * 0.15) : kind === 1 ? new THREE.SphereGeometry(s, 24, 16) : new THREE.CylinderGeometry(s, s, s * 2, 24);
+        const m = new THREE.Mesh(geo, mat); m.castShadow = m.receiveShadow = true; S.scene.add(m);
+        const a = rnd() * Math.PI * 2, r = 1.5 + rnd() * 4.5;
+        objs.push(P.body(shape, 1 + s, [Math.cos(a) * r, s + 0.05, Math.sin(a) * r], { mesh: m, data: { mat, glow: 0 } }));
+      }
+
+      const MAXR = 128, lpos = new Float32Array(MAXR * 6), lcol = new Float32Array(MAXR * 6), lgeo = new THREE.BufferGeometry();
+      lgeo.setAttribute("position", new THREE.BufferAttribute(lpos, 3)); lgeo.setAttribute("color", new THREE.BufferAttribute(lcol, 3));
+      const lines = new THREE.LineSegments(lgeo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.9 }));
+      lines.frustumCulled = false; S.scene.add(lines);
+      const marks = new THREE.InstancedMesh(new THREE.SphereGeometry(0.07, 10, 8), new THREE.MeshBasicMaterial({ color: 0xf7df1e }), MAXR);
+      marks.frustumCulled = false; S.scene.add(marks);
+      const MAXC = 400, cmarks = new THREE.InstancedMesh(new THREE.SphereGeometry(0.06, 8, 6), new THREE.MeshBasicMaterial({ color: 0xf72585, depthTest: false }), MAXC);
+      cmarks.renderOrder = 5; cmarks.frustumCulled = false; S.scene.add(cmarks);
+      const HIT = new THREE.Color(0xf7df1e), MISS = new THREE.Color(0x35577a);
+
+      const cb = new A.ClosestRayResultCallback(P.v3(), P.v3()); P.own(() => A.destroy(cb));
+      const rf = cb.get_m_rayFromWorld(), rt = cb.get_m_rayToWorld();
+      let nRays = 32, sweep = true, armA = 0, rayMs = 0, hitBodies = 0, nMan = 0, nPts = 0;
+      const M = new THREE.Matrix4(), hitSet = new Set(), aq = new THREE.Quaternion();
+      function castRays(t) {
+        const t0 = performance.now(), y = 0.55; let nm = 0;
+        hitSet.clear();
+        for (let i = 0; i < nRays; i++) {
+          const th = (i / nRays) * Math.PI * 2 + 0.3 * t, c = Math.cos(th), s = Math.sin(th);
+          const fx = c * 0.35, fz = s * 0.35, tx = c * 11, tz = s * 11;
+          rf.setValue(fx, y, fz); rt.setValue(tx, y, tz);
+          cb.set_m_closestHitFraction(1);
+          P.world.rayTest(rf, rt, cb);
+          const f = cb.get_m_closestHitFraction();
+          let ex = tx, ez = tz, col = MISS;
+          if (f < 1) {
+            ex = fx + (tx - fx) * f; ez = fz + (tz - fz) * f;
+            const rec = P.byPtr.get(A.getPointer(cb.get_m_collisionObject()));
+            if (rec && rec.mass > 0) { col = HIT; hitSet.add(rec); rec.data.glow = 1; marks.setMatrixAt(nm++, M.makeTranslation(ex, y, ez)); }
+          }
+          const o = i * 6;
+          lpos[o] = fx; lpos[o + 1] = y; lpos[o + 2] = fz; lpos[o + 3] = ex; lpos[o + 4] = y; lpos[o + 5] = ez;
+          for (const k of [0, 3]) { lcol[o + k] = col.r; lcol[o + k + 1] = col.g; lcol[o + k + 2] = col.b; }
+        }
+        rayMs = ema(rayMs, performance.now() - t0);
+        hitBodies = hitSet.size;
+        lgeo.setDrawRange(0, nRays * 2);
+        lgeo.attributes.position.needsUpdate = true; lgeo.attributes.color.needsUpdate = true;
+        marks.count = nm; marks.instanceMatrix.needsUpdate = true;
+      }
+      function drawContacts() {
+        nMan = P.disp.getNumManifolds(); let k = 0;
+        for (let i = 0; i < nMan && k < MAXC; i++) {
+          const m = P.disp.getManifoldByIndexInternal(i), nc = m.getNumContacts();
+          for (let j = 0; j < nc && k < MAXC; j++) {
+            const cp = m.getContactPoint(j);
+            if (cp.getDistance() > 0.02) continue;
+            const p = cp.getPositionWorldOnB();
+            cmarks.setMatrixAt(k++, M.makeTranslation(p.x(), p.y(), p.z()));
+          }
+        }
+        nPts = k; cmarks.count = k; cmarks.instanceMatrix.needsUpdate = true;
+      }
+      ctx.slider("射線", { min: 8, max: 128, step: 8, value: 32, format: (v) => `${v} 條` }, (v) => { nRays = v; });
+      ctx.toggle("掃臂", true, (v) => { sweep = v; });
+      ctx.button("打亂", () => {
+        for (const r of objs) { r.b.activate(); r.b.applyCentralImpulse(P.v3((Math.random() - 0.5) * 8 * r.mass, 4 * r.mass, (Math.random() - 0.5) * 8 * r.mass)); }
+      }, { primary: true });
+
+      S.onFrame((dt, t) => {
+        if (sweep) armA += 0.7 * dt;
+        arm.ms.setWorldTransform(P.T(3.2 * Math.cos(armA), 0.25, -3.2 * Math.sin(armA), aq.setFromAxisAngle(UP, armA)));
+        P.step(dt, 4, 1 / 120);
+        P.syncAll();
+        castRays(t);
+        drawContacts();
+        for (const r of objs) { r.data.glow = Math.max(0, r.data.glow - dt * 3); r.data.mat.emissiveIntensity = r.data.glow * 0.9; }
+      });
+      autoFit(S, 7.8, 5.4, 1.02);
+      legend(ctx, [["#f7df1e", "射線命中剛體", true], ["#35577a", "未命中或撞牆"], ["#f72585", "接觸點"]]);
+      hud(ctx, () => `射線 <b>${nRays}</b>・命中剛體 <b>${hitBodies}</b>・接觸流形 <b>${nMan}</b>・接觸點 <b>${nPts}</b>・射線查詢 <b>${rayMs.toFixed(2)}</b> ms`);
+    },
+  },
+
+  // 7. Continuous collision detection vs tunnelling.
+  {
+    id: "ccd", title: "連續碰撞偵測",
+    api: "body.setCcdMotionThreshold(t)・setCcdSweptSphereRadius(r)",
+    desc: "兩排子彈以相同速度射向 10 公分厚的牆，物理步長固定 1/60 秒。速度一高，單步位移就超過牆厚，未開 CCD 的子彈直接穿牆；開啟連續碰撞偵測的那排沿掃掠球體檢查，被牆擋下。小點是每一步的位置，為了只看穿透現象，這個場景關閉重力。",
+    hint: "調高速度看穿透，開慢動作看每一步的跳躍",
+    async mount(ctx) {
+      await boot(ctx);
+      const S = stage(ctx, { labels: true, fov: 42, portraitFov: 60, bg: 0x0c0e13, pos: [7.5, 5.5, -10], target: [0, 1.6, -1],
+        orbit: { minDistance: 4, maxDistance: 30 } });
+      env(S, 0.4);
+      sunLight(S, { intensity: 1.6, pos: [3, 8, -4], shadow: false, hemi: [0xdfe8ff, 0x15171d, 0.9] });
+      const P = physics(ctx, { gravity: 0 });
+      const grid = new THREE.GridHelper(20, 20, 0x2a3140, 0x1b2029); S.scene.add(grid);
+      // the near wall gets its label under its foot so the two labels never overlap in projection
+      const LANES = [{ x: -1.6, ly: 2.9, ccd: true, color: 0x7bd389, name: "開啟 CCD" }, { x: 1.6, ly: -0.4, ccd: false, color: 0xff8c42, name: "未開 CCD" }];
+      const wallShape = P.shape(new A.btBoxShape(P.v3(1.2, 1.2, 0.05)));
+      const bulletShape = P.shape(new A.btSphereShape(0.08)), bulletGeo = S.own(new THREE.SphereGeometry(0.08, 16, 12));
+      for (const L of LANES) {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2.4, 0.1), new THREE.MeshStandardMaterial({ color: 0x8fa3bf, transparent: true, opacity: 0.35, roughness: 0.3 }));
+        S.scene.add(m);
+        const ed = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(2.4, 2.4, 0.1)), new THREE.LineBasicMaterial({ color: L.color }));
+        ed.position.set(L.x, 1.2, 3); S.scene.add(ed);
+        P.body(wallShape, 0, [L.x, 1.2, 3], { restitution: 1, mesh: m });
+        const gun = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 0.6, 16).rotateX(Math.PI / 2), std(L.color, { metalness: 0.6, roughness: 0.3 }));
+        gun.position.set(L.x, 1.2, -7.4); S.scene.add(gun);
+        L.mat = S.own(std(L.color, { emissive: L.color, emissiveIntensity: 0.6 }));
+        L.lab = label(L.name, "穿透 0／0", true); L.lab.position.set(L.x, L.ly, 3); S.scene.add(L.lab);
+        L.results = [];
+      }
+      const TRAIL = 1200, trail = new THREE.InstancedMesh(new THREE.SphereGeometry(0.035, 8, 6), new THREE.MeshBasicMaterial(), TRAIL);
+      trail.frustumCulled = false; trail.count = 0; S.scene.add(trail);
+      const tr = Array.from({ length: TRAIL }, () => ({ x: 0, y: 0, z: 0, t: -99, lane: 0 })); let ti = 0;
+      const laneColors = LANES.map((L) => new THREE.Color(L.color));
+
+      let speed = 90, slow = false, acc = 0, simT = 0, nextFire = 0.3;
+      const bullets = [];
+      function fire() {
+        const jy = (Math.random() - 0.5) * 0.9;
+        LANES.forEach((L, li) => {
+          const m = new THREE.Mesh(bulletGeo, L.mat); S.scene.add(m);
+          const r = P.body(bulletShape, 0.05, [L.x, 1.2 + jy, -7], { restitution: 0.4, group: 4, mask: 2, awake: true, mesh: m });
+          if (L.ccd) { r.b.setCcdMotionThreshold(0.08); r.b.setCcdSweptSphereRadius(0.06); }
+          r.b.setLinearVelocity(P.v3(0, 0, speed));
+          bullets.push({ r, li, born: simT, v: speed, done: false });
+        });
+      }
+      function afterStep() {
+        const F = A.HEAPF32;
+        for (const b of [...bullets]) {
+          const p = b.r.gp, z = F[p + 14];
+          const e = tr[ti]; ti = (ti + 1) % TRAIL; e.x = F[p + 12]; e.y = F[p + 13]; e.z = z; e.t = simT; e.lane = b.li;
+          if (!b.done) {
+            const vz = b.r.b.getLinearVelocity().z();
+            if (z > 3.2) { b.done = true; record(b.li, true); }
+            else if (z > 1 && vz < b.v * 0.5) { b.done = true; record(b.li, false); }
+          }
+          if (simT - b.born > 10.5 / b.v + 1.2 || Math.abs(z) > 12) { bullets.splice(bullets.indexOf(b), 1); P.remove(b.r); }
+        }
+      }
+      function record(li, tunneled) {
+        const L = LANES[li];
+        L.results.push(tunneled); if (L.results.length > 5) L.results.shift();
+        L.lab.sub.textContent = `穿透 ${L.results.filter(Boolean).length}／${L.results.length}（最近 5 發）`;
+      }
+      ctx.slider("速度", { min: 5, max: 250, step: 5, value: 90, format: (v) => `${v} m/s` }, (v) => { speed = v; for (const L of LANES) { L.results = []; L.lab.sub.textContent = "穿透 0／0"; } });
+      ctx.toggle("慢動作", false, (v) => { slow = v; });
+
+      const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), V = new THREE.Vector3(), SC = new THREE.Vector3();
+      S.onFrame((dt) => {
+        acc = Math.min(acc + dt * (slow ? 0.2 : 1), 6 / 60);
+        P.time(() => {
+          while (acc >= 1 / 60) {
+            acc -= 1 / 60; simT += 1 / 60;
+            if (simT >= nextFire) { fire(); nextFire += 0.8; }
+            P.world.stepSimulation(1 / 60, 0);
+            afterStep();
+          }
+        });
+        P.syncAll();
+        let k = 0;
+        for (const e of tr) {
+          const age = simT - e.t;
+          if (age > 2.4) continue;
+          trail.setMatrixAt(k, M.compose(V.set(e.x, e.y, e.z), Q, SC.setScalar(1 - age / 2.4)));
+          trail.setColorAt(k++, laneColors[e.lane]);
+        }
+        trail.count = k; trail.instanceMatrix.needsUpdate = true;
+        if (trail.instanceColor) trail.instanceColor.needsUpdate = true;
+      });
+      autoFit(S, 5.2, 3.8, 1.05);
+      legend(ctx, [["#7bd389", "開啟 CCD", true], ["#ff8c42", "未開 CCD", true]]);
+      hud(ctx, () => `每步位移 <b>${(speed / 60).toFixed(2)}</b> m・牆厚 <b>0.10</b> m・步長 <b>1/60</b> s・物理 <b>${P.ms.toFixed(2)}</b> ms`);
+    },
+  },
+
+  // 8. Stress: rigid body count ramp.
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "stepSimulation(dt, 2, 1/60)・InstancedMesh 直讀 m_graphicsWorldTrans",
+    desc: "剛體逐級加量倒進攪拌箱，量測 Bullet 每步耗時、同步到 InstancedMesh 的時間與 WASM 堆積用量，畫面掉到 30 FPS 以下就停止加壓。",
+    hint: "按「自動加壓」逐級增加剛體數",
+    async mount(ctx) {
+      ctx.html('<div class="am-view"></div>');
+      const host = ctx.$(".am-view");
+      ctx.controls.classList.add("bottom");
+      await boot(ctx);
+      const S = stage(ctx, { host, shadows: false, fov: 50, bg: 0x07080b, pos: [0, 13, 18], target: [0, 1, 0],
+        orbit: { autoRotate: true, autoRotateSpeed: 0.4, maxPolarAngle: Math.PI * 0.47, minDistance: 8, maxDistance: 60 } });
+      env(S, 0.5);
+      sunLight(S, { intensity: 1.8, pos: [6, 14, 8], shadow: false, hemi: [0xe8f0ff, 0x15171d, 0.9] });
+      const P = physics(ctx);
+      const fl = new THREE.Mesh(new THREE.PlaneGeometry(15, 15).rotateX(-Math.PI / 2), std(0x141821, { roughness: 0.95 })); S.scene.add(fl);
+      P.body(P.shape(new A.btBoxShape(P.v3(7.5, 0.5, 7.5))), 0, [0, -0.5, 0]);
+      const glass = S.own(new THREE.MeshStandardMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0.08, depthWrite: false }));
+      const wx = P.shape(new A.btBoxShape(P.v3(7.5, 3, 0.25))), wz = P.shape(new A.btBoxShape(P.v3(0.25, 3, 7.5)));
+      for (const s of [-1, 1]) {
+        P.body(wx, 0, [0, 3, s * 7.25], { mesh: S.scene.add(new THREE.Mesh(new THREE.BoxGeometry(15, 6, 0.5), glass)).children.at(-1) });
+        P.body(wz, 0, [s * 7.25, 3, 0], { mesh: S.scene.add(new THREE.Mesh(new THREE.BoxGeometry(0.5, 6, 15), glass)).children.at(-1) });
+      }
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(15, 6, 15)), new THREE.LineBasicMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0.4 }));
+      edges.position.y = 3; S.scene.add(edges);
+      const padM = new THREE.Mesh(new THREE.BoxGeometry(13.6, 0.6, 0.3), std(0xff8c42, { roughness: 0.4 })); S.scene.add(padM);
+      const paddle = P.body(P.shape(new A.btBoxShape(P.v3(6.8, 0.3, 0.15))), 0, [0, 0.45, 0], { kinematic: true, mesh: padM });
+
+      const CAP = 1500;
+      const boxShape = P.shape(new A.btBoxShape(P.v3(0.22, 0.22, 0.22))), sphShape = P.shape(new A.btSphereShape(0.25));
+      const boxMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.44, 0.44, 0.44), std(0xffffff, { roughness: 0.45 }), CAP);
+      const sphMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(0.25, 12, 8), std(0xffffff, { roughness: 0.35 }), CAP);
+      for (const m of [boxMesh, sphMesh]) { m.frustumCulled = false; m.count = 0; S.scene.add(m); }
+      const col = new THREE.Color();
+      for (let i = 0; i < CAP; i++) { boxMesh.setColorAt(i, col.setHex(PALETTE[i % 6])); sphMesh.setColorAt(i, col.setHex(PALETTE[(i + 3) % 6])); }
+      const all = [], boxes = [], sphs = [];
+      const spawnPos = (k) => { const g = k % 196; return [((g % 14) - 6.5) * 0.9 + (Math.random() - 0.5) * 0.2, 7 + Math.floor(k / 196) * 0.8, (Math.floor(g / 14) - 6.5) * 0.9 + (Math.random() - 0.5) * 0.2]; };
+      function apply(n) {
+        while (all.length < n) {
+          const k = all.length, isBox = k % 2 === 0;
+          const r = P.body(isBox ? boxShape : sphShape, 1, spawnPos(k), { restitution: 0.1, rolling: 0.01 });
+          r.isBox = isBox; all.push(r); (isBox ? boxes : sphs).push(r);
+        }
+        while (all.length > n) { const r = all.pop(); (r.isBox ? boxes : sphs).pop(); P.remove(r); }
+      }
+      let stir = true, ang = 0, syncMs = 0;
+      const aq = new THREE.Quaternion();
+      ctx.toggle("攪拌槳", true, (v) => { stir = v; });
+      ctx.button("重新灑落", () => {
+        all.forEach((r, k) => {
+          const [x, y, z] = spawnPos(k), t = P.T(x, y, z);
+          r.b.setWorldTransform(t); r.ms.setWorldTransform(t);
+          r.b.setLinearVelocity(P.v3()); r.b.setAngularVelocity(P.v3()); r.b.activate();
+        });
+      });
+      S.onFrame((dt) => {
+        if (stir) ang += 0.6 * dt;
+        paddle.ms.setWorldTransform(P.T(0, 0.45, 0, aq.setFromAxisAngle(UP, ang)));
+        P.step(dt, 2, 1 / 60);
+        P.syncAll();
+        const t0 = performance.now(), F = A.HEAPF32;
+        for (const [list, mesh] of [[boxes, boxMesh], [sphs, sphMesh]]) {
+          const e = mesh.instanceMatrix.array;
+          for (let i = 0; i < list.length; i++) heapToMatrix(e, F, list[i].gp, i * 16);
+          mesh.count = list.length; mesh.instanceMatrix.needsUpdate = true;
+        }
+        syncMs = ema(syncMs, performance.now() - t0);
+      });
+      autoFit(S, 8, 4, 1.05);
+      ctx.ramp({
+        label: "剛體", unit: "個",
+        steps: [100, 250, 500, 1000, 1500, 2000, 3000],
+        minFps: 30,
+        apply,
+        metrics: () => ({
+          物理步進: `${P.ms.toFixed(1)} ms`,
+          同步繪圖: `${syncMs.toFixed(2)} ms`,
+          活動剛體: all.reduce((s, r) => s + (r.b.isActive() ? 1 : 0), 0),
+          接觸流形: P.disp.getNumManifolds(),
+          "WASM 堆積": heapText(),
+        }),
+        note: "ammo.js 在單一執行緒的 WebAssembly 裡跑完整 Bullet 管線：DBVT 寬相、窄相碰撞與循序脈衝求解器。剛體堆疊越密，接觸流形越多，求解器負擔隨之上升；關閉攪拌槳後靜止的剛體會進入休眠、幾乎不耗時。這個建置的 WASM 堆積大小固定，只能讀到曾經用到的最高點；畫面用 InstancedMesh 直接讀 WASM 記憶體裡的變換矩陣。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

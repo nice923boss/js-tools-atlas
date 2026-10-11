@@ -3,239 +3,1279 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Howler.js 示範：音樂播放器與取樣切片</title>
+<title>Howler.js 示範：8 個場景看懂瀏覽器音訊播放庫與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"]}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"],"scenes":["音樂播放器","音訊切片","多聲部與 Sound ID","3D 空間音效","事件與狀態","全域混音","載入方式與快取","極限測試"],"note":"按場景內的播放鍵、方塊或按鈕才會建立 AudioContext 並發聲；發聲前看到的波形來自 OfflineAudioContext 解碼或合成的真實音訊資料"}</script>
 <style>
-  body {
-    background:
-      radial-gradient(70% 70% at 20% 30%, rgba(157, 140, 255, 0.14), transparent 70%),
-      radial-gradient(60% 60% at 90% 90%, rgba(76, 201, 240, 0.10), transparent 70%),
-      var(--bg);
+  .board { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); min-height: 0; }
+  .hw-card { position: relative; min-width: 0; min-height: 0; border-radius: 10px; background: #0b0d11; border: 1px solid var(--line); overflow: hidden; }
+  .hw-cv { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+  .hw-cv > canvas { position: absolute; left: 0; top: 0; display: block; touch-action: none; }
+  .hw-lbl { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 11.5px; line-height: 1.4; color: var(--muted); white-space: nowrap; overflow: hidden; }
+  .hw-lbl > span { overflow: hidden; text-overflow: ellipsis; }
+  .hw-lbl b { color: var(--fg); font-weight: 600; }
+  .hw-lbl > .hw-time { flex: none; }
+  .hw-m { font-family: var(--mono); }
+  .hw-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; }
+  .hw-grow { flex: 1; }
+  .hw-mini { flex: none; min-width: 26px; height: 24px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); font: 12px var(--font); cursor: pointer; }
+  .hw-mini[aria-pressed="true"] { background: rgba(247, 37, 133, 0.3); border-color: #f72585; }
+  .hw-state { min-width: 0; font-size: 11.5px; line-height: 1.5; color: var(--muted); overflow: hidden; }
+  .hw-state .hw-m { color: var(--fg); font-size: 11px; }
+  input.hw-rng { width: 100%; min-width: 0; margin: 0; accent-color: #f7df1e; }
+
+  /* 1. player */
+  .hw-player { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 10px; }
+  .hw-disc > .hw-cv { position: absolute; inset: 0; }
+  .hw-play { position: absolute; left: 50%; top: 50%; width: 64px; height: 64px; margin: -32px 0 0 -32px; border-radius: 50%; border: 0; background: #f7df1e; color: #111; font: 22px var(--font); cursor: pointer; box-shadow: 0 0 0 6px rgba(247, 223, 30, 0.15), 0 6px 24px rgba(0, 0, 0, 0.5); transition: transform .1s; }
+  .hw-play:active { transform: scale(0.94); }
+  .hw-info { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; }
+  .hw-wave { flex: 1; min-height: 56px; cursor: pointer; }
+  .hw-row { display: grid; grid-template-columns: 5em minmax(0, 1fr) 4.2em; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  .hw-row output { text-align: right; color: var(--fg); font: 11.5px var(--mono); }
+  @media (max-width: 560px) {
+    .hw-player { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; gap: 6px; }
+    .hw-play { width: 52px; height: 52px; margin: -26px 0 0 -26px; font-size: 18px; }
+    .hw-info { gap: 4px; }
+    .hw-wave { flex: none; height: 46px; min-height: 0; }
+    .hw-row { grid-template-columns: 4.6em minmax(0, 1fr) 3.8em; gap: 6px; }
   }
-  .wrap {
-    position: fixed; inset: 0; display: grid; place-items: center; padding: 16px 16px 48px;
+
+  /* 2. sprite */
+  .hw-sp { display: grid; grid-template-rows: minmax(0, 0.85fr) minmax(0, 1fr); gap: 8px; }
+  .hw-pads { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 8px; min-height: 0; }
+  .hw-pad { --rc: #f7df1e; --p: 0; position: relative; display: flex; flex-direction: column; gap: 4px; min-width: 0; min-height: 0; padding: 6px 8px; border-radius: 10px; border: 1px solid var(--line); background: linear-gradient(90deg, color-mix(in srgb, var(--rc) 24%, #0b0d11) calc(var(--p) * 100%), #0b0d11 0); color: var(--fg); font: inherit; text-align: left; cursor: pointer; overflow: hidden; transition: box-shadow .2s, transform .08s; }
+  .hw-pad::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px; background: var(--rc); }
+  .hw-pad.on { box-shadow: 0 0 0 1px var(--rc), 0 0 22px -4px var(--rc); }
+  .hw-pad:active { transform: scale(0.97); }
+  .hw-pad > .hw-cv { display: block; flex: 1; }
+  @media (max-width: 560px) { .hw-pads { gap: 5px; } .hw-pad { padding: 4px 5px; } .hw-pad .hw-rg { display: none; } }
+
+  /* 3. voices */
+  .hw-poly { display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 8px; }
+  .hw-strip { flex: none; height: 64px; }
+  .hw-xy canvas { cursor: crosshair; }
+  .hw-vlist { display: flex; flex-direction: column; gap: 6px; padding: 8px; }
+  .hw-vrows { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 4px; }
+  .hw-vrow { display: grid; grid-template-columns: 10px 3.4em minmax(0, 1fr) auto auto; align-items: center; gap: 6px; font-size: 11.5px; }
+  .hw-vrow > i { width: 10px; height: 10px; border-radius: 50%; }
+  .hw-empty { padding: 4px 2px; font-size: 12px; color: var(--muted); }
+  @media (max-width: 560px) {
+    .hw-poly { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) 112px; gap: 6px; }
+    .hw-poly .hw-col { gap: 6px; }
+    .hw-strip { height: 40px; }
+    .hw-vlist { padding: 5px 6px; gap: 3px; }
   }
-  .card {
-    width: min(860px, 100%); display: grid; gap: 18px 24px;
-    grid-template-columns: auto 1fr; align-items: center;
+
+  /* 4. spatial */
+  .hw-3d { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 8px; }
+  .hw-side { display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; min-width: 0; min-height: 0; }
+  .hw-plane canvas { cursor: grab; }
+  @media (max-width: 560px) {
+    .hw-3d { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1.35fr) minmax(0, 1fr); gap: 6px; }
+    .hw-side { grid-template-rows: none; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
   }
-  .disc { position: relative; width: 250px; aspect-ratio: 1; }
-  .disc canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-  .disc .playbtn {
-    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-    width: 84px; height: 84px; border-radius: 50%; border: 0; cursor: pointer;
-    background: var(--accent); color: var(--accent-ink); font-size: 30px; font-weight: 700;
-    box-shadow: 0 0 0 8px rgba(247, 223, 30, 0.12), 0 10px 30px rgba(0, 0, 0, 0.4);
+
+  /* 5. events */
+  .hw-ev { display: grid; grid-template-columns: minmax(0, 1fr) 240px; grid-template-rows: auto minmax(0, 1fr) auto; gap: 8px; }
+  .hw-ev > .hw-state { grid-column: 1 / -1; }
+  .hw-ev > .hw-tl { grid-column: 1; grid-row: 2; }
+  .hw-acts { grid-column: 1 / -1; grid-row: 3; display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 5px; }
+  .hw-act { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; min-width: 0; padding: 4px 8px; font: 11px var(--font); line-height: 1.3; text-align: left; }
+  .hw-act code { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px var(--mono); color: var(--fg); }
+  .hw-act span { color: var(--muted); white-space: nowrap; }
+  .hw-log { grid-column: 2; grid-row: 2; overflow: auto; padding: 6px 8px; font-size: 11.5px; line-height: 1.55; color: var(--muted); }
+  .hw-log b { color: var(--fg); font-weight: 600; }
+  @media (max-height: 560px) { .hw-act span { display: none; } .hw-act { padding: 3px 8px; } }
+  @media (max-width: 560px) {
+    .hw-ev { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto 56px; gap: 5px; }
+    .hw-ev > .hw-tl, .hw-acts, .hw-log { grid-column: 1; grid-row: auto; }
+    .hw-acts { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; }
+    .hw-act { padding: 2px 5px; }
+    .hw-act span { display: none; }
+    .hw-log { padding: 3px 6px; }
   }
-  .disc .playbtn:active { transform: translate(-50%, -48%); }
-  .info { min-width: 0; }
-  .info h1 { margin: 0; font-size: 20px; }
-  .info .sub { color: var(--muted); font-size: 13px; margin: 2px 0 12px; }
-  .seek { height: 8px; background: rgba(255, 255, 255, 0.1); border-radius: 4px; cursor: pointer; position: relative; }
-  .seek i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 4px;
-    background: linear-gradient(90deg, var(--c6), var(--c2)); }
-  .time { display: flex; justify-content: space-between; font: 12px var(--mono); color: var(--muted); margin: 6px 0 12px; }
-  .row { display: grid; grid-template-columns: 74px 1fr 46px; align-items: center; gap: 8px; font-size: 13px; }
-  .row span:last-child { font: 12px var(--mono); color: var(--muted); text-align: right; }
-  .row input { width: 100%; }
-  .fx { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
-  .pads { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 8px; }
-  .pad {
-    aspect-ratio: 1.3; border-radius: 10px; border: 1px solid var(--line); cursor: pointer;
-    background: linear-gradient(160deg, rgba(255,255,255,0.07), rgba(255,255,255,0.02));
-    color: var(--fg); font: 600 13px var(--font); display: grid; place-items: center; align-content: center; gap: 2px;
-    transition: transform .08s, box-shadow .2s, background .2s;
+
+  /* 6. mixer */
+  .hw-mix { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 8px; }
+  .hw-trks { display: grid; grid-template-rows: repeat(4, minmax(0, 1fr)); gap: 6px; min-width: 0; min-height: 0; }
+  .hw-trk { --rc: #f7df1e; display: grid; grid-template-columns: 4.6em minmax(0, 1fr) 80px auto; align-items: stretch; gap: 8px; padding: 6px 8px 6px 12px; }
+  .hw-trk::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--rc); }
+  .hw-trk > input, .hw-trk > button { align-self: center; }
+  .hw-tn { display: flex; flex-direction: column; justify-content: center; font-size: 12.5px; }
+  .hw-tn small { font-size: 10.5px; color: var(--muted); }
+  .hw-glob { display: flex; flex-direction: column; gap: 6px; padding: 8px; }
+  .hw-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .hw-chip { padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); font: 11px var(--mono); color: var(--muted); opacity: .55; text-decoration: line-through; }
+  .hw-chip.ok { opacity: 1; color: var(--fg); border-color: rgba(123, 211, 137, 0.6); background: rgba(123, 211, 137, 0.12); text-decoration: none; }
+  @media (max-width: 560px) {
+    .hw-mix { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1.5fr) minmax(0, 1fr); gap: 6px; }
+    .hw-trks { gap: 4px; }
+    .hw-trk { grid-template-columns: 2.8em minmax(0, 1fr) 56px auto; gap: 5px; padding: 3px 6px 3px 9px; }
+    .hw-tn small { display: none; }
+    .hw-glob { padding: 5px 6px; gap: 3px; }
+    .hw-chip { padding: 0 5px; font-size: 10px; }
   }
-  .pad small { font: 11px var(--mono); color: var(--muted); }
-  .pad.hit { background: var(--pc); color: #111; box-shadow: 0 0 24px -2px var(--pc); transform: scale(0.96); }
-  .pad.hit small { color: #222; }
-  .padtitle { grid-column: 1 / -1; margin-bottom: -10px; font-size: 12px; color: var(--muted); }
-  @media (max-width: 620px) {
-    /* stacked layout: the hint would sit on the slice pads; show it briefly, then fade it out */
-    .hint { animation: hint-fade .5s 8s forwards; }
-    .card { grid-template-columns: minmax(0, 1fr); gap: 10px; justify-items: center; }
-    .disc { width: 150px; }
-    .disc .playbtn { width: 56px; height: 56px; font-size: 20px; }
-    .info { width: 100%; }
-    .info h1 { font-size: 16px; }
-    .info .sub { margin-bottom: 6px; }
-    .time { margin: 4px 0 6px; }
-    .row { grid-template-columns: 60px 1fr 40px; font-size: 12px; }
-    .pads { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; width: 100%; }
-    .pad { aspect-ratio: 2.2; font-size: 12px; }
-    .padtitle { display: none; }
-    .fx .btn { padding: 6px 9px; font-size: 12px; }
+
+  /* 7. loading */
+  .hw-ld { display: grid; grid-template-rows: minmax(0, 1.15fr) minmax(0, 1fr); gap: 8px; }
+  .hw-ldcs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; min-height: 0; }
+  .hw-ldc { --rc: #4cc9f0; display: flex; flex-direction: column; gap: 4px; padding: 9px 10px 8px; }
+  .hw-ldc::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px; background: var(--rc); }
+  .hw-sub { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hw-kv { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+  .hw-kv b { overflow: hidden; text-overflow: ellipsis; font-weight: 500; color: var(--fg); }
+  .hw-kv.big b { font: 600 20px var(--mono); }
+  .hw-pb { display: flex; align-items: center; gap: 6px; margin-top: auto; font-size: 11px; color: var(--muted); }
+  .hw-bar { flex: 1; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+  .hw-bar > i { display: block; width: 0; height: 100%; background: var(--rc); }
+  @media (max-width: 560px) {
+    .hw-ld { grid-template-rows: auto minmax(0, 1fr); gap: 6px; }
+    .hw-ldcs { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+    .hw-ldc { gap: 1px; padding: 5px 8px 4px; }
+    .hw-sub, .hw-kv.x { display: none; }
+    .hw-kv.big b { font-size: 13px; }
   }
+
+  /* 8. stress */
+  .hw-bv { position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px); border-radius: 10px; background: #050608; overflow: hidden; border: 1px solid var(--line); }
+  @media (min-width: 761px) { .hw-bv { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 350px; } }
+  .hw-bvin { position: absolute; inset: 0; }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/howler@2.2.4/dist/howler.min.js"></script>
 </head>
 <body>
-<div class="wrap">
-  <div class="card">
-    <div class="disc">
-      <canvas id="viz"></canvas>
-      <button class="playbtn" id="play" aria-label="播放">▶</button>
-    </div>
-    <div class="info">
-      <h1>示範循環音樂</h1>
-      <div class="sub">100 BPM・Am F C G・自製電子樂</div>
-      <div class="seek" id="seek"><i id="bar"></i></div>
-      <div class="time"><span id="cur">0:00</span><span id="dur">0:19</span></div>
-      <div class="row"><span>音量</span><input type="range" id="vol" min="0" max="100" value="80"><span id="volv">80%</span></div>
-      <div class="row"><span>播放速度</span><input type="range" id="rate" min="50" max="200" value="100"><span id="ratev">1.00x</span></div>
-      <div class="row"><span>左右聲道</span><input type="range" id="pan" min="-100" max="100" value="0"><span id="panv">置中</span></div>
-      <div class="fx">
-        <button class="btn" id="fadein">淡入 2 秒</button>
-        <button class="btn" id="fadeout">淡出 2 秒</button>
-        <button class="btn" id="loop" aria-pressed="true">循環播放</button>
-      </div>
-    </div>
-    <div class="padtitle">取樣切片（Audio Sprite，鍵盤 1 到 8）</div>
-    <div class="pads" id="pads"></div>
-  </div>
-</div>
-<div class="hint">按中間播放鍵，拖曳滑桿調速度與聲道，點切片即時觸發</div>
-
-<script src="https://cdn.jsdelivr.net/npm/howler@2.2.4/dist/howler.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Howler.js: one Howl for the looping track, one Howl with an audio sprite for the pads.
-const SRC = ["_shared/audio/loop.mp3"];
-const BAR_MS = 2400; // 100 BPM, 4/4
-const COLORS = ["#f7df1e", "#ff8c42", "#f72585", "#9d8cff", "#4cc9f0", "#7bd389", "#f7df1e", "#ff8c42"];
+const { h, fmtMs } = Showcase;
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+const CJK = '"Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif';
+const MONO = '"JetBrains Mono", ui-monospace, Consolas, monospace';
+const LOOP_SRC = "_shared/audio/loop.mp3", BAR = 2.4, SR = 44100;
+const PAL = ["#f7df1e", "#ff8c42", "#f72585", "#9d8cff", "#4cc9f0", "#7bd389", "#2ec4b6", "#e8e6e3"];
+const BAD_WAV = "data:audio/wav;base64,UklGRgAAAABXQVZF";
+const EV_ZH = {
+  load: "載入完成", loaderror: "載入失敗", play: "開始播放", playerror: "播放失敗", end: "播放到結尾", pause: "暫停",
+  stop: "停止", seek: "跳轉", fade: "淡變結束", volume: "音量變更", rate: "速度變更", mute: "靜音切換", stereo: "聲道變更",
+  once: "once('play') 觸發後自動移除",
+};
 
-const music = new Howl({ src: SRC, loop: true, volume: 0.8 });
-const sprite = {};
-for (let i = 0; i < 8; i++) sprite["s" + i] = [i * BAR_MS, 1200];
-const pads = new Howl({ src: SRC, sprite, volume: 0.9 });
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const fmtT = (s) => { s = Math.max(0, +s || 0); const m = Math.floor(s / 60); return `${m}:${(s - m * 60).toFixed(1).padStart(4, "0")}`; };
+const toDb = (x) => 20 * Math.log10(Math.max(1e-6, x));
+const fmtDb = (x) => { const d = toDb(x); return d < -90 ? "−∞ dB" : `${d < 0 ? "−" : ""}${Math.abs(d).toFixed(1)} dB`; };
+const fmtKB = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.round(b / 1024)} KB`);
 
-// Tap Howler's master output with an AnalyserNode for the ring visualizer.
-const ctx = Howler.ctx;
-let analyser = null;
-if (ctx && Howler.masterGain) {
-  analyser = ctx.createAnalyser();
-  analyser.fftSize = 256;
-  analyser.smoothingTimeConstant = 0.8;
-  Howler.masterGain.disconnect();
-  Howler.masterGain.connect(analyser);
-  analyser.connect(ctx.destination);
+// ---------- canvas helpers ----------
+function sizeCanvas(cv, el) {
+  const w = Math.max(1, el.clientWidth), hh = Math.max(1, el.clientHeight);
+  const pw = Math.round(w * DPR), ph = Math.round(hh * DPR);
+  if (cv.width !== pw || cv.height !== ph) { cv.width = pw; cv.height = ph; }
+  cv.style.width = w + "px"; cv.style.height = hh + "px";
+  const g = cv.getContext("2d");
+  g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  return { g, w, h: hh };
 }
-const freq = new Uint8Array(analyser ? analyser.frequencyBinCount : 128);
-
-const $ = (id) => document.getElementById(id);
-const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
-music.once("load", () => { $("dur").textContent = fmt(music.duration()); });
-
-const playBtn = $("play");
-function syncPlayButton() { playBtn.textContent = music.playing() ? "❚❚" : "▶"; }
-playBtn.addEventListener("click", () => {
-  if (music.playing()) music.pause();
-  else music.play();
-});
-music.on("play", syncPlayButton);
-music.on("pause", syncPlayButton);
-music.on("stop", syncPlayButton);
-
-$("seek").addEventListener("click", (e) => {
-  const r = e.currentTarget.getBoundingClientRect();
-  music.seek(((e.clientX - r.left) / r.width) * music.duration());
-});
-$("vol").addEventListener("input", (e) => {
-  music.volume(e.target.value / 100);
-  $("volv").textContent = `${e.target.value}%`;
-});
-$("rate").addEventListener("input", (e) => {
-  const r = e.target.value / 100;
-  music.rate(r);
-  pads.rate(r);
-  $("ratev").textContent = `${r.toFixed(2)}x`;
-});
-$("pan").addEventListener("input", (e) => {
-  const p = e.target.value / 100;
-  music.stereo(p);
-  $("panv").textContent = p === 0 ? "置中" : p < 0 ? `左 ${Math.round(-p * 100)}` : `右 ${Math.round(p * 100)}`;
-});
-$("fadein").addEventListener("click", () => {
-  if (!music.playing()) music.play();
-  music.fade(0, $("vol").value / 100, 2000);
-});
-$("fadeout").addEventListener("click", () => { if (music.playing()) music.fade(music.volume(), 0, 2000); });
-$("loop").addEventListener("click", (e) => {
-  const on = e.currentTarget.getAttribute("aria-pressed") !== "true";
-  e.currentTarget.setAttribute("aria-pressed", on);
-  music.loop(on);
-});
-music.on("end", () => { if (!music.loop()) syncPlayButton(); });
-
-// Sprite pads
-const padEls = [];
-for (let i = 0; i < 8; i++) {
-  const b = document.createElement("button");
-  b.className = "pad";
-  b.style.setProperty("--pc", COLORS[i]);
-  b.innerHTML = `切片 ${i + 1}<small>${(i * BAR_MS / 1000).toFixed(1)} 秒</small>`;
-  b.addEventListener("pointerdown", () => hit(i));
-  $("pads").append(b);
-  padEls.push(b);
+function watch(ctx, el, fn) { const ro = new ResizeObserver(() => ctx.active && fn()); ro.observe(el); ctx.onCleanup(() => ro.disconnect()); }
+function view(ctx, el, onfit) {
+  const cv = h("canvas"); el.append(cv);
+  const v = { cv, g: null, w: 1, h: 1 };
+  const fit = () => { Object.assign(v, sizeCanvas(cv, el)); if (onfit) onfit(v); };
+  fit(); watch(ctx, el, fit);
+  return v;
 }
-function hit(i) {
-  pads.play("s" + i);
-  padEls[i].classList.add("hit");
-  setTimeout(() => padEls[i].classList.remove("hit"), 180);
+function txt(g, s, x, y, color = "#9aa0aa", mono = false, align = "left", size = 11) {
+  g.font = `${size}px ${mono ? MONO : CJK}`; g.textAlign = align; g.textBaseline = "top"; g.fillStyle = color; g.fillText(s, x, y);
 }
-window.addEventListener("keydown", (e) => {
-  const n = parseInt(e.key, 10);
-  if (n >= 1 && n <= 8) hit(n - 1);
-  if (e.code === "Space") { e.preventDefault(); playBtn.click(); }
-});
-
-// Ring visualizer
-const cv = $("viz");
-const g = cv.getContext("2d");
-function resize() {
-  const dpr = Math.min(devicePixelRatio || 1, 2);
-  cv.width = cv.clientWidth * dpr;
-  cv.height = cv.clientHeight * dpr;
-}
-resize();
-window.addEventListener("resize", resize);
-
-let spin = 0;
-function frame(t) {
-  const W = cv.width, H = cv.height, cx = W / 2, cy = H / 2, R = W * 0.29;
-  g.clearRect(0, 0, W, H);
-  const live = analyser && (music.playing() || pads.playing());
-  if (analyser) analyser.getByteFrequencyData(freq);
-  const N = 64;
-  spin += music.playing() ? 0.004 : 0.001;
-  // vinyl-like disc
-  const grd = g.createRadialGradient(cx, cy, R * 0.2, cx, cy, R);
-  grd.addColorStop(0, "#22252c");
-  grd.addColorStop(1, "#121418");
-  g.fillStyle = grd;
-  g.beginPath(); g.arc(cx, cy, R, 0, Math.PI * 2); g.fill();
-  g.strokeStyle = "rgba(255,255,255,0.05)";
-  for (let k = 1; k < 6; k++) { g.beginPath(); g.arc(cx, cy, R * (0.45 + k * 0.1), 0, Math.PI * 2); g.stroke(); }
-  for (let i = 0; i < N; i++) {
-    const a = spin + (i / N) * Math.PI * 2;
-    const v = live ? freq[Math.floor(i * 1.6)] / 255 : 0.12 + 0.08 * Math.sin(i * 0.7 + t / 900);
-    const len = R * 0.06 + v * R * 0.55;
-    const hue = 250 - (i / N) * 70;
-    g.strokeStyle = `hsl(${hue} 90% ${55 + v * 15}%)`;
-    g.lineWidth = Math.max(2, W / 120);
-    g.lineCap = "round";
-    g.beginPath();
-    g.moveTo(cx + Math.cos(a) * (R + 6), cy + Math.sin(a) * (R + 6));
-    g.lineTo(cx + Math.cos(a) * (R + 6 + len), cy + Math.sin(a) * (R + 6 + len));
-    g.stroke();
+function lane(g, x, y, w, hh) { g.fillStyle = "rgba(255,255,255,.025)"; g.fillRect(x, y, w, hh); g.fillStyle = "rgba(255,255,255,.08)"; g.fillRect(x, y + hh / 2, w, 1); }
+function peaks(d, cols) {
+  cols = Math.max(1, Math.floor(cols));
+  const lo = new Float32Array(cols), hi = new Float32Array(cols), step = d.length / cols;
+  for (let c = 0; c < cols; c++) {
+    let a = 1, b = -1;
+    const e = Math.min(d.length, Math.floor((c + 1) * step));
+    for (let i = Math.floor(c * step); i < e; i++) { const v = d[i]; if (v < a) a = v; if (v > b) b = v; }
+    if (a <= b) { lo[c] = a; hi[c] = b; }
   }
-  const d = music.duration() || 19.2;
-  const pos = music.state() === "loaded" ? music.seek() : 0;
-  $("bar").style.width = `${(pos / d) * 100}%`;
-  $("cur").textContent = fmt(pos);
-  requestAnimationFrame(frame);
+  return { lo, hi, cols };
 }
-requestAnimationFrame(frame);
+function peakCache(d) { let n = -1, v = null; return (cols) => { cols = Math.max(1, Math.round(cols)); if (cols !== n) { n = cols; v = peaks(d, cols); } return v; }; }
+function drawPeaks(g, pk, x, y, w, hh, color, gain = 1) {
+  const mid = y + hh / 2, cw = w / pk.cols;
+  g.fillStyle = color;
+  for (let c = 0; c < pk.cols; c++) {
+    const top = mid - clamp(pk.hi[c] * gain, -1, 1) * hh / 2, bot = mid - clamp(pk.lo[c] * gain, -1, 1) * hh / 2;
+    g.fillRect(x + c * cw, top, Math.max(1, cw - (cw > 2 ? 0.6 : 0)), Math.max(1, bot - top));
+  }
+}
+function drawLive(g, arr, x, y, w, hh, color, gain = 1) {
+  const n = arr.length, mid = y + hh / 2, cols = Math.max(2, Math.floor(w));
+  g.strokeStyle = color; g.lineWidth = 1.2; g.beginPath();
+  for (let i = 0; i < cols; i++) {
+    const yy = mid - clamp(arr[Math.floor((i / cols) * n)] * gain, -1, 1) * hh / 2;
+    if (i) g.lineTo(x + (i / cols) * w, yy); else g.moveTo(x, yy);
+  }
+  g.stroke();
+}
+// Log-spaced bands from an AnalyserNode byte spectrum, 0..1.
+function logBands(fq, n, lo = 2, hi = 400) {
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = Math.floor(lo * Math.pow(hi / lo, i / n)), b = Math.max(a + 1, Math.floor(lo * Math.pow(hi / lo, (i + 1) / n)));
+    let m = 0;
+    for (let j = a; j < b; j++) m = Math.max(m, fq[j]);
+    out[i] = m / 255;
+  }
+  return out;
+}
+function drawBands(g, vals, x, y, w, hh, hue0 = 190, span = 150) {
+  const n = vals.length, bw = w / n;
+  for (let i = 0; i < n; i++) {
+    const bh = vals[i] * hh;
+    if (bh < 0.5) continue;
+    g.fillStyle = `hsl(${hue0 + (i / n) * span} 85% 60%)`;
+    g.fillRect(x + i * bw + 0.5, y + hh - bh, Math.max(1, bw - 1), bh);
+  }
+}
+function envelope(d, n) {
+  const out = new Float32Array(n), step = d.length / n;
+  let mx = 1e-9;
+  for (let c = 0; c < n; c++) {
+    let m = 0;
+    const e = Math.min(d.length, Math.floor((c + 1) * step));
+    for (let i = Math.floor(c * step); i < e; i++) m = Math.max(m, Math.abs(d[i]));
+    out[c] = m; mx = Math.max(mx, m);
+  }
+  for (let c = 0; c < n; c++) out[c] /= mx;
+  return out;
+}
+
+// ---------- audio assets (decoded or synthesised offline, never through Howler.ctx) ----------
+function wavBlob(data, sr) {
+  const n = data.length, ab = new ArrayBuffer(44 + n * 2), v = new DataView(ab);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); str(8, "WAVE"); str(12, "fmt ");
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, sr, true);
+  v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, "data"); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, Math.round(clamp(data[i], -1, 1) * 32767), true);
+  return new Blob([ab], { type: "audio/wav" });
+}
+// Renders a mono clip with an OfflineAudioContext, normalises it and wraps it as a WAV blob URL.
+async function synth(sec, build) {
+  const oc = new OfflineAudioContext(1, Math.round(sec * SR), SR);
+  const nb = oc.createBuffer(1, SR, SR), nd = nb.getChannelData(0);
+  let s = 22222;
+  for (let i = 0; i < nd.length; i++) { s = (s * 16807) % 2147483647; nd[i] = s / 1073741823.5 - 1; }
+  const out = oc.createGain(); out.connect(oc.destination);
+  build(oc, out, nb);
+  const data = (await oc.startRendering()).getChannelData(0);
+  let pk = 0;
+  for (let i = 0; i < data.length; i++) pk = Math.max(pk, Math.abs(data[i]));
+  if (pk > 0) for (let i = 0; i < data.length; i++) data[i] *= 0.89 / pk;
+  const blob = wavBlob(data, SR);
+  return { src: URL.createObjectURL(blob), data, dur: sec, bytes: blob.size, fmt: ["wav"] };
+}
+function env(p, t, peak, a, d) {
+  p.setValueAtTime(0, t); p.linearRampToValueAtTime(peak, t + a);
+  p.exponentialRampToValueAtTime(0.0008, t + a + d); p.setValueAtTime(0, t + a + d + 0.001);
+}
+function osc(oc, out, { t, f, f1, type = "sine", peak = 0.5, a = 0.005, d = 0.3, detune = 0, sus = 0, dest }) {
+  const o = oc.createOscillator(), g = oc.createGain();
+  o.type = type; o.detune.value = detune;
+  o.frequency.setValueAtTime(f, t);
+  if (f1) o.frequency.exponentialRampToValueAtTime(f1, t + Math.min(d, 0.12));
+  g.gain.value = 0;
+  if (sus) {
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(peak, t + a);
+    g.gain.setValueAtTime(peak, t + sus); g.gain.exponentialRampToValueAtTime(0.0008, t + sus + d);
+  } else env(g.gain, t, peak, a, d);
+  o.connect(g).connect(dest || out);
+  o.start(t); o.stop(t + a + d + sus + 0.05);
+}
+function noise(oc, out, nb, { t, peak = 0.3, a = 0.002, d = 0.1, type, freq, q = 1 }) {
+  const s = oc.createBufferSource(), g = oc.createGain();
+  s.buffer = nb; s.loop = true; g.gain.value = 0; env(g.gain, t, peak, a, d);
+  let node = s;
+  if (type) { const f = oc.createBiquadFilter(); f.type = type; f.frequency.value = freq; f.Q.value = q; s.connect(f); node = f; }
+  node.connect(g).connect(out);
+  s.start(t, (t * 7.3) % 0.9); s.stop(t + a + d + 0.05);
+}
+function lowpass(oc, out, freq, q = 1) { const f = oc.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = freq; f.Q.value = q; f.connect(out); return f; }
+const CHORDS = [[220, 261.63, 329.63], [174.61, 220, 261.63], [196, 261.63, 329.63], [196, 246.94, 293.66]];
+const ROOTS = [55, 43.65, 65.41, 49];
+const MAKERS = {
+  async loop() {
+    const res = await fetch(LOOP_SRC);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const ab = await res.arrayBuffer();
+    const buf = await new OfflineAudioContext(1, 1, SR).decodeAudioData(ab.slice(0));
+    return { src: LOOP_SRC, data: buf.getChannelData(0), bytes: ab.byteLength, dur: buf.duration, ch: buf.numberOfChannels };
+  },
+  chime: () => synth(2.4, (oc, out) => [523.25, 659.25, 783.99, 1046.5, 1318.51].forEach((f, i) => {
+    osc(oc, out, { t: i * 0.28, f, peak: 0.5, a: 0.004, d: 1.2 });
+    osc(oc, out, { t: i * 0.28, f: f * 2.76, peak: 0.12, a: 0.002, d: 0.4 });
+  })),
+  pulse: () => synth(1, (oc, out, nb) => {
+    const lp = lowpass(oc, out, 1800);
+    [[0, 330], [0.5, 494]].forEach(([t, f]) => osc(oc, out, { t, f, type: "sawtooth", peak: 0.4, a: 0.003, d: 0.22, dest: lp }));
+    [0.25, 0.75].forEach((t) => noise(oc, out, nb, { t, peak: 0.18, d: 0.05, type: "highpass", freq: 6000 }));
+  }),
+  drums: () => synth(4, (oc, out, nb) => {
+    for (let b = 0; b < 8; b++) {
+      const t = b * 0.5;
+      osc(oc, out, { t, f: 150, f1: 45, peak: 0.9, a: 0.002, d: 0.35 });
+      if (b % 2) { noise(oc, out, nb, { t, peak: 0.45, d: 0.16, type: "bandpass", freq: 1800, q: 0.8 }); osc(oc, out, { t, f: 190, type: "triangle", peak: 0.3, d: 0.08 }); }
+      noise(oc, out, nb, { t: t + 0.25, peak: 0.16, d: 0.04, type: "highpass", freq: 7000 });
+    }
+  }),
+  bass: () => synth(4, (oc, out) => {
+    const lp = lowpass(oc, out, 700, 4);
+    for (let i = 0; i < 16; i++) osc(oc, out, { t: i * 0.25, f: ROOTS[i >> 2] * (i % 2 ? 2 : 1), type: "sawtooth", peak: 0.5, a: 0.004, d: 0.2, dest: lp });
+  }),
+  pad: () => synth(4, (oc, out) => CHORDS.forEach((ch, i) => ch.forEach((f) => [-4, 4].forEach((detune) =>
+    osc(oc, out, { t: i, f, type: "triangle", peak: 0.12, a: 0.08, sus: 0.8, d: 0.15, detune }))))),
+  lead: () => synth(4, (oc, out) => {
+    const lp = lowpass(oc, out, 3200);
+    for (let i = 0; i < 32; i++) {
+      const ch = CHORDS[i >> 3];
+      osc(oc, out, { t: i * 0.125, f: ch[[0, 1, 2, 1][i % 4]] * (i % 8 < 4 ? 2 : 4), type: "square", peak: 0.22, a: 0.003, d: 0.1, dest: lp });
+    }
+  }),
+  // 1 s seamless loop: 110 Hz harmonics with a 4 Hz tremolo, both whole cycles per second.
+  buzz: () => synth(1, (oc, out) => {
+    const am = oc.createGain(), lfo = oc.createOscillator(), lg = oc.createGain();
+    am.gain.value = 0.6; am.connect(out);
+    lfo.frequency.value = 4; lg.gain.value = 0.4; lfo.connect(lg).connect(am.gain); lfo.start(0);
+    for (let k = 1; k <= 10; k++) { const o = oc.createOscillator(), g = oc.createGain(); o.frequency.value = 110 * k; g.gain.value = 1 / k; o.connect(g).connect(am); o.start(0); }
+  }),
+};
+const memo = new Map();
+function asset(name) {
+  if (!memo.has(name)) memo.set(name, MAKERS[name]().catch((e) => { memo.delete(name); throw e; }));
+  return memo.get(name);
+}
+
+// ---------- Howler plumbing ----------
+// One analyser on Howler.masterGain (everything played through Web Audio passes it),
+// plus a stereo split for left/right meters. Built lazily, after the first Howl exists.
+let TAP = null;
+function tap() {
+  if (TAP || !Howler.ctx || !Howler.masterGain) return TAP;
+  const ac = Howler.ctx, mg = Howler.masterGain;
+  const an = ac.createAnalyser(); an.fftSize = 2048; an.smoothingTimeConstant = 0.6;
+  mg.disconnect(); mg.connect(an); an.connect(ac.destination);
+  const up = ac.createGain(); up.channelCount = 2; up.channelCountMode = "explicit"; up.channelInterpretation = "speakers";
+  const sp = ac.createChannelSplitter(2), L = ac.createAnalyser(), R = ac.createAnalyser();
+  L.fftSize = R.fftSize = 1024;
+  mg.connect(up); up.connect(sp); sp.connect(L, 0); sp.connect(R, 1);
+  TAP = { ac, an, L, R, td: new Float32Array(2048), fq: new Uint8Array(1024), t1: new Float32Array(1024) };
+  return TAP;
+}
+function rmsOf(an, buf) { an.getFloatTimeDomainData(buf); let s = 0; for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i]; return Math.sqrt(s / buf.length); }
+// Every Howl a scene creates is unloaded on unmount (unload stops all of its sounds).
+function keeper(ctx) {
+  const set = new Set();
+  ctx.onCleanup(() => { set.forEach((x) => x.unload()); set.clear(); });
+  return { add: (x) => (set.add(x), x), drop: (x) => { if (x && set.delete(x)) x.unload(); }, alive: (x) => set.has(x) };
+}
+// play() is only called on a loaded Howl: a queued play() would still run if the Howl
+// finished decoding after unload(), so loading Howls are waited for explicitly instead.
+function whenLoaded(ctx, k, howl, fn) {
+  if (howl.state() === "loaded") return fn();
+  howl.once("load", () => { if (ctx.active && k.alive(howl)) fn(); });
+}
+const fail = (ctx, what) => (a, b) => {
+  const e = b ?? a;
+  console.error(`[howler] ${what}`, e);
+  if (ctx.active) ctx.status("").error(`${what}失敗：${e && e.message ? e.message : e}`);
+};
+function debounce(ctx, fn, ms) { let t = 0; ctx.onCleanup(() => clearTimeout(t)); return () => { clearTimeout(t); t = setTimeout(() => ctx.active && fn(), ms); }; }
+
+Showcase.run({
+  scenes: [
+    {
+      id: "player", title: "音樂播放器",
+      api: "new Howl・play／pause・seek・volume・rate・stereo・fade・loop",
+      desc: "Howler.js 的核心：一個 Howl 管一個音檔，play() 回傳 Sound ID，跳轉、音量、速度、左右聲道都能即時調整。外圈是整首的音量包絡與進度，內圈是 masterGain 的即時頻譜。",
+      hint: "按中央播放鍵發聲；點右側波形跳到該位置，拖滑桿調音量、速度與聲道；下方可淡入、淡出與切換循環。",
+      mount(ctx) {
+        ctx.html(`<div class="board hw-player">
+          <div class="hw-card hw-disc"><div class="hw-cv"></div><button class="hw-play" type="button" aria-label="播放">▶</button></div>
+          <div class="hw-info">
+            <div class="hw-lbl"><span><b>loop.mp3</b>　<span class="hw-m hw-meta">解碼中…</span></span><span class="hw-m hw-time">0:00.0 / 0:00.0</span></div>
+            <div class="hw-card hw-cv hw-wave"></div>
+            <label class="hw-row"><span>音量</span><input class="hw-rng" type="range" min="0" max="1" step="0.01" value="0.8" data-k="vol"><output>80%</output></label>
+            <label class="hw-row"><span>播放速度</span><input class="hw-rng" type="range" min="0.5" max="2" step="0.05" value="1" data-k="rate"><output>1.00×</output></label>
+            <label class="hw-row"><span>左右聲道</span><input class="hw-rng" type="range" min="-1" max="1" step="0.05" value="0" data-k="pan"><output>0.00</output></label>
+            <div class="hw-state"><div class="hw-m hw-api"></div><div>最後事件：<span class="hw-m hw-evc">無</span> <span class="hw-evz"></span></div></div>
+          </div></div>`);
+        const k = keeper(ctx);
+        let howl = null, id = null, vol = 0.8, rate = 1, pan = 0, loop = true, pending = null, last = null, A = null, pk = null, wasOn = false, fadeTok = 0;
+        const ring = view(ctx, ctx.$(".hw-disc > .hw-cv")), wave = view(ctx, ctx.$(".hw-wave"));
+        const playBtn = ctx.$(".hw-play"), metaEl = ctx.$(".hw-meta"), timeEl = ctx.$(".hw-time");
+        const apiEl = ctx.$(".hw-api"), evc = ctx.$(".hw-evc"), evz = ctx.$(".hw-evz");
+        asset("loop").then((a) => { if (!ctx.active) return; A = a; pk = peakCache(a.data); metaEl.textContent = `${fmtT(a.dur)}・${fmtKB(a.bytes)}・${a.ch} 聲道`; }).catch(fail(ctx, "音檔解碼"));
+        const loaded = () => howl && howl.state() === "loaded";
+        const make = () => {
+          const opts = { src: [LOOP_SRC], volume: vol, rate, loop, onloaderror: fail(ctx, "載入"), onplayerror: fail(ctx, "播放") };
+          for (const e of ["load", "play", "pause", "stop", "end", "seek", "fade", "volume", "rate"]) opts["on" + e] = (sid) => { if (ctx.active) last = [e, sid]; };
+          howl = k.add(new Howl(opts));
+          howl.on("stereo", (sid) => { if (ctx.active) last = ["stereo", sid]; });
+          tap();
+        };
+        const start = () => {
+          id = howl.play(id ?? undefined);
+          howl.stereo(pan, id);
+          if (pending != null) { howl.seek(pending, id); pending = null; }
+        };
+        const toggle = () => {
+          if (!howl) make();
+          whenLoaded(ctx, k, howl, () => { if (id != null && howl.playing(id)) howl.pause(id); else start(); });
+        };
+        ctx.on(playBtn, "click", toggle);
+        ctx.$$(".hw-row input").forEach((inp) => ctx.on(inp, "input", () => {
+          const v = +inp.value, out = inp.nextElementSibling;
+          if (inp.dataset.k === "vol") { vol = v; out.textContent = `${Math.round(v * 100)}%`; if (loaded()) howl.volume(v); }
+          else if (inp.dataset.k === "rate") { rate = v; out.textContent = `${v.toFixed(2)}×`; if (loaded()) howl.rate(v); }
+          else { pan = v; out.textContent = v.toFixed(2); if (loaded() && id != null) howl.stereo(v, id); }
+        }));
+        ctx.on(wave.cv, "pointerdown", (e) => {
+          if (!A) return;
+          const r = wave.cv.getBoundingClientRect(), t = clamp((e.clientX - r.left) / r.width, 0, 0.999) * A.dur;
+          if (loaded() && id != null) howl.seek(t, id); else pending = t;
+        });
+        ctx.button("淡入 2 秒", () => {
+          if (!howl) make();
+          whenLoaded(ctx, k, howl, () => {
+            fadeTok++;
+            if (id == null || !howl.playing(id)) start();
+            howl.fade(0, vol, 2000, id);
+          });
+        });
+        ctx.button("淡出 2 秒", () => {
+          if (!loaded() || id == null || !howl.playing(id)) return;
+          const tok = ++fadeTok;
+          howl.fade(howl.volume(id), 0, 2000, id);
+          howl.once("fade", (sid) => { if (!ctx.active || tok !== fadeTok) return; howl.pause(sid); howl.volume(vol, sid); }, id);
+        });
+        ctx.toggle("循環播放", loop, (v) => { loop = v; if (howl) howl.loop(v); });
+        ctx.interval(() => {
+          if (!howl) { apiEl.textContent = "Howler.ctx = null，尚未建立 Howl"; return; }
+          const has = loaded() && id != null, s = has ? howl.seek(id) : 0;
+          apiEl.textContent = `state() "${howl.state()}"・playing() ${has ? howl.playing(id) : false}・seek() ${(+s || 0).toFixed(2)}・volume() ${(+(has ? howl.volume(id) : vol)).toFixed(2)}・rate() ${(+(has ? howl.rate(id) : rate)).toFixed(2)}・ctx "${Howler.ctx ? Howler.ctx.state : "null"}"`;
+          if (last) { evc.textContent = `${last[0]}${last[1] ? " #" + last[1] : ""}`; evz.textContent = `（${EV_ZH[last[0]] || ""}）`; }
+        }, 150);
+        const bands = new Float32Array(64);
+        ctx.raf(() => {
+          const on = !!(loaded() && id != null && howl.playing(id));
+          if (on !== wasOn) { wasOn = on; playBtn.textContent = on ? "❚❚" : "▶"; playBtn.setAttribute("aria-label", on ? "暫停" : "播放"); }
+          const dur = A ? A.dur : 1;
+          let pos = pending ?? 0;
+          if (loaded() && id != null) { const s = howl.seek(id); if (typeof s === "number") pos = s; }
+          const t = tap();
+          let lb = null;
+          if (t && on) { t.an.getByteFrequencyData(t.fq); lb = logBands(t.fq, 64); }
+          for (let i = 0; i < 64; i++) bands[i] = Math.max(lb ? lb[i] : 0, bands[i] * 0.9);
+          const tm = `${fmtT(pos)} / ${fmtT(dur)}`;
+          if (timeEl.textContent !== tm) timeEl.textContent = tm;
+          // disc: outer ring = file envelope + progress, inner ring = live spectrum
+          {
+            const { g, w, h: hh } = ring;
+            g.clearRect(0, 0, w, hh);
+            const cx = w / 2, cy = hh / 2, R = Math.max(30, Math.min(w, hh) / 2 - 12), prog = pos / dur;
+            if (pk) {
+              const p = pk(180), r0 = R * 0.72;
+              g.lineWidth = Math.max(1, ((Math.PI * 2 * r0) / 180) * 0.55);
+              for (let i = 0; i < 180; i++) {
+                const a0 = -Math.PI / 2 + (i / 180) * Math.PI * 2, amp = Math.max(Math.abs(p.hi[i]), Math.abs(p.lo[i]));
+                const r1 = r0 + Math.max(1.5, amp * R * 0.24);
+                g.strokeStyle = (i + 0.5) / 180 <= prog ? "#f7df1e" : "rgba(255,255,255,.2)";
+                g.beginPath(); g.moveTo(cx + Math.cos(a0) * r0, cy + Math.sin(a0) * r0); g.lineTo(cx + Math.cos(a0) * r1, cy + Math.sin(a0) * r1); g.stroke();
+              }
+              for (let b = 0; b * BAR < dur - 0.01; b++) {
+                const a0 = -Math.PI / 2 + ((b * BAR) / dur) * Math.PI * 2;
+                txt(g, String(b + 1), cx + Math.cos(a0) * (R + 4), cy + Math.sin(a0) * (R + 4) - 5, "#7d8490", true, "center", 9);
+              }
+            } else txt(g, "解碼音檔中…", cx, cy + R * 0.5, "#7d8490", false, "center");
+            g.strokeStyle = "rgba(255,255,255,.08)"; g.lineWidth = 2; g.beginPath(); g.arc(cx, cy, R * 0.98, 0, Math.PI * 2); g.stroke();
+            g.strokeStyle = "#f7df1e"; g.beginPath(); g.arc(cx, cy, R * 0.98, -Math.PI / 2, -Math.PI / 2 + prog * Math.PI * 2); g.stroke();
+            const r0 = R * 0.33;
+            g.lineWidth = Math.max(1.5, ((Math.PI * 2 * r0) / 64) * 0.55);
+            for (let i = 0; i < 64; i++) {
+              const a0 = -Math.PI / 2 + (i / 64) * Math.PI * 2, r1 = r0 + 2 + bands[i] * R * 0.34;
+              g.strokeStyle = bands[i] > 0.01 ? `hsl(${190 + (i / 64) * 160} 85% 60%)` : "rgba(255,255,255,.12)";
+              g.beginPath(); g.moveTo(cx + Math.cos(a0) * r0, cy + Math.sin(a0) * r0); g.lineTo(cx + Math.cos(a0) * r1, cy + Math.sin(a0) * r1); g.stroke();
+            }
+            txt(g, id != null ? `Sound ID #${id}` : "尚未建立 Howl", 10, hh - 20, id != null ? "#e8e6e3" : "#7d8490", id != null, "left", 10.5);
+          }
+          // overview waveform with bar grid; played part highlighted
+          {
+            const { g, w, h: hh } = wave;
+            g.clearRect(0, 0, w, hh);
+            if (pk) {
+              const p = pk(w), x = (pos / dur) * w, y0 = 14, wh = hh - 18;
+              drawPeaks(g, p, 0, y0, w, wh, "rgba(255,255,255,.24)");
+              g.save(); g.beginPath(); g.rect(0, 0, x, hh); g.clip(); drawPeaks(g, p, 0, y0, w, wh, "#f7df1e"); g.restore();
+              for (let b = 0; b * BAR < dur - 0.01; b++) {
+                const bx = ((b * BAR) / dur) * w;
+                g.fillStyle = "rgba(255,255,255,.12)"; g.fillRect(bx, 0, 1, hh);
+                txt(g, String(b + 1), bx + 3, 1, "#7d8490", true, "left", 9.5);
+              }
+              g.fillStyle = "#fff"; g.fillRect(x - 0.75, 0, 1.5, hh);
+            }
+          }
+        });
+      },
+    },
+    {
+      id: "sprite", title: "音訊切片",
+      api: "sprite: { s0: [起點 ms, 長度 ms, 循環] }・play('s3')・seek(id)・rate",
+      desc: "把一個音檔切成 8 段 sprite，每次 play('s3') 都會產生新的 Sound ID，可以重疊播放。改切片長度會用同一個 src 重建 Howl，直接命中 Howler 的解碼快取，不必重新下載。",
+      hint: "點方塊或按鍵盤 1～8 觸發切片；上方顯示每段切片的範圍，彩色直線是每個播放中 Sound ID 的即時位置。",
+      mount(ctx) {
+        ctx.html(`<div class="board hw-sp"><div class="hw-card hw-cv"></div><div class="hw-pads"></div></div>`);
+        const k = keeper(ctx);
+        let howl = null, len = 1.2, rate = 1, loopSlice = false, A = null, pk = null, act = [];
+        const ov = view(ctx, ctx.$(".hw-sp > .hw-cv"));
+        const pads = [];
+        const drawPad = (i) => {
+          const p = pads[i];
+          if (!p || !p.v || !A) return;
+          const { g, w, h: hh } = p.v;
+          g.clearRect(0, 0, w, hh);
+          const s0 = Math.floor(i * BAR * SR), s1 = Math.min(A.data.length, Math.floor((i * BAR + len) * SR));
+          lane(g, 0, 0, w, hh);
+          drawPeaks(g, peaks(A.data.subarray(s0, s1), w), 0, 1, w, hh - 2, PAL[i]);
+        };
+        for (let i = 0; i < 8; i++) {
+          const box = h("span", { class: "hw-cv" }), rg = h("span", { class: "hw-m hw-rg" });
+          const b = h("button", { type: "button", class: "hw-pad", style: `--rc:${PAL[i]}`, "aria-label": `播放切片 s${i}`, onclick: () => hit(i) },
+            h("span", { class: "hw-lbl" }, h("span", {}, h("b", { text: String(i + 1) }), ` 切片 s${i}`), rg), box);
+          ctx.$(".hw-pads").append(b);
+          pads.push({ b, rg, box, v: null, p: -1 });
+          pads[i].v = view(ctx, box, () => drawPad(i));
+        }
+        const redrawPads = () => pads.forEach((p, i) => {
+          drawPad(i);
+          p.rg.textContent = `${(i * BAR).toFixed(1)}～${(i * BAR + len).toFixed(1)}s`;
+        });
+        redrawPads();
+        asset("loop").then((a) => { if (!ctx.active) return; A = a; pk = peakCache(a.data); redrawPads(); }).catch(fail(ctx, "音檔解碼"));
+        const sprite = () => Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`s${i}`, loopSlice ? [i * BAR * 1000, len * 1000, true] : [i * BAR * 1000, len * 1000]]));
+        const build = () => {
+          const old = howl;
+          // Create the new Howl before unloading the old one so the decoded buffer stays cached.
+          howl = k.add(new Howl({ src: [LOOP_SRC], sprite: sprite(), rate, onloaderror: fail(ctx, "載入"), onplayerror: fail(ctx, "播放") }));
+          tap();
+          act = [];
+          k.drop(old);
+        };
+        const rebuildSoon = debounce(ctx, build, 250);
+        const hit = (i) => {
+          if (!howl) build();
+          const hw = howl;
+          whenLoaded(ctx, k, hw, () => {
+            if (hw !== howl) return;
+            if (act.length >= 16) hw.stop(act.shift().id);
+            const id = hw.play(`s${i}`);
+            hw.rate(rate, id);
+            act.push({ id, i });
+          });
+        };
+        ctx.on(window, "keydown", (e) => {
+          if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || (e.target.closest && e.target.closest("input, textarea, select"))) return;
+          const n = +e.key;
+          if (n >= 1 && n <= 8) { e.preventDefault(); hit(n - 1); }
+        });
+        ctx.slider("切片長度", { min: 0.2, max: 2.4, step: 0.1, value: len, format: (v) => `${(+v).toFixed(1)} 秒` }, (v) => { len = +v; redrawPads(); if (howl) rebuildSoon(); });
+        ctx.slider("速度", { min: 0.5, max: 2, step: 0.05, value: 1, format: (v) => `${(+v).toFixed(2)}×` }, (v) => { rate = +v; if (howl) act.forEach((a) => howl.rate(rate, a.id)); });
+        ctx.toggle("循環切片", false, (v) => { loopSlice = v; if (howl) build(); });
+        ctx.button("全部停止", () => { if (howl) howl.stop(); act = []; });
+        ctx.raf(() => {
+          if (howl && howl.state() === "loaded") act = act.filter((a) => howl.playing(a.id));
+          const prog = new Array(8).fill(-1);
+          const { g, w, h: hh } = ov;
+          g.clearRect(0, 0, w, hh);
+          const top = 20, wh = Math.max(10, hh - top - 24);
+          if (!A) { txt(g, "解碼音檔中…", 10, 8, "#7d8490"); return; }
+          for (let i = 0; i < 8; i++) {
+            const x0 = ((i * BAR) / A.dur) * w, x1 = ((i * BAR + len) / A.dur) * w;
+            g.fillStyle = PAL[i] + "26"; g.fillRect(x0, top, x1 - x0, wh);
+            g.fillStyle = PAL[i]; g.fillRect(x0, top, x1 - x0, 2);
+            txt(g, `s${i}`, x0 + 3, top + 4, PAL[i], true, "left", 10);
+          }
+          drawPeaks(g, pk(w), 0, top, w, wh, "rgba(255,255,255,.38)");
+          for (const a of act) {
+            const s = howl.seek(a.id);
+            if (typeof s !== "number") continue;
+            g.fillStyle = PAL[a.i]; g.fillRect((s / A.dur) * w - 1, top - 5, 2, wh + 10);
+            prog[a.i] = Math.max(prog[a.i], clamp((s - a.i * BAR) / len, 0, 1));
+          }
+          txt(g, `播放中 ${act.length} 個 Sound ID`, 8, 3, "#e8e6e3");
+          txt(g, `rate ${rate.toFixed(2)}×`, w - 8, 3, "#9aa0aa", true, "right", 10.5);
+          const tail = loopSlice ? ", true" : "";
+          txt(g, `sprite: { s0: [0, ${Math.round(len * 1000)}${tail}], s1: [2400, ${Math.round(len * 1000)}${tail}], …, s7: [16800, ${Math.round(len * 1000)}${tail}] }`, 8, hh - 17, "#9aa0aa", true, "left", 10.5);
+          pads.forEach((p, i) => {
+            const v = Math.round(prog[i] * 100);
+            if (v === p.p) return;
+            p.p = v;
+            p.b.style.setProperty("--p", Math.max(0, v) / 100);
+            p.b.classList.toggle("on", v >= 0);
+          });
+        });
+      },
+    },
+    {
+      id: "voices", title: "多聲部與 Sound ID",
+      api: "id = play()・stereo(x, id)・rate(r, id)・volume(v, id)・pause(id)・fade(…, id)・once('fade', fn, id)",
+      desc: "同一個 Howl 可以同時播放多個聲音，每個 play() 都回傳獨立的 Sound ID；帶 id 呼叫方法就只影響那一個聲音。這裡最多 8 個循環鐘聲，各自有聲道、音高與音量。",
+      hint: "點左側平面新增聲部，拖曳圓點：左右＝stereo 聲道，上下＝rate 音高（±12 半音）。右側清單可個別調音量、暫停，或淡出後移除。",
+      mount(ctx) {
+        ctx.html(`<div class="board hw-poly"><div class="hw-col"><div class="hw-card hw-cv hw-grow hw-xy"></div><div class="hw-card hw-cv hw-strip"></div></div><div class="hw-card hw-vlist"><div class="hw-lbl"><span><b>Sound ID</b> 清單</span><span class="hw-m hw-cnt">0 / 8</span></div><div class="hw-vrows"><div class="hw-empty">尚無聲部：點左側平面或按「＋ 新聲部」</div></div></div></div>`);
+        const k = keeper(ctx);
+        const VC = ["#4cc9f0", "#f72585", "#f7df1e", "#7bd389", "#9d8cff", "#ff8c42", "#2ec4b6", "#e8e6e3"];
+        let howl = null, A = null, pk = null, drag = null, capAt = -1e9, paused = false, nc = 0, voices = [];
+        const xy = view(ctx, ctx.$(".hw-xy")), strip = view(ctx, ctx.$(".hw-strip"));
+        const rowsEl = ctx.$(".hw-vrows"), cntEl = ctx.$(".hw-cnt"), emptyEl = ctx.$(".hw-empty");
+        asset("chime").then((a) => { if (ctx.active) { A = a; pk = peakCache(a.data); } }).catch(fail(ctx, "合成音色"));
+        const semi = (y) => Math.round((0.5 - y) * 24);
+        const apply = (v) => { if (v.id) { howl.stereo(v.x, v.id); howl.rate(Math.pow(2, semi(v.y) / 12), v.id); } };
+        const sync = () => { cntEl.textContent = `${voices.length} / 8`; emptyEl.hidden = voices.length > 0; };
+        const forget = (v) => { voices = voices.filter((x) => x !== v); if (v.row) v.row.remove(); sync(); };
+        const remove = (v) => {
+          if (v.dying || !v.id) return;
+          v.dying = true;
+          howl.fade(howl.volume(v.id), 0, 400, v.id);
+          howl.once("fade", () => { if (!ctx.active) return; howl.stop(v.id); forget(v); }, v.id);
+        };
+        const makeRow = (v) => {
+          const range = h("input", { class: "hw-rng", type: "range", min: 0, max: 1, step: 0.01, value: v.vol, "aria-label": `#${v.id} 音量`, oninput: () => { v.vol = +range.value; howl.volume(v.vol, v.id); } });
+          v.pb = h("button", { type: "button", class: "hw-mini", title: "暫停／繼續這個 Sound ID", onclick: () => (howl.playing(v.id) ? howl.pause(v.id) : howl.play(v.id)) }, "❚❚");
+          const xb = h("button", { type: "button", class: "hw-mini", title: "淡出 0.4 秒後停止", onclick: () => remove(v) }, "✕");
+          v.row = h("div", { class: "hw-vrow" }, h("i", { style: `background:${v.c}` }), h("span", { class: "hw-m", text: `#${v.id}` }), range, v.pb, xb);
+          rowsEl.append(v.row);
+        };
+        const add = (x, y) => {
+          if (voices.length >= 8) { capAt = performance.now(); return; }
+          if (!A) return;
+          if (!howl) { howl = k.add(new Howl({ src: [A.src], format: A.fmt, loop: true, onloaderror: fail(ctx, "載入"), onplayerror: fail(ctx, "播放") })); tap(); }
+          const v = { id: 0, x, y, vol: 0.7, c: VC[nc++ % 8], row: null, pb: null, dying: false, on: true };
+          voices.push(v); sync();
+          whenLoaded(ctx, k, howl, () => {
+            if (!voices.includes(v)) return;
+            v.id = howl.play();
+            howl.volume(v.vol, v.id);
+            apply(v);
+            makeRow(v);
+          });
+        };
+        const geo = () => ({ w: xy.w, hh: xy.h });
+        const toXY = (e) => { const r = xy.cv.getBoundingClientRect(); return [clamp(((e.clientX - r.left) / r.width) * 2 - 1, -1, 1), clamp((e.clientY - r.top) / r.height, 0.02, 0.98)]; };
+        ctx.on(xy.cv, "pointerdown", (e) => {
+          const [x, y] = toXY(e), { w, hh } = geo();
+          const near = voices.find((v) => Math.hypot(((v.x + 1) / 2) * w - ((x + 1) / 2) * w, v.y * hh - y * hh) < 22);
+          if (near) { drag = near; xy.cv.setPointerCapture(e.pointerId); } else add(x, y);
+        });
+        ctx.on(xy.cv, "pointermove", (e) => { if (!drag) return; [drag.x, drag.y] = toXY(e); apply(drag); });
+        const up = () => (drag = null);
+        ctx.on(xy.cv, "pointerup", up); ctx.on(xy.cv, "pointercancel", up);
+        ctx.button("＋ 新聲部", () => add(Math.random() * 1.6 - 0.8, 0.15 + Math.random() * 0.7), { primary: true });
+        const pauseBtn = ctx.button("全部暫停", () => {
+          if (!howl) return;
+          paused = !paused;
+          voices.forEach((v) => v.id && (paused ? howl.pause(v.id) : howl.play(v.id)));
+          pauseBtn.textContent = paused ? "全部繼續" : "全部暫停";
+        });
+        ctx.button("全部停止", () => {
+          if (howl) howl.stop();
+          voices.forEach((v) => v.row && v.row.remove());
+          voices = []; paused = false; pauseBtn.textContent = "全部暫停"; sync();
+        });
+        ctx.raf(() => {
+          const ok = howl && howl.state() === "loaded", dur = A ? A.dur : 2.4;
+          {
+            const { g, w, h: hh } = xy;
+            g.clearRect(0, 0, w, hh);
+            g.fillStyle = "rgba(255,255,255,.06)";
+            for (let s = -12; s <= 12; s += 12) g.fillRect(0, (0.5 - s / 24) * hh, w, 1);
+            for (let i = 1; i < 4; i++) g.fillRect((i / 4) * w, 0, 1, hh);
+            txt(g, "左聲道", 8, hh / 2 + 4, "#7d8490"); txt(g, "右聲道", w - 8, hh / 2 + 4, "#7d8490", false, "right");
+            txt(g, "+12 半音", w / 2 + 6, 6, "#7d8490", true, "left", 10); txt(g, "−12 半音", w / 2 + 6, hh - 18, "#7d8490", true, "left", 10);
+            if (!voices.length) txt(g, "點這裡新增聲部", w / 2, hh / 2 - 26, "#e8e6e3", false, "center", 13);
+            for (const v of voices) {
+              const px = ((v.x + 1) / 2) * w, py = v.y * hh;
+              let vol = v.vol, prog = 0, on = false;
+              if (ok && v.id) { vol = howl.volume(v.id); on = howl.playing(v.id); const s = howl.seek(v.id); prog = typeof s === "number" ? (s % dur) / dur : 0; }
+              const r = 9 + vol * 16;
+              g.globalAlpha = on || !v.id ? 1 : 0.45;
+              g.fillStyle = v.c + "33"; g.strokeStyle = v.c; g.lineWidth = 1.5;
+              g.beginPath(); g.arc(px, py, r, 0, Math.PI * 2); g.fill(); g.stroke();
+              g.lineWidth = 3; g.beginPath(); g.arc(px, py, r + 4, -Math.PI / 2, -Math.PI / 2 + prog * Math.PI * 2); g.stroke();
+              const st = semi(v.y);
+              txt(g, v.id ? `#${v.id}` : "載入中", px, py + r + 7, v.c, !!v.id, "center", 10);
+              txt(g, `${st > 0 ? "+" : st < 0 ? "−" : ""}${Math.abs(st)}`, px, py - 6, "#e8e6e3", true, "center", 10.5);
+              g.globalAlpha = 1;
+              if (v.pb && ok) { const lbl = on ? "❚❚" : "▶"; if (v.pb.textContent !== lbl) v.pb.textContent = lbl; }
+            }
+            if (performance.now() - capAt < 1600) {
+              g.fillStyle = "rgba(0,0,0,.6)"; g.fillRect(w / 2 - 150, hh / 2 - 16, 300, 32);
+              txt(g, "最多 8 個聲部：先按 ✕ 移除再新增", w / 2, hh / 2 - 7, "#f7df1e", false, "center", 12.5);
+            }
+          }
+          {
+            const { g, w, h: hh } = strip;
+            g.clearRect(0, 0, w, hh);
+            if (!pk) { txt(g, "合成鐘聲中…", 8, 6, "#7d8490"); return; }
+            drawPeaks(g, pk(w), 0, 4, w, hh - 8, "rgba(255,255,255,.3)");
+            txt(g, `鐘聲 ${dur.toFixed(1)} 秒，loop: true`, 6, 3, "#7d8490", false, "left", 10);
+            if (ok) for (const v of voices) {
+              if (!v.id) continue;
+              const s = howl.seek(v.id);
+              if (typeof s === "number") { g.fillStyle = v.c; g.fillRect(((s % dur) / dur) * w - 1, 0, 2, hh); }
+            }
+          }
+        });
+      },
+    },
+    {
+      id: "spatial", title: "3D 空間音效",
+      api: "pos(x, y, z, id)・pannerAttr({ distanceModel, panningModel, rolloffFactor }, id)・PannerNode",
+      desc: "Howler 的 spatial 外掛為每個聲音接上 Web Audio PannerNode。聽者在中央、面向上方（−z），拖曳音源改變 3D 位置；右上是三種距離衰減公式的曲線，右下是 masterGain 之後實際量到的左右聲道音量。",
+      hint: "按「▶ 播放」後拖曳平面上的粉紅音源；切換衰減模型、HRTF／等功率與衰減係數，看公式曲線與實測電平一起變化。",
+      mount(ctx) {
+        ctx.html(`<div class="board hw-3d"><div class="hw-card hw-cv hw-plane"></div><div class="hw-side"><div class="hw-card hw-cv hw-curve"></div><div class="hw-card hw-cv hw-meter"></div></div></div>`);
+        const k = keeper(ctx);
+        const MODELS = ["inverse", "linear", "exponential"], MZH = ["反比", "線性", "指數"], PANS = ["HRTF", "equalpower"];
+        const FORM = ["ref ÷ (ref + r × (d − ref))", "1 − r × (d − ref) ÷ (max − ref)", "(d ÷ ref) ^ (−r)"];
+        const REF = 1, MAX = 10;
+        let howl = null, id = null, model = 0, pm = 0, roll = 1, orbit = false, ang = Math.PI / 4, drag = false;
+        const src = { x: 2.5, z: -2.5 }, hist = [];
+        const plane = view(ctx, ctx.$(".hw-plane")), curve = view(ctx, ctx.$(".hw-curve")), meter = view(ctx, ctx.$(".hw-meter"));
+        asset("buzz").catch(fail(ctx, "合成音色"));
+        const gainOf = (m, d) => {
+          const dd = Math.max(d, REF);
+          if (m === 1) return 1 - Math.min(1, roll) * ((clamp(dd, REF, MAX) - REF) / (MAX - REF));
+          if (m === 2) return Math.pow(dd / REF, -roll);
+          return REF / (REF + roll * (dd - REF));
+        };
+        const attrs = () => ({ distanceModel: MODELS[model], panningModel: PANS[pm], refDistance: REF, maxDistance: MAX, rolloffFactor: roll });
+        const playing = () => howl && id != null && howl.state() === "loaded" && howl.playing(id);
+        const push = () => { if (playing()) howl.pos(src.x, 0, src.z, id); };
+        const btn = ctx.button("▶ 播放", () => {
+          if (playing()) { howl.stop(id); id = null; btn.textContent = "▶ 播放"; return; }
+          asset("buzz").then((a) => {
+            if (!ctx.active) return;
+            if (!howl) { howl = k.add(new Howl({ src: [a.src], format: a.fmt, loop: true, volume: 0.9, ...attrs(), onloaderror: fail(ctx, "載入"), onplayerror: fail(ctx, "播放") })); tap(); }
+            whenLoaded(ctx, k, howl, () => {
+              id = howl.play();
+              howl.pos(src.x, 0, src.z, id);
+              howl.pannerAttr(attrs(), id);
+              btn.textContent = "■ 停止";
+            });
+          }).catch(fail(ctx, "合成音色"));
+        }, { primary: true });
+        const reattr = () => { if (playing()) howl.pannerAttr(attrs(), id); };
+        ctx.group(MZH, 0, (i) => { model = i; reattr(); });
+        ctx.group(["HRTF", "等功率"], 0, (i) => { pm = i; reattr(); });
+        ctx.slider("衰減係數", { min: 0.25, max: 3, step: 0.05, value: 1, format: (v) => (+v).toFixed(2) }, (v) => { roll = +v; reattr(); });
+        ctx.toggle("自動繞行", false, (v) => { orbit = v; ang = Math.atan2(src.x, -src.z); });
+        const geo = () => { const S = Math.min(plane.w, plane.h) - 40; return { cx: plane.w / 2, cy: plane.h / 2 + 4, K: S / 2 / 10 }; };
+        const toWorld = (e) => {
+          const r = plane.cv.getBoundingClientRect(), { cx, cy, K } = geo();
+          let x = (e.clientX - r.left - cx) / K, z = (e.clientY - r.top - cy) / K;
+          const d = Math.hypot(x, z);
+          if (d > 10) { x *= 10 / d; z *= 10 / d; }
+          return { x, z };
+        };
+        ctx.on(plane.cv, "pointerdown", (e) => { drag = true; plane.cv.setPointerCapture(e.pointerId); Object.assign(src, toWorld(e)); push(); });
+        ctx.on(plane.cv, "pointermove", (e) => { if (!drag) return; Object.assign(src, toWorld(e)); push(); });
+        const up = () => (drag = false);
+        ctx.on(plane.cv, "pointerup", up); ctx.on(plane.cv, "pointercancel", up);
+        ctx.raf((t, dt) => {
+          if (orbit && !drag) { ang += (dt / 1000) * 0.6; src.x = 3 * Math.sin(ang); src.z = -3 * Math.cos(ang); push(); }
+          const on = playing(), T = tap(), d = Math.hypot(src.x, src.z), gth = gainOf(model, d);
+          let l = 0, r = 0;
+          if (T && on) { l = rmsOf(T.L, T.t1); r = rmsOf(T.R, T.t1); }
+          hist.push([l, r]); if (hist.length > 240) hist.shift();
+          // plane (top view)
+          {
+            const { g, w, h: hh } = plane, { cx, cy, K } = geo();
+            g.clearRect(0, 0, w, hh);
+            g.fillStyle = "rgba(255,255,255,.05)"; g.fillRect(cx - 10 * K, cy, 20 * K, 1); g.fillRect(cx, cy - 10 * K, 1, 20 * K);
+            [1, 2, 5, 10].forEach((rr) => {
+              g.strokeStyle = rr === REF ? "rgba(247,223,30,.5)" : "rgba(255,255,255,.12)";
+              g.setLineDash(rr === REF ? [] : [3, 4]); g.lineWidth = 1;
+              g.beginPath(); g.arc(cx, cy, rr * K, 0, Math.PI * 2); g.stroke();
+              txt(g, String(rr), cx + rr * K * 0.71 + 2, cy - rr * K * 0.71 - 12, "#7d8490", true, "left", 10);
+            });
+            g.setLineDash([]);
+            txt(g, "前方（−z）", cx, Math.max(2, cy - 10 * K - 16), "#9aa0aa", false, "center", 10.5);
+            txt(g, "左", 8, cy - 16, "#7d8490"); txt(g, "右", w - 8, cy - 16, "#7d8490", false, "right");
+            txt(g, "refDistance 1・maxDistance 10", w - 8, hh - 17, "#7d8490", true, "right", 10);
+            const sx = cx + src.x * K, sy = cy + src.z * K;
+            g.strokeStyle = "rgba(255,255,255,.3)"; g.setLineDash([4, 4]); g.beginPath(); g.moveTo(cx, cy); g.lineTo(sx, sy); g.stroke(); g.setLineDash([]);
+            g.fillStyle = "#e8e6e3"; g.beginPath(); g.arc(cx, cy, 9, 0, Math.PI * 2); g.fill();
+            g.beginPath(); g.moveTo(cx - 5, cy - 7); g.lineTo(cx, cy - 15); g.lineTo(cx + 5, cy - 7); g.fill();
+            txt(g, "L", cx - 20, cy - 6, "#4cc9f0", true, "left", 10); txt(g, "R", cx + 14, cy - 6, "#f72585", true, "left", 10);
+            const lv = Math.max(l, r);
+            g.fillStyle = "rgba(247,37,133,.18)"; g.beginPath(); g.arc(sx, sy, 12 + lv * 60, 0, Math.PI * 2); g.fill();
+            g.fillStyle = "#f72585"; g.beginPath(); g.arc(sx, sy, 9, 0, Math.PI * 2); g.fill();
+            txt(g, `pos(${src.x.toFixed(1)}, 0, ${src.z.toFixed(1)})`, 8, hh - 32, "#e8e6e3", true, "left", 10.5);
+            txt(g, `距離 ${d.toFixed(2)}・${on ? "播放中" : "尚未播放"}`, 8, hh - 17, on ? "#f7df1e" : "#7d8490", false, "left", 11);
+          }
+          // distance model curve
+          {
+            const { g, w, h: hh } = curve;
+            g.clearRect(0, 0, w, hh);
+            txt(g, w < 260 ? `${MZH[model]}衰減・r = ${roll.toFixed(2)}` : `距離衰減：${MZH[model]}（${MODELS[model]}）・r = ${roll.toFixed(2)}`, 8, 6, "#e8e6e3");
+            txt(g, FORM[model], 8, 22, "#9aa0aa", true, "left", 10);
+            const x0 = 30, y0 = 40, cw = w - x0 - 10, ch = Math.max(10, hh - y0 - 20);
+            g.fillStyle = "rgba(255,255,255,.06)";
+            for (let q = 0; q <= 4; q++) g.fillRect(x0, y0 + (q / 4) * ch, cw, 1);
+            for (let q = 0; q <= 10; q += 2) { g.fillRect(x0 + (q / 10) * cw, y0, 1, ch); txt(g, String(q), x0 + (q / 10) * cw, y0 + ch + 3, "#7d8490", true, "center", 9.5); }
+            txt(g, "1", x0 - 5, y0 - 5, "#7d8490", true, "right", 9.5); txt(g, "0", x0 - 5, y0 + ch - 6, "#7d8490", true, "right", 9.5);
+            [0, 1, 2].forEach((m) => {
+              g.strokeStyle = m === model ? "#f7df1e" : "rgba(255,255,255,.18)"; g.lineWidth = m === model ? 2 : 1;
+              g.beginPath();
+              for (let i = 0; i <= 100; i++) { const xx = x0 + (i / 100) * cw, yy = y0 + (1 - gainOf(m, (i / 100) * 10)) * ch; if (i) g.lineTo(xx, yy); else g.moveTo(xx, yy); }
+              g.stroke();
+            });
+            const mx = x0 + (Math.min(d, 10) / 10) * cw, my = y0 + (1 - gth) * ch;
+            g.fillStyle = "#f72585"; g.beginPath(); g.arc(mx, my, 5, 0, Math.PI * 2); g.fill();
+            txt(g, `增益 ${gth.toFixed(2)}（${fmtDb(gth)}）`, Math.min(mx + 8, w - 120), Math.max(y0, my - 18), "#f72585", false, "left", 10.5);
+          }
+          // measured L/R level after masterGain
+          {
+            const { g, w, h: hh } = meter;
+            g.clearRect(0, 0, w, hh);
+            txt(g, w < 260 ? "實測左右聲道 RMS" : "實測左右聲道 RMS（masterGain 之後）", 8, 6, "#e8e6e3");
+            const y0 = 26, ch = Math.max(10, hh - y0 - 8), dbY = (v) => y0 + clamp(-toDb(v) / 60, 0, 1) * ch;
+            g.fillStyle = "rgba(255,255,255,.06)";
+            [0, -20, -40, -60].forEach((db) => { const yy = y0 + (-db / 60) * ch; g.fillRect(0, yy, w, 1); txt(g, `${db ? "−" + -db : 0}`, w - 4, yy + 2, "#7d8490", true, "right", 9); });
+            if (!on) txt(g, "按「▶ 播放」後顯示實測電平", 8, y0 + ch / 2 - 6, "#7d8490");
+            [[0, "#4cc9f0"], [1, "#f72585"]].forEach(([c, col]) => {
+              g.strokeStyle = col; g.lineWidth = 1.5; g.beginPath();
+              hist.forEach((p, i) => { const xx = (i / 239) * (w - 30), yy = dbY(p[c]); if (i) g.lineTo(xx, yy); else g.moveTo(xx, yy); });
+              g.stroke();
+            });
+            if (on) { txt(g, `L ${fmtDb(l)}`, 8, y0 + 2, "#4cc9f0", true, "left", 10.5); txt(g, `R ${fmtDb(r)}`, 92, y0 + 2, "#f72585", true, "left", 10.5); }
+          }
+        });
+      },
+    },
+    {
+      id: "events", title: "事件與狀態",
+      api: "on／once／off・onload・onloaderror・onplay・onend・onpause・onstop・onseek・onfade・onvolume・onrate・onmute・state()・unload()",
+      desc: "Howler 的每個操作都會觸發事件，事件以 setTimeout 非同步送出並帶著 Sound ID。按下方按鈕呼叫 API，時間軸記錄最近 12 秒的事件，右側是完整事件紀錄。",
+      hint: "第一次按任一按鈕會建立 Howl 並觸發 load；「載入壞檔」故意用損壞的 WAV 觸發 loaderror；off('end') 之後播放到結尾就不再記錄 end。",
+      mount(ctx) {
+        ctx.html(`<div class="board hw-ev"><div class="hw-state"><span class="hw-m hw-api"></span><span class="hw-msg"></span></div><div class="hw-card hw-cv hw-tl"></div><div class="hw-acts"></div><div class="hw-card hw-log"><div>尚無事件</div></div></div>`);
+        const k = keeper(ctx);
+        const LANES = ["load", "loaderror", "play", "end", "pause", "stop", "seek", "fade", "volume", "rate", "mute"];
+        const LC = { load: "#7bd389", loaderror: "#ff5d5d", play: "#4cc9f0", end: "#9d8cff", pause: "#f7df1e", stop: "#ff8c42", seek: "#2ec4b6", fade: "#f72585", volume: "#e8e6e3", rate: "#c77dff", mute: "#8d99ae", once: "#ffffff" };
+        const T0 = performance.now(), evs = [];
+        let howl = null, gone = false, A = null, endOn = true, fadeOut = true;
+        const tl = view(ctx, ctx.$(".hw-tl")), logEl = ctx.$(".hw-log"), apiEl = ctx.$(".hw-api"), msgEl = ctx.$(".hw-msg");
+        asset("chime").then((a) => { if (ctx.active) A = a; }).catch(fail(ctx, "合成音色"));
+        const logRow = (...kids) => {
+          if (evs.length === 1 && logEl.firstChild && !logEl.firstChild.firstChild?.className) logEl.textContent = "";
+          logEl.prepend(h("div", {}, ...kids));
+          while (logEl.children.length > 40) logEl.lastChild.remove();
+        };
+        const stamp = () => h("span", { class: "hw-m", text: `${((performance.now() - T0) / 1000).toFixed(2)}s ` });
+        const record = (e, id, extra = "") => {
+          if (!ctx.active) return;
+          const t = performance.now();
+          evs.push({ t, e, id });
+          while (evs.length && t - evs[0].t > 13000) evs.shift();
+          logRow(stamp(), h("b", { class: "hw-m", text: e }), id ? h("span", { class: "hw-m", text: ` #${id}` }) : null, h("span", { text: ` ${EV_ZH[e] || ""}${extra ? "：" + extra : ""}` }));
+        };
+        const note = (code, zh) => { if (ctx.active) logRow(stamp(), h("span", { class: "hw-m", text: code }), h("span", { text: ` ${zh}` })); };
+        const onEnd = (id) => record("end", id);
+        const make = () => {
+          const opts = { src: [A.src], format: A.fmt, onplayerror: fail(ctx, "播放") };
+          for (const e of ["load", "loaderror", "play", "pause", "stop", "seek", "fade", "volume", "rate", "mute"]) opts["on" + e] = (id, err) => record(e, id, e === "loaderror" ? String(err) : "");
+          if (endOn) opts.onend = onEnd;
+          howl = k.add(new Howl(opts));
+          gone = false;
+          tap();
+        };
+        const need = (fn) => () => {
+          if (!A) return;
+          if (!howl) make();
+          const hw = howl;
+          whenLoaded(ctx, k, hw, () => { if (hw === howl) fn(hw); });
+        };
+        const acts = [
+          ["play()", "播放新聲音", need((hw) => hw.play())],
+          ["pause()", "暫停全部", need((hw) => hw.pause())],
+          ["stop()", "停止全部", need((hw) => hw.stop())],
+          ["seek(1.2)", "跳到 1.2 秒", need((hw) => hw.seek(1.2))],
+          [() => (fadeOut ? "fade(1, 0, 1000)" : "fade(0, 1, 1000)"), "1 秒淡出／淡入", need((hw) => { hw.fade(fadeOut ? 1 : 0, fadeOut ? 0 : 1, 1000); fadeOut = !fadeOut; })],
+          [() => `volume(${howl && howl.volume() < 1 ? 1 : 0.5})`, "音量切換", need((hw) => hw.volume(hw.volume() < 1 ? 1 : 0.5))],
+          [() => `rate(${howl && howl.rate() !== 1 ? 1 : 1.5})`, "速度切換", need((hw) => hw.rate(hw.rate() !== 1 ? 1 : 1.5))],
+          [() => `mute(${!(howl && howl.mute())})`, "靜音切換", need((hw) => hw.mute(!hw.mute()))],
+          [() => `loop(${!(howl && howl.loop())})`, "循環切換（無事件）", need((hw) => { hw.loop(!hw.loop()); note(`loop(${hw.loop()})`, "loop() 不會觸發事件，只改變狀態"); })],
+          ["once('play')", "下一次 play 才觸發", need((hw) => { hw.once("play", (id) => record("once", id)); note("once('play', fn)", "已登記，只會觸發一次"); })],
+          [() => (endOn ? "off('end')" : "on('end')"), "移除／加回 end 監聽", () => {
+            if (howl) { if (endOn) howl.off("end", onEnd); else howl.on("end", onEnd); }
+            endOn = !endOn;
+            note(endOn ? "on('end', fn)" : "off('end', fn)", endOn ? "end 事件恢復記錄" : "之後 end 事件不再記錄");
+          }],
+          ["unload()", "釋放 Howl", () => { if (!howl) return; k.drop(howl); howl = null; gone = true; note("unload()", "Howl 已釋放，state() 變成 unloaded，下次會重新建立"); }],
+          ["載入壞檔", "觸發 loaderror", () => {
+            const bad = k.add(new Howl({ src: [BAD_WAV], format: ["wav"], onloaderror: (id, err) => { record("loaderror", id, `壞檔：${err}`); k.drop(bad); } }));
+            tap();
+          }],
+        ];
+        const actsEl = ctx.$(".hw-acts");
+        const btns = acts.map(([code, zh, fn]) => {
+          const c = h("code", { text: typeof code === "function" ? code() : code });
+          const b = h("button", { type: "button", class: "btn hw-act", onclick: () => { fn(); refresh(); ctx.timeout(refresh, 60); } }, c, h("span", { text: zh }));
+          actsEl.append(b);
+          return { code, c };
+        });
+        const refresh = () => btns.forEach(({ code, c }) => { if (typeof code === "function") c.textContent = code(); });
+        ctx.interval(() => {
+          if (!howl) { apiEl.textContent = gone ? 'state() "unloaded"' : ""; msgEl.textContent = gone ? "　Howl 已釋放，按任一按鈕重新建立" : "尚未建立 Howl：按任一按鈕建立（第一次會觸發 load）"; return; }
+          msgEl.textContent = "";
+          const ok = howl.state() === "loaded";
+          apiEl.textContent = `state() "${howl.state()}"・playing() ${ok && howl.playing()}・duration() ${howl.duration().toFixed(2)}・volume() ${(+howl.volume()).toFixed(2)}・mute() ${howl.mute()}・loop() ${howl.loop()}`;
+        }, 150);
+        ctx.raf(() => {
+          const { g, w, h: hh } = tl;
+          g.clearRect(0, 0, w, hh);
+          const now = performance.now(), WIN = 12000, lx = 66, top = 46, rw = w - lx - 8, T = tap();
+          lane(g, lx, 4, rw, 34);
+          txt(g, "即時波形", lx - 6, 15, "#7d8490", false, "right", 10.5);
+          if (T) { T.an.getFloatTimeDomainData(T.td); drawLive(g, T.td, lx, 4, rw, 34, "#4cc9f0", 1.5); }
+          const lh = Math.max(6, (hh - top - 16) / LANES.length);
+          LANES.forEach((e, i) => {
+            const y = top + i * lh;
+            g.fillStyle = i % 2 ? "rgba(255,255,255,.02)" : "rgba(255,255,255,.045)"; g.fillRect(lx, y, rw, lh - 1);
+            txt(g, e, lx - 6, y + lh / 2 - 6, LC[e], true, "right", 10);
+          });
+          for (let s = 0; s <= 12; s += 2) {
+            const x = lx + rw - ((s * 1000) / WIN) * rw;
+            g.fillStyle = "rgba(255,255,255,.07)"; g.fillRect(x, top, 1, lh * LANES.length);
+            if (s) txt(g, `−${s}s`, x, hh - 13, "#7d8490", true, "center", 9.5); else txt(g, "現在", x - 2, hh - 13, "#7d8490", false, "right", 9.5);
+          }
+          for (const ev of evs) {
+            const li = ev.e === "once" ? 2 : LANES.indexOf(ev.e);
+            const x = lx + rw - ((now - ev.t) / WIN) * rw;
+            if (li < 0 || x < lx) continue;
+            const y = top + li * lh + lh / 2 - 0.5, age = (now - ev.t) / 1000, rr = Math.min(5, lh * 0.32);
+            g.fillStyle = LC[ev.e];
+            if (ev.e === "once") { g.strokeStyle = "#fff"; g.lineWidth = 1.5; g.beginPath(); g.arc(x, y, rr + 3, 0, Math.PI * 2); g.stroke(); }
+            g.beginPath(); g.arc(x, y, rr, 0, Math.PI * 2); g.fill();
+            if (age < 0.5) { g.globalAlpha = 1 - age * 2; g.beginPath(); g.arc(x, y, rr + age * 24, 0, Math.PI * 2); g.fill(); g.globalAlpha = 1; }
+            if (ev.id && lh >= 14 && age < 4) txt(g, `#${ev.id}`, x + rr + 3, y - 5, LC[ev.e], true, "left", 9);
+          }
+        });
+      },
+    },
+    {
+      id: "mixer", title: "全域混音",
+      api: "Howler.volume・Howler.mute・Howler.stop・Howler.codecs・Howler.ctx・Howler.masterGain",
+      desc: "4 個 Howl 各播一軌（鼓組、貝斯、和弦、旋律），在同一個 JavaScript 工作中同時 play()，起點對齊同一個音訊時鐘。全域 Howler 物件控制總音量與靜音，所有 Web Audio 聲音都經過 Howler.masterGain。",
+      hint: "按「▶ 全部播放」；每軌可調音量與 M 靜音，總音量與全域靜音作用在 masterGain。軌道右側電平是依 PCM 與音量估算，右側頻譜才是 masterGain 的實際輸出。",
+      mount(ctx) {
+        ctx.html(`<div class="board hw-mix"><div class="hw-trks"></div><div class="hw-card hw-glob"><div class="hw-lbl"><span><b>masterGain</b> 輸出頻譜</span><span class="hw-m hw-cs"></span></div><div class="hw-cv hw-grow"></div><div class="hw-lbl"><span>Howler.codecs(副檔名)：這個瀏覽器能播的格式</span></div><div class="hw-chips"></div></div></div>`);
+        const k = keeper(ctx);
+        const STEMS = [["drums", "鼓組", "#f7df1e"], ["bass", "貝斯", "#ff8c42"], ["pad", "和弦", "#9d8cff"], ["lead", "旋律", "#4cc9f0"]];
+        let mVol = 1, gMute = false, playing = false, howls = null, ids = [], busy = false;
+        const trks = STEMS.map(([key, name, c], i) => {
+          const box = h("div", { class: "hw-cv" });
+          const t = { key, name, c, vol: 0.8, mute: false, A: null, pk: null, v: null, lvl: 0 };
+          const vol = h("input", { class: "hw-rng", type: "range", min: 0, max: 1, step: 0.01, value: t.vol, "aria-label": `${name}音量`, oninput: () => { t.vol = +vol.value; if (howls) howls[i].volume(t.vol); } });
+          const m = h("button", { type: "button", class: "hw-mini", "aria-pressed": "false", title: "這一軌靜音", onclick: () => { t.mute = !t.mute; m.setAttribute("aria-pressed", String(t.mute)); if (howls) howls[i].mute(t.mute); } }, "M");
+          ctx.$(".hw-trks").append(h("div", { class: "hw-card hw-trk", style: `--rc:${c}` }, h("span", { class: "hw-tn" }, h("b", { text: name }), h("small", { class: "hw-m", text: key })), box, vol, m));
+          t.v = view(ctx, box);
+          asset(key).then((a) => { if (ctx.active) { t.A = a; t.pk = peakCache(a.data); } }).catch(fail(ctx, "合成音軌"));
+          return t;
+        });
+        const EXTS = ["mp3", "mpeg", "opus", "ogg", "oga", "wav", "aac", "caf", "m4a", "mp4", "weba", "webm", "dolby", "flac"];
+        ctx.$(".hw-chips").append(...EXTS.map((x) => h("span", { class: `hw-chip${Howler.codecs(x) ? " ok" : ""}`, text: x })));
+        const spec = view(ctx, ctx.$(".hw-glob > .hw-cv")), csEl = ctx.$(".hw-cs");
+        const setBtn = (on) => { playing = on; btn.textContent = on ? "■ 全部停止" : "▶ 全部播放"; };
+        const btn = ctx.button("▶ 全部播放", async () => {
+          if (playing) { howls.forEach((hw) => hw.stop()); setBtn(false); return; }
+          if (busy) return;
+          busy = true;
+          try {
+            const As = await Promise.all(trks.map((t) => asset(t.key)));
+            if (!ctx.active) return;
+            if (!howls) {
+              howls = trks.map((t, i) => k.add(new Howl({ src: [As[i].src], format: As[i].fmt, loop: true, volume: t.vol, mute: t.mute, onloaderror: fail(ctx, `${t.name}載入`), onplayerror: fail(ctx, "播放") })));
+              tap(); Howler.volume(mVol); Howler.mute(gMute);
+            }
+            await Promise.all(howls.map((hw) => (hw.state() === "loaded" ? null : new Promise((res) => hw.once("load", res)))));
+            if (!ctx.active) return;
+            // All four start inside one task, so they share the same AudioContext start time.
+            ids = howls.map((hw) => hw.play());
+            setBtn(true);
+          } catch (e) { fail(ctx, "播放")(e); } finally { busy = false; }
+        }, { primary: true });
+        ctx.slider("總音量", { min: 0, max: 1, step: 0.01, value: 1, format: (v) => `${Math.round(v * 100)}%` }, (v) => { mVol = +v; if (Howler.ctx) Howler.volume(mVol); });
+        ctx.toggle("全域靜音", false, (v) => { gMute = v; if (Howler.ctx) Howler.mute(v); });
+        ctx.button("Howler.stop()", () => { if (Howler.ctx) Howler.stop(); setBtn(false); });
+        ctx.onCleanup(() => { if (Howler.ctx) { Howler.volume(1); Howler.mute(false); } });
+        ctx.interval(() => { const ac = Howler.ctx; csEl.textContent = ac ? `ctx "${ac.state}"・${ac.sampleRate} Hz・volume() ${Howler.volume().toFixed(2)}` : "Howler.ctx = null"; }, 300);
+        let bandsHold = new Float32Array(72);
+        ctx.raf(() => {
+          const ok = howls && howls.every((hw) => hw.state() === "loaded");
+          trks.forEach((t, i) => {
+            const { g, w, h: hh } = t.v;
+            g.clearRect(0, 0, w, hh);
+            if (!t.pk) { txt(g, "合成中…", 4, 4, "#7d8490"); return; }
+            const mw = 40, ww = w - mw - 6, dur = t.A.dur;
+            let pos = 0, on = false;
+            if (ok && ids[i] != null) { on = howls[i].playing(ids[i]); const s = howls[i].seek(ids[i]); pos = typeof s === "number" ? s % dur : 0; }
+            const x = (pos / dur) * ww, p = t.pk(ww);
+            drawPeaks(g, p, 0, 2, ww, hh - 4, "rgba(255,255,255,.22)");
+            g.save(); g.beginPath(); g.rect(0, 0, x, hh); g.clip(); drawPeaks(g, p, 0, 2, ww, hh - 4, t.c); g.restore();
+            for (let b = 1; b < 4; b++) { g.fillStyle = "rgba(255,255,255,.1)"; g.fillRect((b / 4) * ww, 0, 1, hh); }
+            if (on) { g.fillStyle = "#fff"; g.fillRect(x - 0.75, 0, 1.5, hh); }
+            let est = 0;
+            if (on) {
+              const c = Math.floor(pos * SR), a = Math.max(0, c - 1024), e = Math.min(t.A.data.length, c + 1024);
+              let s = 0;
+              for (let j = a; j < e; j++) s += t.A.data[j] * t.A.data[j];
+              est = Math.sqrt(s / Math.max(1, e - a)) * t.vol * (t.mute ? 0 : 1) * (gMute ? 0 : mVol);
+            }
+            t.lvl = Math.max(est, t.lvl * 0.88);
+            const lv = clamp(1 + toDb(t.lvl) / 60, 0, 1);
+            g.fillStyle = "rgba(255,255,255,.06)"; g.fillRect(w - mw, 2, mw, hh - 4);
+            g.fillStyle = t.c; g.fillRect(w - mw, 2 + (hh - 4) * (1 - lv), 6, (hh - 4) * lv);
+            txt(g, t.lvl > 1e-4 ? fmtDb(t.lvl).replace(" dB", "") : "−∞", w - 2, hh / 2 - 6, "#9aa0aa", true, "right", 9.5);
+          });
+          const { g, w, h: hh } = spec;
+          g.clearRect(0, 0, w, hh);
+          const T = tap();
+          let lb = null;
+          if (T && playing) { T.an.getByteFrequencyData(T.fq); lb = logBands(T.fq, 72); }
+          for (let i = 0; i < 72; i++) bandsHold[i] = Math.max(lb ? lb[i] : 0, bandsHold[i] * 0.9);
+          lane(g, 0, 0, w, hh);
+          drawBands(g, bandsHold, 0, 4, w, hh - 18, 30, 200);
+          txt(g, "低頻", 4, hh - 13, "#7d8490", false, "left", 9.5); txt(g, "高頻", w - 4, hh - 13, "#7d8490", false, "right", 9.5);
+          if (!playing) txt(g, "按「▶ 全部播放」後顯示實際輸出", w / 2, hh / 2 - 8, "#7d8490", false, "center");
+        });
+      },
+    },
+    {
+      id: "loading", title: "載入方式與快取",
+      api: "html5: true・Howler 解碼快取・onload・state()・duration()・rate",
+      desc: "Web Audio 模式先用 XHR 下載整個檔案再解碼成 PCM 放進記憶體，延遲低、可任意重疊；同一個 src 再建立 Howl 會直接命中快取。HTML5 模式交給瀏覽器的 audio 元素串流，不佔解碼記憶體，但不經過 masterGain。",
+      hint: "按「依序載入三種」量測三種方式的載入時間，每張卡片可單獨播放。調速度時 Web Audio 會連音高一起變，HTML5 模式預設保持音高。",
+      mount(ctx) {
+        ctx.html(`<div class="board hw-ld"><div class="hw-ldcs"></div><div class="hw-card hw-cv"></div></div>`);
+        const k = keeper(ctx);
+        const MODES = [
+          { name: "Web Audio", sub: "XHR 下載＋decodeAudioData", c: "#4cc9f0" },
+          { name: "快取命中", sub: "同一個 src 再 new Howl()", c: "#7bd389" },
+          { name: "HTML5 Audio", sub: "html5: true，audio 元素串流", c: "#f72585" },
+        ];
+        let A = null, rate = 1, busy = false, howls = [null, null, null], ids = [null, null, null], ms = [null, null, null];
+        const cards = MODES.map((m, i) => {
+          const B = {};
+          const kv = (key, label, val, cls = "", mono = false) => h("div", { class: `hw-kv ${cls}` }, h("span", { text: label }), (B[key] = h("b", { class: mono ? "hw-m" : null, text: val })));
+          const bar = h("i"), tm = h("span", { class: "hw-m", text: "0.0s" });
+          const pb = h("button", { type: "button", class: "hw-mini", title: "播放／暫停這張卡片的 Howl", onclick: () => playCard(i) }, "▶");
+          ctx.$(".hw-ldcs").append(h("div", { class: "hw-card hw-ldc", style: `--rc:${m.c}` },
+            h("div", { class: "hw-lbl" }, h("span", {}, h("b", { text: m.name })), h("span", { class: "hw-m", text: `#${i + 1}` })),
+            h("div", { class: "hw-sub", text: m.sub }),
+            kv("ms", "載入耗時", "尚未載入", "big", true), kv("mem", "記憶體", "…"),
+            kv("mg", "經過 masterGain", i === 2 ? "✕ 不經過" : "✓ 經過", "x"), kv("st", "state()", "…", "x", true),
+            h("div", { class: "hw-pb" }, pb, h("div", { class: "hw-bar" }, bar), tm)));
+          return { B, bar, tm, pb, on: null };
+        });
+        const sp = view(ctx, ctx.$(".hw-ld > .hw-cv"));
+        asset("loop").then((a) => { if (!ctx.active) return; A = a; cards[0].B.mem.textContent = `檔案 ${fmtKB(a.bytes)}`; cards[2].B.mem.textContent = `檔案 ${fmtKB(a.bytes)}`; }).catch(fail(ctx, "音檔"));
+        const measure = (i, opts) => new Promise((res) => {
+          const t0 = performance.now();
+          const hw = k.add(new Howl({ ...opts, rate, onloaderror: (id, e) => { fail(ctx, `${MODES[i].name} 載入`)(id, e); res(null); }, onplayerror: fail(ctx, "播放") }));
+          tap();
+          howls[i] = hw;
+          const done = () => { ms[i] = performance.now() - t0; res(hw); };
+          if (hw.state() === "loaded") done(); else hw.once("load", () => { if (ctx.active && k.alive(hw)) done(); else res(null); });
+          ctx.timeout(() => res(null), 10000);
+        });
+        const reset = () => {
+          if (busy) return;
+          howls.forEach((hw) => k.drop(hw));
+          howls = [null, null, null]; ids = [null, null, null]; ms = [null, null, null];
+        };
+        const runAll = async () => {
+          if (busy) return;
+          reset();
+          busy = true; runBtn.disabled = true;
+          const stamp = Date.now(), web = `${LOOP_SRC}?web=${stamp}`;
+          try {
+            if (!(await measure(0, { src: [web] })) || !ctx.active) return;
+            if (!(await measure(1, { src: [web] })) || !ctx.active) return;
+            await measure(2, { src: [`${LOOP_SRC}?html5=${stamp}`], html5: true });
+          } finally { busy = false; if (ctx.active) runBtn.disabled = false; }
+        };
+        const playCard = async (i) => {
+          if (!howls[i]) { await runAll(); if (!ctx.active || !howls[i]) return; }
+          const hw = howls[i];
+          if (hw.state() !== "loaded") return;
+          if (ids[i] != null && hw.playing(ids[i])) hw.pause(ids[i]);
+          else { ids[i] = hw.play(ids[i] ?? undefined); hw.rate(rate, ids[i]); }
+        };
+        const runBtn = ctx.button("依序載入三種", runAll, { primary: true });
+        ctx.slider("速度", { min: 0.5, max: 2, step: 0.05, value: 1, format: (v) => `${(+v).toFixed(2)}×` }, (v) => { rate = +v; howls.forEach((hw, i) => { if (hw && ids[i] != null) hw.rate(rate, ids[i]); }); });
+        ctx.button("重設", reset);
+        ctx.interval(() => cards.forEach((c, i) => {
+          const hw = howls[i];
+          c.B.ms.textContent = ms[i] != null ? fmtMs(ms[i]) : hw ? "載入中…" : "尚未載入";
+          c.B.st.textContent = hw ? `"${hw.state()}"` : "…";
+          if (hw && hw.state() === "loaded" && Howler.ctx) {
+            const d = hw.duration();
+            if (i === 0) c.B.mem.textContent = `PCM ≈ ${fmtKB(d * Howler.ctx.sampleRate * (A ? A.ch : 2) * 4)}（檔案 ${A ? fmtKB(A.bytes) : "…"}）`;
+            if (i === 1) c.B.mem.textContent = "共用 #1 的 PCM，+0 KB";
+            if (i === 2) c.B.mem.textContent = "瀏覽器自管，串流";
+          } else if (!hw) c.B.mem.textContent = i === 1 ? "…" : A ? `檔案 ${fmtKB(A.bytes)}` : "…";
+        }), 200);
+        const hold = new Float32Array(96);
+        ctx.raf(() => {
+          cards.forEach((c, i) => {
+            const hw = howls[i];
+            let p = 0, s = 0, on = false;
+            if (hw && hw.state() === "loaded" && ids[i] != null) {
+              on = hw.playing(ids[i]);
+              const v = hw.seek(ids[i]);
+              s = typeof v === "number" ? v : 0;
+              p = clamp(s / (hw.duration() || 1), 0, 1);
+            }
+            c.bar.style.width = `${(p * 100).toFixed(1)}%`;
+            const t = `${s.toFixed(1)}s`;
+            if (c.tm.textContent !== t) c.tm.textContent = t;
+            if (c.on !== on) { c.on = on; c.pb.textContent = on ? "❚❚" : "▶"; }
+          });
+          const { g, w, h: hh } = sp;
+          g.clearRect(0, 0, w, hh);
+          const bw = Math.min(w * 0.42, 340), x1 = bw + 16;
+          txt(g, "載入耗時（對數刻度）", 8, 6, "#e8e6e3");
+          const top = 26, rh = Math.max(8, Math.min(26, (hh - top - 10) / 3 - 6));
+          MODES.forEach((m, i) => {
+            const y = top + i * (rh + 6);
+            g.fillStyle = "rgba(255,255,255,.05)"; g.fillRect(8, y, bw - 8, rh);
+            if (ms[i] != null) {
+              const f = clamp(Math.log10(Math.max(0.1, ms[i]) / 0.1) / 4, 0.02, 1);
+              g.fillStyle = m.c; g.fillRect(8, y, (bw - 8) * f, rh);
+              txt(g, fmtMs(ms[i]), 12, y + rh / 2 - 6, "#050608", true, "left", 10.5);
+            } else txt(g, m.name, 12, y + rh / 2 - 6, "#7d8490", false, "left", 10.5);
+          });
+          txt(g, "0.1 ms", 8, top + 3 * (rh + 6), "#7d8490", true, "left", 9);
+          txt(g, "1 s", bw, top + 3 * (rh + 6), "#7d8490", true, "right", 9);
+          const T = tap();
+          let lb = null;
+          if (T) { T.an.getByteFrequencyData(T.fq); lb = logBands(T.fq, 96); }
+          for (let i = 0; i < 96; i++) hold[i] = Math.max(lb ? lb[i] : 0, hold[i] * 0.9);
+          txt(g, "masterGain 頻譜：#3 HTML5 的聲音不經過這裡", x1, 6, "#e8e6e3");
+          lane(g, x1, 24, w - x1 - 8, hh - 32);
+          drawBands(g, hold, x1, 24, w - x1 - 8, hh - 32);
+        });
+      },
+    },
+    {
+      id: "stress", title: "極限測試", kind: "stress",
+      api: "同一個 Howl 同時 play() N 次・rate(r, id)・stereo(p, id)・seek(id)・playing(id)",
+      desc: "同一個 1 秒循環音色同時播放 N 個 Sound ID，每個都有自己的音高與左右位置。每一格畫面都對每個 id 呼叫 seek(id) 與 playing(id)，Howler 內部以線性搜尋找 id，成本隨 N² 成長。",
+      hint: "按「自動加壓」從 16 個逐級加到 1024 個；「▶ 試聽」用目前數量發聲，「■ 停止聲音」全部停止。音訊時鐘／實際時間接近 1.000 代表音訊執行緒跟得上。",
+      mount(ctx) {
+        ctx.html(`<div class="hw-bv"><div class="hw-cv hw-bvin"></div></div>`);
+        ctx.controls.classList.add("bottom");
+        const k = keeper(ctx);
+        const PENTA = [1, 9 / 8, 5 / 4, 3 / 2, 5 / 3, 2];
+        let howl = null, loading = null, started = false, target = 16, ids = [], playMs = 0, live = 0, envA = null;
+        const clk = { a: 0, p: 0, r: 0 };
+        const v = view(ctx, ctx.$(".hw-bvin"));
+        asset("pulse").then((a) => { if (ctx.active) envA = envelope(a.data, 200); }).catch(fail(ctx, "合成音色"));
+        const ensure = () => (loading ||= asset("pulse").then((a) => new Promise((res, rej) => {
+          if (!ctx.active) return rej(new DOMException("Scene unmounted", "AbortError"));
+          howl = k.add(new Howl({ src: [a.src], format: a.fmt, loop: true, volume: 0.05, onloaderror: (_, e) => rej(new Error(`載入失敗：${e}`)), onplayerror: fail(ctx, "播放") }));
+          tap();
+          if (howl.state() === "loaded") res(); else howl.once("load", () => res());
+        })).catch((e) => { loading = null; throw e; }));
+        const apply = async (n) => {
+          target = n;
+          if (!started) return;
+          await ensure();
+          if (!ctx.active || !started) return;
+          const t0 = performance.now();
+          let made = 0;
+          while (ids.length < n) {
+            const i = ids.length, id = howl.play();
+            howl.rate(PENTA[i % 6] * (i % 12 < 6 ? 1 : 0.5), id);
+            howl.stereo(((i * 0.618) % 1) * 2 - 1, id);
+            ids.push(id); made++;
+          }
+          while (ids.length > n) howl.stop(ids.pop());
+          // Voices sharing a rate start in the same render quantum and add up coherently, so scale by 1/N.
+          howl.volume(0.9 / n);
+          if (made) playMs = (performance.now() - t0) / made;
+        };
+        const r = ctx.ramp({
+          label: "同時播放數", unit: "個", steps: [16, 32, 64, 128, 256, 512, 1024], apply,
+          title: "極限測試：同時播放的 Sound ID",
+          note: "FPS 反映主執行緒成本：每格對 N 個 id 呼叫 seek 與 playing 再畫出來。play() 平均耗時含 rate 與 stereo 設定；音訊時鐘比值低於 0.98 代表音訊執行緒開始跟不上。",
+          metrics: () => ({ "播放中": live, "play() 平均": playMs ? `${playMs.toFixed(2)} ms` : "…", "音訊時鐘／實際": clk.r ? clk.r.toFixed(3) : "…" }),
+        });
+        // The ramp's own run button is the gesture that may create the AudioContext.
+        ctx.on(ctx.el, "click", (e) => { if (e.target.closest && e.target.closest("[data-sc-run]")) { started = true; ensure().catch(() => {}); } }, { capture: true });
+        ctx.button("▶ 試聽", () => { started = true; ensure().catch(fail(ctx, "載入")); r.set(r.value); }, { primary: true });
+        ctx.button("■ 停止聲音", () => { started = false; if (howl) howl.stop(); ids = []; });
+        ctx.interval(() => {
+          const ac = Howler.ctx;
+          if (!ac || !started) { clk.p = 0; clk.r = 0; return; }
+          const a = ac.currentTime, p = performance.now();
+          if (clk.p) clk.r = (a - clk.a) / ((p - clk.p) / 1000);
+          clk.a = a; clk.p = p;
+        }, 1000);
+        const hold = new Float32Array(96);
+        ctx.raf(() => {
+          const { g, w, h: hh } = v;
+          g.clearRect(0, 0, w, hh);
+          const ok = started && howl && howl.state() === "loaded", n = ok ? ids.length : target, T = tap();
+          const th = Math.min(120, hh * 0.28);
+          lane(g, 10, 26, w - 20, th);
+          let lb = null;
+          if (T && ok) { T.an.getByteFrequencyData(T.fq); T.an.getFloatTimeDomainData(T.td); lb = logBands(T.fq, 96); }
+          for (let i = 0; i < 96; i++) hold[i] = Math.max(lb ? lb[i] : 0, hold[i] * 0.9);
+          drawBands(g, hold, 10, 26, w - 20, th);
+          if (lb) drawLive(g, T.td, 10, 26, w - 20, th, "#f7df1e", 2);
+          txt(g, ok ? `masterGain 即時頻譜與波形・每個聲音音量 ${(0.9 / Math.max(1, n)).toFixed(4)}` : "尚未發聲：按「自動加壓」或「▶ 試聽」", 12, 8, ok ? "#e8e6e3" : "#7d8490");
+          const gy = 26 + th + 12, gh = hh - gy - 10, gw = w - 20;
+          const cols = Math.max(1, Math.ceil(Math.sqrt((n * gw) / Math.max(1, gh)))), rows = Math.ceil(n / cols);
+          const cell = Math.min(gw / cols, gh / Math.max(1, rows)), rad = Math.max(1, cell * 0.38);
+          let on = 0;
+          for (let i = 0; i < n; i++) {
+            let b = 0.12;
+            if (ok) {
+              const id = ids[i];
+              if (howl.playing(id)) {
+                on++;
+                const s = howl.seek(id), ph = typeof s === "number" ? ((s % 1) + 1) % 1 : 0;
+                b = 0.25 + 0.75 * (envA ? envA[Math.min(envA.length - 1, Math.floor(ph * envA.length))] : 0.5);
+              }
+            }
+            g.fillStyle = `hsl(${185 + (i % 6) * 30} ${i % 12 < 6 ? 85 : 55}% ${Math.round(14 + b * 54)}%)`;
+            const x = 10 + (i % cols) * cell + cell / 2, y = gy + Math.floor(i / cols) * cell + cell / 2;
+            if (rad < 3) g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+            else { g.beginPath(); g.arc(x, y, rad, 0, Math.PI * 2); g.fill(); }
+          }
+          live = on;
+          txt(g, `${ok ? `播放中 ${on}` : `待命 ${n}`} 個 Sound ID・顏色＝音高（6 音 × 2 個八度）・亮度＝各自循環內的位置`, 12, gy - 12 > 26 + th ? gy - 11 : gy, "#9aa0aa", false, "left", 10.5);
+        });
+      },
+    },
+  ],
+});
 </script>
 </body>
 </html>

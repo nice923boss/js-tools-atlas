@@ -3,168 +3,539 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>COBE 示範：從台北出發的航線地球儀</title>
+<title>COBE 示範：八個場景看懂點陣地球儀與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","note":"城市標籤使用 CSS Anchor Positioning，不支援的瀏覽器只顯示光點"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"城市標籤與卡片使用 CSS Anchor Positioning，不支援的瀏覽器只顯示光點","scenes":["台北航線","外觀參數","點陣密度","縮放與構圖","標記點","DOM 綁定標記","逐格動畫","極限測試"]}</script>
 <style>
-  body { background: radial-gradient(circle at 50% 55%, #10183a 0%, #070912 70%); }
-  .wrap { position: fixed; inset: 0; display: grid; place-items: center; }
-  .globe { position: relative; touch-action: none; cursor: grab; }
-  .globe.dragging { cursor: grabbing; }
-  .globe canvas { display: block; width: 100%; height: 100%; }
-  .heading { position: fixed; left: 16px; top: 14px; z-index: 40; pointer-events: none; }
-  .heading h1 { margin: 0; font-size: clamp(20px, 4.4vw, 30px); letter-spacing: .06em; }
-  .heading p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
-  .city {
-    position: absolute; display: none; padding: 3px 8px; border-radius: 999px; font-size: 12px; white-space: nowrap;
-    background: rgba(14, 16, 19, .78); border: 1px solid rgba(255, 255, 255, .18); color: #fff; pointer-events: none;
-    transform: translateY(-6px); transition: opacity .25s;
+  .globes { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 8px) 8px calc(var(--sc-ctl-b, 0px) + 8px);
+    display: grid; gap: 8px; grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+    background: radial-gradient(circle at 50% 58%, #121a3c 0%, #070912 72%); }
+  .globes.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .globes.four { grid-template: repeat(2, minmax(0, 1fr)) / repeat(2, minmax(0, 1fr)); }
+  @media (orientation: portrait) { .globes.two { grid-template: repeat(2, minmax(0, 1fr)) / minmax(0, 1fr); } }
+  .cell { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+  .globes.two .cell, .globes.four .cell { border-radius: 10px; background: rgba(255, 255, 255, 0.025); border: 1px solid rgba(255, 255, 255, 0.07); }
+  .orb { position: absolute; left: 50%; top: 50%; translate: -50% -50%; }
+  .orb.fill { left: 0; top: 0; translate: none; }
+  .orb canvas { display: block; width: 100%; height: 100%; }
+  .grab { cursor: grab; touch-action: none; }
+  .grab.dragging { cursor: grabbing; }
+  .cap { position: absolute; left: 8px; top: 6px; z-index: 4; max-width: calc(100% - 16px); font: 500 11.5px/1.5 var(--font);
+    color: var(--fg); pointer-events: none; padding: 2px 7px; border-radius: 6px; background: rgba(7, 9, 18, 0.7); }
+  .cap.bl { top: auto; bottom: 6px; left: auto; right: 8px; max-width: min(60%, 460px); text-align: right; }
+  .cap b { color: var(--accent); font: 700 11.5px/1.5 var(--mono); }
+  .cap b.nm { font-family: var(--font); }
+  .cap .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin: 0 3px 0 6px; vertical-align: -1px;
+    background: var(--c); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.4); }
+  .cap .sw:first-child { margin-left: 0; }
+  .cap .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin: 0 4px 0 8px; background: var(--c); }
+  .cap .dot:first-child { margin-left: 0; }
+  .heading { position: absolute; left: 16px; top: calc(var(--sc-ctl-h, 0px) + 10px); z-index: 4; pointer-events: none; }
+  .heading h1 { margin: 0; font-size: clamp(18px, 4vw, 28px); letter-spacing: 0.06em; }
+  .heading p { margin: 3px 0 0; font-size: 12px; color: var(--muted); }
+  .lbl, .card, .arcl { position: absolute; display: none; z-index: 2; white-space: nowrap; transition: opacity 0.3s, filter 0.3s; }
+  .lbl { padding: 3px 8px; border-radius: 999px; font-size: 12px; background: rgba(14, 16, 19, 0.78);
+    border: 1px solid rgba(255, 255, 255, 0.18); color: #fff; pointer-events: none; }
+  .lbl.home { background: #f25f3a; border-color: #ffb199; font-weight: 700; }
+  .lbl small { color: rgba(255, 255, 255, 0.65); margin-left: 4px; font-family: var(--font); font-variant-numeric: tabular-nums; }
+  .lbl.tw { padding: 1px 6px; font-size: 11px; }
+  .lbl.tw small { font-size: 10px; }
+  .globes:not(.zoomed) .lbl.tw { display: none; }
+  .globes.compact .lbl.tw small { display: none; }
+  .card { padding: 5px 9px; border-radius: 8px; font: 500 11.5px/1.4 var(--font); color: #fff; cursor: pointer;
+    background: rgba(12, 15, 24, 0.86); border: 1px solid rgba(255, 255, 255, 0.2); box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4); }
+  .card:hover { border-color: var(--accent); }
+  .card.home { background: rgba(242, 95, 58, 0.92); border-color: #ffb199; cursor: default; }
+  .card b { font-size: 12.5px; }
+  .card .t { margin-left: 6px; font: 700 12px/1.4 var(--mono); color: var(--accent); }
+  .card.home .t { color: #fff; }
+  .card small { display: block; color: rgba(255, 255, 255, 0.7); font: 500 10.5px/1.4 var(--font); font-variant-numeric: tabular-nums; }
+  .arcl { padding: 2px 7px; border-radius: 6px; font: 600 11px/1.5 var(--font); font-variant-numeric: tabular-nums; color: #1a1408; background: rgba(255, 199, 77, 0.92);
+    pointer-events: none; translate: -50% -50%; }
+  .nosup { display: none; position: absolute; right: 8px; bottom: 6px; z-index: 4; max-width: 60%; font-size: 11px; color: var(--c5); text-align: right; }
+  @supports (anchor-name: --a) {
+    .lbl, .card.home, .mode-cards .card, .mode-arcs .arcl { display: block; }
   }
-  .city.home { background: #f25f3a; border-color: #ffb199; font-weight: 700; transform: translateY(6px); }
-  .city small { color: rgba(255, 255, 255, .65); margin-left: 4px; font-family: var(--mono); }
-  @supports (anchor-name: --a) { .city { display: block; } }
-  @media (max-width: 600px) { .heading { top: auto; bottom: 46px; } }
+  @supports not (anchor-name: --a) { .nosup { display: block; } }
+  .hero { position: absolute; z-index: 3; pointer-events: none; opacity: 0; transition: opacity 0.4s; max-width: min(46%, 380px); }
+  .hero h2 { margin: 0 0 6px; font-size: clamp(18px, 3.6vw, 34px); letter-spacing: 0.05em; text-shadow: 0 2px 10px #000; }
+  .hero p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+  .hero.m1 { opacity: 1; left: 50%; top: 10%; translate: -50% 0; text-align: center; max-width: 90%; }
+  .hero.m2 { opacity: 1; left: 5%; top: 50%; translate: 0 -50%; }
+  .stress-view { position: absolute; inset: 8px; border-radius: 10px; overflow: hidden;
+    background: radial-gradient(circle at 50% 50%, #121a3c 0%, #07080b 70%); }
+  .stress-view .cell { position: absolute; inset: 0 0 var(--sc-ctl-b, 0px) 0; }
+  @media (min-width: 761px) { .stress-view { inset: 8px 8px 8px 350px; } }
 </style>
 </head>
 <body>
-<div class="wrap"><div class="globe" id="globe"><canvas id="cv"></canvas></div></div>
-<div class="heading"><h1>從台北出發</h1><p>8 條直飛航線，拖曳地球儀轉動</p></div>
-<div class="controls" id="fly">
-  <button class="btn" data-go="tpe">台灣</button>
-  <button class="btn" data-go="nrt">東京</button>
-  <button class="btn" data-go="sfo">舊金山</button>
-  <button class="btn" data-go="lhr">倫敦</button>
-  <button class="btn" data-go="syd">雪梨</button>
-  <button class="btn" id="spin" aria-pressed="true">自轉</button>
-</div>
-<div class="hint">拖曳旋轉・點城市按鈕飛過去</div>
-
+<script src="_shared/showcase.js"></script>
 <script type="module">
+// COBE showcase: tiny WebGL dot globe. Every scene creates its own globe(s) and, on unmount, calls destroy()
+// and loses the WebGL context explicitly (cobe's destroy() frees buffers and programs but keeps the context).
+// cobe 2.0.1 has no render callback: each scene drives phi / theta / markers from ctx.raf() through globe.update().
 import createGlobe from "https://cdn.jsdelivr.net/npm/cobe@2.0.1/dist/index.esm.js";
 
-// City list: [id, label, IATA, lat, lon]. Taipei is the hub every arc starts from.
-const CITIES = [
-  ["tpe", "台北", "TPE", 25.03, 121.56],
-  ["nrt", "東京", "NRT", 35.68, 139.69],
-  ["icn", "首爾", "ICN", 37.57, 126.98],
-  ["hkg", "香港", "HKG", 22.32, 114.17],
-  ["sin", "新加坡", "SIN", 1.35, 103.82],
-  ["sfo", "舊金山", "SFO", 37.77, -122.42],
-  ["lhr", "倫敦", "LHR", 51.51, -0.13],
-  ["syd", "雪梨", "SYD", -33.87, 151.21],
-  ["bkk", "曼谷", "BKK", 13.75, 100.5],
+const { h, fmt } = Showcase;
+const RAD = Math.PI / 180;
+const TAU = Math.PI * 2;
+const SPIN = 0.0025;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const wrapPi = (d) => ((((d + Math.PI) % TAU) + TAU) % TAU) - Math.PI;
+// Same conversion cobe uses internally: puts a lat/lon at the centre of the visible disc.
+const toAngles = (lat, lon) => [Math.PI - (lon * RAD - Math.PI / 2), lat * RAD];
+const rgb = (c) => `rgb(${c.map((v) => Math.round(v * 255)).join(",")})`;
+const HOME = [25.03, 121.56];
+const HOME_PHI = toAngles(...HOME)[0];
+const NIGHT = {
+  dark: 1, diffuse: 1.25, mapSamples: 16000, mapBrightness: 6, mapBaseBrightness: 0.04,
+  baseColor: [0.25, 0.3, 0.55], markerColor: [0.3, 0.85, 1], glowColor: [0.25, 0.32, 0.75], arcColor: [1, 0.78, 0.3],
+};
+const PAL = [[0.97, 0.87, 0.12], [0.3, 0.79, 0.94], [0.97, 0.15, 0.52], [0.48, 0.83, 0.54], [1, 0.55, 0.26], [0.62, 0.55, 1]];
+
+// Original demo routes: [id, label, IATA, lat, lon]. Taipei is the hub every arc starts from.
+const ROUTES = [
+  ["tpe", "台北", "TPE", 25.03, 121.56], ["nrt", "東京", "NRT", 35.68, 139.69], ["icn", "首爾", "ICN", 37.57, 126.98],
+  ["hkg", "香港", "HKG", 22.32, 114.17], ["sin", "新加坡", "SIN", 1.35, 103.82], ["sfo", "舊金山", "SFO", 37.77, -122.42],
+  ["lhr", "倫敦", "LHR", 51.51, -0.13], ["syd", "雪梨", "SYD", -33.87, 151.21], ["bkk", "曼谷", "BKK", 13.75, 100.5],
 ];
-const byId = Object.fromEntries(CITIES.map((c) => [c[0], c]));
-const home = byId.tpe;
+const ROUTE_PLACE = { tpe: "below", bkk: "left", sin: "left", nrt: "right" };
 
-const markers = CITIES.map(([id, , , lat, lon]) => ({
-  id, location: [lat, lon], size: id === "tpe" ? 0.09 : 0.045,
-  ...(id === "tpe" ? { color: [1, 0.42, 0.25] } : {}),
-}));
-const arcs = CITIES.filter((c) => c[0] !== "tpe").map(([id, , , lat, lon]) => ({
-  id: "a-" + id, from: [home[3], home[4]], to: [lat, lon],
-}));
+// Taiwan cities: [name, lat, lon, population in 10k]. Rounded figures, illustration only.
+const TW = [
+  ["臺北", 25.038, 121.564, 249], ["桃園", 24.993, 121.301, 230], ["新竹", 24.804, 120.968, 45], ["臺中", 24.148, 120.674, 285],
+  ["嘉義", 23.48, 120.449, 26], ["臺南", 22.997, 120.212, 186], ["高雄", 22.627, 120.301, 273], ["宜蘭", 24.757, 121.753, 45],
+  ["花蓮", 23.992, 121.601, 32], ["臺東", 22.755, 121.144, 21], ["澎湖", 23.566, 119.579, 10.5],
+];
+// World metro areas: [id, name, lat, lon, population in millions, IANA time zone]. Rounded, illustration only.
+const WORLD = [
+  ["tyo", "東京", 35.68, 139.69, 37, "Asia/Tokyo"], ["sel", "首爾", 37.57, 126.98, 26, "Asia/Seoul"],
+  ["hkg", "香港", 22.32, 114.17, 7.5, "Asia/Hong_Kong"], ["sin", "新加坡", 1.35, 103.82, 6, "Asia/Singapore"],
+  ["bkk", "曼谷", 13.75, 100.5, 11, "Asia/Bangkok"], ["syd", "雪梨", -33.87, 151.21, 5.3, "Australia/Sydney"],
+  ["dxb", "杜拜", 25.2, 55.27, 3.6, "Asia/Dubai"], ["lon", "倫敦", 51.51, -0.13, 9.6, "Europe/London"],
+  ["par", "巴黎", 48.86, 2.35, 11, "Europe/Paris"], ["nyc", "紐約", 40.71, -74.01, 19.5, "America/New_York"],
+  ["sfo", "舊金山", 37.77, -122.42, 4.6, "America/Los_Angeles"], ["lax", "洛杉磯", 34.05, -118.24, 12.5, "America/Los_Angeles"],
+];
+const W = Object.fromEntries(WORLD.map((c) => [c[0], c]));
+const SAMPLE_MARKERS = [
+  { location: HOME, size: 0.05 },
+  ...["tyo", "sin", "syd", "sfo", "lon", "dxb"].map((id) => ({ location: [W[id][2], W[id][3]], size: 0.032 })),
+];
 
-// Same conversion cobe uses internally: put a lat/lon at the front of the globe.
-const toAngles = (lat, lon) => [Math.PI - ((lon * Math.PI) / 180 - Math.PI / 2), (lat * Math.PI) / 180];
+function distKm([a, b], [c, d]) {
+  const p = (c - a) * RAD, q = (d - b) * RAD;
+  const s = Math.sin(p / 2) ** 2 + Math.cos(a * RAD) * Math.cos(c * RAD) * Math.sin(q / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(s));
+}
 
-const wrapEl = document.getElementById("globe");
-const canvas = document.getElementById("cv");
-let [phi, theta] = toAngles(home[3], home[4]);
-phi -= 0.2;
-theta = 0.32;
-let target = null;
-let spin = true;
-let globe = null;
-let size = 0;
-
-function build() {
-  if (globe) globe.destroy();
-  wrapEl.querySelectorAll(".city").forEach((n) => n.remove());
-  size = Math.round(Math.min(innerWidth, innerHeight) * (innerWidth < 600 ? 0.92 : 0.86));
-  wrapEl.style.width = wrapEl.style.height = size + "px";
-  const dpr = Math.min(devicePixelRatio || 1, 2);
-  globe = createGlobe(canvas, {
-    devicePixelRatio: dpr, width: size, height: size, phi, theta,
-    dark: 1, diffuse: 1.25, mapSamples: 16000, mapBrightness: 6, mapBaseBrightness: 0.04,
-    baseColor: [0.25, 0.3, 0.55], markerColor: [0.3, 0.85, 1], glowColor: [0.25, 0.32, 0.75],
-    markers, arcs, arcColor: [1, 0.78, 0.3], arcWidth: 0.9, arcHeight: 0.28, markerElevation: 0.02,
+// Creates a cobe globe inside `cell`: square (shorter edge) by default, or stretched over the whole cell with `fill`.
+// cobe wraps the canvas in its own div and puts anchor divs there, so labels are appended to `orb` after it.
+function mountGlobe(ctx, cell, opts = {}, { fill = false } = {}) {
+  const orb = h("div", { class: fill ? "orb fill" : "orb" });
+  const cv = h("canvas");
+  orb.append(cv);
+  cell.append(orb);
+  const measure = () => {
+    const w = Math.max(40, Math.floor(cell.clientWidth)), hh = Math.max(40, Math.floor(cell.clientHeight));
+    return fill ? [w, hh] : [Math.min(w, hh), Math.min(w, hh)];
+  };
+  let [w, hh] = measure();
+  const setBox = () => { orb.style.width = `${w}px`; orb.style.height = `${hh}px`; };
+  setBox();
+  const globe = createGlobe(cv, { devicePixelRatio: Math.min(2, window.devicePixelRatio || 1), width: w, height: hh, ...NIGHT, ...opts });
+  const ro = new ResizeObserver(() => {
+    const [nw, nh] = measure();
+    if (nw === w && nh === hh) return;
+    w = nw; hh = nh;
+    setBox();
+    globe.update({ width: w, height: hh });
   });
-  globe.update({ phi, theta });
-  // Labels go after the anchor divs cobe just inserted, so the anchors precede them in tree order.
-  for (const [id, label, code] of CITIES) {
-    const el = document.createElement("div");
-    el.className = "city" + (id === "tpe" ? " home" : "");
-    el.innerHTML = label + "<small>" + code + "</small>";
-    el.style.positionAnchor = "--cobe-" + id;
-    // East Asian cities are close together: hub label below, Tokyo right, Bangkok and Singapore left, others above.
-    if (id === "tpe") { el.style.top = "anchor(bottom)"; el.style.left = "anchor(center)"; el.style.translate = "-50% 0"; }
-    else if (id === "bkk" || id === "sin") { el.style.top = "anchor(center)"; el.style.right = "anchor(left)"; el.style.translate = "-4px calc(-50% + 6px)"; }
-    else if (id === "nrt") { el.style.top = "anchor(center)"; el.style.left = "anchor(right)"; el.style.translate = "4px calc(-50% + 6px)"; }
-    else { el.style.bottom = "anchor(top)"; el.style.left = "anchor(center)"; el.style.translate = "-50% 0"; }
-    el.style.opacity = "var(--cobe-visible-" + id + ", 0)";
-    wrapEl.appendChild(el);
-  }
+  ro.observe(cell);
+  ctx.onCleanup(() => {
+    ro.disconnect();
+    globe.destroy();
+    const gl = cv.getContext("webgl2") || cv.getContext("webgl");
+    gl?.getExtension("WEBGL_lose_context")?.loseContext();
+  });
+  return { globe, orb, get w() { return w; }, get h() { return hh; } };
 }
 
-// Drag to rotate with a little inertia after release.
-let drag = null;
-let vel = 0;
-wrapEl.addEventListener("pointerdown", (e) => {
-  drag = { x: e.clientX, y: e.clientY };
-  target = null;
-  wrapEl.classList.add("dragging");
-  wrapEl.setPointerCapture(e.pointerId);
-});
-wrapEl.addEventListener("pointermove", (e) => {
-  if (!drag) return;
-  const dx = e.clientX - drag.x;
-  const dy = e.clientY - drag.y;
-  drag = { x: e.clientX, y: e.clientY };
-  vel = dx / 220;
-  phi += vel;
-  theta = Math.max(-0.9, Math.min(0.9, theta + dy / 220));
-});
-const endDrag = () => { drag = null; wrapEl.classList.remove("dragging"); };
-wrapEl.addEventListener("pointerup", endDrag);
-wrapEl.addEventListener("pointercancel", endDrag);
-
-const spinBtn = document.getElementById("spin");
-const setSpin = (on) => { spin = on; spinBtn.setAttribute("aria-pressed", String(on)); };
-document.getElementById("fly").addEventListener("click", (e) => {
-  if (e.target === spinBtn) { setSpin(!spin); return; }
-  const b = e.target.closest("[data-go]");
-  if (!b) return;
-  const c = byId[b.dataset.go];
-  const [p, t] = toAngles(c[3], c[4]);
-  target = [p, Math.max(-0.9, Math.min(0.9, t * 0.8))];
-  setSpin(false);
-  document.querySelectorAll("#fly [data-go]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
-});
-
-// cobe v2 has no render callback: drive phi/theta from our own animation loop.
-function tick() {
-  if (target) {
-    // Shortest way round, eased.
-    let d = (target[0] - phi) % (Math.PI * 2);
-    if (d > Math.PI) d -= Math.PI * 2;
-    if (d < -Math.PI) d += Math.PI * 2;
-    phi += d * 0.07;
-    theta += (target[1] - theta) * 0.07;
-    if (Math.abs(d) < 0.001 && Math.abs(target[1] - theta) < 0.001) target = null;
-  } else if (!drag) {
-    vel *= 0.94;
-    phi += vel + (spin ? 0.0025 : 0);
-  }
-  globe.update({ phi, theta });
-  requestAnimationFrame(tick);
+// Drag to rotate (with inertia), optional auto spin, and eased fly-to along the shortest way round.
+function rotor(ctx, el, { phi = 0, theta = 0.3, spin = SPIN, ignore = null } = {}) {
+  const r = { phi, theta, spin, zoom: 1, vel: 0, target: null, drag: null };
+  el.classList.add("grab");
+  ctx.on(el, "pointerdown", (e) => {
+    if (ignore && e.target.closest(ignore)) return;
+    r.drag = { x: e.clientX, y: e.clientY };
+    r.target = null;
+    el.classList.add("dragging");
+    el.setPointerCapture(e.pointerId);
+  });
+  ctx.on(el, "pointermove", (e) => {
+    if (!r.drag) return;
+    const dx = e.clientX - r.drag.x, dy = e.clientY - r.drag.y;
+    r.drag = { x: e.clientX, y: e.clientY };
+    r.vel = dx / (220 * r.zoom);
+    r.phi += r.vel;
+    r.theta = clamp(r.theta + dy / (220 * r.zoom), -1.2, 1.2);
+  });
+  const end = () => { r.drag = null; el.classList.remove("dragging"); };
+  ctx.on(el, "pointerup", end);
+  ctx.on(el, "pointercancel", end);
+  r.flyTo = (lat, lon, tilt = 0.8) => { const [p, t] = toAngles(lat, lon); r.target = [p, clamp(t * tilt, -1.2, 1.2)]; };
+  r.step = (dt) => {
+    const k = dt / 16.7;
+    if (r.target) {
+      const d = wrapPi(r.target[0] - r.phi), e = 1 - Math.pow(0.93, k);
+      r.phi += d * e;
+      r.theta += (r.target[1] - r.theta) * e;
+      if (Math.abs(d) < 0.001 && Math.abs(r.target[1] - r.theta) < 0.001) r.target = null;
+    } else if (!r.drag) {
+      r.vel *= Math.pow(0.94, k);
+      r.phi += r.vel + r.spin * k;
+    }
+  };
+  return r;
 }
 
-let resizeTimer = 0;
-addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(build, 150); });
-build();
-requestAnimationFrame(tick);
+// Label glued to a cobe anchor div. cobe writes --cobe-visible-{key} as an invalid token while the point faces the
+// camera, so opacity falls back to its initial 1 and the blur to none; on the far side the fallbacks 0 / 3px apply.
+const PLACES = {
+  above: { bottom: "anchor(top)", left: "anchor(center)", translate: "-50% -6px" },
+  below: { top: "anchor(bottom)", left: "anchor(center)", translate: "-50% 7px" },
+  left: { top: "anchor(center)", right: "anchor(left)", translate: "-8px -50%" },
+  right: { top: "anchor(center)", left: "anchor(right)", translate: "8px -50%" },
+  center: { top: "anchor(center)", left: "anchor(center)" },
+};
+function anchorLabel(orb, key, html, cls, place = "above") {
+  const el = h("div", { class: cls });
+  el.innerHTML = html;
+  el.style.positionAnchor = `--cobe-${key}`;
+  Object.assign(el.style, PLACES[place]);
+  el.style.opacity = `var(--cobe-visible-${key}, 0)`;
+  el.style.filter = `blur(calc((1 - var(--cobe-visible-${key}, 0)) * 3px))`;
+  orb.append(el);
+  return el;
+}
+
+// Unit vectors and great-circle interpolation for the animated flights.
+const unit = (lat, lon) => { const a = lat * RAD, b = lon * RAD; return [Math.cos(a) * Math.cos(b), Math.cos(a) * Math.sin(b), Math.sin(a)]; };
+function slerp(A, B, om, t) {
+  const s = Math.sin(om), a = Math.sin((1 - t) * om) / s, b = Math.sin(t * om) / s;
+  const x = a * A[0] + b * B[0], y = a * A[1] + b * B[1], z = a * A[2] + b * B[2];
+  return [Math.asin(clamp(z, -1, 1)) / RAD, Math.atan2(y, x) / RAD];
+}
+
+Showcase.run({ scenes: [
+  {
+    id: "routes", title: "台北航線",
+    api: "createGlobe(canvas, { markers, arcs, … })・globe.update({ phi, theta })",
+    desc: "原示範移植：從台北出發的 8 條航線。標記點與弧線都帶 id，城市標籤用 CSS Anchor Positioning 黏在 cobe 產生的錨點上，轉到背面時自動淡出。",
+    hint: "拖曳旋轉，點城市按鈕飛過去",
+    mount(ctx) {
+      ctx.html(`<div class="globes"><div class="cell"></div><div class="heading"><h1>從台北出發</h1><p>8 條直飛航線，拖曳地球儀轉動</p></div></div>`);
+      const cell = ctx.$(".cell");
+      const rot = rotor(ctx, cell, { phi: HOME_PHI - 0.2, theta: 0.32 });
+      const markers = ROUTES.map(([id, , , lat, lon]) => ({
+        id, location: [lat, lon], size: id === "tpe" ? 0.09 : 0.045, ...(id === "tpe" ? { color: [1, 0.42, 0.25] } : {}),
+      }));
+      const arcs = ROUTES.slice(1).map(([id, , , lat, lon]) => ({ id: `a-${id}`, from: HOME, to: [lat, lon] }));
+      const g = mountGlobe(ctx, cell, { phi: rot.phi, theta: rot.theta, markers, arcs, arcWidth: 0.9, arcHeight: 0.28, markerElevation: 0.02 });
+      for (const [id, label, code] of ROUTES) {
+        anchorLabel(g.orb, id, `${label}<small>${code}</small>`, id === "tpe" ? "lbl home" : "lbl", ROUTE_PLACE[id] || "above");
+      }
+      const go = ["tpe", "nrt", "sfo", "lhr", "syd"];
+      ctx.group(["台北", "東京", "舊金山", "倫敦", "雪梨"], -1, (i) => {
+        const c = ROUTES.find((r) => r[0] === go[i]);
+        rot.flyTo(c[3], c[4]);
+        rot.spin = 0;
+        spinBtn.setAttribute("aria-pressed", "false");
+      });
+      const spinBtn = ctx.toggle("自轉", true, (v) => { rot.spin = v ? SPIN : 0; });
+      ctx.raf((t, dt) => { rot.step(dt); g.globe.update({ phi: rot.phi, theta: rot.theta }); });
+    },
+  },
+  {
+    id: "look", title: "外觀參數",
+    api: "createGlobe(canvas, { dark, diffuse, mapBrightness, mapBaseBrightness, baseColor, markerColor, glowColor })",
+    desc: "四組配色並排：dark 決定點陣是亮點還是暗點，baseColor 是球體底色，markerColor 是標記點，glowColor 是外圍光暈。滑桿同時調四顆的 diffuse（受光柔和度）、mapBrightness（陸地點亮度）與 mapBaseBrightness（海洋點亮度）。",
+    hint: "拖曳任一顆，四顆一起轉",
+    mount(ctx) {
+      const LOOKS = [
+        { name: "夜間藍", dark: 1, baseColor: [0.25, 0.3, 0.55], markerColor: [0.3, 0.85, 1], glowColor: [0.25, 0.32, 0.75] },
+        { name: "日間白", dark: 0, baseColor: [1, 1, 1], markerColor: [0.95, 0.35, 0.2], glowColor: [1, 1, 1] },
+        { name: "霓虹", dark: 1, baseColor: [0.35, 0.05, 0.4], markerColor: [0.2, 1, 0.6], glowColor: [0.9, 0.2, 0.7] },
+        { name: "琥珀", dark: 0, baseColor: [1, 0.82, 0.55], markerColor: [0.75, 0.2, 0.1], glowColor: [1, 0.7, 0.35] },
+      ];
+      ctx.html(`<div class="globes four">${LOOKS.map(() => `<div class="cell"><div class="cap"></div></div>`).join("")}</div>`);
+      const look = { diffuse: 1.2, mapBrightness: 6, mapBaseBrightness: 0.04 };
+      const rot = rotor(ctx, ctx.$(".globes"), { phi: HOME_PHI - 0.5, theta: 0.3 });
+      const globes = ctx.$$(".cell").map((cell, i) => {
+        const { name, ...style } = LOOKS[i];
+        const sw = (c, label) => `<span class="sw" style="--c:${rgb(c)}"></span>${label}`;
+        cell.querySelector(".cap").innerHTML = `<b class="nm">${name}</b>・dark ${style.dark}<br>${sw(style.baseColor, "底色")}${sw(style.markerColor, "標記")}${sw(style.glowColor, "光暈")}`;
+        return mountGlobe(ctx, cell, { ...look, ...style, markers: SAMPLE_MARKERS, phi: rot.phi, theta: rot.theta }).globe;
+      });
+      ctx.slider("diffuse", { min: 0.2, max: 3, step: 0.05, value: look.diffuse, format: (v) => v.toFixed(2) }, (v) => { look.diffuse = v; });
+      ctx.slider("mapBrightness", { min: 1, max: 12, step: 0.5, value: look.mapBrightness, format: (v) => v.toFixed(1) }, (v) => { look.mapBrightness = v; });
+      ctx.slider("mapBaseBrightness", { min: 0, max: 0.3, step: 0.01, value: look.mapBaseBrightness, format: (v) => v.toFixed(2) }, (v) => { look.mapBaseBrightness = v; });
+      ctx.raf((t, dt) => {
+        rot.step(dt);
+        for (const g of globes) g.update({ phi: rot.phi, theta: rot.theta, ...look });
+      });
+    },
+  },
+  {
+    id: "density", title: "點陣密度",
+    api: "createGlobe(canvas, { mapSamples })・globe.update({ mapSamples, scale })",
+    desc: "mapSamples 是整顆球面的點數（含海洋），越多點越細。陸地遮罩是內建 256×128 的小圖，點再多海岸線也不會更精細；超過約 32,000 點時 shader 的索引會出錯、南半球的點消失，所以滑桿只到 30,000。右側固定看東亞，放大後可看出遮罩的解析度。",
+    hint: "拖曳左側地球儀，調整點數與近景倍率",
+    mount(ctx) {
+      const DENSITY = [1000, 2000, 4000, 8000, 12000, 16000, 20000, 24000, 30000];
+      ctx.html(`<div class="globes two"><div class="cell"><div class="cap"></div></div><div class="cell"><div class="cap"></div></div></div>`);
+      const [c1, c2] = ctx.$$(".cell");
+      const [capA, capB] = ctx.$$(".cap");
+      let ms = 16000, zoom = 2.5;
+      const rot = rotor(ctx, c1, { phi: HOME_PHI - 0.5, theta: 0.3 });
+      const [ep, et] = toAngles(30, 122);
+      const g1 = mountGlobe(ctx, c1, { mapSamples: ms, phi: rot.phi, theta: rot.theta }).globe;
+      const g2 = mountGlobe(ctx, c2, { mapSamples: ms, phi: ep, theta: et, scale: zoom, markerElevation: 0.005,
+        markers: [{ location: HOME, size: 0.012, color: [1, 0.42, 0.25] }] }, { fill: true }).globe;
+      const paint = () => {
+        // Mean spacing between dots on an Earth-sized sphere.
+        const km = Math.sqrt((4 * Math.PI * 6371 ** 2) / ms);
+        capA.innerHTML = `全球・mapSamples <b>${fmt(ms)}</b><br>平均點距約 <b>${fmt(km)}</b> km`;
+        capB.innerHTML = `東亞近景・scale <b>${zoom.toFixed(1)}</b><br>紅點：台北`;
+      };
+      paint();
+      ctx.slider("mapSamples", { min: 0, max: DENSITY.length - 1, step: 1, value: DENSITY.indexOf(ms), format: (i) => fmt(DENSITY[i]) }, (i) => { ms = DENSITY[i]; paint(); });
+      ctx.slider("近景 scale", { min: 1, max: 5, step: 0.1, value: zoom, format: (v) => v.toFixed(1) }, (v) => { zoom = v; paint(); });
+      ctx.raf((t, dt) => {
+        rot.step(dt);
+        g1.update({ phi: rot.phi, theta: rot.theta, mapSamples: ms });
+        g2.update({ mapSamples: ms, scale: zoom });
+      });
+    },
+  },
+  {
+    id: "frame", title: "縮放與構圖",
+    api: "globe.update({ scale, offset: [x, y], width, height })",
+    desc: "canvas 不一定要是正方形。scale 放大球體，offset 以像素位移球心（實際位移是 offset × scale ÷ 2），常見的「地平線」與「右側主視覺」版面都是這兩個參數的組合。",
+    hint: "切換三種構圖，可拖曳旋轉",
+    mount(ctx) {
+      ctx.html(`<div class="globes"><div class="cell"><div class="hero"><h2>從台北，連結世界</h2><p></p></div><div class="cap bl"></div></div></div>`);
+      const cell = ctx.$(".cell"), hero = ctx.$(".hero"), cap = ctx.$(".cap");
+      const rot = rotor(ctx, cell, { phi: HOME_PHI - 0.3, theta: 0.25 });
+      const arcs = ["tyo", "sin", "syd", "sfo", "lon", "dxb"].map((id) => ({ from: HOME, to: [W[id][2], W[id][3]] }));
+      const view = mountGlobe(ctx, cell, { phi: rot.phi, theta: rot.theta, markers: SAMPLE_MARKERS, arcs, arcHeight: 0.25 }, { fill: true });
+      const TEXT = ["", "地平線：scale 放大到 2.6，offset 把球心推到畫面下方", "主視覺：offset 把地球推到右側，左半邊留給標題"];
+      const THETA = [0.25, -0.45, 0.25];
+      let mode = 0;
+      const cur = { scale: 1, ox: 0, oy: 0 };
+      // Target scale / offset for the current canvas size. Globe radius in CSS px = 0.4 × scale × height.
+      const target = () => {
+        const Wd = view.w, H = view.h;
+        if (mode === 1) { const s = 2.6; return { scale: s, ox: 0, oy: (2 * (0.4 * s * H - 0.08 * H)) / s }; }
+        if (mode === 2) { const s = 1.2, R = 0.4 * s * H; return { scale: s, ox: (2 * Math.max(0.15 * Wd, Wd / 2 - 0.9 * R)) / s, oy: 0 }; }
+        return { scale: 1, ox: 0, oy: 0 };
+      };
+      ctx.group(["置中", "地平線", "右側主視覺"], 0, (i) => {
+        mode = i;
+        hero.className = `hero m${i}`;
+        hero.querySelector("p").textContent = TEXT[i];
+        rot.target = [rot.phi + 0.3, THETA[i]];
+      });
+      let lastCap = 0;
+      ctx.raf((t, dt) => {
+        rot.step(dt);
+        const tg = target(), e = 1 - Math.pow(0.9, dt / 16.7);
+        for (const k of ["scale", "ox", "oy"]) cur[k] += (tg[k] - cur[k]) * e;
+        rot.zoom = cur.scale;
+        view.globe.update({ phi: rot.phi, theta: rot.theta, scale: cur.scale, offset: [cur.ox, cur.oy] });
+        if (t - lastCap > 120) {
+          lastCap = t;
+          cap.innerHTML = `canvas <b>${view.w}×${view.h}</b>・scale <b>${cur.scale.toFixed(2)}</b>・offset <b>[${Math.round(cur.ox)}, ${Math.round(cur.oy)}]</b>`;
+        }
+      });
+    },
+  },
+  {
+    id: "markers", title: "標記點",
+    api: "markers: [{ location: [lat, lon], size, color }]・markerElevation",
+    desc: "台灣 11 個縣市與 12 個世界都會區，點的大小依人口換算（示意資料）。台灣的點帶自己的 color，世界城市沿用全域 markerColor。台灣近景可看出陸地點陣很粗（遮罩只有 256×128），但標記點照經緯度精確落點，縣市名稱是綁在標記 id 上的 DOM 標籤。markerElevation 讓點浮離地表，轉到邊緣時看得出高度。",
+    hint: "切換視角，調整點的大小與高度",
+    mount(ctx) {
+      ctx.html(`<div class="globes"><div class="cell"><div class="cap bl"><span class="dot" style="--c:#ffcc40"></span>台灣縣市<span class="dot" style="--c:#4dd9ff"></span>世界都會區　點越大人口越多（示意資料）</div></div></div>`);
+      const cell = ctx.$(".cell");
+      const VIEWS = [{ at: [23.6, 120.9], scale: 24 }, { at: [18, 122], scale: 1.8 }, { at: null, scale: 1 }];
+      const rot = rotor(ctx, cell, { phi: HOME_PHI, theta: 0.3, spin: 0 });
+      let viewIdx = 0, scale = 1, mult = 1, dirty = true;
+      // Sizes shrink with sqrt(scale) so close-ups do not swallow neighbouring cities.
+      const build = () => [
+        ...TW.map(([, lat, lon, pop], i) => ({ id: `m-${i}`, location: [lat, lon], size: ((0.0035 + 0.00068 * Math.sqrt(pop)) * mult) / Math.sqrt(scale), color: [1, 0.8, 0.25] })),
+        ...WORLD.map(([, , lat, lon, pop]) => ({ location: [lat, lon], size: ((0.008 + 0.005 * Math.sqrt(pop)) * mult) / Math.sqrt(scale) })),
+      ];
+      const view = mountGlobe(ctx, cell, { phi: rot.phi, theta: rot.theta, mapSamples: 24000, markerElevation: 0.02, markers: build() }, { fill: true });
+      const g = view.globe;
+      // County labels, shown only in the close-up (stage class "zoomed").
+      const TW_PLACE = ["right", "left", "below", "left", "right", "left", "left", "right", "right", "right", "left"];
+      TW.forEach(([name, , , pop], i) => {
+        const el = anchorLabel(view.orb, `m-${i}`, `${name}<small>${fmt(pop)} 萬</small>`, "lbl tw", TW_PLACE[i]);
+        el.style.translate = { right: "14px -50%", left: "-14px -50%", below: "-50% 10px" }[TW_PLACE[i]];
+      });
+      const stageEl = ctx.$(".globes");
+      const setView = (i) => {
+        viewIdx = i;
+        const v = VIEWS[i];
+        if (v.at) { rot.flyTo(v.at[0], v.at[1], 1); rot.spin = 0; } else { rot.target = [rot.phi, 0.3]; rot.spin = SPIN; }
+      };
+      ctx.group(["台灣近景", "亞太", "全球"], 0, setView);
+      ctx.slider("大小倍率", { min: 0.4, max: 2.5, step: 0.1, value: 1, format: (v) => `${v.toFixed(1)}×` }, (v) => { mult = v; dirty = true; });
+      ctx.slider("markerElevation", { min: 0, max: 0.25, step: 0.01, value: 0.02, format: (v) => v.toFixed(2) }, (v) => g.update({ markerElevation: v }));
+      setView(0);
+      ctx.raf((t, dt) => {
+        rot.step(dt);
+        // Short canvases: zoom in a bit more and drop the population text so the county labels do not collide.
+        const compact = view.h < 420;
+        stageEl.classList.toggle("compact", compact);
+        const goal = viewIdx === 0 && compact ? 30 : VIEWS[viewIdx].scale;
+        if (Math.abs(goal - scale) > 0.002) { scale += (goal - scale) * (1 - Math.pow(0.9, dt / 16.7)); dirty = true; } else if (scale !== goal) { scale = goal; dirty = true; }
+        rot.zoom = scale;
+        stageEl.classList.toggle("zoomed", scale > 12);
+        // Dim the land dots as they grow so the city markers stay readable in the close-up.
+        const o = { phi: rot.phi, theta: rot.theta, scale, mapBrightness: 6 / Math.sqrt(scale) };
+        if (dirty) { o.markers = build(); dirty = false; }
+        g.update(o);
+      });
+    },
+  },
+  {
+    id: "dom", title: "DOM 綁定標記",
+    api: "markers[i].id → anchor-name: --cobe-{id}・var(--cobe-visible-{id})",
+    desc: "帶 id 的標記與弧線會在 canvas 旁產生錨點，任何 HTML 都能用 CSS Anchor Positioning 黏上去，可放當地時間、距離、按鈕。弧高 arcHeight 只在傳入 arcs 時寫進緩衝，所以調整後要再傳一次 arcs，弧線標籤則會即時跟著弧頂移動。",
+    hint: "點城市卡片飛過去，切到航線標籤看距離",
+    mount(ctx) {
+      const CITIES = [["tyo", "right"], ["sin", "left"], ["dxb", "above"], ["lon", "above"], ["nyc", "above"], ["sfo", "above"], ["syd", "below"]];
+      ctx.html(`<div class="globes mode-cards"><div class="cell"><div class="cap bl">飛行時間以 800 km/h 估算</div><div class="nosup">此瀏覽器不支援 CSS Anchor Positioning，只顯示光點與航線</div></div></div>`);
+      const stage = ctx.$(".globes"), cell = ctx.$(".cell");
+      const rot = rotor(ctx, cell, { phi: HOME_PHI - 0.35, theta: 0.3, ignore: ".card" });
+      const markers = [{ id: "d-tpe", location: HOME, size: 0.06, color: [1, 0.42, 0.25] },
+        ...CITIES.map(([id]) => ({ id: `d-${id}`, location: [W[id][2], W[id][3]], size: 0.04 }))];
+      const arcs = CITIES.map(([id]) => ({ id: `r-${id}`, from: HOME, to: [W[id][2], W[id][3]] }));
+      const g = mountGlobe(ctx, cell, { phi: rot.phi, theta: rot.theta, markers, arcs, arcHeight: 0.3, markerElevation: 0.02 });
+      const clocks = [];
+      const clock = (tz) => { const s = h("span", { class: "t" }); clocks.push([s, new Intl.DateTimeFormat("zh-TW", { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" })]); return s; };
+      const home = anchorLabel(g.orb, "d-tpe", "<b>台北</b>", "card home", "below");
+      home.append(clock("Asia/Taipei"), h("small", { text: "出發地" }));
+      for (const [id, place] of CITIES) {
+        const [, name, lat, lon, , tz] = W[id];
+        const km = distKm(HOME, [lat, lon]);
+        const card = anchorLabel(g.orb, `d-${id}`, `<b>${name}</b>`, "card", place);
+        card.append(clock(tz), h("small", { text: `距台北 ${fmt(km)} km` }));
+        card.addEventListener("click", () => { rot.flyTo(lat, lon); rot.spin = 0; });
+        anchorLabel(g.orb, `arc-r-${id}`, `${name} ${fmt(km)} km・約 ${(km / 800).toFixed(1)} 小時`, "arcl", "center");
+      }
+      const tick = () => { const now = new Date(); for (const [s, f] of clocks) s.textContent = f.format(now); };
+      tick();
+      ctx.interval(tick, 1000);
+      ctx.group(["城市卡片", "航線標籤"], 0, (i) => { stage.className = `globes ${i ? "mode-arcs" : "mode-cards"}`; });
+      ctx.slider("arcHeight", { min: 0.05, max: 0.6, step: 0.01, value: 0.3, format: (v) => v.toFixed(2) }, (v) => {
+        g.globe.update({ arcHeight: v });
+        g.globe.update({ arcs });
+      });
+      ctx.button("台北", () => { rot.flyTo(...HOME); rot.spin = SPIN; });
+      ctx.raf((t, dt) => { rot.step(dt); g.globe.update({ phi: rot.phi, theta: rot.theta }); });
+    },
+  },
+  {
+    id: "anim", title: "逐格動畫",
+    api: "requestAnimationFrame → globe.update({ phi, theta, markers })",
+    desc: "cobe 2.0.1 沒有 onRender 回呼，動畫由頁面自己的 requestAnimationFrame 每格呼叫 update()。這裡每格重算航班沿大圓航線的位置與尾跡，整份 markers 陣列重新傳入，台北的點同時做呼吸縮放。",
+    hint: "調整航班數與速度，可拖曳旋轉",
+    mount(ctx) {
+      ctx.html(`<div class="globes"><div class="cell"><div class="cap"></div></div></div>`);
+      const cell = ctx.$(".cell"), cap = ctx.$(".cap");
+      const rot = rotor(ctx, cell, { phi: HOME_PHI - 0.6, theta: 0.35 });
+      const A = unit(...HOME);
+      const DEST = WORLD.map(([, , lat, lon]) => {
+        const B = unit(lat, lon);
+        return { at: [lat, lon], B, om: Math.acos(clamp(A[0] * B[0] + A[1] * B[1] + A[2] * B[2], -1, 1)) };
+      });
+      const dests = DEST.map((d) => ({ location: d.at, size: 0.022, color: [0.55, 0.62, 0.9] }));
+      let count = 18, speed = 1, updMs = 0;
+      const flights = [];
+      const spawn = (f = {}, p = Math.random(), back = Math.random() < 0.5) => Object.assign(f, { d: DEST[(Math.random() * DEST.length) | 0], p, back });
+      const sync = () => { while (flights.length < count) flights.push(spawn()); flights.length = count; };
+      sync();
+      const g = mountGlobe(ctx, cell, { phi: rot.phi, theta: rot.theta, markerElevation: 0.01 }).globe;
+      ctx.slider("航班數", { min: 4, max: 60, step: 1, value: count }, (v) => { count = v; sync(); });
+      ctx.slider("速度", { min: 0.25, max: 3, step: 0.25, value: speed, format: (v) => `${v}×` }, (v) => { speed = v; });
+      let lastCap = 0;
+      ctx.raf((t, dt) => {
+        rot.step(dt);
+        const list = [{ location: HOME, size: 0.035 + 0.02 * (0.5 + 0.5 * Math.sin(t / 260)), color: [1, 0.42, 0.25] }, ...dests];
+        for (const f of flights) {
+          // Constant angular speed: long-haul routes take longer.
+          f.p += ((0.25 * speed * dt) / 1000) / f.d.om;
+          // Outbound leg done: fly home. Return leg done: pick a new destination.
+          if (f.p >= 1) { if (f.back) spawn(f, 0, false); else { f.back = true; f.p = 0; } }
+          const [P, Q] = f.back ? [f.d.B, A] : [A, f.d.B];
+          for (let k = 5; k >= 0; k--) {
+            const tt = f.p - (k * 0.025) / f.d.om;
+            if (tt < 0) continue;
+            const c = 1 - k / 6;
+            list.push({ location: slerp(P, Q, f.d.om, tt), size: k ? 0.016 * c : 0.032, color: k ? [0.35 + 0.6 * c, 0.6 + 0.35 * c, 1] : [1, 1, 1] });
+          }
+        }
+        const t0 = performance.now();
+        g.update({ phi: rot.phi, theta: rot.theta, markers: list });
+        updMs = updMs * 0.9 + (performance.now() - t0) * 0.1;
+        if (t - lastCap > 300) {
+          lastCap = t;
+          cap.innerHTML = `每格 update({ markers })：<b>${updMs.toFixed(2)}</b> ms<br>標記 <b>${fmt(list.length)}</b> 個・航班 <b>${count}</b>`;
+        }
+      });
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "globe.update({ markers })：N 個 instanced 標記點",
+    desc: "在球面上隨機撒 N 個彩色標記點並持續自轉。可切換每格只更新角度，或每格把整份 markers 重新傳入。",
+    hint: "按「自動加壓」開始，可切換更新方式",
+    mount(ctx) {
+      ctx.html(`<div class="stress-view"><div class="cell"></div></div>`);
+      ctx.controls.classList.add("bottom");
+      const cell = ctx.$(".cell");
+      const rot = rotor(ctx, cell, { phi: HOME_PHI - 0.4, theta: 0.35, spin: 0.004 });
+      const g = mountGlobe(ctx, cell, { phi: rot.phi, theta: rot.theta, markerElevation: 0.01 }).globe;
+      const pool = [];
+      const grow = (n) => {
+        for (let i = pool.length; i < n; i++) {
+          const lat = Math.asin(2 * Math.random() - 1) / RAD, lon = Math.random() * 360 - 180;
+          pool.push({ location: [lat, lon], size: 0.006 + Math.random() * 0.01, color: PAL[i % PAL.length] });
+        }
+      };
+      let list = [], mode = 0, updMs = 0;
+      ctx.group(["只更新角度", "每格重傳標記"], 0, (i) => { mode = i; });
+      ctx.raf((t, dt) => {
+        rot.step(dt);
+        const t0 = performance.now();
+        g.update(mode ? { phi: rot.phi, theta: rot.theta, markers: list } : { phi: rot.phi, theta: rot.theta });
+        updMs = updMs * 0.85 + (performance.now() - t0) * 0.15;
+      });
+      ctx.ramp({
+        label: "標記點", unit: "個",
+        steps: [1000, 5000, 20000, 50000, 100000, 250000, 500000],
+        minFps: 30,
+        apply(n) { grow(n); list = pool.slice(0, n); g.update({ markers: list }); },
+        metrics: () => ({ "update() 耗時": `${updMs.toFixed(2)} ms`, 標記緩衝: `${((list.length * 32) / 1048576).toFixed(1)} MB` }),
+        note: "每個標記是一個 instanced 四邊形，在 fragment shader 裁成圓點，背面的點在 vertex shader 直接丟棄，點多時瓶頸在 GPU 填充率。「只更新角度」每格只改 phi、theta，但 update() 仍會走訪全部標記檢查 id；「每格重傳標記」每格把 markers 重新打包成 Float32Array 並以 bufferData 上傳，瓶頸轉到 JS 與記憶體配置。update() 耗時只含 JS 與送出指令，GPU 繪製時間反映在 FPS。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

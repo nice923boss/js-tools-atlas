@@ -3,128 +3,843 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>htmx 示範：用 HTML 屬性做分頁、載入更多與分頁籤</title>
+<title>htmx 示範：八個場景看懂用 HTML 屬性發請求與交換片段</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","note":"伺服器回應以 demos/assets/htmx/ 的靜態 HTML 片段模擬"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"沒有後端：頁內 MockXHR 取代 XMLHttpRequest 模擬伺服器，場景 1 的片段讀自 demos/assets/htmx/","scenes":["城市散步週報","交換策略","主動搜尋","無限捲動與輪詢","表單驗證","OOB 與事件","交換轉場","極限測試"]}</script>
 <style>
-  body { background: radial-gradient(70% 60% at 100% 0%, rgba(52,101,164,.22), transparent 60%), var(--bg); --hx: #5d8fd6; }
-  .app { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr) 270px; grid-template-rows: auto auto minmax(0, 1fr); gap: 10px 14px; padding: 12px 12px 46px; }
-  .head { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-  .head h1 { margin: 0; font-size: 18px; }
-  .head .sim { font-size: 12px; color: var(--c5); border: 1px dashed rgba(255,140,66,.55); border-radius: 6px; padding: 1px 8px; }
-  .tabs { display: flex; gap: 4px; padding: 3px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line); }
-  .tabs button { flex: 1; border: 0; background: none; color: var(--muted); padding: 8px 6px; border-radius: 9px; font: 600 13px var(--font); cursor: pointer; white-space: nowrap; }
-  .tabs button[aria-selected="true"] { background: var(--hx); color: #fff; }
-  .tabs .sub { font-weight: 400; opacity: .8; }
-  #panel { grid-row: 3; min-height: 0; overflow-y: auto; scrollbar-width: thin; border-radius: 14px; background: var(--bg-2); border: 1px solid var(--line); padding: 10px 12px; }
-  .log { grid-column: 2; grid-row: 2 / 4; min-height: 0; display: flex; flex-direction: column; border-radius: 14px; background: #0a0d12; border: 1px solid var(--line); padding: 10px; }
-  .log h2 { margin: 0 0 6px; font-size: 13px; display: flex; justify-content: space-between; }
-  .log h2 span { color: var(--muted); font-weight: 400; font-size: 11px; }
-  .log ol { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; scrollbar-width: thin; }
-  .log li { font: 11px/1.5 var(--mono); color: #b9c7d6; padding: 6px 8px; border-radius: 8px; background: rgba(93,143,214,.08); border-left: 3px solid var(--hx); animation: pop .35s; }
-  .log li b { color: var(--c4); }
-  .log li .url { color: #fff; word-break: break-all; }
-  .log li .sw { color: var(--muted); }
-  .log .attr { margin-top: 8px; font: 11px/1.6 var(--mono); color: var(--muted); border-top: 1px solid var(--line); padding-top: 8px; word-break: break-all; }
-  .log .attr code { color: var(--c2); }
-  @keyframes pop { from { opacity: 0; transform: translateY(-6px); } }
-  /* htmx adds .htmx-added to new content until it settles, which drives the fade-in */
-  #panel > *, .feed > * { transition: opacity .35s, transform .35s; }
-  #panel > .htmx-added, .feed > .htmx-added { opacity: 0; transform: translateY(8px); }
-  .events { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-  .ev { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,.035); }
-  .ev .date { flex: none; width: 50px; text-align: center; font: 800 20px/1.1 var(--mono); color: var(--hx); }
-  .ev .date small { display: block; font: 600 10px var(--font); color: var(--muted); }
-  .ev .info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  .ev .info b { font-size: 14px; }
-  .ev .info span { font-size: 12px; color: var(--muted); }
-  .ev .city { flex: none; font-size: 11px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--fg); }
-  .pager { display: flex; align-items: center; gap: 4px; margin-top: 10px; flex-wrap: wrap; }
-  .pager button { min-width: 32px; height: 30px; padding: 0 9px; border-radius: 8px; border: 1px solid var(--line); background: none; color: var(--fg); cursor: pointer; font: 12px var(--font); }
-  .pager button.on { background: var(--hx); border-color: transparent; color: #fff; font-weight: 700; }
-  .pager button:disabled { opacity: .35; cursor: default; }
-  .pager .pinfo { margin-left: auto; font-size: 11px; color: var(--muted); }
-  .feed { display: flex; flex-direction: column; gap: 8px; }
-  .post { display: flex; gap: 10px; padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,.035); }
-  .post .ava { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: rgba(93,143,214,.18); font-size: 18px; }
-  .post b { font-size: 13px; }
-  .post small { margin-left: 8px; font-size: 11px; color: var(--muted); }
-  .post p { margin: 2px 0 0; font-size: 13px; }
-  .more { height: 36px; border-radius: 10px; border: 1px dashed var(--hx); background: none; color: var(--hx); font: 600 13px var(--font); cursor: pointer; }
-  .more:hover { background: rgba(93,143,214,.12); }
-  .end { margin: 4px 0; text-align: center; font-size: 12px; color: var(--muted); }
-  .subtabs { display: flex; gap: 0; border-bottom: 1px solid var(--line); }
-  .subtabs button { border: 0; background: none; color: var(--muted); padding: 8px 16px; font: 600 13px var(--font); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
-  .subtabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--hx); }
-  .intro { margin: 10px 0 8px; font-size: 13px; color: #c9d3de; }
-  .spots { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
-  .spots li { display: flex; flex-direction: column; gap: 2px; padding: 12px; border-radius: 12px; background: rgba(255,255,255,.035); }
-  .spots .emo { font-size: 26px; }
-  .spots b { font-size: 14px; }
-  .spots li span:last-child { font-size: 12px; color: var(--muted); }
-  @media (max-width: 640px) {
-    .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto minmax(0, 1fr); padding: 8px 8px 46px; gap: 8px; }
-    .head h1 { font-size: 16px; }
-    .tabs .sub { display: none; }
-    .log { grid-column: 1; grid-row: 3; padding: 6px 8px; }
-    .log h2, .log .attr, .log li:not(:first-child) { display: none; }
-    .log li { animation: none; }
-    #panel { grid-row: 4; }
-    .ev .city { display: none; }
-    .pager .pinfo { display: none; }
+  .sc-scene { --hx: #5d8fd6; --hx-ink: #fff; }
+  .hx-root { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); min-height: 0; background: radial-gradient(70% 60% at 100% 0%, rgba(52,101,164,.16), transparent 60%); }
+  .hx-pane { min-height: 0; min-width: 0; overflow: auto; scrollbar-width: thin; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line); padding: 10px 12px; }
+  .hx-pane > h3 { margin: 0 0 8px; font-size: 13px; display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .hx-pane > h3 small { font-weight: 400; color: var(--muted); font-size: 11px; text-align: right; }
+  .hx-b { border: 1px solid var(--line); background: var(--panel); color: var(--fg); border-radius: 8px; padding: 4px 10px; font: 12px var(--font); cursor: pointer; white-space: nowrap; }
+  .hx-b.pri { background: var(--hx); color: var(--hx-ink); border-color: transparent; font-weight: 700; }
+  .hx-b:disabled { opacity: .4; cursor: not-allowed; }
+  .hx-log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+  .hx-log li { font: 11px/1.45 var(--mono); padding: 5px 8px; border-radius: 7px; background: rgba(93,143,214,.08); border-left: 3px solid var(--hx); color: #b9c7d6; word-break: break-all; animation: hx-pop .3s; }
+  .hx-log li.warn { border-left-color: var(--c5); background: rgba(255,140,66,.08); }
+  .hx-log li i { font-style: normal; color: var(--c4); }
+  .hx-log li .u { color: #fff; }
+  @keyframes hx-pop { from { opacity: 0; transform: translateY(-5px); } }
+  .hx-spin { display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(93,143,214,.3); border-top-color: var(--hx); animation: hx-rot .7s linear infinite; flex: none; }
+  @keyframes hx-rot { to { transform: rotate(1turn); } }
+
+  /* 1. weekly (ported) */
+  .hx-week { display: grid; grid-template-columns: minmax(0, 1fr) 250px; grid-template-rows: auto auto minmax(0, 1fr); gap: 10px 12px; }
+  .hx-week .head { grid-column: 1 / -1; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .hx-week .head h2 { margin: 0; font-size: 18px; }
+  .hx-week .sim { font-size: 12px; color: var(--c5); border: 1px dashed rgba(255,140,66,.55); border-radius: 6px; padding: 1px 8px; }
+  .hx-week .tabs { display: flex; gap: 4px; padding: 3px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line); }
+  .hx-week .tabs button { flex: 1; border: 0; background: none; color: var(--muted); padding: 8px 6px; border-radius: 9px; font: 600 13px var(--font); cursor: pointer; white-space: nowrap; }
+  .hx-week .tabs button[aria-selected="true"] { background: var(--hx); color: #fff; }
+  .hx-week .tabs .sub { font-weight: 400; opacity: .8; }
+  .hx-week .tabs { grid-column: 1; }
+  .hx-week .pw { grid-column: 1; grid-row: 3; position: relative; min-height: 0; display: flex; }
+  .hx-week .wbar { position: absolute; left: 12px; right: 12px; top: 0; height: 3px; border-radius: 3px; background: linear-gradient(90deg, transparent, var(--hx), transparent) 0 0 / 40% 100% no-repeat; animation: hx-slide 1s linear infinite; z-index: 2; }
+  @keyframes hx-slide { from { background-position: -40% 0; } to { background-position: 140% 0; } }
+  .hx-week #panel { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; border-radius: 14px; background: var(--bg-2); border: 1px solid var(--line); padding: 10px 12px; }
+  .hx-week .log { grid-column: 2; grid-row: 2 / 4; min-height: 0; display: flex; flex-direction: column; border-radius: 14px; background: #0a0d12; border: 1px solid var(--line); padding: 10px; }
+  .hx-week .log h3 { margin: 0 0 6px; font-size: 13px; display: flex; justify-content: space-between; }
+  .hx-week .log h3 small { color: var(--muted); font-weight: 400; font-size: 11px; }
+  .hx-week .log ol { overflow-y: auto; flex: 1; min-height: 0; scrollbar-width: thin; }
+  .hx-week .attr { margin-top: 8px; font: 11px/1.6 var(--mono); color: var(--muted); border-top: 1px solid var(--line); padding-top: 8px; word-break: break-all; }
+  .hx-week .attr code { color: var(--c2); }
+  .hx-week #panel > *, .hx-week .feed > * { transition: opacity .35s, transform .35s; }
+  .hx-week #panel > .htmx-added, .hx-week .feed > .htmx-added { opacity: 0; transform: translateY(8px); }
+  .hx-week .events { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .hx-week .ev { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,.035); }
+  .hx-week .ev .date { flex: none; width: 50px; text-align: center; font: 800 20px/1.1 var(--mono); color: var(--hx); }
+  .hx-week .ev .date small { display: block; font: 600 10px var(--font); color: var(--muted); }
+  .hx-week .ev .info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .hx-week .ev .info b { font-size: 14px; }
+  .hx-week .ev .info span { font-size: 12px; color: var(--muted); }
+  .hx-week .ev .city { flex: none; font-size: 11px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); }
+  .hx-week .pager { display: flex; align-items: center; gap: 4px; margin-top: 10px; flex-wrap: wrap; }
+  .hx-week .pager button { min-width: 32px; height: 30px; padding: 0 9px; border-radius: 8px; border: 1px solid var(--line); background: none; color: var(--fg); cursor: pointer; font: 12px var(--font); }
+  .hx-week .pager button.on { background: var(--hx); border-color: transparent; color: #fff; font-weight: 700; }
+  .hx-week .pager button:disabled { opacity: .35; cursor: default; }
+  .hx-week .pager .pinfo { margin-left: auto; font-size: 11px; color: var(--muted); }
+  .hx-week .feed { display: flex; flex-direction: column; gap: 8px; }
+  .hx-post, .hx-week .post { display: flex; gap: 10px; padding: 8px 10px; border-radius: 10px; background: rgba(255,255,255,.035); }
+  .hx-post .ava, .hx-week .post .ava { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: rgba(93,143,214,.18); font-size: 18px; }
+  .hx-post b, .hx-week .post b { font-size: 13px; }
+  .hx-post small, .hx-week .post small { margin-left: 8px; font-size: 11px; color: var(--muted); }
+  .hx-post p, .hx-week .post p { margin: 2px 0 0; font-size: 13px; }
+  .hx-week .more { height: 36px; border-radius: 10px; border: 1px dashed var(--hx); background: none; color: var(--hx); font: 600 13px var(--font); cursor: pointer; }
+  .hx-week .end, .hx-end { margin: 4px 0; text-align: center; font-size: 12px; color: var(--muted); }
+  .hx-week .subtabs { display: flex; border-bottom: 1px solid var(--line); }
+  .hx-week .subtabs button { border: 0; background: none; color: var(--muted); padding: 8px 16px; font: 600 13px var(--font); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .hx-week .subtabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--hx); }
+  .hx-week .intro { margin: 10px 0 8px; font-size: 13px; color: #c9d3de; }
+  .hx-week .spots { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .hx-week .spots li { display: flex; flex-direction: column; gap: 2px; padding: 12px; border-radius: 12px; background: rgba(255,255,255,.035); }
+  .hx-week .spots .emo { font-size: 26px; }
+  .hx-week .spots li span:last-child { font-size: 12px; color: var(--muted); }
+
+  /* 2. swap styles */
+  .hx-swaps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: minmax(150px, 1fr); gap: 8px; overflow: auto; scrollbar-width: thin; align-content: start; }
+  .hx-sw { min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 12px; background: var(--bg-2); border: 1px solid var(--line); }
+  .hx-sw .top { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+  .hx-sw code { font: 11px/1.3 var(--mono); color: var(--c2); min-width: 0; overflow-wrap: anywhere; }
+  .hx-sw .hx-stage { flex: 1; min-height: 64px; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 4px; padding: 6px; border-radius: 8px; background: rgba(0,0,0,.22); overflow: hidden; }
+  .hx-tgt { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 4px; min-height: 34px; max-height: 64px; overflow: auto; scrollbar-width: none; padding: 5px; border-radius: 7px; border: 1.5px dashed var(--hx); transition: opacity .4s, transform .4s; }
+  .hx-tgt.htmx-swapping { opacity: 0; transform: scale(.9); }
+  .hx-chip { font: 600 11px var(--mono); padding: 2px 7px; border-radius: 6px; background: hsl(var(--h, 210) 70% 55%); color: #0b0e13; animation: hx-pop .3s; }
+  .hx-chip.old { background: rgba(255,255,255,.12); color: var(--muted); font-family: var(--font); }
+  .hx-sw p { margin: 0; font-size: 11px; color: var(--muted); }
+  .hx-sw p b { color: var(--c4); font-family: var(--mono); }
+
+  /* 3. active search */
+  .hx-search { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 10px; }
+  .hx-search .box { display: flex; align-items: center; gap: 8px; height: 38px; padding: 0 12px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); }
+  .hx-search .box:focus-within { border-color: var(--hx); }
+  .hx-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; color: var(--fg); font: 14px var(--font); }
+  .hx-res { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .hx-res .cnt { font-size: 11px; color: var(--muted); }
+  .hx-res li { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 8px; background: rgba(255,255,255,.035); font-size: 13px; }
+  .hx-res .dots { display: flex; gap: 3px; flex: none; }
+  .hx-res .dots i { width: 10px; height: 10px; border-radius: 50%; background: var(--c); }
+  .hx-res small { margin-left: auto; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hx-res mark { background: rgba(247,223,30,.85); color: #1a1a14; border-radius: 3px; padding: 0 1px; }
+  .hx-cmp .row { padding: 8px 0; border-bottom: 1px dashed var(--line); display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; }
+  .hx-cmp code { grid-column: 1 / -1; font: 11px var(--mono); color: var(--c2); }
+  .hx-cmp input { height: 30px; padding: 0 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); font: 13px var(--font); min-width: 0; }
+  .hx-cmp .out { font-size: 12px; color: var(--fg); white-space: nowrap; }
+  .hx-cmp .meta { grid-column: 1 / -1; font-size: 11px; color: var(--muted); }
+  .hx-cmp .meta b { color: var(--fg); font-family: var(--mono); }
+  .hx-ticks { grid-column: 1 / -1; display: flex; gap: 3px; flex-wrap: wrap; min-height: 8px; }
+  .hx-ticks i { width: 8px; height: 8px; border-radius: 2px; background: rgba(255,255,255,.18); }
+  .hx-ticks i.rq { background: var(--hx); }
+  .hx-cmp .note { font-size: 11px; color: var(--muted); line-height: 1.6; margin: 8px 0 0; }
+
+  /* 4. infinite scroll + polling */
+  .hx-scroll { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 10px; }
+  .hx-scroll .feedp { display: flex; flex-direction: column; overflow: hidden; }
+  .hx-feed { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; display: flex; flex-direction: column; gap: 6px; }
+  .hx-feed .htmx-added { opacity: 0; }
+  .hx-feed .hx-post { transition: opacity .4s; }
+  .hx-feed .pg { font: 11px var(--mono); color: var(--hx); text-align: center; }
+  .hx-ind { display: flex; gap: 8px; align-items: center; justify-content: center; font-size: 12px; color: var(--hx); padding-top: 6px; }
+  .hx-scroll .side { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+  .hx-scroll .side .hx-pane { flex: none; }
+  .hx-scroll .side .hx-pane.poll { flex: 1; }
+  .hx-wx { display: flex; gap: 10px; align-items: center; }
+  .hx-wx .emo { font-size: 30px; }
+  .hx-wx b { font-size: 16px; }
+  .hx-wx small { display: block; font-size: 11px; color: var(--muted); }
+  .hx-skel { height: 14px; border-radius: 6px; margin: 6px 0; background: linear-gradient(90deg, rgba(255,255,255,.05), rgba(255,255,255,.14), rgba(255,255,255,.05)) 0 0 / 200% 100%; animation: hx-sk 1.2s linear infinite; }
+  .hx-skel.s2 { width: 60%; }
+  @keyframes hx-sk { to { background-position: -200% 0; } }
+  .hx-bike { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+  .hx-bike li { display: grid; grid-template-columns: 7em minmax(0, 1fr) 2.5em; gap: 8px; align-items: center; font-size: 12px; }
+  .hx-bike .hx-bar { height: 8px; border-radius: 4px; background: rgba(255,255,255,.08); overflow: hidden; }
+  .hx-bike .hx-bar i { display: block; height: 100%; border-radius: 4px; background: var(--hx); transition: width .6s, background-color .6s; }
+  .hx-bike .low i { background: var(--c5); }
+  .hx-bike b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hx-bike em { font: normal 12px var(--mono); text-align: right; }
+  .hx-pmeta { margin-top: 8px; font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; gap: 6px; align-items: center; }
+  .hx-pmeta b { color: var(--fg); font-family: var(--mono); }
+
+  /* 5. form */
+  .hx-formw { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 10px; }
+  .hx-form { display: flex; flex-direction: column; gap: 8px; }
+  .hx-fld { display: grid; grid-template-columns: 4.5em minmax(0, 1fr); gap: 2px 10px; align-items: center; font-size: 13px; }
+  .hx-fld > span:first-child { color: var(--muted); }
+  .hx-fld input, .hx-fld select { height: 32px; padding: 0 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); font: 13px var(--font); min-width: 0; }
+  .hx-fld.bad input, .hx-fld.bad select { border-color: var(--c5); }
+  .hx-fld .msg { grid-column: 2; min-height: 16px; font-size: 11px; }
+  .hx-fld .msg em { font-style: normal; }
+  .hx-fld .err { color: var(--c5); }
+  .hx-fld .ok { color: var(--c4); }
+  .hx-form .act { display: flex; align-items: center; gap: 10px; padding-left: calc(4.5em + 10px); }
+  .hx-form .act .hx-b { padding: 7px 16px; font-size: 13px; }
+  .hx-form .sum { font-size: 11px; color: var(--c5); }
+  .hx-done { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; padding: 18px; border-radius: 12px; background: rgba(123,211,137,.1); border: 1px solid rgba(123,211,137,.4); }
+  .hx-done b { font-size: 16px; }
+  .hx-done p { margin: 0; font-size: 13px; }
+  .hx-done code { font: 12px var(--mono); color: var(--c4); }
+  .hx-cfg { margin: 8px 0 0; font: 11px/1.55 var(--mono); color: #b9c7d6; background: rgba(0,0,0,.25); border-radius: 8px; padding: 8px; white-space: pre-wrap; }
+
+  /* 6. OOB + events */
+  .hx-shop { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .9fr) minmax(0, 1fr); gap: 10px; }
+  .hx-goods { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .hx-prod { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); font: 600 13px var(--font); cursor: pointer; text-align: left; }
+  .hx-prod span { font-size: 20px; }
+  .hx-prod small { font: 11px var(--mono); color: var(--muted); }
+  .hx-prod.hx-flash { animation: hx-flash .5s; }
+  @keyframes hx-flash { 40% { border-color: var(--hx); box-shadow: 0 0 0 3px rgba(93,143,214,.35); } }
+  .hx-badge { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 99px; background: var(--hx); color: #fff; font: 700 12px var(--mono); animation: hx-pop .3s; }
+  .hx-toast { font-size: 12px; padding: 7px 9px; border-radius: 8px; background: rgba(93,143,214,.12); margin-bottom: 8px; }
+  .hx-mini { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+  .hx-mini li { display: flex; justify-content: space-between; padding: 3px 6px; border-radius: 6px; background: rgba(255,255,255,.035); animation: hx-pop .3s; }
+  .hx-mini li small { font-family: var(--mono); color: var(--muted); }
+  .hx-tot { border-top: 1px solid var(--line); padding-top: 8px; margin-bottom: 8px; }
+  .hx-tot .sum { display: flex; justify-content: space-between; font-size: 13px; }
+  .hx-tot b { font: 700 15px var(--mono); color: var(--c4); }
+  .hx-tot small { font-size: 11px; color: var(--muted); }
+  .hx-tl { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+  .hx-tl li { display: grid; grid-template-columns: 3.6em minmax(0, 1fr); gap: 6px; font: 11px/1.4 var(--mono); color: #c6d2df; padding: 2px 6px; border-radius: 5px; animation: hx-pop .25s; }
+  .hx-tl li i { font-style: normal; color: var(--muted); text-align: right; }
+  .hx-tl li.ext { color: var(--c4); }
+  .hx-tl li.sub { color: var(--muted); padding-left: 16px; }
+  .hx-tl li.oob { color: var(--c2); }
+  .hx-tl li span { overflow-wrap: anywhere; }
+
+  /* 7. transitions */
+  .hx-fx { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 10px; }
+  .hx-fx .col { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+  .hx-fx .col .hx-pane { flex: 1; }
+  .hx-vtl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .hx-vtc { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px; height: 92px; border-radius: 12px; border: 0; cursor: pointer; color: #0b0e13; font: 700 15px var(--font); background: linear-gradient(135deg, var(--c), color-mix(in srgb, var(--c) 55%, #000)); }
+  .hx-vtc span { font-size: 26px; }
+  .hx-vtd { display: flex; flex-direction: column; gap: 8px; padding: 18px; min-height: 200px; border-radius: 16px; color: #0b0e13; background: linear-gradient(135deg, var(--c), color-mix(in srgb, var(--c) 55%, #000)); }
+  .hx-vtd .emo { font-size: 54px; }
+  .hx-vtd b { font-size: 22px; }
+  .hx-vtd p { margin: 0; font-size: 14px; line-height: 1.6; }
+  .hx-vtd .hx-b { align-self: flex-start; }
+  ::view-transition-group(*) { animation-duration: .45s; }
+  .hx-pbar { height: 12px; border-radius: 6px; background: rgba(255,255,255,.08); overflow: hidden; }
+  #hx-pbar { display: block; height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--hx), var(--c4)); transition: width .55s ease; }
+  .hx-pnum { display: flex; justify-content: space-between; align-items: center; margin: 6px 0; font: 700 18px var(--mono); }
+  .hx-steps { list-style: none; margin: 0; padding: 0; display: flex; gap: 4px; flex-wrap: wrap; }
+  .hx-steps li { font-size: 11px; padding: 3px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); transition: background-color .5s, color .5s, border-color .5s; }
+  .hx-steps li.done { background: var(--c4); color: #0b1a0f; border-color: transparent; }
+  #hx-quote blockquote { margin: 0 0 10px; padding: 10px 12px; border-radius: 10px; border-left: 3px solid var(--hx); background: rgba(93,143,214,.08); transition: opacity .3s, transform .3s; }
+  #hx-quote blockquote p { margin: 0; font-size: 15px; line-height: 1.6; }
+  #hx-quote blockquote cite { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); font-style: normal; }
+  #hx-quote.htmx-swapping blockquote { opacity: 0; transform: translateY(-8px); }
+  #hx-quote blockquote.htmx-added { opacity: 0; transform: translateY(8px); }
+
+  /* 8. stress */
+  .hx-stress { position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 350px; padding: 0; display: flex; flex-direction: column; border-radius: 12px; border: 1px solid var(--line); background: var(--bg-2); overflow: hidden; }
+  .hx-stress .hd { flex: none; padding: 6px 10px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hx-stress .hd b { color: var(--hx); font-family: var(--mono); }
+  .hx-stress .tbl { flex: 1; min-height: 0; overflow: auto; scrollbar-width: thin; }
+  .hx-stress table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .hx-stress td { padding: 2px 8px; border-bottom: 1px solid rgba(255,255,255,.05); white-space: nowrap; }
+  .hx-stress td.id, .hx-stress td.n { font: 11px var(--mono); color: var(--muted); width: 60px; }
+  .hx-stress td.n { color: var(--hx); text-align: right; }
+  .hx-stress button { border: 1px solid var(--line); background: none; color: var(--fg); border-radius: 5px; font: 10px var(--mono); padding: 0 6px; cursor: pointer; }
+
+  @media (max-width: 760px) {
+    .hx-week { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto minmax(0, 1fr); gap: 8px; }
+    .hx-week .head h2 { font-size: 16px; }
+    .hx-week .sim, .hx-week .tabs .sub, .hx-week .log h3, .hx-week .attr, .hx-week .log li:not(:first-child), .hx-week .ev .city, .hx-week .pager .pinfo { display: none; }
+    .hx-week .log { grid-column: 1; grid-row: 3; padding: 6px 8px; }
+    .hx-week .pw { grid-row: 4; }
+    .hx-swaps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .hx-search, .hx-scroll, .hx-formw, .hx-fx { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
+    .hx-scroll { grid-template-rows: minmax(0, 1.3fr) minmax(0, 1fr); }
+    .hx-scroll .side { flex-direction: row; }
+    .hx-scroll .side .hx-pane { flex: 1; }
+    .hx-shop { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, .8fr); }
+    .hx-shop .life { grid-column: 1 / -1; }
+    .hx-goods { grid-template-columns: minmax(0, 1fr); }
+    .hx-fx .col { flex-direction: row; }
+    .hx-stress { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px); opacity: .9; }
+  }
+  @media (max-width: 480px) {
+    .hx-sw code .k { display: none; }
+    .hx-scroll .side { flex-direction: column; }
+    .hx-scroll .side .hx-pane:first-child { display: none; }
+    .hx-goods .hx-prod { flex-direction: row; align-items: center; gap: 6px; padding: 5px 7px; }
+    .hx-goods .hx-prod small { display: none; }
+    .hx-fx .col { flex-direction: column; }
+    .hx-fld { grid-template-columns: minmax(0, 1fr); }
+    .hx-fld .msg { grid-column: 1; }
+    .hx-form .act { padding-left: 0; }
   }
 </style>
 </head>
 <body>
-<div class="app">
-  <div class="head">
-    <h1>🗺️ 城市散步週報</h1>
-    <span class="sim">示範用靜態 HTML 片段模擬伺服器回應・活動為示意資料</span>
-  </div>
-  <nav class="tabs" role="tablist" id="tabs">
-    <button role="tab" aria-selected="true" hx-get="assets/htmx/events-1.html" hx-target="#panel">📅 活動<span class="sub">・分頁</span></button>
-    <button role="tab" aria-selected="false" hx-get="assets/htmx/feed-1.html" hx-target="#panel">💬 動態<span class="sub">・載入更多</span></button>
-    <button role="tab" aria-selected="false" hx-get="assets/htmx/city-tpe.html" hx-target="#panel">🏙️ 景點<span class="sub">・分頁籤</span></button>
-  </nav>
-  <div id="panel" hx-get="assets/htmx/events-1.html" hx-trigger="load" hx-swap="innerHTML settle:250ms"></div>
-  <aside class="log">
-    <h2>請求紀錄 <span>沒有寫任何 fetch</span></h2>
-    <ol id="log"></ol>
-    <div class="attr" id="attr"></div>
-  </aside>
-</div>
-<div class="hint">點分頁籤、頁碼、載入更多・右側即時顯示 htmx 發出的請求</div>
-
 <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.11/dist/htmx.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// htmx: every button above only has hx-get / hx-target / hx-swap attributes; this script just visualises htmx's events.
-htmx.config.defaultSettleDelay = 250;
-const started = new WeakMap();
-const $ = (id) => document.getElementById(id);
+(() => {
+  // ---------- mock server: swap window.XMLHttpRequest for an in-page fake while a scene is mounted ----------
+  const RealXHR = window.XMLHttpRequest;
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const kb = (n) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`);
+  const rnd = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
 
-document.body.addEventListener("htmx:beforeRequest", (e) => {
-  started.set(e.detail.xhr, performance.now());
-  const tab = e.detail.elt.closest("#tabs button");
-  if (tab) document.querySelectorAll("#tabs button").forEach((b) => b.setAttribute("aria-selected", b === tab));
-  const el = e.detail.elt;
-  const attrs = ["hx-get", "hx-target", "hx-swap", "hx-trigger"].filter((a) => el.hasAttribute(a)).map((a) => `<code>${a}</code>="${el.getAttribute(a)}"`);
-  $("attr").innerHTML = `剛觸發的元素屬性：<br>${attrs.join("<br>")}`;
-});
+  function mockServer(ctx, routes, opt = {}) {
+    const server = { latency: opt.latency ?? 300, onLog: opt.onLog || null, hits: 0 };
+    const timers = new Set();
+    let live = true;
+    const later = (fn, ms) => { const id = setTimeout(() => { timers.delete(id); if (live) fn(); }, ms); timers.add(id); return id; };
+    class MockXHR {
+      constructor() {
+        Object.assign(this, { readyState: 0, status: 0, statusText: "", response: "", responseText: "", responseURL: "", timeout: 0, withCredentials: false });
+        this._rq = {}; this._rs = {}; this._ls = {};
+        this.upload = { addEventListener() {}, removeEventListener() {} };
+      }
+      open(method, url) { this._m = String(method).toUpperCase(); this._u = url; this.readyState = 1; }
+      overrideMimeType() {}
+      setRequestHeader(k, v) { this._rq[k.toLowerCase()] = v; }
+      getResponseHeader(k) { const v = this._rs[k.toLowerCase()]; return v == null ? null : String(v); }
+      getAllResponseHeaders() { return Object.entries(this._rs).map(([k, v]) => `${k}: ${v}\r\n`).join(""); }
+      addEventListener(t, f) { (this._ls[t] ||= []).push(f); }
+      removeEventListener(t, f) { this._ls[t] = (this._ls[t] || []).filter((x) => x !== f); }
+      _fire(t) {
+        const e = { type: t, target: this, lengthComputable: false, loaded: 0, total: 0 };
+        (this._ls[t] || []).slice().forEach((f) => f.call(this, e));
+        if (typeof this[`on${t}`] === "function") this[`on${t}`](e);
+      }
+      abort() { clearTimeout(this._tid); timers.delete(this._tid); this.readyState = 4; this._fire("abort"); this._fire("loadend"); }
+      send(body) {
+        const t0 = performance.now();
+        const url = new URL(this._u, location.href);
+        const params = new URLSearchParams(url.search);
+        if (body instanceof FormData) for (const [k, v] of body) params.append(k, v);
+        else if (typeof body === "string" && body) for (const [k, v] of new URLSearchParams(body)) params.append(k, v);
+        const at = url.pathname.indexOf("/mock/");
+        const parts = at >= 0 ? url.pathname.slice(at + 6).split("/").filter(Boolean) : [];
+        const handler = at >= 0 ? routes[parts[0]] : routes["*"];
+        const req = { method: this._m, rest: parts.slice(1), params, q: (k) => params.get(k) ?? "", headers: this._rq, href: url.href };
+        this._fire("loadstart");
+        Promise.resolve().then(() => (handler ? handler(req) : { status: 404, body: "" })).then((res) => {
+          if (!live) return;
+          const r = typeof res === "string" ? { body: res } : res;
+          const lat = r.delay ?? (typeof server.latency === "function" ? server.latency() : server.latency);
+          this._tid = later(() => {
+            this.readyState = 4; this.status = r.status || 200; this.responseURL = url.href;
+            this._rs = { "content-type": "text/html; charset=utf-8" };
+            for (const [k, v] of Object.entries(r.headers || {})) this._rs[k.toLowerCase()] = typeof v === "string" ? v : JSON.stringify(v);
+            this.response = this.responseText = r.body ?? "";
+            server.hits++;
+            if (server.onLog) {
+              const path = url.pathname.replace(/^.*\/demos\//, "") + decodeURIComponent(url.search);
+              server.onLog({ method: this._m, path, status: this.status, ms: performance.now() - t0, bytes: new Blob([this.responseText]).size });
+            }
+            this._fire("load"); this._fire("loadend");
+          }, lat);
+        });
+      }
+    }
+    window.XMLHttpRequest = MockXHR;
+    ctx.onCleanup(() => {
+      live = false; timers.forEach(clearTimeout); timers.clear();
+      if (window.XMLHttpRequest === MockXHR) window.XMLHttpRequest = RealXHR;
+    });
+    return server;
+  }
 
-document.body.addEventListener("htmx:afterSwap", (e) => {
-  const { xhr, requestConfig, target } = e.detail;
-  const ms = Math.max(1, Math.round(performance.now() - (started.get(xhr) || performance.now())));
-  const path = requestConfig.path.split("/").pop();
-  const swap = requestConfig.elt.getAttribute("hx-swap") || "innerHTML";
-  const where = target.id ? `#${target.id}` : target.isConnected ? target.tagName.toLowerCase() : "this";
-  const li = document.createElement("li");
-  li.innerHTML = `GET <span class="url">${path}</span><br><b>${xhr.status}</b> ・ ${ms} ms ・ ${(xhr.responseText.length / 1024).toFixed(1)} KB<br><span class="sw">${swap.split(" ")[0]} → ${where}</span>`;
-  $("log").prepend(li);
-  while ($("log").children.length > 12) $("log").lastChild.remove();
-});
+  // Patch htmx.config for one scene and restore it on unmount.
+  function useConfig(ctx, patch) {
+    const prev = {};
+    for (const k of Object.keys(patch)) { prev[k] = htmx.config[k]; htmx.config[k] = patch[k]; }
+    ctx.onCleanup(() => Object.assign(htmx.config, prev));
+  }
 
-document.body.addEventListener("htmx:responseError", (e) => console.warn("htmx request failed", e.detail.xhr.status, e.detail.requestConfig.path));
+  // Render markup, let htmx bind it, and let htmx clean its listeners on unmount.
+  // `before(root)` runs ahead of htmx.process so listeners catch requests fired by hx-trigger="load".
+  function hxMount(ctx, markup, cls, attrs = "", before) {
+    ctx.html(`<div class="hx-root ${cls}" ${attrs}>${markup}</div>`);
+    const root = ctx.el.firstElementChild;
+    if (before) before(root);
+    htmx.process(root);
+    ctx.onCleanup(() => htmx.swap(root, "", { swapStyle: "innerHTML", swapDelay: 0, settleDelay: 0 }));
+    return root;
+  }
+  const swapIn = (target, markup) => htmx.swap(target, markup, { swapStyle: "innerHTML", swapDelay: 0, settleDelay: 0 });
+
+  function logger(ol, max = 40) {
+    return (e) => {
+      const li = document.createElement("li");
+      if (e.status >= 400) li.className = "warn";
+      li.innerHTML = `<i>${e.method}</i> <span class="u">${esc(e.path)}</span> → ${e.status}・${Math.round(e.ms)} ms・${kb(e.bytes)}`;
+      ol.prepend(li);
+      while (ol.children.length > max) ol.lastChild.remove();
+    };
+  }
+
+  // Async loops that stop quietly when the scene unmounts (ctx.sleep rejects).
+  const loop = (fn) => fn().catch(() => {});
+
+  // ---------- data ----------
+  const LINES = { BL: ["板南線", "#0070bd"], R: ["淡水信義線", "#e3002c"], G: ["松山新店線", "#008659"], O: ["中和新蘆線", "#f8b61c"], BR: ["文湖線", "#c48c31"] };
+  const LINE_SRC = {
+    BL: "頂埔 永寧 土城 海山 亞東醫院 府中 板橋 新埔 江子翠 龍山寺 西門 台北車站 善導寺 忠孝新生 忠孝復興 忠孝敦化 國父紀念館 市政府 永春 後山埤 昆陽 南港 南港展覽館",
+    R: "象山 台北101/世貿 信義安和 大安 大安森林公園 東門 中正紀念堂 台大醫院 台北車站 中山 雙連 民權西路 圓山 劍潭 士林 芝山 明德 石牌 唭哩岸 奇岩 北投 新北投 復興崗 忠義 關渡 竹圍 紅樹林 淡水",
+    G: "新店 新店區公所 七張 小碧潭 大坪林 景美 萬隆 公館 台電大樓 古亭 中正紀念堂 小南門 西門 北門 中山 松江南京 南京復興 台北小巨蛋 南京三民 松山",
+    O: "南勢角 景安 永安市場 頂溪 古亭 東門 忠孝新生 松江南京 行天宮 中山國小 民權西路 大橋頭 台北橋 菜寮 三重 先嗇宮 頭前庄 新莊 輔大 丹鳳 迴龍 三重國小 三和國中 徐匯中學 三民高中 蘆洲",
+    BR: "動物園 木柵 萬芳社區 萬芳醫院 辛亥 麟光 六張犁 科技大樓 大安 忠孝復興 南京復興 中山國中 松山機場 大直 劍南路 西湖 港墘 文德 內湖 大湖公園 葫洲 東湖 南港軟體園區 南港展覽館",
+  };
+  const STATIONS = new Map();
+  for (const [code, list] of Object.entries(LINE_SRC)) for (const s of list.split(" ")) STATIONS.set(s, [...(STATIONS.get(s) || []), code]);
+
+  const PEOPLE = [["🚴", "阿凱"], ["📷", "小美"], ["🍜", "老王"], ["🍍", "Rita"], ["⛰️", "大雄"], ["🚂", "阿豪"], ["🌊", "小琪"], ["🏮", "Ken"]];
+  const SAYS = ["剛騎完北宜公路，九彎十八拐的風景值得。", "象山步道的夕陽，雲層剛剛好。", "第二市場的滷肉飯排十分鐘很值得。", "關廟鳳梨季到了，路邊一顆 60 元。",
+    "合歡山今天能見度超好，看得到奇萊山。", "坐南迴線看太平洋，多良車站一定要下車。", "北投溫泉博物館免費參觀，建築很美。", "大稻埕碼頭的晚霞配上貨櫃市集。",
+    "九份的芋圓還是要吃阿柑姨那家。", "花蓮七星潭的石頭灘，聽浪聲很療癒。", "台南早餐吃牛肉湯，六點就開門。", "淡水騎單車到漁人碼頭剛好一小時。"];
+
+  Showcase.run({
+    scenes: [
+      // 1 ---------------------------------------------------------------------------
+      {
+        id: "week", title: "城市散步週報",
+        api: "hx-get · hx-target · hx-trigger=\"load\" · hx-indicator · settle",
+        desc: "原示範移植：分頁、載入更多、子分頁全部由 HTML 片段組成。左上角延遲可調，右側紀錄每次請求與觸發元素的 hx 屬性。",
+        hint: "點分頁或頁碼，或開啟自動導覽",
+        mount(ctx) {
+          useConfig(ctx, { defaultSettleDelay: 250 });
+          let lat = 350;
+          const server = mockServer(ctx, { "*": (req) => fetch(req.href).then((r) => r.text()) }, { latency: () => lat });
+          const root = hxMount(ctx, `
+            <div class="head"><h2>城市散步週報</h2><span class="sim">模擬伺服器・延遲 <b class="lat">350</b> ms</span></div>
+            <div class="tabs" role="tablist">
+              <button role="tab" aria-selected="true" hx-get="assets/htmx/events-1.html">活動<span class="sub">・分頁</span></button>
+              <button role="tab" aria-selected="false" hx-get="assets/htmx/feed-1.html">動態<span class="sub">・載入更多</span></button>
+              <button role="tab" aria-selected="false" hx-get="assets/htmx/city-tpe.html">景點<span class="sub">・子分頁</span></button>
+            </div>
+            <div class="pw"><div class="wbar htmx-indicator" id="hx-wk-bar"></div><div id="panel" hx-get="assets/htmx/events-1.html" hx-trigger="load"></div></div>
+            <aside class="log"><h3>請求紀錄 <small>前端攔截 XHR</small></h3><ol class="hx-log"></ol>
+              <div class="attr">等待第一個請求…</div></aside>`, "hx-week", `hx-target="#panel" hx-indicator="#hx-wk-bar"`, (root) => {
+            const attr = root.querySelector(".attr");
+            ctx.on(root, "htmx:beforeRequest", (e) => {
+              const elt = e.detail.elt;
+              if (elt.closest(".tabs")) root.querySelectorAll(".tabs [role=tab]").forEach((b) => b.setAttribute("aria-selected", String(b === elt)));
+              const own = [...elt.attributes].filter((a) => a.name.startsWith("hx-")).map((a) => `<code>${a.name}</code>="${esc(a.value)}"`).join(" ");
+              const tgt = e.detail.target;
+              attr.innerHTML = `&lt;${elt.tagName.toLowerCase()} ${own}&gt;<br>實際目標：<code>${tgt === elt ? "this" : "#" + esc(tgt.id)}</code>`;
+            });
+          });
+          server.onLog = logger(root.querySelector(".hx-log"));
+          ctx.slider("延遲", { min: 0, max: 1500, step: 50, value: lat, format: (v) => `${v} ms` }, (v) => { lat = v; root.querySelector(".lat").textContent = v; });
+          let auto = true;
+          ctx.toggle("自動導覽", auto, (v) => (auto = v));
+          const TOUR = [".pager button:not(.on):not(:disabled)", ".tabs [role=tab]:nth-child(2)", ".more", ".more", ".tabs [role=tab]:nth-child(3)",
+            ".subtabs [aria-selected=false]", ".subtabs [aria-selected=false]", ".tabs [role=tab]:nth-child(1)"];
+          let step = 0;
+          ctx.timeout(() => ctx.interval(() => {
+            if (!auto) return;
+            const b = root.querySelector(TOUR[step++ % TOUR.length]);
+            if (b) b.click();
+          }, 2600), 600);
+        },
+      },
+      // 2 ---------------------------------------------------------------------------
+      {
+        id: "swap", title: "交換策略",
+        api: "hx-swap: innerHTML · outerHTML · afterbegin · beforeend · beforebegin · afterend · delete · none",
+        desc: "同一個伺服器回應，換一個 hx-swap 就落在不同位置。虛線框是 hx-target，彩色標籤是伺服器回傳的片段。",
+        hint: "按各卡的送出，或全部送出",
+        mount(ctx) {
+          const MODES = [
+            ["innerHTML", "取代目標內部"], ["outerHTML", "連目標本身換掉（回應帶同一個 id）"], ["afterbegin", "插到目標內最前面"],
+            ["beforeend scroll:bottom", "插到最後並捲到底"], ["beforebegin", "插在目標之前（框外）"], ["afterend", "插在目標之後（框外）"],
+            ["delete swap:400ms", "淡出後刪除目標，回應被忽略"], ["none", "目標不動，只處理 OOB"],
+          ];
+          const counts = MODES.map(() => 0);
+          let noneN = 0;
+          const chip = (i, n) => `<span class="hx-chip" style="--h:${(i * 47 + n * 23) % 360}">#${n}</span>`;
+          const tgt = (i) => `<div class="hx-tgt" id="hx-t${i}"><span class="hx-chip old">原內容</span></div>`;
+          mockServer(ctx, {
+            chip: (req) => {
+              const i = +req.rest[0], n = ++counts[i];
+              if (i === 1) return `<div class="hx-tgt" id="hx-t1">${chip(i, n)}<span class="hx-chip old">新的框</span></div>`;
+              if (i === 7) return `${chip(i, n)}<b id="hx-none-n" hx-swap-oob="true">${++noneN}</b>`;
+              return chip(i, n);
+            },
+          }, { latency: 180 });
+          const cards = () => MODES.map(([m, d], i) => `
+            <div class="hx-sw"><div class="top"><code><span class="k">hx-swap=</span>"${m}"</code>
+              <button class="hx-b pri" hx-get="mock/chip/${i}" hx-target="#hx-t${i}" hx-swap="${m}">送出</button></div>
+              <div class="hx-stage">${tgt(i)}</div>
+              <p>${d}${i === 7 ? `・OOB 計數 <b id="hx-none-n">0</b>` : ""}</p></div>`).join("");
+          const root = hxMount(ctx, cards(), "hx-swaps");
+          // keep stages readable: trim chips that piled up outside the target box
+          ctx.on(root, "htmx:afterSettle", () => root.querySelectorAll(".hx-stage").forEach((st) => {
+            const out = [...st.children].filter((c) => !c.classList.contains("hx-tgt"));
+            out.slice(0, Math.max(0, out.length - 4)).forEach((c) => c.remove());
+          }));
+          ctx.on(root, "htmx:beforeRequest", (e) => {
+            if (e.detail.target.id !== "hx-t6") return;
+            const btn = e.detail.elt;
+            btn.disabled = true;
+            ctx.timeout(() => {
+              const st = btn.closest(".hx-sw").querySelector(".hx-stage");
+              if (!st.querySelector("#hx-t6")) st.insertAdjacentHTML("beforeend", tgt(6));
+              btn.disabled = false;
+            }, 1300);
+          });
+          const fireAll = () => root.querySelectorAll(".top .hx-b").forEach((b, i) => ctx.timeout(() => b.isConnected && !b.disabled && b.click(), i * 120));
+          ctx.button("全部送出", fireAll, { primary: true });
+          ctx.button("重設", () => { counts.fill(0); noneN = 0; swapIn(root, cards()); });
+          let auto = true;
+          ctx.toggle("自動", auto, (v) => (auto = v));
+          ctx.timeout(fireAll, 300);
+          ctx.interval(() => {
+            if (!auto) return;
+            const bs = [...root.querySelectorAll(".top .hx-b:not(:disabled)")];
+            bs[rnd(0, bs.length - 1)]?.click();
+          }, 1500);
+        },
+      },
+      // 3 ---------------------------------------------------------------------------
+      {
+        id: "search", title: "主動搜尋",
+        api: "hx-trigger=\"input changed delay:250ms\" · keyup[key=='Enter'] · throttle · hx-indicator",
+        desc: "輸入時才向伺服器查台北捷運站。右側同時餵入三種觸發寫法，灰格是 input 事件，藍格是真的送出的請求，看防抖與節流差在哪。",
+        hint: "在任一輸入框打字，或讓它自動打字",
+        mount(ctx) {
+          const TRIG = [["input", "每次輸入都送"], ["input changed delay:300ms", "停手 300ms 才送（防抖）"], ["input throttle:500ms", "每 500ms 最多一次（節流）"]];
+          mockServer(ctx, {
+            search: (req) => {
+              const q = req.q("q").trim();
+              if (!q) return `<li class="cnt">輸入站名，例如「忠孝」或「南港」</li>`;
+              const hit = [...STATIONS].filter(([name]) => name.includes(q));
+              const mark = (s) => esc(s).split(esc(q)).join(`<mark>${esc(q)}</mark>`);
+              return `<li class="cnt">「${esc(q)}」找到 ${hit.length} 站</li>` + hit.slice(0, 8).map(([name, ls]) =>
+                `<li><span class="dots">${ls.map((c) => `<i style="--c:${LINES[c][1]}"></i>`).join("")}</span>${mark(name)}<small>${ls.map((c) => LINES[c][0]).join("、")}</small></li>`).join("");
+            },
+            echo: (req) => `→「${esc(req.q("v"))}」`,
+          }, { latency: 220 });
+          const root = hxMount(ctx, `
+            <section class="hx-pane"><h3>台北捷運站搜尋 <small>input changed delay:250ms</small></h3>
+              <label class="box"><span>🔍</span><input name="q" type="search" placeholder="輸入站名" autocomplete="off"
+                hx-get="mock/search" hx-trigger="input changed delay:250ms, keyup[key=='Enter'], load" hx-target="#hx-res" hx-indicator="#hx-q-spin">
+                <span id="hx-q-spin" class="hx-spin htmx-indicator"></span></label>
+              <ul id="hx-res" class="hx-res"></ul></section>
+            <section class="hx-pane hx-cmp"><h3>三種觸發修飾 <small>藍格＝送出請求</small></h3>
+              ${TRIG.map(([t, d], i) => `<div class="row" data-i="${i}"><code>hx-trigger="${t}"</code>
+                <input name="v" autocomplete="off" hx-get="mock/echo/${i}" hx-trigger="${t}" hx-target="next .out">
+                <span class="out">…</span><div class="meta">${d}：事件 <b class="ev">0</b>・請求 <b class="rq">0</b></div><div class="hx-ticks"></div></div>`).join("")}
+              <p class="note">同樣的按鍵序列，防抖只在停手後送一次，節流則固定間隔送；主搜尋框另外用 changed 過濾掉「值沒變」的事件。</p></section>`, "hx-search");
+          const rows = [...root.querySelectorAll(".hx-cmp .row")];
+          rows.forEach((row) => {
+            const inp = row.querySelector("input"), ticks = row.querySelector(".hx-ticks");
+            const ev = row.querySelector(".ev"), rq = row.querySelector(".rq");
+            ctx.on(inp, "input", () => {
+              ev.textContent = +ev.textContent + 1;
+              ticks.append(document.createElement("i"));
+              while (ticks.children.length > 36) ticks.firstChild.remove();
+            });
+            ctx.on(inp, "htmx:beforeRequest", () => { rq.textContent = +rq.textContent + 1; ticks.lastElementChild?.classList.add("rq"); });
+          });
+          const inputs = [root.querySelector("input[name=q]"), ...rows.map((r) => r.querySelector("input"))];
+          const type = (v) => inputs.forEach((inp) => { inp.value = v; inp.dispatchEvent(new Event("input", { bubbles: true })); });
+          const PH = [["忠", "忠孝", "忠孝復", "忠孝復興", "忠孝復", "忠孝", "忠孝敦", "忠孝敦化"], ["大", "大安", "大安森", "大安森林"], ["南", "南港"], ["中", "中山", "中山國", "中山國中", "中山", "中正"]];
+          let auto = true;
+          ctx.toggle("自動打字", auto, (v) => (auto = v));
+          ctx.button("清除計數", () => {
+            root.querySelectorAll(".hx-cmp .ev, .hx-cmp .rq").forEach((b) => (b.textContent = 0));
+            root.querySelectorAll(".hx-ticks").forEach((t) => (t.innerHTML = ""));
+          });
+          loop(async () => {
+            await ctx.sleep(400);
+            for (let k = 0; ; k++) {
+              if (!auto) { await ctx.sleep(300); continue; }
+              for (const v of PH[k % PH.length]) { type(v); await ctx.sleep(170); }
+              await ctx.sleep(2600);
+            }
+          });
+        },
+      },
+      // 4 ---------------------------------------------------------------------------
+      {
+        id: "scroll", title: "無限捲動與輪詢",
+        api: "hx-trigger=\"intersect once\" · \"load delay:900ms\" · \"every 1s\" · HTTP 286 停止輪詢",
+        desc: "每頁最後一則帶 intersect once，捲到就載下一頁並插在自己後面；天氣卡延遲載入；YouBike 每秒輪詢，列表元素帶 id，settle 時寬度會平滑過渡。",
+        hint: "捲動左側動態，或按停止輪詢",
+        mount(ctx) {
+          const PAGES = 6;
+          let bikeN = 0, stop = false;
+          const BIKE = ["台北車站", "市政府", "公館", "西門", "大安森林公園"].map((name) => ({ name, v: rnd(4, 26) }));
+          const post = (k) => { const [ava, who] = PEOPLE[k % PEOPLE.length]; return [ava, who, SAYS[(k * 5) % SAYS.length]]; };
+          const bikeInner = (done) => `<ul class="hx-bike">${BIKE.map((b, i) => `<li id="hx-bk${i}" class="${b.v < 6 ? "low" : ""}"><b>${b.name}</b>
+              <span class="hx-bar"><i id="hx-bki${i}" style="width:${(b.v / 30) * 100}%"></i></span><em>${b.v}</em></li>`).join("")}</ul>
+            <div class="hx-pmeta"><span>更新 <b>${bikeN}</b> 次</span>${done ? `<span>已停止（HTTP 286）</span><button class="hx-b" hx-get="mock/bike/start" hx-target="#hx-bikebox" hx-swap="outerHTML">重新開始</button>` : "<span>every 1s</span>"}</div>`;
+          const bikeBox = () => `<div id="hx-bikebox" hx-get="mock/bike" hx-trigger="every 1s">${bikeInner(false)}</div>`;
+          mockServer(ctx, {
+            feed: (req) => {
+              const p = +req.rest[0] || 1;
+              const items = [0, 1, 2, 3, 4].map((j) => {
+                const k = (p - 1) * 5 + j, [ava, who, say] = post(k);
+                const more = j === 4 && p < PAGES ? ` hx-get="mock/feed/${p + 1}" hx-trigger="intersect once" hx-swap="afterend" hx-indicator="#hx-f-ind"` : "";
+                return `<article class="hx-post"${more}><span class="ava">${ava}</span><div><b>${who}</b><small>#${k + 1}</small><p>${say}</p></div></article>`;
+              }).join("");
+              return `<div class="pg">第 ${p} 頁</div>${items}${p === PAGES ? `<p class="hx-end">到底了，共 ${PAGES * 5} 則</p>` : ""}<b id="hx-pg" hx-swap-oob="true">${p}</b>`;
+            },
+            weather: () => `<div class="hx-wx"><span class="emo">⛅</span><div><b>台北 27°C</b><small>午後雷陣雨機率 40%</small><small>load delay:900ms 才載入</small></div></div>`,
+            bike: (req) => {
+              if (req.rest[0] === "start") { stop = false; return bikeBox(); }
+              bikeN++;
+              BIKE.forEach((b) => (b.v = Math.max(0, Math.min(30, b.v + rnd(-5, 5)))));
+              return stop ? { status: 286, body: bikeInner(true) } : bikeInner(false);
+            },
+          }, { latency: 450 });
+          const root = hxMount(ctx, `
+            <section class="hx-pane feedp"><h3>動態牆 <small>已載入 <b id="hx-pg">0</b> / ${PAGES} 頁</small></h3>
+              <div class="hx-feed" id="hx-feed" hx-get="mock/feed/1" hx-trigger="load"></div>
+              <div id="hx-f-ind" class="hx-ind htmx-indicator"><span class="hx-spin"></span>載入下一頁…</div></section>
+            <div class="side">
+              <section class="hx-pane"><h3>今日天氣 <small>延遲載入</small></h3>
+                <div hx-get="mock/weather" hx-trigger="load delay:900ms" hx-swap="outerHTML"><div class="hx-skel"></div><div class="hx-skel s2"></div></div></section>
+              <section class="hx-pane poll"><h3>YouBike 剩餘車輛 <small>輪詢</small></h3>${bikeBox()}</section>
+            </div>`, "hx-scroll");
+          const feed = root.querySelector("#hx-feed");
+          ctx.button("停止輪詢（回 286）", () => (stop = true));
+          ctx.button("動態重來", () => { feed.scrollTop = 0; htmx.ajax("GET", "mock/feed/1", { source: feed, target: feed, swap: "innerHTML" }); });
+          let auto = true, acc = 0, hold = 0;
+          ctx.toggle("自動捲動", auto, (v) => (auto = v));
+          ctx.raf((t, dt) => {
+            if (!auto) return;
+            if (hold > 0) { hold -= dt; if (hold <= 0) feed.scrollTop = 0; return; }
+            acc += dt * 0.06;
+            const px = Math.floor(acc);
+            if (px) { feed.scrollTop += px; acc -= px; }
+            if (feed.querySelector(".hx-end") && feed.scrollTop + feed.clientHeight >= feed.scrollHeight - 2) hold = 2500;
+          });
+        },
+      },
+      // 5 ---------------------------------------------------------------------------
+      {
+        id: "form", title: "表單驗證",
+        api: "hx-post · hx-target=\"next .msg\" · 422 重繪表單 · hx-disabled-elt · htmx.config.responseHandling",
+        desc: "每個欄位停手 400ms 就請伺服器檢查；送出時伺服器回 422 並重繪整張表單（含錯誤訊息），成功才換成完成卡。",
+        hint: "改欄位看即時檢查，或用按鈕送出",
+        mount(ctx) {
+          useConfig(ctx, { responseHandling: [{ code: "204", swap: false }, { code: "422", swap: true }, { code: "[23]..", swap: true }, { code: "[45]..", swap: false, error: true }] });
+          const CITY = { tpe: "台北場", txg: "台中場", khh: "高雄場（已額滿）" };
+          const check = (k, v = "") => {
+            if (k === "name") return v.trim().length >= 2 ? "" : "至少 2 個字";
+            if (k === "email") return !/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(v) ? "Email 格式不正確" : v.toLowerCase() === "demo@example.com" ? "這個 Email 已報名過" : "";
+            if (k === "phone") return /^09\d{8}$/.test(v) ? "" : "需為 09 開頭共 10 碼";
+            if (k === "city") return v === "khh" ? "這場已額滿，請改選其他場" : CITY[v] ? "" : "請選擇場次";
+            if (k === "seats") return /^[1-4]$/.test(v) ? "" : "每筆限 1 到 4 位";
+            return "";
+          };
+          const msg = (err) => (err ? `<em class="err">✗ ${err}</em>` : `<em class="ok">✓ 可以</em>`);
+          const live = (k, trig = "input changed delay:400ms") => `hx-post="mock/check/${k}" hx-trigger="${trig}" hx-target="next .msg" hx-swap="innerHTML"`;
+          const formHTML = (v = {}, errs = null) => {
+            const m = (k) => `<span class="msg">${errs ? msg(errs[k]) : ""}</span>`;
+            const bad = errs ? Object.values(errs).filter(Boolean).length : 0;
+            const inp = (k, label, type, ph) => `<label class="hx-fld"><span>${label}</span><input name="${k}" type="${type}" value="${esc(v[k] || "")}" placeholder="${ph}" autocomplete="off" ${live(k)}>${m(k)}</label>`;
+            return `<form class="hx-form" novalidate hx-post="mock/signup" hx-target="this" hx-swap="outerHTML" hx-indicator="find .spin" hx-disabled-elt="find button[type=submit]">
+              ${inp("name", "姓名", "text", "王小明")}${inp("email", "Email", "email", "you@example.com")}${inp("phone", "手機", "tel", "0912345678")}
+              <label class="hx-fld"><span>場次</span><select name="city" ${live("city", "change")}><option value="">請選擇</option>${Object.entries(CITY).map(([c, l]) => `<option value="${c}"${v.city === c ? " selected" : ""}>${l}</option>`).join("")}</select>${m("city")}</label>
+              ${inp("seats", "人數", "number", "1 到 4")}
+              <div class="act"><button type="submit" class="hx-b pri">送出報名</button><span class="hx-spin htmx-indicator spin"></span>${bad ? `<span class="sum">伺服器回 422：${bad} 項要修正</span>` : ""}</div></form>`;
+          };
+          const server = mockServer(ctx, {
+            check: (req) => msg(check(req.rest[0], req.q(req.rest[0]))),
+            signup: (req) => {
+              if (req.method === "GET") return formHTML();
+              const v = Object.fromEntries(["name", "email", "phone", "city", "seats"].map((k) => [k, req.q(k)]));
+              const errs = Object.fromEntries(Object.keys(v).map((k) => [k, check(k, v[k])]));
+              if (Object.values(errs).some(Boolean)) return { status: 422, body: formHTML(v, errs) };
+              return `<div class="hx-done"><b>🎉 報名成功</b><p>${esc(v.name)}・${CITY[v.city]}・${v.seats} 位，確認信寄到 ${esc(v.email)}</p>
+                <code>POST mock/signup → 200</code><button class="hx-b" hx-get="mock/signup/new" hx-target="closest .hx-done" hx-swap="outerHTML">再報一位</button></div>`;
+            },
+          }, { latency: 500 });
+          const root = hxMount(ctx, `
+            <section class="hx-pane"><h3>市集志工報名 <small>novalidate，全交給伺服器</small></h3><div id="hx-formhost">${formHTML()}</div></section>
+            <section class="hx-pane"><h3>請求紀錄 <small>422 標橘色</small></h3>
+              <pre class="hx-cfg" style="margin:0 0 8px">${esc(`// 本場景暫時改設定，切走即還原
+htmx.config.responseHandling = [
+  { code: "204", swap: false },
+  { code: "422", swap: true },   // 驗證失敗也要交換
+  { code: "[23]..", swap: true },
+  { code: "[45]..", swap: false, error: true },
+]`)}</pre><ol class="hx-log"></ol></section>`, "hx-formw");
+          server.onLog = logger(root.querySelector(".hx-log"), 14);
+          const host = root.querySelector("#hx-formhost");
+          const submit = (v) => {
+            if (!host.querySelector("form")) swapIn(host, formHTML());
+            const f = host.querySelector("form");
+            for (const [k, val] of Object.entries(v)) f.elements[k].value = val;
+            f.requestSubmit();
+          };
+          const BAD = { name: "王", email: "demo@example.com", phone: "0912", city: "khh", seats: "6" };
+          const GOOD = { name: "王小明", email: "ming@example.com", phone: "0912345678", city: "tpe", seats: "2" };
+          ctx.button("送出錯誤資料", () => submit(BAD));
+          ctx.button("送出正確資料", () => submit(GOOD), { primary: true });
+          ctx.timeout(() => submit(BAD), 500);
+        },
+      },
+      // 6 ---------------------------------------------------------------------------
+      {
+        id: "oob", title: "OOB 與事件",
+        api: "hx-swap-oob · HX-Trigger 標頭 · hx-trigger=\"cart-updated from:body\" · hx-on::after-request · htmx:configRequest",
+        desc: "一個回應同時更新三處：主目標是提示列，數量徽章與迷你清單走 OOB；回應標頭 HX-Trigger 再叫合計區自己重抓。右側是一次點擊的完整事件時間軸。",
+        hint: "點伴手禮加入購物車",
+        mount(ctx) {
+          const GOODS = [["🍍", "鳳梨酥", 120], ["☀️", "太陽餅", 90], ["🍬", "牛軋糖", 150], ["🍵", "烏龍茶", 380], ["🥭", "芒果乾", 200], ["🍡", "麻糬", 80]];
+          let cart = [], totals = 0;
+          const badge = () => `<span id="hx-badge" class="hx-badge" hx-swap-oob="true">${cart.length}</span>`;
+          mockServer(ctx, {
+            cart: (req) => {
+              const hdr = { "HX-Trigger": { "cart-updated": { count: 0 } } };
+              if (req.method === "DELETE") {
+                cart = [];
+                return { body: `購物車已清空${badge()}<ul id="hx-mini" class="hx-mini" hx-swap-oob="true"></ul>`, headers: hdr };
+              }
+              if (req.rest[0] === "total") {
+                totals++;
+                const sum = cart.reduce((a, i) => a + GOODS[i][2], 0);
+                return `<div class="sum"><span>合計 ${cart.length} 件</span><b>NT$ ${sum.toLocaleString()}</b></div><small>cart-updated 觸發重抓，第 ${totals} 次</small>`;
+              }
+              const i = +req.rest[1], [ava, name, price] = GOODS[i];
+              cart.push(i);
+              hdr["HX-Trigger"]["cart-updated"].count = cart.length;
+              return { headers: hdr, body: `已加入「${name}」・session ${esc(req.headers["x-cart-session"] || "無")}${badge()}<div hx-swap-oob="beforeend:#hx-mini"><li><span>${ava} ${name}</span><small>NT$ ${price}</small></li></div>` };
+            },
+          }, { latency: 260 });
+          const root = hxMount(ctx, `
+            <section class="hx-pane"><h3><span>伴手禮 <span id="hx-badge" class="hx-badge">0</span></span><small>hx-post</small></h3>
+              <div class="hx-goods">${GOODS.map(([ava, name, price], i) => `<button class="hx-prod" hx-post="mock/cart/add/${i}" hx-target="#hx-toast"
+                hx-on::after-request="this.classList.remove('hx-flash'); void this.offsetWidth; this.classList.add('hx-flash')"><span>${ava}</span>${name}<small>NT$ ${price}</small></button>`).join("")}</div></section>
+            <section class="hx-pane"><h3>購物車 <small>OOB 目標</small></h3>
+              <div id="hx-toast" class="hx-toast">點左邊商品加入購物車</div><ul id="hx-mini" class="hx-mini"></ul>
+              <div class="hx-tot" hx-get="mock/cart/total" hx-trigger="load, cart-updated from:body"></div>
+              <button class="hx-b" hx-delete="mock/cart" hx-target="#hx-toast">清空</button></section>
+            <section class="hx-pane life"><h3>事件時間軸 <small>相對點擊 ms</small></h3><ol class="hx-tl"></ol></section>`, "hx-shop");
+          const tl = root.querySelector(".hx-tl");
+          let t0 = performance.now();
+          const oobSeen = new WeakSet();
+          const EVENTS = ["htmx:configRequest", "htmx:beforeRequest", "htmx:beforeSend", "htmx:afterRequest", "htmx:beforeSwap", "htmx:oobBeforeSwap", "htmx:oobAfterSwap", "htmx:afterSwap", "htmx:afterSettle", "cart-updated"];
+          for (const name of EVENTS) {
+            ctx.on(root, name, (e) => {
+              const d = e.detail || {};
+              const elt = d.elt || e.target;
+              const sub = !!elt.closest?.(".hx-tot");
+              let extra = "", cls = sub ? "sub" : "";
+              if (name === "htmx:configRequest") {
+                if (!sub) { tl.innerHTML = ""; t0 = performance.now(); d.headers["X-Cart-Session"] = "demo-42"; extra = "・加標頭 X-Cart-Session"; }
+              } else if (name === "htmx:beforeRequest") extra = `・${d.requestConfig.verb.toUpperCase()} ${d.requestConfig.path}`;
+              else if (name === "htmx:afterRequest") extra = `・${d.xhr.status}`;
+              else if (name === "htmx:beforeSwap" || name === "htmx:afterSwap") extra = `・#${d.target?.id || "?"}`;
+              else if (name.startsWith("htmx:oob")) {
+                // htmx fires oobAfterSwap on every element in the shared settle list; log it once per OOB swap
+                if (name === "htmx:oobAfterSwap") { if (oobSeen.has(d)) return; oobSeen.add(d); }
+                extra = `・#${d.target?.id || e.target.id}`; cls = "oob";
+              }
+              else if (name === "cart-updated") { extra = "・HX-Trigger 標頭觸發"; cls = "ext"; }
+              const li = document.createElement("li");
+              li.className = cls;
+              li.innerHTML = `<i>+${Math.round(performance.now() - t0)}</i><span>${sub ? "合計 " : ""}${name.replace("htmx:", "")}${esc(extra)}</span>`;
+              tl.append(li);
+              tl.parentElement.scrollTop = tl.parentElement.scrollHeight;
+            });
+          }
+          let auto = true;
+          ctx.toggle("自動點選", auto, (v) => (auto = v));
+          ctx.button("清空", () => root.querySelector("[hx-delete]").click());
+          const pick = () => {
+            if (cart.length >= 6) return root.querySelector("[hx-delete]").click();
+            const bs = root.querySelectorAll(".hx-prod");
+            bs[rnd(0, bs.length - 1)].click();
+          };
+          ctx.timeout(pick, 600);
+          ctx.timeout(pick, 1400);
+          ctx.timeout(() => ctx.interval(() => auto && pick(), 2800), 1400);
+        },
+      },
+      // 7 ---------------------------------------------------------------------------
+      {
+        id: "transition", title: "交換轉場",
+        api: "hx-swap=\"innerHTML transition:true\" · swap:300ms settle:300ms · .htmx-swapping · .htmx-added · id 屬性過渡",
+        desc: "左邊用 View Transitions，卡片和詳情共用 view-transition-name，瀏覽器自動補間；右上進度條靠同 id 元素在 settle 時換屬性產生 CSS 過渡；右下語錄用 swap 與 settle 延遲做淡出淡入。",
+        hint: "點景點卡看轉場",
+        mount(ctx) {
+          const SPOTS = [["⛰️", "太魯閣", "#7bd389", "立霧溪切出的大理石峽谷，燕子口與九曲洞步道最熱門。"], ["🏯", "九份老街", "#ffb86b", "山城階梯與茶樓，傍晚點燈後最有味道。"],
+            ["🌊", "墾丁", "#6cc4ff", "台灣最南端，白沙灣與龍磐草原看海景。"], ["🚣", "日月潭", "#c79bff", "環湖自行車道與向山遊客中心，清晨水霧最美。"]];
+          const STEPS = ["上傳", "轉檔", "壓縮", "發布"];
+          const QUOTES = [["一枝草，一點露。", "台灣諺語"], ["千金買厝，萬金買厝邊。", "台灣諺語"], ["食緊挵破碗。", "台灣諺語"], ["好天著存雨來糧。", "台灣諺語"], ["戲棚下站久就是你的。", "台灣諺語"]];
+          let pct = 0, qi = 0;
+          const vt = `hx-target="#hx-vt" hx-swap="innerHTML transition:true"`;
+          const list = () => `<div class="hx-vtl">${SPOTS.map(([e, n, c], i) => `<button class="hx-vtc" style="--c:${c};view-transition-name:hx-vt${i}" hx-get="mock/vt/${i}" ${vt}><span>${e}</span>${n}</button>`).join("")}</div>`;
+          const detail = (i) => { const [e, n, c, d] = SPOTS[i]; return `<div class="hx-vtd" style="--c:${c};view-transition-name:hx-vt${i}"><span class="emo">${e}</span><b>${n}</b><p>${d}</p><button class="hx-b" hx-get="mock/vt" ${vt}>← 返回列表</button></div>`; };
+          const jobInner = (done) => `<div class="hx-pnum"><span>${done ? "完成 ✓" : "處理中…"}</span><b>${pct}%</b></div><div class="hx-pbar"><i id="hx-pbar" style="width:${pct}%"></i></div>
+            <ol class="hx-steps">${STEPS.map((s, i) => `<li id="hx-st${i}" class="${pct >= (i + 1) * 25 ? "done" : ""}">${s}</li>`).join("")}</ol>
+            ${done ? `<button class="hx-b hx-restart" hx-get="mock/job/reset" hx-target="#hx-job" hx-swap="outerHTML" style="margin-top:8px">重新開始</button>` : ""}`;
+          const jobBox = () => `<div id="hx-job" hx-get="mock/job" hx-trigger="every 600ms">${jobInner(false)}</div>`;
+          const quote = () => { const [q, c] = QUOTES[qi++ % QUOTES.length]; return `<blockquote><p>${q}</p><cite>${c}・第 ${qi} 則</cite></blockquote>`; };
+          mockServer(ctx, {
+            vt: (req) => (req.rest.length ? detail(+req.rest[0]) : list()),
+            job: (req) => {
+              if (req.rest[0] === "reset") { pct = 0; return jobBox(); }
+              pct = Math.min(100, pct + rnd(5, 14));
+              return pct >= 100 ? { status: 286, body: jobInner(true) } : jobInner(false);
+            },
+            quote: () => quote(),
+          }, { latency: 150 });
+          const qswap = `hx-swap="innerHTML swap:300ms settle:300ms"`;
+          const root = hxMount(ctx, `
+            <section class="hx-pane"><h3>View Transitions <small>transition:true</small></h3><div id="hx-vt">${list()}</div></section>
+            <div class="col">
+              <section class="hx-pane"><h3>同 id 屬性過渡 <small>every 600ms，到 100% 回 286</small></h3>${jobBox()}</section>
+              <section class="hx-pane"><h3>淡出淡入 <small>swap:300ms settle:300ms</small></h3>
+                <div id="hx-quote" hx-get="mock/quote" hx-trigger="every 2.4s" ${qswap}>${quote()}</div>
+                <button class="hx-b" hx-get="mock/quote" hx-target="#hx-quote" ${qswap}>下一句</button></section>
+            </div>`, "hx-fx");
+          let auto = true, k = 0, idle = 0;
+          ctx.toggle("自動播放", auto, (v) => (auto = v));
+          const flip = () => {
+            if (!auto) return;
+            const back = root.querySelector(".hx-vtd .hx-b");
+            if (back) back.click();
+            else root.querySelectorAll(".hx-vtc")[k++ % SPOTS.length]?.click();
+          };
+          // first flip early (200 ms + 150 ms latency + 450 ms animation) so screenshots at 1.2 s and 2.5 s land on a settled detail view
+          ctx.timeout(() => { flip(); ctx.interval(flip, 4000); }, 200);
+          ctx.interval(() => {
+            const r = root.querySelector(".hx-restart");
+            idle = r ? idle + 1 : 0;
+            if (auto && r && idle >= 2) r.click();
+          }, 1000);
+        },
+      },
+      // 8 ---------------------------------------------------------------------------
+      {
+        id: "stress", title: "極限測試", kind: "stress",
+        api: "htmx.ajax() · innerHTML 交換 · htmx.process 綁定 · 清理舊節點",
+        desc: "一次交換 n 列表格，每列帶一顆 hx-post 按鈕，量 htmx 解析片段、插入、為新按鈕綁定監聽，再用另一份 n 列取代並清理舊列的總時間。",
+        hint: "按開始測試；測完可點任一列的 +1",
+        mount(ctx) {
+          useConfig(ctx, { defaultSettleDelay: 0 });
+          let data = { a: "", b: "" };
+          const counts = new Map();
+          const rows = (n, tag) => {
+            let s = "";
+            for (let i = 0; i < n; i++) s += `<tr><td class="id">${tag}${i + 1}</td><td>站點 ${i + 1}・${tag === "A" ? "原始資料" : "取代資料"}</td><td class="n" id="hx-r${i}">0</td><td><button hx-post="mock/row/${i}" hx-target="#hx-r${i}">+1</button></td></tr>`;
+            return s;
+          };
+          mockServer(ctx, {
+            rows: (req) => data[req.rest[0]],
+            row: (req) => { const i = +req.rest[0]; counts.set(i, (counts.get(i) || 0) + 1); return String(counts.get(i)); },
+          }, { latency: 0 });
+          const root = hxMount(ctx, `<div class="hd">已渲染 <b class="cnt">0</b> 列<span class="res"></span></div>
+            <div class="tbl"><table><tbody id="hx-tb"></tbody></table></div>`, "hx-stress");
+          const tbody = root.querySelector("#hx-tb"), table = root.querySelector("table");
+          const cnt = root.querySelector(".cnt"), res = root.querySelector(".res");
+          ctx.controls.classList.add("bottom");
+          data = { a: rows(200, "A"), b: "" };
+          htmx.ajax("GET", "mock/rows/a", { source: table, target: tbody, swap: "innerHTML" }).then(() => (cnt.textContent = tbody.rows.length));
+          ctx.bench({
+            label: "列數", unit: "列", sizes: [100, 500, 1000, 2000, 5000, 10000, 20000, 50000], target: 1000, budget: 2000,
+            note: "每次：htmx.ajax 從模擬伺服器取回 n 列（每列一顆 hx-post 按鈕）以 innerHTML 交換並綁定，再用另一份 n 列取代（含清理舊列）。延遲設 0，計時含一次 setTimeout(0) 排程。",
+            prepare: (n) => { counts.clear(); data = { a: rows(n, "A"), b: rows(n, "B") }; },
+            run: async (n) => {
+              const t0 = performance.now();
+              await htmx.ajax("GET", "mock/rows/a", { source: table, target: tbody, swap: "innerHTML" });
+              const t1 = performance.now();
+              await htmx.ajax("GET", "mock/rows/b", { source: table, target: tbody, swap: "innerHTML" });
+              const t2 = performance.now();
+              cnt.textContent = Showcase.fmt(tbody.rows.length);
+              const detail = `建立 ${Showcase.fmtMs(t1 - t0)}・取代 ${Showcase.fmtMs(t2 - t1)}`;
+              res.textContent = `・${detail}`;
+              return detail;
+            },
+          });
+        },
+      },
+    ],
+  });
+})();
 </script>
 </body>
 </html>

@@ -3,56 +3,258 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>glslCanvas 示範：邊改邊編譯的片段著色器</title>
+<title>glslCanvas 示範：八個場景看懂片段著色器沙盒與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["即時編輯","內建 uniform","紋理 uniform","自訂 uniform","load() 熱抽換","多畫布","多通道緩衝","極限測試"]}</script>
 <style>
-  :root { --ed: min(380px, 42vw); }
-  #glsl { position: fixed; left: 0; top: 0; width: calc(100% - var(--ed) - 24px); height: 100%; display: block; }
-  .btn { padding: 7px 10px; font-size: 12px; }
-  .editor {
-    position: fixed; right: 12px; top: 56px; bottom: 12px; width: var(--ed); z-index: 40;
+  .gc-bg {
+    background:
+      radial-gradient(55% 70% at 50% 45%, #1f2433 0%, transparent 70%),
+      radial-gradient(40% 50% at 85% 10%, rgba(247, 37, 133, 0.12), transparent 70%),
+      radial-gradient(40% 50% at 10% 95%, rgba(76, 201, 240, 0.12), transparent 70%),
+      var(--bg);
+  }
+  .gc-fill { position: absolute; inset: 0; }
+  canvas.gc-cv { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+  /* 1. live editor */
+  .gc-live { position: absolute; inset: 0; }
+  .gc-view { position: absolute; left: 0; top: 0; bottom: 0; right: calc(min(380px, 42%) + 20px); }
+  .gc-ed {
+    position: absolute; right: 10px; top: calc(var(--sc-ctl-h, 0px) + 4px); bottom: 10px; width: min(380px, 42%); z-index: 20;
     display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
   }
-  .editor .head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; }
-  .editor .head b { font-weight: 600; flex: none; }
-  #status { min-width: 0; font: 11px/1.4 var(--mono); color: var(--c4); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #status.err { color: var(--c3); }
-  .editor textarea {
+  .gc-ed-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; }
+  .gc-ed-head b { font-weight: 600; flex: none; }
+  .gc-st { min-width: 0; font: 11px/1.4 var(--mono); color: var(--muted); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .gc-st.gc-ok { color: var(--c4); }
+  .gc-st.gc-bad { color: var(--c3); }
+  .gc-ed textarea {
     flex: 1; min-height: 0; resize: none; margin: 0;
     background: rgba(0, 0, 0, 0.38); border: 1px solid var(--line); border-radius: 8px;
     padding: 8px 10px; font: 11.5px/1.5 var(--mono); color: #d8d6cf;
     white-space: pre; overflow: auto; tab-size: 2; outline: none;
   }
-  .editor textarea:focus { border-color: var(--accent); }
-  .knobs { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 6px 8px; align-items: center; font-size: 12px; color: var(--muted); }
-  .knobs input { width: 100%; margin: 0; }
-  .note { margin: 0; font-size: 11px; line-height: 1.5; color: var(--muted); }
-  .note code { font-family: var(--mono); color: var(--fg); }
-  @media (max-width: 600px) {
-    #glsl { width: 100%; height: calc(100% - 252px); }
-    .editor { left: 12px; right: 12px; width: auto; top: auto; bottom: 46px; height: 200px; }
-    .note { display: none; }
+  .gc-ed textarea:focus { border-color: var(--accent); }
+  .gc-knobs { display: grid; grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr); gap: 6px 8px; align-items: center; font-size: 12px; color: var(--muted); }
+  .gc-knobs input { width: 100%; min-width: 0; margin: 0; }
+  .gc-note { margin: 0; font-size: 11px; line-height: 1.5; color: var(--muted); }
+  .gc-note code, .gc-rule code { font-family: var(--mono); color: var(--fg); }
+
+  /* 2. built-in uniforms */
+  .gc-card { position: absolute; top: 10px; right: 10px; bottom: 10px; left: 300px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); }
+  .gc-side { position: absolute; left: 10px; top: 10px; bottom: 10px; width: 280px; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+  .gc-side .panel { padding: 8px 11px; }
+  .gc-uni { font: 500 11px/1.6 var(--mono); color: var(--muted); }
+  .gc-uni > div { display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; }
+  .gc-uni b { color: var(--fg); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+  .gc-k { flex: none; width: 12.5ch; }
+  .gc-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--dot); }
+  .gc-uni .gc-sub { padding-left: 13px; font-size: 10.5px; }
+  .gc-uni .gc-meta { margin-top: 4px; padding-top: 4px; border-top: 1px dashed var(--line); }
+  .gc-rule { font-size: 11.5px; line-height: 1.55; color: var(--muted); }
+  .gc-rule > b { display: block; margin-bottom: 3px; color: var(--fg); font-size: 12px; }
+  .gc-rule ul { margin: 0; padding-left: 16px; }
+
+  /* 3. texture + shared bottom-left readout */
+  .gc-readout {
+    position: absolute; left: 10px; bottom: 10px; z-index: 20; padding: 7px 11px; max-width: calc(100% - 20px);
+    font: 500 11px/1.55 var(--mono); color: var(--muted);
+  }
+  .gc-readout b { color: var(--fg); font-weight: 600; }
+  .gc-line { word-break: break-all; }
+
+  /* 4. custom uniforms */
+  .gc-table {
+    position: absolute; left: 10px; bottom: 10px; z-index: 20; padding: 8px 12px; max-width: calc(100% - 20px);
+    font: 500 11px/1.6 var(--mono); color: var(--muted);
+  }
+  .gc-trow { display: flex; justify-content: space-between; gap: 14px; white-space: nowrap; }
+  .gc-trow code { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-family: var(--mono); color: var(--fg); }
+  .gc-trow span { flex: none; color: var(--c2); }
+  .gc-tfoot { margin-top: 5px; padding-top: 5px; border-top: 1px dashed var(--line); }
+  .gc-tfoot div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .gc-tfoot b { color: var(--accent); font-weight: 600; }
+
+  /* 5. hot swap */
+  .gc-swap {
+    position: absolute; inset: calc(var(--sc-ctl-h, 0px) + 4px) 10px 10px; display: grid; gap: 10px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  }
+  .gc-code { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 0; overflow: hidden; }
+  .gc-code pre {
+    position: relative; flex: 1; min-height: 0; margin: 0; overflow: auto; padding: 10px 12px;
+    font: 10.5px/1.5 var(--mono); color: var(--muted); white-space: pre;
+  }
+  .gc-hl { background: rgba(247, 223, 30, 0.14); color: var(--fg); border-radius: 3px; box-shadow: 0 0 0 2px rgba(247, 223, 30, 0.14); }
+  .gc-st2 { padding: 7px 12px; border-top: 1px solid var(--line); font: 500 11px/1.45 var(--mono); color: var(--c4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .gc-view2 { position: relative; min-width: 0; min-height: 0; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); }
+  .gc-checker { background: repeating-conic-gradient(#1b1e24 0% 25%, #121418 0% 50%) 50% / 24px 24px; }
+
+  /* 6. many canvases */
+  .gc-tiles {
+    position: absolute; inset: calc(var(--sc-ctl-h, 0px) + 4px) 10px 10px; display: grid; gap: 8px;
+    grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr));
+  }
+  .gc-tile { position: relative; min-width: 0; min-height: 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background: var(--bg-2); }
+  .gc-tag {
+    position: absolute; left: 6px; bottom: 6px; z-index: 2; max-width: calc(100% - 12px); padding: 4px 8px; border-radius: 7px;
+    background: var(--panel); border: 1px solid var(--line); font: 500 10.5px/1.45 var(--mono); color: var(--muted); pointer-events: none; overflow: hidden;
+  }
+  .gc-tag div, .gc-tag em { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-style: normal; }
+  .gc-tag b { margin-right: 6px; font: 600 11.5px/1.45 var(--font); color: var(--fg); }
+  .gc-tag span { color: var(--c2); }
+
+  /* 8. stress */
+  .gc-stress { position: absolute; inset: 8px; border-radius: 12px; overflow: hidden; }
+  @media (min-width: 561px) { .gc-stress { inset: 8px 8px 8px 350px; } }
+  .gc-badge { position: absolute; top: 10px; right: 10px; z-index: 5; padding: 8px 12px; text-align: right; pointer-events: none; }
+  .gc-badge b { display: block; font: 800 34px/1 var(--mono); color: var(--accent); }
+  .gc-badge span { display: block; margin-top: 5px; font: 500 11px/1.45 var(--mono); color: var(--muted); }
+
+  @media (max-width: 560px) {
+    .gc-view { right: 0; bottom: 240px; }
+    .gc-ed { left: 10px; right: 10px; width: auto; top: auto; bottom: 10px; height: 220px; }
+    .gc-note { display: none; }
+    .gc-card { left: 10px; bottom: 150px; }
+    .gc-side { top: auto; right: 10px; width: auto; }
+    .gc-rule { display: none; }
+    .gc-uni { font-size: 10.5px; line-height: 1.5; }
+    .gc-table { right: 10px; font-size: 10px; padding: 6px 10px; }
+    .gc-swap { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 0.8fr) minmax(0, 1fr); }
+    .gc-view2 { order: -1; }
+    .gc-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(3, minmax(0, 1fr)); }
+    .gc-badge { top: auto; bottom: calc(var(--sc-ctl-b, 0px) + 6px); z-index: 119; padding: 6px 10px; }
+    .gc-badge b { font-size: 24px; }
+    .gc-badge span { display: none; }
   }
 </style>
 </head>
 <body>
-<canvas id="glsl"></canvas>
-<div class="controls" id="bar"></div>
-<aside class="panel editor">
-  <div class="head"><b id="title">fragment shader</b><span id="status">編譯中…</span></div>
-  <textarea id="src" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="GLSL 片段著色器原始碼"></textarea>
-  <div class="knobs">
-    <label for="speed">速度</label><input id="speed" type="range" min="0" max="3" step="0.01" value="1">
-    <label for="hue">色相</label><input id="hue" type="range" min="0" max="1" step="0.01" value="0">
-  </div>
-  <p class="note"><code>u_time</code>、<code>u_mouse</code>、<code>u_resolution</code> 由 glslCanvas 自動傳入；<code>u_speed</code>、<code>u_hue</code> 由滑桿透過 <code>setUniform()</code> 設定。</p>
-</aside>
-<div class="hint">直接改程式碼，停手 0.4 秒就重新編譯</div>
-
+<script src="_shared/showcase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/glslCanvas@0.2.6/dist/GlslCanvas.min.js"></script>
 <script>
+const { h, fmtCompact, fmtMs } = Showcase;
+const DPR = () => Math.min(2, window.devicePixelRatio || 1);
+const LIM = 4096;
+const IMG = (n) => `_shared/img/photo-${n}.jpg`;
+const PHOTOS = ["峽灣", "紅岩峽谷", "綠色山谷公路", "披毯巴哥犬", "瀑布彩虹", "藍底水母", "母獅特寫", "海象群"];
+const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+// ---------- sandbox helper ----------
+// glslCanvas keeps ping-pong buffer textures alive across load(); free them before replacing.
+function dropBuffers(sb) {
+  const gl = sb.gl;
+  for (const k in sb.buffers) {
+    const b = sb.buffers[k];
+    if (b.bundle) for (const io of [b.bundle.input, b.bundle.output]) { gl.deleteTexture(io.texture); gl.deleteFramebuffer(io.buffer); }
+    if (b.program) gl.deleteProgram(b.program);
+  }
+  sb.buffers = {};
+}
+
+// BUFFER_n passes render into RGBA float textures; check that the device can actually draw into one.
+function floatRT(gl) {
+  if (!gl.getExtension("OES_texture_float")) return false;
+  gl.getExtension("WEBGL_color_buffer_float");
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 2, 2, 0, gl.RGBA, gl.FLOAT, null);
+  const fb = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.deleteFramebuffer(fb);
+  gl.deleteTexture(tex);
+  return ok;
+}
+
+// One GlslCanvas per canvas element. We own the backing-store size (DPR capped at 2, optional scale)
+// and replace sb.resize so glslCanvas never runs its float readPixels buffer-resize path.
+function createSandbox(ctx, host, { frag, scale = 1, dpr = true, pointer = false, attrs = {} } = {}) {
+  const canvas = h("canvas", { class: "gc-cv", ...attrs });
+  host.append(canvas);
+  const g = { canvas, scale, dpr, renders: 0, rps: 0, loads: 0, frag: frag || attrs["data-fragment"] || "", vert: undefined, ms: 0, ctorMs: 0, sb: null };
+  let sb = null;
+  const size = () => {
+    const k = (g.dpr ? DPR() : 1) * g.scale;
+    const cw = canvas.clientWidth, ch = canvas.clientHeight;
+    const w = Math.max(1, Math.min(LIM, Math.round(cw * k)));
+    const hh = Math.max(1, Math.min(LIM, Math.round(ch * k)));
+    const changed = canvas.width !== w || canvas.height !== hh;
+    if (changed) { canvas.width = w; canvas.height = hh; }
+    if (sb && sb.gl) {
+      sb.width = cw;
+      sb.height = ch;
+      sb.realToCSSPixels = cw ? w / cw : k;
+      if (changed) sb.gl.viewport(0, 0, w, hh);
+    }
+    return changed;
+  };
+  size();
+  const t0 = performance.now();
+  sb = new GlslCanvas(canvas, frag ? { fragmentString: frag } : {}, { onError() {} });
+  g.ctorMs = performance.now() - t0;
+  g.sb = sb;
+  if (!sb.gl) {
+    canvas.remove();
+    throw new Error("此瀏覽器無法建立 WebGL，glslCanvas 需要 WebGL 1。");
+  }
+  size();
+
+  // Wrapper around sb.load(): frees the previous program and buffers, and survives link failures
+  // (glslCanvas leaves program = null and its internal render() then throws).
+  g.load = (f, v) => {
+    size();
+    const old = sb.program;
+    dropBuffers(sb);
+    g.frag = f;
+    if (v) g.vert = v;
+    const t1 = performance.now();
+    try { sb.load(f, v); } catch (err) { if (sb.program) throw err; }
+    g.ms = performance.now() - t1;
+    g.loads++;
+    if (old && old !== sb.program) sb.gl.deleteProgram(old);
+  };
+  sb.resize = () => {
+    const c = size();
+    if (c) {
+      sb.forceRender = true;
+      // Buffers are sized at load time, so a new size means a fresh load (the simulation restarts).
+      if (Object.keys(sb.buffers).length) g.load(g.frag, g.vert);
+    }
+    return c;
+  };
+
+  sb.on("render", () => g.renders++);
+  let last = 0;
+  ctx.interval(() => { g.rps = (g.renders - last) * 2; last = g.renders; }, 500);
+
+  if (pointer) {
+    // glslCanvas only listens to document mousemove; forward touch and pen moves so u_mouse follows a finger too.
+    canvas.style.touchAction = "none";
+    const fwd = (e) => { if (e.pointerType !== "mouse") document.dispatchEvent(new MouseEvent("mousemove", { clientX: e.clientX, clientY: e.clientY })); };
+    ctx.on(canvas, "pointermove", fwd);
+    ctx.on(canvas, "pointerdown", fwd);
+  }
+  ctx.on(canvas, "webglcontextlost", (e) => {
+    e.preventDefault();
+    if (ctx.active) ctx.status("").error("WebGL 內容遺失（GPU 負載過重或被系統回收），切到別的場景再回來即可重建。");
+  });
+  ctx.onCleanup(() => {
+    const gl = sb.gl;
+    const lose = gl && gl.getExtension("WEBGL_lose_context");
+    if (gl) { dropBuffers(sb); sb.destroy(); }
+    if (lose) lose.loseContext();
+    canvas.remove();
+  });
+  return g;
+}
+
+// ---------- scene 1: the original live-editor presets ----------
 const HEADER = `#ifdef GL_ES
 precision highp float;
 #endif
@@ -229,97 +431,972 @@ void main() {
 };
 
 const PRESETS = [["aurora", "極光"], ["grid", "霓虹格線"], ["cells", "細胞"], ["lava", "熔岩"]];
-const canvas = document.getElementById("glsl");
-const src = document.getElementById("src");
-const status = document.getElementById("status");
-const speed = document.getElementById("speed");
-const hue = document.getElementById("hue");
 
-// glslCanvas only resizes when the CSS size changes, so give it the right backing size up front.
-const dpr = window.devicePixelRatio || 1;
-canvas.width = Math.round(canvas.clientWidth * dpr);
-canvas.height = Math.round(canvas.clientHeight * dpr);
+// ---------- scene 2: built-in uniforms ----------
+const CLOCK = `#ifdef GL_ES
+precision highp float;
+#endif
 
-const sandbox = new GlslCanvas(canvas);
-let lastError = "", pending = "", lastGood = "", restoring = false;
+uniform vec2 u_resolution;
+uniform vec2 u_mouse;
+uniform float u_time;
+uniform float u_delta;
+uniform vec4 u_date;
 
-function applyKnobs() {
-  sandbox.setUniform("u_speed", Number(speed.value));
-  sandbox.setUniform("u_hue", Number(hue.value));
+#define TAU 6.28318530718
+
+float seg(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a, ba = b - a;
+  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba * h);
 }
 
-function compile(code) {
-  pending = code;
-  sandbox.load(code);
+vec2 dir(float turns) { return vec2(sin(turns * TAU), cos(turns * TAU)); }
+
+// 1 inside a band of half-width w around distance d, with a 1 px soft edge
+float band(float d, float w) { return 1.0 - smoothstep(w - 0.5, w + 0.5, d); }
+
+void main() {
+  vec2 fc = gl_FragCoord.xy;
+  vec3 col = vec3(0.05, 0.057, 0.07);
+  // Pixel grid every 100 px, brighter every 500 px (u_resolution is in device pixels)
+  vec2 g1 = step(mod(fc, 100.0), vec2(1.0));
+  vec2 g5 = step(mod(fc, 500.0), vec2(1.0));
+  col += 0.045 * max(g1.x, g1.y) + 0.06 * max(g5.x, g5.y);
+
+  vec2 c = 0.5 * u_resolution;
+  float R = 0.34 * min(u_resolution.x, u_resolution.y);
+  float k = max(R / 150.0, 0.7);
+  vec2 p = fc - c;
+  float r = length(p);
+  float ang = fract(atan(p.x, p.y) / TAU + 1.0);
+
+  // Dial face and rim
+  col = mix(col, vec3(0.085, 0.095, 0.12), 1.0 - smoothstep(R - 0.5, R + 0.5, r));
+  col = mix(col, vec3(0.36, 0.38, 0.44), band(abs(r - R), 1.5 * k));
+
+  // Radar sweep driven by u_time: one turn every 6 s
+  float sweep = fract(u_time / 6.0);
+  float trail = exp(-fract(sweep - ang) * 9.0);
+  float inner = 1.0 - smoothstep(0.77 * R - 0.5, 0.77 * R + 0.5, r);
+  col += vec3(0.3, 0.79, 0.94) * 0.3 * trail * inner;
+  col = mix(col, vec3(0.3, 0.79, 0.94), band(seg(p, vec2(0.0), dir(sweep) * 0.77 * R), 0.8 * k) * 0.8);
+
+  // Minute and hour ticks
+  float dMin = abs(fract(ang * 60.0 + 0.5) - 0.5) / 60.0 * TAU * r;
+  float dHour = abs(fract(ang * 12.0 + 0.5) - 0.5) / 12.0 * TAU * r;
+  float bMin = step(0.88 * R, r) * step(r, 0.95 * R);
+  float bHour = step(0.8 * R, r) * step(r, 0.95 * R);
+  col = mix(col, vec3(0.55, 0.56, 0.6), band(dMin, 0.8 * k) * bMin);
+  col = mix(col, vec3(0.92, 0.91, 0.88), band(dHour, 2.2 * k) * bHour);
+
+  // Hands from u_date.w = seconds since local midnight
+  float s = u_date.w;
+  vec2 sd = dir(s / 60.0);
+  col = mix(col, vec3(0.92, 0.91, 0.88), band(seg(p, vec2(0.0), dir(s / 43200.0) * 0.5 * R), 4.0 * k));
+  col = mix(col, vec3(0.92, 0.91, 0.88), band(seg(p, vec2(0.0), dir(s / 3600.0) * 0.75 * R), 2.6 * k));
+  col = mix(col, vec3(0.97, 0.87, 0.12), band(seg(p, -sd * 0.16 * R, sd * 0.86 * R), 1.2 * k));
+  col = mix(col, vec3(0.97, 0.87, 0.12), band(r, 6.0 * k));
+
+  // u_delta ring: a full circle is 66.7 ms (15 fps); white marks at 16.7 ms and 33.3 ms
+  float fill = clamp(u_delta / 0.0667, 0.0, 1.0);
+  float ring = band(abs(r - 1.1 * R), 3.0 * k);
+  col = mix(col, vec3(0.2, 0.21, 0.25), ring);
+  col = mix(col, vec3(0.97, 0.15, 0.52), ring * step(ang, fill));
+  float dMark = min(abs(fract(ang + 0.25) - 0.5), abs(fract(ang) - 0.5)) * TAU * r;
+  col = mix(col, vec3(1.0), band(dMark, 0.8) * band(abs(r - 1.1 * R), 5.0 * k));
+
+  // u_mouse crosshair; a dim marker orbits until the cursor enters the canvas
+  float live = step(0.5, u_mouse.x + u_mouse.y);
+  vec2 m = mix(c + dir(u_time * 0.1) * 1.25 * R, u_mouse, live);
+  float dm = length(fc - m);
+  vec3 orange = vec3(1.0, 0.55, 0.26);
+  col = mix(col, orange, band(min(abs(fc.x - m.x), abs(fc.y - m.y)), 0.5) * 0.45 * live);
+  col = mix(col, orange, band(abs(dm - 12.0 * k), 1.0) * mix(0.35, 1.0, live));
+  col = mix(col, orange, band(dm, 2.5 * k) * mix(0.35, 1.0, live));
+
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// ---------- scene 3: textures ----------
+const TEX_FOCUS = `
+// Focus point: the cursor, or a slow drift while the cursor is outside
+vec2 focus() {
+  if (u_mouse.x > 0.0) return u_mouse / u_resolution;
+  return 0.5 + vec2(0.28 * cos(u_time * 0.5), 0.22 * sin(u_time * 0.7));
+}
+`;
+const TEX_FX = {
+  plain: `  vec3 col = img(uv);`,
+  ripple: `  vec2 f = focus();
+  float asp = u_resolution.x / u_resolution.y;
+  vec2 d = (uv - f) * vec2(asp, 1.0);
+  float r = length(d);
+  float w = sin(r * 60.0 - u_time * 6.0) * exp(-r * 4.0);
+  vec2 off = d / max(r, 1e-4) / vec2(asp, 1.0) * w * 0.012;
+  vec3 col = img(uv + off) * (1.0 + w * 0.08);`,
+  pixel: `  vec2 f = focus();
+  float asp = u_resolution.x / u_resolution.y;
+  float d = length((uv - f) * vec2(asp, 1.0));
+  // Cell size doubles in steps away from the focus: 1, 2, 4 ... 64 px
+  float cell = exp2(floor(mix(0.0, 6.99, smoothstep(0.04, 0.6, d)))) * max(u_resolution.y / 600.0, 1.0);
+  vec2 cid = floor(gl_FragCoord.xy / cell);
+  vec2 inCell = gl_FragCoord.xy - cid * cell;
+  float gap = cell < 8.0 ? 1.0 : step(1.0, inCell.x) * step(1.0, inCell.y);
+  vec3 col = img((cid + 0.5) * cell / u_resolution) * mix(0.7, 1.0, gap);`,
+  chroma: `  vec2 f = focus();
+  vec2 d = (uv - f) * (0.04 + 0.025 * sin(u_time * 1.3));
+  vec3 col = vec3(img(uv + d).r, img(uv).g, img(uv - d).b);`,
+  kaleido: `  vec2 f = focus();
+  float asp = u_resolution.x / u_resolution.y;
+  vec2 d = (uv - 0.5) * vec2(asp, 1.0);
+  float r = length(d);
+  float a = atan(d.y, d.x) + u_time * 0.15;
+  float wedge = 6.2832 / 8.0;
+  a = mod(a, wedge);
+  a = min(a, wedge - a);
+  vec2 q = f + vec2(cos(a), sin(a)) * r * 0.9 / vec2(asp, 1.0);
+  q = 1.0 - abs(mod(q, 2.0) - 1.0);
+  vec3 col = img(q) * (1.0 - 0.3 * r);`,
+  lens: `  vec2 f = focus();
+  float asp = u_resolution.x / u_resolution.y;
+  float r = length((uv - f) * vec2(asp, 1.0));
+  float R = 0.2;
+  vec3 col = img(uv) * (1.0 - 0.4 * (1.0 - smoothstep(R, R * 1.4, r)));
+  float inside = 1.0 - smoothstep(R - 0.003, R + 0.003, r);
+  col = mix(col, img(f + (uv - f) / 2.2) * (1.08 - 0.2 * r / R), inside);
+  col = mix(col, vec3(0.97, 0.87, 0.12), 1.0 - smoothstep(0.0, 0.006, abs(r - R)));`,
+};
+const FXK = ["plain", "ripple", "pixel", "chroma", "kaleido", "lens"];
+const FXN = ["原圖", "波紋", "像素化", "色散", "萬花筒", "放大鏡"];
+
+// The "// url" comment after a sampler2D declaration makes load() fetch that image by itself.
+const texFrag = (url, fx) => {
+  const anim = fx !== "plain";
+  return `#ifdef GL_ES
+precision highp float;
+#endif
+
+uniform sampler2D u_tex0; // ${url}
+uniform vec2 u_tex0Resolution;
+uniform vec2 u_resolution;
+${anim ? "uniform vec2 u_mouse;\nuniform float u_time;\n" : ""}
+// Same math as CSS object-fit: cover
+vec2 cover(vec2 uv) {
+  vec2 tr = max(u_tex0Resolution, vec2(1.0));
+  float sa = u_resolution.x / u_resolution.y, ta = tr.x / tr.y;
+  vec2 s = sa > ta ? vec2(1.0, ta / sa) : vec2(sa / ta, 1.0);
+  return (uv - 0.5) * s + 0.5;
 }
 
-if (!sandbox.gl) {
-  status.className = "err";
-  status.textContent = "此瀏覽器無法建立 WebGL";
-} else {
-  sandbox.on("error", (e) => {
-    const first = String(e.error || "").split("\n").find((line) => line.trim()) || "未知錯誤";
-    // glslCanvas prepends "#line 0", so the driver reports editor line + 1.
-    const m = first.match(/ERROR:\s*\d+:(\d+):\s*(.*)/);
-    lastError = m ? `第 ${Number(m[1]) - 1} 行：${m[2]}` : first;
-  });
-  // A new program starts with zeroed custom uniforms, so re-send the slider values on every load.
-  sandbox.on("load", () => {
-    applyKnobs();
-    if (restoring) return;
-    if (sandbox.isValid) {
-      lastGood = pending;
-      status.className = "";
-      status.textContent = "● 編譯成功";
-      status.title = "";
-    } else {
-      status.className = "err";
-      status.textContent = "● " + lastError;
-      status.title = lastError + "（畫面保留上一版）";
-      // glslCanvas swaps in a white placeholder on failure; put the last working shader back.
-      if (lastGood) {
-        restoring = true;
-        sandbox.load(lastGood);
-        restoring = false;
-      }
-    }
-    lastError = "";
-  });
+vec3 img(vec2 uv) { return texture2D(u_tex0, cover(uv)).rgb; }
+${anim ? TEX_FOCUS : ""}
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+${TEX_FX[fx]}
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+};
+
+// ---------- scene 4: custom uniforms of every type ----------
+const METABALL = `#ifdef GL_ES
+precision highp float;
+#endif
+
+uniform vec2 u_resolution;
+uniform vec2 u_balls[6];
+uniform float u_r[6];
+uniform vec3 u_color;
+uniform float u_thresh;
+uniform bool u_iso;
+
+struct Light {
+  vec2 pos;
+  float power;
+};
+uniform Light u_light;
+
+float field(vec2 p) {
+  float f = 0.0;
+  for (int i = 0; i < 6; i++) {
+    vec2 d = p - u_balls[i];
+    float r = max(u_r[i], 0.001);
+    f += exp(-dot(d, d) / (r * r));
+  }
+  return f;
 }
 
-function loadPreset(key) {
-  document.querySelectorAll("#bar .btn").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.k === key)));
-  document.getElementById("title").textContent = PRESETS.find((p) => p[0] === key)[1] + ".frag";
-  src.value = SHADERS[key].trim() + "\n";
-  src.scrollTop = 0;
-  if (sandbox.gl) compile(src.value);
+void main() {
+  float px = 1.0 / u_resolution.y;
+  vec2 p = gl_FragCoord.xy * px;
+  float f = field(p);
+  // Field change per pixel, from central differences
+  vec2 grad = vec2(field(p + vec2(1.5 * px, 0.0)) - field(p - vec2(1.5 * px, 0.0)),
+                   field(p + vec2(0.0, 1.5 * px)) - field(p - vec2(0.0, 1.5 * px))) / 3.0;
+  float w = max(length(grad), 1e-4);
+  float inside = smoothstep(-w, w, f - u_thresh);
+
+  // Treat the field as a height map; a gentle slope keeps the blobs dome-shaped
+  vec3 n = normalize(vec3(-grad * 0.07 * u_resolution.y, 1.0));
+  vec3 ld = normalize(vec3(u_light.pos, 0.5) - vec3(p, 0.0));
+  // Half-Lambert wrap so the far side fades instead of cutting to black
+  float diff = 0.5 + 0.5 * dot(n, ld);
+  diff *= diff;
+  float spec = pow(max(dot(n, normalize(ld + vec3(0.0, 0.0, 1.0))), 0.0), 40.0);
+  vec2 lv = p - u_light.pos;
+  vec3 bg = vec3(0.04, 0.045, 0.06) + u_color * 0.12 * exp(-dot(lv, lv) * 18.0) * u_light.power;
+  vec3 blob = u_color * (0.18 + 0.82 * diff * u_light.power) + vec3(1.0) * spec * 0.8 * u_light.power;
+  vec3 col = mix(bg, blob, inside);
+
+  if (u_iso) {
+    // Distance to the nearest 0.1 contour of the field, in pixels
+    float dpx = abs(fract(f / 0.1 + 0.5) - 0.5) * 0.1 / w;
+    float iso = (1.0 - smoothstep(0.5, 1.5, dpx)) * step(0.02, f) * (1.0 - inside);
+    col = mix(col, u_color * 0.9 + 0.1, iso * 0.6);
+  }
+
+  // Light marker
+  float lr = length(lv) / px;
+  col = mix(col, vec3(1.0, 0.95, 0.8), (1.0 - smoothstep(1.0, 2.0, abs(lr - 9.0))) * 0.9);
+  col = mix(col, vec3(1.0, 0.95, 0.8), 1.0 - smoothstep(2.5, 3.5, lr));
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+const hueRGB = (hu) => [0, 0.33, 0.67].map((o) => 0.5 + 0.5 * Math.cos(6.2832 * (hu + o)));
+
+// ---------- scene 5: interchangeable shader parts ----------
+const SW_HEAD = `#ifdef GL_ES
+precision highp float;
+#endif
+
+uniform vec2 u_resolution;
+uniform float u_time;
+varying vec2 v_texcoord;
+
+`;
+const SW_MAIN = `void main() {
+  vec2 uv = v_texcoord;
+  vec2 p = (uv - 0.5) * vec2(u_resolution.x / u_resolution.y, 1.0);
+  gl_FragColor = vec4(post(palette(pattern(p, u_time)), uv), 1.0);
+}
+`;
+const SW_PAT = [
+  ["同心圓", `float pattern(vec2 p, float t) {
+  return fract(length(p) * 4.0 - t * 0.5);
+}
+`],
+  ["條紋", `float pattern(vec2 p, float t) {
+  return 0.5 + 0.5 * sin((p.x + p.y * 0.4) * 18.0 + sin(p.y * 6.0 + t) * 2.0);
+}
+`],
+  ["雜訊", `float hash(vec2 q) { return fract(sin(dot(q, vec2(127.1, 311.7))) * 43758.5453); }
+float vnoise(vec2 q) {
+  vec2 i = floor(q), f = fract(q);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x),
+             mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+}
+float pattern(vec2 p, float t) {
+  return vnoise(p * 5.0 + vec2(t * 0.4, 0.0)) * 0.65 + vnoise(p * 11.0 - t * 0.3) * 0.35;
+}
+`],
+  ["棋盤", `float pattern(vec2 p, float t) {
+  float a = t * 0.2;
+  vec2 q = mat2(cos(a), -sin(a), sin(a), cos(a)) * p * 5.0;
+  return mod(floor(q.x) + floor(q.y), 2.0) * 0.75 + 0.25 * fract(q.x);
+}
+`],
+];
+const SW_PAL = [
+  ["霓虹", `vec3 palette(float v) {
+  return 0.5 + 0.5 * cos(6.2832 * (v + vec3(0.0, 0.33, 0.67)));
+}
+`],
+  ["熱度", `vec3 palette(float v) {
+  return clamp(vec3(v * 3.0, v * 3.0 - 1.0, v * 3.0 - 2.0), 0.0, 1.0);
+}
+`],
+  ["單色", `vec3 palette(float v) {
+  return mix(vec3(0.06, 0.07, 0.09), vec3(0.97, 0.87, 0.12), v);
+}
+`],
+  ["彩虹", `vec3 palette(float v) {
+  return clamp(abs(mod(v * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+}
+`],
+];
+const SW_POST = [
+  ["無", `vec3 post(vec3 c, vec2 uv) {
+  return c;
+}
+`],
+  ["掃描線", `vec3 post(vec3 c, vec2 uv) {
+  return c * (0.7 + 0.3 * sin(gl_FragCoord.y * 1.6));
+}
+`],
+  ["暈影", `vec3 post(vec3 c, vec2 uv) {
+  vec2 d = uv - 0.5;
+  return c * (1.0 - dot(d, d) * 2.2);
+}
+`],
+  ["顆粒", `vec3 post(vec3 c, vec2 uv) {
+  float n = fract(sin(dot(gl_FragCoord.xy + fract(u_time) * 97.0, vec2(12.9898, 78.233))) * 43758.5453);
+  return c + (n - 0.5) * 0.2;
+}
+`],
+];
+const SW_VERT = ["全畫面", "傾斜卡片"];
+// Custom vertex shaders must keep glslCanvas's attribute order: a_position first, then a_texcoord.
+const CARD_VERT = `#ifdef GL_ES
+precision highp float;
+#endif
+
+uniform vec2 u_resolution;
+uniform float u_time;
+
+attribute vec2 a_position;
+attribute vec2 a_texcoord;
+varying vec2 v_texcoord;
+
+void main() {
+  float aspect = u_resolution.x / u_resolution.y;
+  // Shrink the full-screen quad into a card and tilt it in 3D
+  vec3 v = vec3(a_position.x * aspect, a_position.y, 0.0) * 0.62;
+  float a = 0.55 * sin(u_time * 0.8);
+  float b = 0.3 * sin(u_time * 0.6 + 1.0);
+  v.xz = mat2(cos(a), -sin(a), sin(a), cos(a)) * v.xz;
+  v.yz = mat2(cos(b), -sin(b), sin(b), cos(b)) * v.yz;
+  // Perspective: w grows with depth
+  gl_Position = vec4(v.x * 2.6 / aspect, v.y * 2.6, 0.0, v.z + 2.6);
+  v_texcoord = a_texcoord;
+}
+`;
+
+// ---------- scene 6: one GlslCanvas per tile ----------
+const tileFrag = (body, extra = "") => `#ifdef GL_ES
+precision highp float;
+#endif
+
+uniform vec2 u_resolution;
+uniform float u_hue;
+${extra}
+vec3 pal(float t) { return 0.5 + 0.5 * cos(6.2832 * (t + u_hue + vec3(0.0, 0.33, 0.67))); }
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+void main() {
+${body}
+}
+`;
+const TILES = [
+  { name: "漸層", api: "data-fragment", frag: tileFrag(`  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec2 d = uv - vec2(0.3, 0.75);
+  vec3 col = mix(pal(0.55), pal(0.9), uv.x * 0.7 + uv.y * 0.3) * (0.45 + 0.55 * uv.y);
+  col += pal(0.2) * 0.35 * exp(-dot(d, d) * 9.0);
+  gl_FragColor = vec4(col, 1.0);`) },
+  { name: "波浪", api: "u_time", frag: tileFrag(`  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec3 col = vec3(0.03, 0.035, 0.05);
+  for (int i = 0; i < 5; i++) {
+    float fi = float(i);
+    float y = 0.5 + 0.22 * sin(uv.x * (5.0 + fi) + u_time * (1.0 + fi * 0.3) + fi * 1.7);
+    col += pal(fi * 0.12) * 0.0025 / (abs(uv.y - y) + 0.004);
+  }
+  gl_FragColor = vec4(col, 1.0);`, "uniform float u_time;") },
+  { name: "照片", api: "data-textures", tex: IMG(5), frag: tileFrag(`  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec2 tr = max(u_tex0Resolution, vec2(1.0));
+  float sa = u_resolution.x / u_resolution.y, ta = tr.x / tr.y;
+  vec2 s = sa > ta ? vec2(1.0, ta / sa) : vec2(sa / ta, 1.0);
+  vec3 c = texture2D(u_tex0, (uv - 0.5) * s + 0.5).rgb;
+  float l = dot(c, vec3(0.299, 0.587, 0.114));
+  // Duotone: map brightness between two palette colours
+  gl_FragColor = vec4(mix(pal(0.6) * 0.15, pal(0.15) * 1.1, smoothstep(0.05, 0.95, l)), 1.0);`, "uniform sampler2D u_tex0;\nuniform vec2 u_tex0Resolution;") },
+  { name: "游標光", api: "u_mouse", frag: tileFrag(`  vec2 fc = gl_FragCoord.xy;
+  vec2 m = u_mouse.x > 0.0 ? u_mouse : 0.5 * u_resolution;
+  float cell = max(10.0, u_resolution.y / 16.0);
+  vec2 g = mod(fc, cell) - 0.5 * cell;
+  float d = length(fc - m) / u_resolution.y;
+  float glow = exp(-d * 6.0);
+  float rad = cell * (0.12 + 0.3 * glow);
+  float dotm = 1.0 - smoothstep(rad - 1.0, rad + 1.0, length(g));
+  vec3 col = vec3(0.03, 0.035, 0.05) + pal(0.1 + d) * dotm * (0.15 + 0.85 * glow) + pal(0.1) * 0.12 * glow;
+  gl_FragColor = vec4(col, 1.0);`, "uniform vec2 u_mouse;") },
+  { name: "星空", api: "u_time", frag: tileFrag(`  vec2 p = gl_FragCoord.xy / u_resolution.y;
+  vec3 col = mix(vec3(0.01, 0.01, 0.03), pal(0.65) * 0.18, gl_FragCoord.y / u_resolution.y);
+  for (int i = 0; i < 3; i++) {
+    float fi = float(i);
+    vec2 q = p * (10.0 + fi * 9.0) + vec2(u_time * (0.4 + fi * 0.5), fi * 13.0);
+    vec2 id = floor(q), f = fract(q) - 0.5;
+    float hv = hash(id + fi * 7.0);
+    vec2 o = vec2(hash(id + 3.1), hash(id + 5.7)) - 0.5;
+    float d = length(f - o * 0.6);
+    float tw = 0.6 + 0.4 * sin(u_time * 3.0 + hv * 40.0);
+    col += pal(hv * 0.3 + 0.5) * step(0.82, hv) * (1.0 - smoothstep(0.0, 0.08 - fi * 0.015, d)) * tw;
+  }
+  gl_FragColor = vec4(col, 1.0);`, "uniform float u_time;") },
+  { name: "Truchet", api: "data-fragment", frag: tileFrag(`  vec2 p = gl_FragCoord.xy / u_resolution.y * 6.0;
+  vec2 id = floor(p), f = fract(p);
+  if (hash(id) > 0.5) f.x = 1.0 - f.x;
+  float d = min(abs(length(f) - 0.5), abs(length(f - 1.0) - 0.5));
+  float w = 6.0 / u_resolution.y;
+  float arc = 1.0 - smoothstep(0.08 - w, 0.08 + w, d);
+  gl_FragColor = vec4(mix(vec3(0.04, 0.045, 0.06), pal(0.3 + 0.2 * hash(id + 1.0)), arc), 1.0);`) },
+];
+
+// ---------- scene 7: BUFFER_0 feedback simulations ----------
+const INK = `#ifdef GL_ES
+precision highp float;
+#endif
+
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform vec3 u_pen;
+uniform sampler2D u_buffer0;
+
+vec3 pal(float t) { return 0.5 + 0.5 * cos(6.2832 * (t + vec3(0.0, 0.33, 0.67))); }
+
+#ifdef BUFFER_0
+// Float buffers use NEAREST filtering, so blend the four neighbours by hand
+vec3 sampleInk(vec2 px) {
+  vec2 q = px - 0.5;
+  vec2 i = floor(q), f = fract(q);
+  vec2 inv = 1.0 / u_resolution;
+  vec3 a = texture2D(u_buffer0, (i + vec2(0.5, 0.5)) * inv).rgb;
+  vec3 b = texture2D(u_buffer0, (i + vec2(1.5, 0.5)) * inv).rgb;
+  vec3 c = texture2D(u_buffer0, (i + vec2(0.5, 1.5)) * inv).rgb;
+  vec3 d = texture2D(u_buffer0, (i + vec2(1.5, 1.5)) * inv).rgb;
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
-const bar = document.getElementById("bar");
-for (const [key, label] of PRESETS) {
-  const b = document.createElement("button");
-  b.className = "btn"; b.type = "button"; b.dataset.k = key; b.textContent = label;
-  b.addEventListener("click", () => loadPreset(key));
-  bar.append(b);
+void main() {
+  float H = u_resolution.y;
+  float asp = u_resolution.x / H;
+  vec2 p = gl_FragCoord.xy / H;
+  float t = u_time;
+  // Velocity: a slow wavy drift plus two counter-rotating vortices
+  vec2 v = vec2(sin(p.y * 6.0 + t * 0.4), sin(p.x * 5.0 - t * 0.3)) * 0.0008;
+  vec2 d1 = p - vec2(asp * 0.33, 0.5), d2 = p - vec2(asp * 0.67, 0.5);
+  float q1 = dot(d1, d1), q2 = dot(d2, d2);
+  v += 0.0025 * vec2(-d1.y, d1.x) / (q1 + 0.02) * exp(-q1 * 6.0);
+  v -= 0.0025 * vec2(-d2.y, d2.x) / (q2 + 0.02) * exp(-q2 * 6.0);
+  // Semi-Lagrangian advection: read the ink from where this pixel's fluid came from
+  vec3 ink = sampleInk((p - v) * H) * 0.996;
+  for (int i = 0; i < 3; i++) {
+    float fi = float(i);
+    float a = t * (0.5 + fi * 0.13) + fi * 2.094;
+    vec2 e = vec2(asp * (0.5 + 0.3 * cos(a)), 0.5 + 0.3 * sin(a * 1.3));
+    vec2 de = p - e;
+    ink += pal(fi * 0.33 + t * 0.05) * exp(-dot(de, de) * 1800.0) * 0.06;
+  }
+  vec2 dp = p - u_pen.xy;
+  ink += pal(t * 0.1 + 0.5) * exp(-dot(dp, dp) * 2500.0) * 0.12 * u_pen.z;
+  gl_FragColor = vec4(min(ink, vec3(6.0)), 1.0);
+}
+#else
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_resolution;
+  vec3 ink = texture2D(u_buffer0, uv).rgb;
+  vec3 bg = mix(vec3(0.02, 0.022, 0.03), vec3(0.05, 0.055, 0.075), uv.y);
+  gl_FragColor = vec4(bg + (1.0 - exp(-ink * 1.5)), 1.0);
+}
+#endif
+`;
+const WAVE = `#ifdef GL_ES
+precision highp float;
+#endif
+
+uniform vec2 u_resolution;
+uniform float u_time;
+uniform vec3 u_pen;
+uniform vec3 u_drop;
+uniform sampler2D u_buffer0;
+
+float height(vec2 px) { return texture2D(u_buffer0, px / u_resolution).r; }
+
+#ifdef BUFFER_0
+// r = height now, g = height one step ago: a discrete wave equation
+void main() {
+  vec2 fc = gl_FragCoord.xy;
+  vec4 s = texture2D(u_buffer0, fc / u_resolution);
+  float lap = height(fc + vec2(1.0, 0.0)) + height(fc - vec2(1.0, 0.0))
+            + height(fc + vec2(0.0, 1.0)) + height(fc - vec2(0.0, 1.0)) - 4.0 * s.r;
+  float hn = (2.0 * s.r - s.g + 0.45 * lap) * 0.992;
+  vec2 p = fc / u_resolution.y;
+  vec2 dd = p - u_drop.xy;
+  hn += u_drop.z * exp(-dot(dd, dd) * 1500.0);
+  vec2 dp = p - u_pen.xy;
+  hn += u_pen.z * 0.25 * sin(u_time * 18.0) * exp(-dot(dp, dp) * 2500.0);
+  gl_FragColor = vec4(hn, s.r, 0.0, 1.0);
+}
+#else
+void main() {
+  vec2 fc = gl_FragCoord.xy;
+  vec2 grad = vec2(height(fc + vec2(1.0, 0.0)) - height(fc - vec2(1.0, 0.0)),
+                   height(fc + vec2(0.0, 1.0)) - height(fc - vec2(0.0, 1.0)));
+  vec3 n = normalize(vec3(-grad * 2.0, 1.0));
+  // Look at the pool floor through the bent surface
+  vec2 p = fc / u_resolution.y + n.xy * 0.08;
+  vec2 f = abs(fract(p * 8.0) - 0.5);
+  float grout = smoothstep(0.43, 0.47, max(f.x, f.y));
+  vec3 col = mix(vec3(0.15, 0.52, 0.62), vec3(0.05, 0.2, 0.27), grout);
+  float ca = sin(p.x * 23.0 + u_time * 1.3) * sin(p.y * 19.0 - u_time * 1.1) + sin((p.x + p.y) * 14.0 + u_time * 0.9);
+  col += vec3(0.55, 0.9, 1.0) * pow(clamp(0.5 + 0.25 * ca, 0.0, 1.0), 3.0) * 0.25;
+  col *= 0.75 + 0.25 * n.z;
+  vec3 L = normalize(vec3(-0.4, 0.5, 0.75));
+  col += vec3(1.0) * pow(max(dot(reflect(-L, n), vec3(0.0, 0.0, 1.0)), 0.0), 60.0) * 0.8;
+  col += vec3(0.4, 0.8, 1.0) * clamp(length(grad) * 3.0, 0.0, 0.35);
+  gl_FragColor = vec4(col, 1.0);
+}
+#endif
+`;
+
+// ---------- scene 8: stress shader ----------
+const stressFrag = (oct) => `#ifdef GL_ES
+precision highp float;
+#endif
+#define OCTAVES ${oct}
+
+uniform vec2 u_resolution;
+uniform float u_time;
+` + NOISE + `
+float fbm(vec2 p) {
+  float v = 0.0, a = 0.5;
+  mat2 r = mat2(0.8, 0.6, -0.6, 0.8);
+  for (int i = 0; i < OCTAVES; i++) { v += a * noise(p); p = r * p * 2.0; a *= 0.5; }
+  return v;
 }
 
-let timer = 0;
-src.addEventListener("input", () => {
-  clearTimeout(timer);
-  status.className = "";
-  status.textContent = "編輯中…";
-  timer = setTimeout(() => sandbox.gl && compile(src.value), 400);
+void main() {
+  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution) / u_resolution.y * 3.0;
+  float t = u_time * 0.25;
+  // Five fbm calls per pixel: two for q, two for r, one for the final value
+  vec2 q = vec2(fbm(p + vec2(0.0, t)), fbm(p + vec2(5.2, 1.3) - t));
+  vec2 r = vec2(fbm(p + 4.0 * q + vec2(1.7, 9.2) + t * 1.5), fbm(p + 4.0 * q + vec2(8.3, 2.8) - t));
+  float f = fbm(p + 3.5 * r);
+  vec3 col = mix(vec3(0.06, 0.0, 0.03), vec3(0.85, 0.12, 0.02), clamp(f * f * 3.0, 0.0, 1.0));
+  col = mix(col, vec3(1.0, 0.7, 0.15), clamp(length(q) * f * 1.4 - 0.25, 0.0, 1.0));
+  col = mix(col, vec3(0.03, 0.0, 0.06), clamp(r.y * r.y - 0.15, 0.0, 1.0));
+  col += vec3(1.0, 0.9, 0.6) * pow(clamp(f * 1.25, 0.0, 1.0), 8.0);
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+Showcase.run({
+  scenes: [
+    {
+      id: "editor",
+      title: "即時編輯",
+      api: "load(frag)・on(\"error\")・isValid・setUniform()",
+      desc: "glslCanvas 的招牌用法：把片段著色器字串交給 load() 就編譯上畫面。改壞時從 error 事件取出行號，並換回上一版能用的程式；速度與色相滑桿用 setUniform() 傳自訂 uniform。",
+      hint: "直接改程式碼，停手 0.4 秒就重新編譯",
+      mount(ctx) {
+        ctx.html(`<div class="gc-live"><div class="gc-view gc-bg"></div><aside class="gc-ed panel">
+  <div class="gc-ed-head"><b>極光.frag</b><span class="gc-st">編譯中…</span></div>
+  <textarea spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="GLSL 片段著色器原始碼"></textarea>
+  <div class="gc-knobs"><span>速度</span><input type="range" min="0" max="3" step="0.01" value="1" aria-label="速度"><span>色相</span><input type="range" min="0" max="1" step="0.01" value="0" aria-label="色相"></div>
+  <p class="gc-note"><code>u_time</code>、<code>u_mouse</code>、<code>u_resolution</code> 由 glslCanvas 自動傳入；<code>u_speed</code>、<code>u_hue</code> 由滑桿透過 <code>setUniform()</code> 設定。</p>
+</aside></div>`);
+        const ta = ctx.$("textarea"), st = ctx.$(".gc-st"), title = ctx.$(".gc-ed-head b");
+        const [speed, hue] = ctx.$$(".gc-knobs input");
+        const g = createSandbox(ctx, ctx.$(".gc-view"), { pointer: true });
+        const sb = g.sb;
+        let lastError = "", lastGood = "", timer = 0;
+        // A new program starts with zeroed custom uniforms, so re-send the knobs on every load.
+        const applyKnobs = () => sb.setUniforms({ u_speed: +speed.value, u_hue: +hue.value });
+        sb.on("load", applyKnobs);
+        sb.on("error", (e) => {
+          const first = String(e.error || "").split("\n").find((line) => line.trim()) || "未知錯誤";
+          // glslCanvas prepends a #define line, so the driver reports editor line + 1.
+          const m = first.match(/ERROR:\s*\d+:(\d+):\s*(.*)/);
+          lastError = m ? `第 ${Number(m[1]) - 1} 行：${m[2]}` : first;
+        });
+        const setSt = (cls, text, tip = "") => { st.className = `gc-st gc-${cls}`; st.textContent = text; st.title = tip; };
+        const compile = () => {
+          const src = ta.value;
+          lastError = "";
+          g.load(src);
+          if (sb.isValid && sb.program) {
+            lastGood = src;
+            setSt("ok", `● 編譯成功・${fmtMs(g.ms)}`);
+            return;
+          }
+          const msg = sb.isValid ? "程式連結失敗（varying 或 uniform 宣告不一致）" : lastError || "編譯失敗";
+          setSt("bad", `● ${msg}`, `${msg}（畫面保留上一版）`);
+          // glslCanvas swaps in a white placeholder on failure; put the last working shader back.
+          if (lastGood) g.load(lastGood);
+        };
+        const pick = (i) => {
+          title.textContent = `${PRESETS[i][1]}.frag`;
+          ta.value = SHADERS[PRESETS[i][0]].trim() + "\n";
+          ta.scrollTop = 0;
+          compile();
+        };
+        ctx.group(PRESETS.map((p) => p[1]), 0, (i) => pick(i));
+        ctx.on(ta, "input", () => {
+          clearTimeout(timer);
+          setSt("busy", "● 編輯中…");
+          timer = setTimeout(() => ctx.active && compile(), 400);
+        });
+        ctx.onCleanup(() => clearTimeout(timer));
+        ctx.on(ta, "keydown", (e) => {
+          if (e.key !== "Tab") return;
+          e.preventDefault();
+          ta.setRangeText("  ", ta.selectionStart, ta.selectionEnd, "end");
+          ta.dispatchEvent(new Event("input"));
+        });
+        ctx.on(speed, "input", applyKnobs);
+        ctx.on(hue, "input", applyKnobs);
+        pick(0);
+      },
+    },
+    {
+      id: "builtins",
+      title: "內建 uniform",
+      api: "u_time・u_delta・u_date・u_mouse・u_resolution・pause()/play()",
+      desc: "glslCanvas 每幀自動傳入五個內建 uniform。名稱要在原始碼出現兩次以上才會傳值（u_date 例外）；用到 u_time、u_mouse 或 u_date 才會每幀重畫。u_time 是從建構起算的牆上時間，暫停後再播放會直接跳號。",
+      hint: "移動游標看 u_mouse，按「暫停」再恢復看 u_time 跳號",
+      mount(ctx) {
+        ctx.html(`<div class="gc-card"></div><div class="gc-side"><div class="gc-uni panel"></div><div class="gc-rule panel"><b>glslCanvas 什麼時候重畫？</b><ul>
+  <li>原始碼用到 <code>u_time</code>、<code>u_mouse</code> 或 <code>u_date</code>：每幀重畫</li>
+  <li>其他情況只在 <code>load()</code>、<code>setUniform()</code>、紋理載入完成、尺寸改變時畫一次</li>
+  <li>名稱出現兩次以上（宣告算一次）才會傳值</li>
+</ul></div></div>`);
+        const g = createSandbox(ctx, ctx.$(".gc-card"), { frag: CLOCK, pointer: true });
+        const sb = g.sb, uni = ctx.$(".gc-uni");
+        let paused = false;
+        const val = (n) => sb.uniforms[n] && sb.uniforms[n].value;
+        const p2 = (n) => String(Math.floor(n)).padStart(2, "0");
+        const row = (c, name, v) => `<div><i class="gc-dot" style="--dot: var(${c})"></i><span class="gc-k">${name}</span><b>${v}</b></div>`;
+        const paint = () => {
+          const t = val("u_time"), d = val("u_delta"), dt = val("u_date"), m = val("u_mouse"), r = val("u_resolution");
+          const sub = dt ? `<div class="gc-sub">→ ${dt[0]}/${dt[1] + 1}/${dt[2]} ${p2(dt[3] / 3600)}:${p2((dt[3] % 3600) / 60)}:${p2(dt[3] % 60)}（月份從 0 起算）</div>` : "";
+          uni.innerHTML = [
+            row("--c2", "u_time", t ? `${t[0].toFixed(2)} s` : "…"),
+            row("--c3", "u_delta", d ? `${(d[0] * 1000).toFixed(1)} ms（約 ${Math.round(1 / Math.max(d[0], 1e-3))} fps）` : "…"),
+            row("--c1", "u_date", dt ? `[${dt[0]}, ${dt[1]}, ${dt[2]}, ${dt[3].toFixed(1)}]` : "…") + sub,
+            row("--c5", "u_mouse", m ? `[${Math.round(m[0])}, ${Math.round(m[1])}]` : "尚未進入畫布"),
+            row("--muted", "u_resolution", r ? `[${r[0]}, ${r[1]}]` : "…"),
+          ].join("") + `<div class="gc-meta">render <b>${g.rps}</b> 次/秒・animated ${sb.animated}${paused ? "・已暫停" : ""}</div>`;
+        };
+        ctx.toggle("暫停", false, (v) => { paused = v; if (v) sb.pause(); else sb.play(); paint(); });
+        ctx.interval(paint, 100);
+        paint();
+      },
+    },
+    {
+      id: "textures",
+      title: "紋理 uniform",
+      api: "uniform sampler2D u_tex0; // 網址・setUniform(\"u_tex0\", url)・u_tex0Resolution",
+      desc: "在 sampler2D 宣告後面用註解寫圖片網址，load() 時就會自動載入；之後可以用 setUniform() 換圖。每張紋理還附帶「名稱 + Resolution」的尺寸 uniform，拿來做等比裁切。六種效果都在片段著色器裡算，焦點跟著游標。",
+      hint: "換效果、換照片，游標移到畫面上改焦點",
+      mount(ctx) {
+        ctx.html(`<div class="gc-fill gc-bg"></div><div class="gc-readout panel"><div class="gc-line"></div><div class="gc-line"></div><div></div><div></div></div>`);
+        const g = createSandbox(ctx, ctx.$(".gc-fill"), { pointer: true });
+        const sb = g.sb;
+        const [lnSrc, lnSet, lnRes, lnRs] = ctx.$$(".gc-readout > div");
+        let photo = "5", fx = 1, srcUrl = IMG(5), setUrl = "", loadMs = null;
+        const paint = () => {
+          const res = val("u_tex0Resolution");
+          lnSrc.innerHTML = `<b>uniform sampler2D u_tex0;</b> // ${srcUrl}`;
+          lnSet.innerHTML = setUrl ? `<b>setUniform</b>("u_tex0", "${setUrl}")` : `換照片：<b>setUniform</b>("u_tex0", url)`;
+          lnRes.innerHTML = `u_tex0Resolution <b>${res ? `[${res.join(", ")}]` : "載入中…"}</b>・載入 ${loadMs == null ? "…" : fmtMs(loadMs)}`;
+          lnRs.innerHTML = `render <b>${g.rps}</b> 次/秒・animated ${sb.animated}${fx === 0 ? "（沒用 u_time，只畫一次）" : ""}`;
+        };
+        function val(n) { return sb.uniforms[n] && sb.uniforms[n].value; }
+        const track = (t0) => {
+          const tex = sb.textures.u_tex0;
+          loadMs = null;
+          if (tex && tex.loading) tex.loading.then(() => { if (ctx.active) { loadMs = performance.now() - t0; paint(); } });
+        };
+        const reload = () => { srcUrl = IMG(photo); setUrl = ""; g.load(texFrag(srcUrl, FXK[fx])); paint(); };
+        ctx.select("照片", PHOTOS.map((n, i) => ({ value: String(i + 1), label: n })), photo, (v) => {
+          photo = v;
+          setUrl = IMG(v);
+          const t0 = performance.now();
+          sb.setUniform("u_tex0", setUrl);
+          track(t0);
+          paint();
+        });
+        ctx.group(FXN, fx, (i) => { fx = i; reload(); });
+        const t0 = performance.now();
+        reload();
+        track(t0);
+        ctx.interval(paint, 300);
+      },
+    },
+    {
+      id: "uniforms",
+      title: "自訂 uniform",
+      api: "setUniform(name, ...values)・setUniforms({...})",
+      desc: "setUniform 依參數自動判斷型別：1 個數字是 float、2 到 4 個是 vec、超過 4 個是 float 陣列、多個 [x, y] 是 vec2 陣列、布林是 bool、物件會拆成 struct 欄位。這支著色器沒有 u_time，關掉動畫後只在 setUniform 時重畫。",
+      hint: "游標移動光源、按住加亮；關掉動畫看 render 次數歸零",
+      mount(ctx) {
+        ctx.html(`<div class="gc-fill gc-bg"></div><div class="gc-table panel">
+  <div class="gc-trow"><code>setUniform("u_balls", [x,y]…)</code><span>vec2[6]</span></div>
+  <div class="gc-trow"><code>setUniform("u_r", r0, …, r5)</code><span>float[6]</span></div>
+  <div class="gc-trow"><code>setUniform("u_color", r, g, b)</code><span>vec3</span></div>
+  <div class="gc-trow"><code>setUniform("u_thresh", v)</code><span>float</span></div>
+  <div class="gc-trow"><code>setUniforms({ u_iso })</code><span>bool</span></div>
+  <div class="gc-trow"><code>setUniforms({ u_light })</code><span>struct Light</span></div>
+  <div class="gc-tfoot"><div></div><div></div></div>
+</div>`);
+        const panel = ctx.$(".gc-table");
+        const [ftLight, ftCount] = ctx.$$(".gc-tfoot div");
+        const g = createSandbox(ctx, ctx.$(".gc-fill"), { frag: METABALL });
+        const sb = g.sb, canvas = g.canvas;
+        const R0 = [0.145, 0.11, 0.135, 0.1, 0.125, 0.11];
+        const FQ = [[0.31, 0.43], [0.47, 0.29], [0.23, 0.37], [0.39, 0.53], [0.53, 0.33], [0.27, 0.49]];
+        let t = 0, anim = true, dirty = true, hue = 0.9, thresh = 0.45, iso = true;
+        let pointer = null, down = false, light = { pos: [0.5, 0.5], power: 1 }, box = null;
+        const statics = () => {
+          sb.setUniform("u_r", ...R0.map((r) => r * box.s));
+          sb.setUniform("u_color", ...hueRGB(hue));
+          sb.setUniform("u_thresh", thresh);
+          sb.setUniforms({ u_iso: iso });
+        };
+        // Balls roam the area not covered by the table panel and the controls (CSS px, y down).
+        const layout = () => {
+          const W = canvas.clientWidth, H = canvas.clientHeight;
+          const cr = canvas.getBoundingClientRect(), pr = panel.getBoundingClientRect();
+          const y0 = ctx.controls.offsetHeight + 16;
+          const b = W <= 560
+            ? { x0: 10, x1: W - 10, y0, y1: Math.max(y0 + 40, pr.top - cr.top - 10) }
+            : { x0: pr.right - cr.left + 10, x1: W - 10, y0, y1: H - 10 };
+          box = { ...b, W, H, s: Math.min(1, Math.min(b.x1 - b.x0, b.y1 - b.y0) / (0.75 * H)) };
+          statics();
+          dirty = true;
+        };
+        const send = () => {
+          const { H, x0, x1, y0, y1 } = box;
+          const balls = R0.map((_, i) => {
+            const cx = x0 + (x1 - x0) * (0.5 + 0.3 * Math.sin(t * FQ[i][0] * 2 + i * 1.7));
+            const cy = y0 + (y1 - y0) * (0.5 + 0.28 * Math.sin(t * FQ[i][1] * 2 + i * 2.3));
+            return [cx / H, (H - cy) / H];
+          });
+          let lx, ly;
+          if (pointer) { lx = pointer.x; ly = pointer.y; }
+          else {
+            lx = (x0 + x1) / 2 + Math.cos(t * 0.6) * (x1 - x0) * 0.35;
+            ly = (y0 + y1) / 2 + Math.sin(t * 0.6) * (y1 - y0) * 0.35;
+          }
+          light = { pos: [lx / H, (H - ly) / H], power: down ? 1.6 : 1 };
+          sb.setUniform("u_balls", ...balls);
+          sb.setUniforms({ u_light: light });
+          dirty = false;
+        };
+        sb.on("load", () => { statics(); send(); });
+        ctx.slider("色相", { min: 0, max: 1, step: 0.01, value: hue }, (v) => { hue = v; statics(); });
+        ctx.slider("門檻", { min: 0.2, max: 0.8, step: 0.01, value: thresh }, (v) => { thresh = v; statics(); });
+        ctx.toggle("等高線", iso, (v) => { iso = v; statics(); });
+        ctx.toggle("動畫", anim, (v) => { anim = v; });
+        canvas.style.touchAction = "none";
+        const at = (e) => { const r = canvas.getBoundingClientRect(); pointer = { x: e.clientX - r.left, y: e.clientY - r.top }; dirty = true; };
+        ctx.on(canvas, "pointermove", at);
+        ctx.on(canvas, "pointerdown", (e) => { canvas.setPointerCapture(e.pointerId); down = true; at(e); });
+        const up = (e) => { down = false; if (e.pointerType !== "mouse") pointer = null; dirty = true; };
+        ctx.on(canvas, "pointerup", up);
+        ctx.on(canvas, "pointercancel", up);
+        ctx.on(canvas, "pointerleave", () => { if (!down) { pointer = null; dirty = true; } });
+        layout();
+        send();
+        ctx.onResize(layout);
+        ctx.raf((now, dt) => {
+          if (anim) t += dt / 1000;
+          if (anim || dirty) send();
+        });
+        const f2 = (n) => n.toFixed(2);
+        ctx.interval(() => {
+          ftLight.innerHTML = `u_light = { pos: [${f2(light.pos[0])}, ${f2(light.pos[1])}], power: ${light.power} }`;
+          ftCount.innerHTML = `sb.uniforms 拆成 <b>${Object.keys(sb.uniforms).length}</b> 個名稱・render <b>${g.rps}</b> 次/秒`;
+        }, 250);
+      },
+    },
+    {
+      id: "swap",
+      title: "load() 熱抽換",
+      api: "load(frag, vert)・on(\"load\")",
+      desc: "把著色器拆成可替換的片段，每次選單變動就拼出新字串、呼叫 load() 重新編譯；選「傾斜卡片」時連頂點著色器一起換。新程式的自訂 uniform 會歸零，所以要在 on(\"load\") 裡重新設定。",
+      hint: "換任一個選單，左側會標出改了哪一段",
+      mount(ctx) {
+        ctx.html(`<div class="gc-swap"><div class="gc-code panel"><pre></pre><div class="gc-st2"></div></div><div class="gc-view2 gc-checker"></div></div>`);
+        const pre = ctx.$("pre"), st = ctx.$(".gc-st2");
+        const g = createSandbox(ctx, ctx.$(".gc-view2"));
+        const sb = g.sb;
+        const vert0 = sb.vertexString;
+        const sel = { pattern: 0, palette: 0, post: 0, vert: 0 };
+        const LISTS = { pattern: SW_PAT, palette: SW_PAL, post: SW_POST, vert: SW_VERT };
+        const swap = (changed) => {
+          const secs = [
+            ["head", SW_HEAD],
+            ["pattern", `// [圖樣] ${SW_PAT[sel.pattern][0]}\n${SW_PAT[sel.pattern][1]}\n`],
+            ["palette", `// [調色] ${SW_PAL[sel.palette][0]}\n${SW_PAL[sel.palette][1]}\n`],
+            ["post", `// [後製] ${SW_POST[sel.post][0]}\n${SW_POST[sel.post][1]}\n`],
+            ["main", SW_MAIN],
+          ];
+          const vert = sel.vert ? CARD_VERT : vert0;
+          secs.push(["vert", `\n// ---- 頂點著色器：load() 的第二個參數（${SW_VERT[sel.vert]}）----\n${vert.trim()}\n`]);
+          const frag = secs.slice(0, 5).map((s) => s[1]).join("");
+          g.load(frag, vert);
+          pre.innerHTML = secs.map(([k, s]) => (k === changed ? `<mark class="gc-hl">${esc(s)}</mark>` : esc(s))).join("");
+          const mark = pre.querySelector("mark");
+          pre.scrollTop = mark ? Math.max(0, mark.offsetTop - 8) : 0;
+          st.textContent = sb.isValid && sb.program
+            ? `第 ${g.loads} 次 load()・${fmtMs(g.ms)}・片段 ${frag.split("\n").length} 行・頂點：${SW_VERT[sel.vert]}`
+            : "編譯失敗";
+        };
+        const sels = {};
+        const add = (key, label) => {
+          sels[key] = ctx.select(label, LISTS[key].map((o, i) => ({ value: String(i), label: Array.isArray(o) ? o[0] : o })), "0", (v) => { sel[key] = +v; swap(key); });
+        };
+        add("pattern", "圖樣");
+        add("palette", "調色");
+        add("post", "後製");
+        add("vert", "頂點");
+        let auto = false;
+        ctx.toggle("自動輪播", false, (v) => { auto = v; });
+        const KEYS = Object.keys(sel);
+        ctx.interval(() => {
+          if (!auto) return;
+          const k = KEYS[Math.floor(Math.random() * KEYS.length)];
+          const n = LISTS[k].length;
+          sel[k] = (sel[k] + 1 + Math.floor(Math.random() * (n - 1))) % n;
+          sels[k].value = String(sel[k]);
+          swap(k);
+        }, 2200);
+        swap(null);
+      },
+    },
+    {
+      id: "multi",
+      title: "多畫布",
+      api: "data-fragment・data-textures・new GlslCanvas(el)",
+      desc: "每個 canvas 都是獨立的 GlslCanvas 與 WebGL 環境，著色器寫在 data-fragment 屬性、圖片寫在 data-textures。沒用到 u_time 或 u_mouse 的靜態著色器只畫一次，所以標籤上的 render 次數是 0。",
+      hint: "拖色相：靜態畫布也會因 setUniform 重畫一次",
+      mount(ctx) {
+        ctx.html(`<div class="gc-tiles"></div>`);
+        const wrap = ctx.$(".gc-tiles");
+        let hue = 0;
+        const items = TILES.map((tl) => {
+          const tile = h("div", { class: "gc-tile" });
+          wrap.append(tile);
+          const attrs = { "data-fragment": tl.frag };
+          if (tl.tex) attrs["data-textures"] = tl.tex;
+          const g = createSandbox(ctx, tile, { attrs, pointer: true });
+          const em = h("em", { text: "…" });
+          tile.append(h("div", { class: "gc-tag" }, h("div", {}, h("b", { text: tl.name }), h("span", { text: tl.api })), em));
+          g.sb.setUniform("u_hue", hue);
+          return { g, em };
+        });
+        const paint = () => items.forEach(({ g, em }) => {
+          em.textContent = `${g.rps}/s・${g.sb.animated ? "動態" : "靜態"}・建立 ${fmtMs(g.ctorMs)}`;
+        });
+        ctx.slider("色相", { min: 0, max: 1, step: 0.01, value: 0 }, (v) => { hue = v; items.forEach(({ g }) => g.sb.setUniform("u_hue", v)); });
+        ctx.toggle("全部暫停", false, (v) => items.forEach(({ g }) => (v ? g.sb.pause() : g.sb.play())));
+        ctx.interval(paint, 500);
+        paint();
+      },
+    },
+    {
+      id: "buffers",
+      title: "多通道緩衝",
+      api: "#ifdef BUFFER_0・uniform sampler2D u_buffer0",
+      desc: "原始碼裡寫 #ifdef BUFFER_0，glslCanvas 就會多編一支程式畫進浮點紋理，下一幀再以 u_buffer0 讀回，於是能在 GPU 上跑會累積狀態的模擬。這需要浮點渲染目標，部分行動裝置不支援。",
+      hint: "按住拖曳攪動，再切到「水波模擬」",
+      mount(ctx) {
+        ctx.html(`<div class="gc-fill gc-bg"></div><div class="gc-readout panel"></div>`);
+        const g = createSandbox(ctx, ctx.$(".gc-fill"), { dpr: false });
+        const sb = g.sb, canvas = g.canvas, box = ctx.$(".gc-readout");
+        if (!floatRT(sb.gl)) {
+          ctx.status("").error("這個裝置不支援浮點渲染目標（OES_texture_float 加浮點 framebuffer），glslCanvas 的多通道緩衝無法運作。");
+          return;
+        }
+        const SIMS = [
+          { name: "墨水漩渦", frag: INK, dpr: false, scale: 1 },
+          { name: "水波模擬", frag: WAVE, dpr: true, scale: 0.5 },
+        ];
+        let cur = 0, pen = [0, 0, 0], dropPending = false;
+        sb.on("load", () => { sb.setUniform("u_pen", ...pen); sb.setUniform("u_drop", 0, 0, 0); });
+        // A drop is an impulse: clear it right after the frame that consumed it.
+        sb.on("render", () => { if (dropPending) { dropPending = false; sb.setUniform("u_drop", 0, 0, 0); } });
+        const paint = () => {
+          const w = canvas.width, hh = canvas.height;
+          box.innerHTML = `<div><b>#ifdef BUFFER_0</b> 這段畫進 u_buffer0，下一幀再讀回（兩張浮點紋理輪流）</div>
+<div>緩衝 <b>${w}×${hh}</b>・RGBA 浮點 ×2・${((w * hh * 16 * 2) / 1048576).toFixed(1)} MB</div>
+<div>主畫面讀到的是上一幀；尺寸一變就重新 load()，模擬歸零</div>
+<div>render <b>${g.rps}</b> 次/秒・${cur ? "每 0.6 秒落一滴・" : ""}按住拖曳可攪動</div>`;
+        };
+        const run = (i) => {
+          cur = i;
+          g.dpr = SIMS[i].dpr;
+          g.scale = SIMS[i].scale;
+          g.load(SIMS[i].frag);
+          paint();
+        };
+        ctx.group(SIMS.map((s) => s.name), 0, (i) => run(i));
+        ctx.button("重設", () => run(cur));
+        canvas.style.touchAction = "none";
+        const setPen = (e, z) => {
+          const r = canvas.getBoundingClientRect();
+          pen = [(e.clientX - r.left) / r.height, (r.bottom - e.clientY) / r.height, z];
+          sb.setUniform("u_pen", ...pen);
+        };
+        ctx.on(canvas, "pointerdown", (e) => { canvas.setPointerCapture(e.pointerId); setPen(e, 1); });
+        ctx.on(canvas, "pointermove", (e) => { if (pen[2]) setPen(e, 1); });
+        const up = (e) => { if (pen[2]) setPen(e, 0); };
+        ctx.on(canvas, "pointerup", up);
+        ctx.on(canvas, "pointercancel", up);
+        ctx.interval(() => {
+          if (cur !== 1) return;
+          const asp = canvas.clientWidth / Math.max(1, canvas.clientHeight);
+          sb.setUniform("u_drop", asp * (0.1 + 0.8 * Math.random()), 0.1 + 0.8 * Math.random(), 0.5 + 0.5 * Math.random());
+          dropPending = true;
+        }, 600);
+        ctx.interval(paint, 500);
+        run(0);
+      },
+    },
+    {
+      id: "stress",
+      title: "極限測試",
+      kind: "stress",
+      api: "canvas 解析度 × fbm 八度",
+      desc: "片段著色器的成本約等於像素數乘上每個像素的運算量：逐級放大繪圖緩衝的解析度倍率，看 FPS 何時跌破 30。",
+      hint: "按「自動加壓」開始",
+      mount(ctx) {
+        ctx.html(`<div class="gc-stress gc-bg"><div class="gc-badge panel"><b>×1</b><span></span></div></div>`);
+        const host = ctx.$(".gc-stress"), badgeN = ctx.$(".gc-badge b"), badgeInfo = ctx.$(".gc-badge span");
+        ctx.controls.classList.add("bottom");
+        let oct = 5;
+        const g = createSandbox(ctx, host, { frag: stressFrag(oct), dpr: false });
+        const paint = () => {
+          const { width: w, height: hh } = g.canvas;
+          badgeN.textContent = `×${g.scale}`;
+          badgeInfo.textContent = `${w}×${hh} px・${((w * hh) / 1e6).toFixed(2)} MP・每像素 ${5 * oct} 次雜訊`;
+        };
+        ctx.select("fbm 八度", [3, 5, 8].map((n) => ({ value: String(n), label: `${n} 層` })), "5", (v) => { oct = +v; g.load(stressFrag(oct)); paint(); });
+        ctx.interval(paint, 500);
+        paint();
+        ctx.ramp({
+          label: "解析度倍率",
+          steps: [0.25, 0.5, 0.75, 1, 1.5, 2, 3],
+          initial: 3,
+          format: (n) => `×${n}`,
+          async apply(n) {
+            g.scale = n;
+            g.sb.resize();
+            paint();
+            await ctx.frame(2);
+          },
+          metrics: () => {
+            const { width: w, height: hh } = g.canvas;
+            return { "繪圖緩衝": `${w}×${hh}`, "百萬像素": ((w * hh) / 1e6).toFixed(2), "雜訊/幀": fmtCompact(w * hh * 5 * oct) };
+          },
+          note: "倍率是每個 CSS 像素對應幾個繪圖像素，倍率加倍時像素數變四倍。每個像素要算 5 次 fbm，每次 fbm 疊「八度」層雜訊，所以成本約為像素數 × 5 × 八度。軟體算圖（SwiftShader）會比實體 GPU 早很多掉幀。",
+        });
+      },
+    },
+  ],
 });
-src.addEventListener("keydown", (e) => {
-  if (e.key !== "Tab") return;
-  e.preventDefault();
-  src.setRangeText("  ", src.selectionStart, src.selectionEnd, "end");
-  src.dispatchEvent(new Event("input"));
-});
-speed.addEventListener("input", () => sandbox.gl && applyKnobs());
-hue.addEventListener("input", () => sandbox.gl && applyKnobs());
-
-loadPreset("aurora");
 </script>
 </body>
 </html>

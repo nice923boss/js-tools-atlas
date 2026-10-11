@@ -3,284 +3,715 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>hls.js 示範：串流畫質與緩衝監控台</title>
+<title>hls.js 示範：八個場景看懂串流播放與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"],"note":"串流為 Mux 公開 HLS 測試片源，預設靜音自動播放"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["串流監控台","ABR 頻寬模擬","事件時間軸","錯誤與重試","字幕與音軌","直播延遲","支援度偵測","極限測試"],"needs":["audio"],"note":"串流為 Mux 與 JW Player 公開 HLS 測試片源，預設靜音播放；限速、錯誤注入與直播清單由頁內自訂 loader 模擬"}</script>
 <style>
-  body {
-    display: grid; grid-template-columns: minmax(0, 1fr) 270px; gap: 12px; padding: 12px 12px 46px; height: 100%;
+  .hj-wrap { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); display: grid; gap: 10px;
+    grid-template-columns: minmax(0, 1fr) 250px; grid-template-rows: minmax(0, 1fr); }
+  .hj-main, .hj-side { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; overflow: hidden; }
+  .hj-vid { position: relative; flex: 1 1 0; min-height: 90px; background: #000; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .hj-vid video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  .hj-tags { position: absolute; left: 8px; top: 8px; right: 8px; display: flex; gap: 6px; flex-wrap: wrap; pointer-events: none; }
+  .hj-tags span { font: 600 11.5px var(--font); padding: 3px 8px; border-radius: 6px; background: rgba(0, 0, 0, .65); border: 1px solid rgba(255, 255, 255, .15); }
+  .hj-tags .on { color: #0e1013; background: var(--accent); border-color: transparent; }
+  .hj-cv { display: block; width: 100%; height: 64px; flex: none; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); }
+  .hj-cv.grow { flex: 1 1 0; height: auto; min-height: 70px; }
+  .hj-h { margin: 0; font-size: 12px; color: var(--muted); font-weight: 600; }
+  .hj-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; flex: none; }
+  .hj-stats div { padding: 5px 8px; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); min-width: 0; }
+  .hj-stats small { display: block; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hj-stats b { display: block; font: 600 13px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hj-log { flex: 1 1 0; min-height: 40px; overflow: hidden; font: 11px/1.55 var(--mono); color: var(--muted); padding: 6px 8px; border-radius: 8px; background: #0a0b0d; border: 1px solid var(--line); }
+  .hj-log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hj-log div:first-child { color: var(--fg); }
+  .hj-log em { font-style: normal; color: var(--c2); }
+  .hj-log .bad em { color: var(--c3); }
+  .hj-list { display: flex; flex-direction: column; gap: 5px; flex: none; }
+  .hj-list button { all: unset; box-sizing: border-box; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 6px;
+    padding: 5px 9px; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); font: 13px var(--font); }
+  .hj-list button small { color: var(--muted); font: 11px var(--mono); }
+  .hj-list button.sel { border-color: var(--accent); background: rgba(247, 223, 30, .1); }
+  .hj-list button.play::after { content: "播放中"; font-size: 10px; color: #0e1013; background: var(--c4); border-radius: 4px; padding: 1px 5px; }
+  .hj-legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--muted); flex: none; }
+  .hj-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  .hj-ladder { display: flex; flex-direction: column; gap: 4px; }
+  .hj-rung { display: grid; grid-template-columns: 52px 1fr auto; gap: 6px; align-items: center; font-size: 12px; }
+  .hj-rung b { font: 600 12px var(--mono); }
+  .hj-rung span { height: 8px; border-radius: 4px; background: var(--line); }
+  .hj-rung em { font-style: normal; font-size: 10.5px; color: var(--muted); min-width: 64px; text-align: right; }
+  .hj-rung.load em { color: var(--c4); } .hj-rung.next em { color: var(--accent); }
+  .hj-evts { flex: 1 1 0; min-height: 0; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-content: start; gap: 2px 8px; font: 11px/1.5 var(--mono); }
+  .hj-evts span { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color .4s; }
+  .hj-evts span.hot { color: var(--c2); }
+  .hj-tries { display: flex; flex-wrap: wrap; gap: 4px; flex: none; min-height: 26px; max-height: 56px; overflow: hidden; align-content: flex-start; }
+  .hj-tries i { font: 600 10.5px/1 var(--mono); font-style: normal; padding: 4px 6px; border-radius: 5px; color: #0e1013; background: var(--c4); }
+  .hj-tries i.err { background: var(--c3); color: #fff; }
+  .hj-cue { flex: none; min-height: 48px; padding: 8px 10px; border-radius: 8px; background: #0a0b0d; border: 1px solid var(--line); font-size: 15px; line-height: 1.45; white-space: pre-line; }
+  .hj-cues { flex: 1 1 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+  .hj-cues div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hj-cues b { font: 500 11px var(--mono); margin-right: 6px; }
+  .hj-cues .now { color: var(--fg); } .hj-cues .now b { color: var(--accent); }
+  .hj-none { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; padding: 20px; color: var(--muted); }
+  .hj-none b { color: var(--fg); font-size: 16px; }
+  .hj-sup { padding: calc(var(--sc-ctl-h, 0px) + 12px) 12px 16px; display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); align-items: start; }
+  .hj-card { padding: 10px 12px; min-width: 0; }
+  .hj-card h2 { margin: 0 0 8px; font-size: 13px; }
+  .hj-card h2 small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+  .hj-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 4px 0; border-top: 1px solid var(--line); font-size: 12.5px; align-items: center; }
+  .hj-row code { font: 11.5px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+  .hj-row b { font: 600 12px var(--mono); }
+  .hj-ok { color: var(--c4); } .hj-no { color: var(--c3); }
+  .hj-advice { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: rgba(247, 223, 30, .08); border: 1px solid rgba(247, 223, 30, .3); font-size: 12.5px; line-height: 1.6; }
+  .hj-stress { position: absolute; inset: 8px 8px 8px 350px; display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; }
+  .hj-stress .hj-cv { flex: 1 1 0; height: auto; min-height: 80px; }
+  @media (max-width: 760px) {
+    .hj-wrap { grid-template-columns: minmax(0, 1fr) 200px; }
+    .hj-stress { inset: 8px; opacity: .9; padding-bottom: calc(var(--sc-ctl-b, 0px) + 10px); }
   }
-  .left { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
-  .vwrap { position: relative; width: 100%; aspect-ratio: 16 / 9; max-height: calc(100vh - 190px); background: #000; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
-  video { width: 100%; height: 100%; display: block; object-fit: contain; background: #000; }
-  .badge { position: absolute; left: 10px; top: 10px; display: flex; gap: 6px; }
-  .badge span { font: 600 12px var(--mono); padding: 3px 8px; border-radius: 6px; background: rgba(0, 0, 0, 0.65); border: 1px solid rgba(255, 255, 255, 0.15); }
-  .badge .lv { color: #0e1013; background: var(--accent); border-color: transparent; }
-  .vbtns { position: absolute; right: 10px; bottom: 10px; display: flex; gap: 6px; }
-  .timeline { position: relative; }
-  .timeline canvas { width: 100%; height: 64px; display: block; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); }
-  .legend { display: flex; gap: 10px; flex-wrap: wrap; font-size: 11px; color: var(--muted); margin-top: 5px; }
-  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
-  aside { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
-  aside h2 { margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: .04em; }
-  .levels { display: flex; flex-direction: column; gap: 5px; }
-  .levels button {
-    all: unset; box-sizing: border-box; cursor: pointer; display: flex; justify-content: space-between; align-items: center;
-    padding: 6px 10px; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); font-size: 13px;
+  @media (max-width: 540px) {
+    .hj-wrap { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1.15fr) minmax(0, 1fr); }
+    .hj-sup { grid-template-columns: minmax(0, 1fr); }
+    .hj-wide { display: none !important; }
+    .hj-list { flex-direction: row; flex-wrap: wrap; }
+    .hj-list button { padding: 4px 8px; font-size: 12px; }
+    .hj-list button small { display: none; }
+    .hj-cv { height: 44px; }
+    .hj-cue { font-size: 13px; min-height: 40px; }
   }
-  .levels button small { color: var(--muted); font: 11px var(--mono); }
-  .levels button.sel { border-color: var(--accent); background: rgba(247, 223, 30, 0.1); }
-  .levels button.play::after { content: "播放中"; font-size: 10px; color: #0e1013; background: var(--c4); border-radius: 4px; padding: 1px 5px; margin-left: 6px; }
-  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-  .stats div { padding: 6px 9px; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); }
-  .stats small { display: block; font-size: 11px; color: var(--muted); }
-  .stats b { font: 600 14px var(--mono); }
-  #bw { width: 100%; height: 46px; display: block; }
-  .log { flex: 1; min-height: 0; overflow: hidden; font: 11px/1.55 var(--mono); color: var(--muted); padding: 6px 9px; border-radius: 8px; background: #0a0b0d; border: 1px solid var(--line); }
-  .log div:first-child { color: var(--fg); }
-  .log em { font-style: normal; color: var(--c2); }
-  @media (max-width: 640px) {
-    body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); padding: 10px 10px 42px; gap: 8px; }
-    .levels { flex-direction: row; flex-wrap: wrap; }
-    .levels button { padding: 4px 8px; font-size: 12px; }
-    .levels button small, .log, #bwbox, .legend { display: none; }
-    .levels button.play::after { content: "●"; background: none; color: var(--c4); padding: 0 0 0 4px; }
-    .stats b { font-size: 12px; }
-    .timeline canvas { height: 44px; }
-  }
-  @media (min-width: 641px) and (max-height: 480px) {
-    #bwbox { display: none; }
-    .levels button { padding: 4px 10px; }
-  }
-  @media (max-width: 640px) and (max-height: 480px) {
-    .vwrap { max-height: calc(100vh - 240px); }
-    .stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  }
+  @media (max-height: 470px) { .hj-short { display: none !important; } }
 </style>
 </head>
 <body>
-<div class="left">
-  <div class="vwrap">
-    <video id="v" muted playsinline></video>
-    <div class="badge"><span class="lv" id="lvBadge">載入中</span><span id="bufBadge">緩衝 0.0 秒</span></div>
-    <div class="vbtns"><button class="btn" id="sound">開啟聲音</button><button class="btn" id="pp">暫停</button></div>
-  </div>
-  <div class="timeline">
-    <canvas id="tl"></canvas>
-    <div class="legend" id="legend"></div>
-  </div>
-</div>
-<aside>
-  <div>
-    <h2>畫質層級（點選鎖定）</h2>
-    <div class="levels" id="levels"></div>
-  </div>
-  <div class="stats">
-    <div><small>頻寬估計</small><b id="sBw">-</b></div>
-    <div><small>已下載片段</small><b id="sFrag">0</b></div>
-    <div><small>前方緩衝</small><b id="sBuf">0.0 s</b></div>
-    <div><small>丟棄影格</small><b id="sDrop">0</b></div>
-  </div>
-  <div id="bwbox"><h2>頻寬變化</h2><canvas id="bw"></canvas></div>
-  <div class="log" id="log"></div>
-</aside>
-<div class="hint">點畫質層級手動切換・選「自動」交給 ABR</div>
-
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// hls.js monitor: adaptive bitrate levels, manual switching, buffer timeline and live event log.
-const SRC = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8";
-const LEVEL_COLORS = ["#4cc9f0", "#7bd389", "#9d8cff", "#ff8c42", "#f72585"];
-const video = document.getElementById("v");
-const $ = (id) => document.getElementById(id);
-const frags = []; // {start, end, level}
-const bwHistory = [];
-let fragCount = 0;
+// hls.js showcase: ABR monitor, simulated bandwidth, event lanes, retries, tracks, live latency, support matrix, parser stress.
+const css = getComputedStyle(document.documentElement);
+const C = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6"].map((v) => css.getPropertyValue(v).trim());
+const FONT = css.getPropertyValue("--font").trim() || "sans-serif";
+const MONO = css.getPropertyValue("--mono").trim() || "monospace";
+const MUX = "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8";
+const MUX_SEG = "https://test-streams.mux.dev/x36xhzz/url_6/";
+const ED = "https://playertest.longtailvideo.com/adaptive/elephants_dream_v4/index.m3u8";
+const LV = [C[1], C[3], C[5], C[4], C[2]];
+const ACTIONS = ["DoNothing", "SendEndCallback", "SendAlternateToPenaltyBox", "RemoveAlternatePermanently", "InsertDiscontinuity", "RetryRequest"];
+const E = Hls.Events;
+const kbps = (b) => (!b ? "-" : b >= 1e6 ? `${(b / 1e6).toFixed(1)} Mbps` : `${Math.round(b / 1e3)} kbps`);
+const sec = (s) => (s == null || !isFinite(s) ? "-" : `${s.toFixed(1)} s`);
+const clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+const stats = (items, cls = "") => `<div class="hj-stats ${cls}">${items.map(([l, k]) => `<div><small>${l}</small><b data-s="${k}">-</b></div>`).join("")}</div>`;
+const setS = (ctx, k, v) => { const el = ctx.$(`[data-s="${k}"]`); if (el && el.textContent !== String(v)) el.textContent = v; };
 
-function log(msg) {
-  const el = $("log");
-  const d = document.createElement("div");
-  d.innerHTML = `${new Date().toLocaleTimeString("zh-TW", { hour12: false })} ${msg}`;
-  el.prepend(d);
-  while (el.children.length > 14) el.lastChild.remove();
+function fit(c) {
+  const r = c.getBoundingClientRect(), dpr = Math.min(2, window.devicePixelRatio || 1);
+  const w = Math.round(r.width * dpr), h = Math.round(r.height * dpr);
+  if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  const g = c.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, r.width, r.height);
+  return [g, r.width, r.height];
 }
-const kbps = (b) => (b >= 1e6 ? `${(b / 1e6).toFixed(1)} Mbps` : `${Math.round(b / 1e3)} kbps`);
-
-if (!Hls.isSupported()) {
-  $("lvBadge").textContent = "此瀏覽器不支援 MSE";
-  log("Hls.isSupported() 為 false，無法用 hls.js 播放");
-} else {
-  const hls = new Hls({
-    startLevel: 0, // start at the lowest rung so ABR visibly climbs
-    maxBufferLength: 30,
-    abrBandWidthFactor: 0.8, // conservative ABR: only step up with clear bandwidth headroom
-    abrBandWidthUpFactor: 0.5,
-  });
-  hls.loadSource(SRC);
-  hls.attachMedia(video);
-
-  hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
-    log(`<em>MANIFEST_PARSED</em> 找到 ${data.levels.length} 個畫質層級`);
-    buildLevels(hls);
-    video.play().catch(() => log("自動播放被瀏覽器擋下，請按播放"));
-  });
-  hls.on(Hls.Events.LEVEL_SWITCHED, (_, d) => {
-    const lv = hls.levels[d.level];
-    log(`<em>LEVEL_SWITCHED</em> 切到 ${lv.height}p`);
-    refreshLevels(hls);
-  });
-  hls.on(Hls.Events.FRAG_LOADED, (_, d) => {
-    const f = d.frag;
-    fragCount++;
-    frags.push({ start: f.start, end: f.start + f.duration, level: f.level });
-    const ms = Math.round(f.stats.loading.end - f.stats.loading.start);
-    log(`<em>FRAG_LOADED</em> #${f.sn} ${hls.levels[f.level].height}p ${(f.stats.loaded / 1024).toFixed(0)} KB ${ms} ms`);
-  });
-  hls.on(Hls.Events.FRAG_LOAD_EMERGENCY_ABORTED, (_, d) => {
-    log(`<em>EMERGENCY_ABORTED</em> 頻寬不足，放棄 ${hls.levels[d.frag.level].height}p 片段並降級`);
-  });
-  hls.on(Hls.Events.ERROR, (_, d) => {
-    log(`<em>ERROR</em> ${d.details}${d.fatal ? "（致命）" : ""}`);
-    if (d.fatal && d.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
-    else if (d.fatal && d.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-  });
-
-  setInterval(() => {
-    const bw = hls.bandwidthEstimate;
-    if (bw) { bwHistory.push(bw); if (bwHistory.length > 60) bwHistory.shift(); }
-    $("sBw").textContent = bw ? kbps(bw) : "-";
-    $("sFrag").textContent = fragCount;
-    const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
-    $("sDrop").textContent = q ? q.droppedVideoFrames : "-";
-    drawBw();
-  }, 1000);
-  window.hls = hls;
-}
-
-function sortedLevels(hls) {
-  return hls.levels.map((l, i) => ({ ...l, index: i, height: l.height, bitrate: l.bitrate })).sort((a, b) => b.height - a.height);
-}
-
-function buildLevels(hls) {
-  const box = $("levels");
-  box.innerHTML = "";
-  const auto = document.createElement("button");
-  auto.dataset.index = "-1";
-  auto.innerHTML = `<span>自動（ABR）</span><small id="autoNow"></small>`;
-  box.append(auto);
-  for (const l of sortedLevels(hls)) {
-    const b = document.createElement("button");
-    b.dataset.index = l.index;
-    b.innerHTML = `<span>${l.height}p</span><small>${kbps(l.bitrate)}</small>`;
-    box.append(b);
-  }
-  box.onclick = (e) => {
-    const b = e.target.closest("button");
-    if (!b) return;
-    const i = Number(b.dataset.index);
-    hls.currentLevel = i; // -1 restores automatic level selection
-    log(i < 0 ? "切回自動畫質選擇" : `手動鎖定 ${hls.levels[i].height}p，清除舊緩衝`);
-    refreshLevels(hls);
-  };
-  $("legend").innerHTML = sortedLevels(hls).map((l) => `<span><i style="background:${LEVEL_COLORS[l.index % 5]}"></i>${l.height}p</span>`).join("")
-    + `<span><i style="background:#ecebe6"></i>播放位置</span>`;
-  refreshLevels(hls);
-}
-
-function refreshLevels(hls) {
-  const playing = hls.currentLevel;
-  const manual = hls.autoLevelEnabled ? -1 : hls.manualLevel ?? hls.loadLevel;
-  for (const b of $("levels").children) {
-    const i = Number(b.dataset.index);
-    b.classList.toggle("sel", i === manual);
-    b.classList.toggle("play", i === playing && i >= 0);
-  }
-  const lv = hls.levels[playing];
-  $("lvBadge").textContent = lv ? `${lv.height}p${hls.autoLevelEnabled ? "・自動" : "・手動"}` : "載入中";
-}
-
-function bufferAhead() {
-  const t = video.currentTime;
-  for (let i = 0; i < video.buffered.length; i++) {
-    if (t >= video.buffered.start(i) - 0.2 && t <= video.buffered.end(i)) return video.buffered.end(i) - t;
-  }
+function bufAhead(v) {
+  const t = v.currentTime;
+  for (let i = 0; i < v.buffered.length; i++) if (t >= v.buffered.start(i) - 0.2 && t <= v.buffered.end(i)) return v.buffered.end(i) - t;
   return 0;
 }
-
-function fitCanvas(c) {
-  const r = c.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-  if (c.width !== Math.round(r.width * dpr) || c.height !== Math.round(r.height * dpr)) {
-    c.width = Math.round(r.width * dpr);
-    c.height = Math.round(r.height * dpr);
+function logger(box, max = 16) {
+  return (msg, bad) => {
+    const d = document.createElement("div");
+    d.innerHTML = `${new Date().toLocaleTimeString("zh-TW", { hour12: false })} ${msg}`;
+    if (bad) d.className = "bad";
+    box.prepend(d);
+    while (box.children.length > max) box.lastChild.remove();
+  };
+}
+function mse(ctx) {
+  if (Hls.isSupported()) return true;
+  ctx.html(`<div class="hj-none"><b>此瀏覽器沒有 MediaSource Extensions</b><p>Hls.isSupported() 回傳 false，hls.js 無法運作。iOS Safari 可直接把 .m3u8 設給 video.src 原生播放，詳見「支援度偵測」場景。</p></div>`);
+  return false;
+}
+// One replaceable Hls instance per scene; destroyed and detached on scene exit.
+function slot(ctx, video) {
+  const s = { hls: null };
+  s.kill = () => { if (s.hls) { s.hls.destroy(); s.hls = null; } };
+  s.start = (src, config, wire) => {
+    s.kill();
+    const hls = (s.hls = new Hls({ loader: SoftXhr, ...config }));
+    wire && wire(hls);
+    hls.on(E.MANIFEST_PARSED, () => video.play().catch(() => {}));
+    hls.on(E.ERROR, (_, d) => {
+      if (!d.fatal || s.hls !== hls) return;
+      if (d.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+      else if (d.type === Hls.ErrorTypes.NETWORK_ERROR) ctx.timeout(() => s.hls === hls && hls.startLoad(), 1500);
+    });
+    hls.loadSource(src);
+    hls.attachMedia(video);
+    return hls;
+  };
+  ctx.onCleanup(() => { s.kill(); video.removeAttribute("src"); video.load(); });
+  return s;
+}
+// XHR loader whose abort detaches the request instead of cancelling it: the download finishes in the
+// background and is discarded, so switching scenes does not leave cancelled requests in the network log.
+const SoftXhr = class extends Hls.DefaultConfig.loader {
+  abortInternal() {
+    const x = this.loader;
+    clearTimeout(this.requestTimeout);
+    clearTimeout(this.retryTimeout);
+    if (x) { x.onreadystatechange = null; x.onprogress = null; if (x.readyState !== 4) this.stats.aborted = true; }
   }
-  const ctx = c.getContext("2d");
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  return [ctx, r.width, r.height];
+};
+// Playlist loader that answers selected URLs from memory (generated playlists); everything else goes to the network.
+function memLoader(serve) {
+  return class extends SoftXhr {
+    load(context, config, callbacks) {
+      const text = serve(context.url);
+      if (text == null) return super.load(context, config, callbacks);
+      const st = this.stats, now = performance.now();
+      this.context = context;
+      st.loading.start = st.loading.first = st.loading.end = now;
+      st.loaded = st.total = text.length;
+      this.hjT = setTimeout(() => callbacks.onSuccess({ url: context.url, data: text }, st, context, null), 0);
+    }
+    abort() { clearTimeout(this.hjT); super.abort(); }
+    destroy() { clearTimeout(this.hjT); super.destroy(); }
+  };
+}
+// Fragment loader hooks: cap() delays delivery to emulate a bandwidth ceiling (bits/s),
+// fault() returns an HTTP status to fail the request with, attempt() observes every main-fragment request.
+function fragLoader(hook) {
+  return class extends SoftXhr {
+    load(context, config, callbacks) {
+      const main = context.frag && context.frag.type === "main";
+      const code = main && hook.fault ? hook.fault() : null;
+      if (code) {
+        const st = this.stats;
+        this.context = context;
+        st.loading.start = performance.now();
+        this.hjT = setTimeout(() => {
+          st.loading.end = performance.now();
+          hook.attempt && hook.attempt(context, code);
+          callbacks.onError({ code, text: "模擬伺服器錯誤" }, context, null, st);
+        }, 150);
+        return;
+      }
+      const cap = main && hook.cap ? hook.cap() : 0;
+      if (!main || (!cap && !hook.attempt)) return super.load(context, config, callbacks);
+      const ok = callbacks.onSuccess;
+      super.load(context, config, { ...callbacks, onSuccess: (resp, st, c, nd) => {
+        hook.attempt && hook.attempt(c, 200);
+        const wait = cap ? (st.loaded * 8 / cap) * 1000 - (performance.now() - st.loading.start) : 0;
+        if (wait <= 0) return ok(resp, st, c, nd);
+        this.hjT = setTimeout(() => { st.loading.end = performance.now(); ok(resp, st, c, nd); }, wait);
+      } });
+    }
+    abort() { clearTimeout(this.hjT); super.abort(); }
+    destroy() { clearTimeout(this.hjT); super.destroy(); }
+  };
+}
+const vidHTML = (tags) => `<div class="hj-vid"><video muted playsinline></video><div class="hj-tags">${tags}</div></div>`;
+function soundButtons(ctx, v) {
+  const s = ctx.button("開啟聲音", () => { v.muted = !v.muted; s.textContent = v.muted ? "開啟聲音" : "靜音"; });
+  const pp = ctx.button("暫停", () => (v.paused ? v.play().catch(() => {}) : v.pause()));
+  ctx.on(v, "play", () => (pp.textContent = "暫停"));
+  ctx.on(v, "pause", () => (pp.textContent = "播放"));
 }
 
-function drawTimeline() {
-  const [ctx, w, h] = fitCanvas($("tl"));
-  ctx.clearRect(0, 0, w, h);
-  const t = video.currentTime || 0;
-  const from = Math.max(0, t - 15), span = 60, to = from + span;
-  const x = (s) => ((s - from) / span) * w;
-  // Buffered ranges (what the browser actually holds)
-  ctx.fillStyle = "rgba(255,255,255,0.10)";
-  for (let i = 0; i < video.buffered.length; i++) {
-    const a = video.buffered.start(i), b = video.buffered.end(i);
-    if (b < from || a > to) continue;
-    ctx.fillRect(x(a), 6, x(b) - x(a), h - 22);
-  }
-  // Downloaded fragments, coloured by quality level
-  for (const f of frags) {
-    if (f.end < from || f.start > to) continue;
-    ctx.fillStyle = LEVEL_COLORS[f.level % 5];
-    ctx.fillRect(x(f.start) + 1, h - 30, Math.max(2, x(f.end) - x(f.start) - 2), 12);
-  }
-  // Ticks
-  ctx.fillStyle = "#9b998f";
-  ctx.font = "10px ui-monospace, Consolas, monospace";
-  for (let s = Math.ceil(from / 10) * 10; s <= to; s += 10) {
-    ctx.fillRect(x(s), h - 14, 1, 4);
-    ctx.fillText(`${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`, x(s) + 3, h - 4);
-  }
-  // Playhead
-  ctx.fillStyle = "#ecebe6";
-  ctx.fillRect(x(t) - 1, 2, 2, h - 18);
-  const ahead = bufferAhead();
-  $("sBuf").textContent = `${ahead.toFixed(1)} s`;
-  $("bufBadge").textContent = `緩衝 ${ahead.toFixed(1)} 秒`;
-  requestAnimationFrame(drawTimeline);
-}
-
-function drawBw() {
-  const c = $("bw");
-  if (!c.offsetParent) return;
-  const [ctx, w, h] = fitCanvas(c);
-  ctx.clearRect(0, 0, w, h);
-  if (bwHistory.length < 2) return;
-  const max = Math.max(...bwHistory) * 1.15;
-  ctx.beginPath();
-  bwHistory.forEach((b, i) => {
-    const px = (i / (bwHistory.length - 1)) * w, py = h - (b / max) * (h - 4) - 2;
-    i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
-  });
-  ctx.strokeStyle = "#f7df1e";
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  ctx.lineTo(w, h);
-  ctx.lineTo(0, h);
-  ctx.fillStyle = "rgba(247,223,30,0.12)";
-  ctx.fill();
-}
-
-$("sound").onclick = () => { video.muted = !video.muted; $("sound").textContent = video.muted ? "開啟聲音" : "靜音"; };
-$("pp").onclick = () => (video.paused ? video.play() : video.pause());
-video.addEventListener("play", () => { $("pp").textContent = "暫停"; });
-video.addEventListener("pause", () => { $("pp").textContent = "播放"; });
-requestAnimationFrame(drawTimeline);
+Showcase.run({ scenes: [
+  {
+    id: "monitor", title: "串流監控台",
+    api: "new Hls(cfg).loadSource(url)；hls.currentLevel = i",
+    desc: "多碼率串流從最低畫質起播，ABR 依頻寬逐級往上爬；下方時間軸用顏色標出每個片段是哪個畫質下載的，灰色是瀏覽器實際持有的緩衝。",
+    hint: "點畫質層級手動鎖定，選「自動」交還給 ABR",
+    mount(ctx) {
+      if (!mse(ctx)) return;
+      ctx.html(`<div class="hj-wrap"><div class="hj-main">${vidHTML(`<span class="on" data-s="lv">載入中</span><span data-s="bufTag">緩衝 0.0 秒</span>`)}
+        <canvas class="hj-cv hj-tl"></canvas><div class="hj-legend hj-wide"></div></div>
+        <div class="hj-side"><h3 class="hj-h">畫質層級（點選鎖定）</h3><div class="hj-list"></div>
+        ${stats([["頻寬估計", "bw"], ["已下載片段", "n"], ["前方緩衝", "buf"], ["丟棄影格", "drop"]])}
+        <div class="hj-wide hj-short"><h3 class="hj-h">頻寬估計變化</h3><canvas class="hj-cv hj-bw" style="height:46px"></canvas></div>
+        <div class="hj-log hj-wide"></div></div></div>`);
+      soundButtons(ctx, ctx.$("video"));
+      const v = ctx.$("video"), log = logger(ctx.$(".hj-log")), frags = [], bwHist = [], box = ctx.$(".hj-list");
+      let fragN = 0;
+      const p = slot(ctx, v);
+      const refresh = () => {
+        const hls = p.hls, playing = hls.currentLevel, manual = hls.autoLevelEnabled ? -1 : hls.manualLevel;
+        for (const b of box.children) {
+          const i = +b.dataset.i;
+          b.classList.toggle("sel", i === manual);
+          b.classList.toggle("play", i === playing && i >= 0);
+        }
+        const lv = hls.levels[playing];
+        setS(ctx, "lv", lv ? `${lv.height}p・${hls.autoLevelEnabled ? "自動" : "手動"}` : "載入中");
+      };
+      const hls = p.start(MUX, { startLevel: 0, maxBufferLength: 30, abrBandWidthFactor: 0.8, abrBandWidthUpFactor: 0.5 }, (h) => {
+        h.on(E.MANIFEST_PARSED, (_, d) => {
+          log(`<em>MANIFEST_PARSED</em> ${d.levels.length} 個畫質層級`);
+          const order = d.levels.map((l, i) => ({ l, i })).sort((a, b) => b.l.height - a.l.height);
+          box.innerHTML = `<button data-i="-1"><span>自動（ABR）</span></button>` +
+            order.map(({ l, i }) => `<button data-i="${i}"><span>${l.height}p</span><small>${kbps(l.bitrate)}</small></button>`).join("");
+          ctx.$(".hj-legend").innerHTML = order.map(({ l, i }) => `<span><i style="background:${LV[i % 5]}"></i>${l.height}p</span>`).join("") + `<span><i style="background:#ecebe6"></i>播放位置</span>`;
+          refresh();
+        });
+        h.on(E.LEVEL_SWITCHED, (_, d) => { log(`<em>LEVEL_SWITCHED</em> 切到 ${h.levels[d.level].height}p`); refresh(); });
+        h.on(E.FRAG_LOADED, (_, d) => {
+          const f = d.frag;
+          fragN++;
+          frags.push({ a: f.start, b: f.start + f.duration, lv: f.level });
+          log(`<em>FRAG_LOADED</em> #${f.sn} ${h.levels[f.level].height}p ${(f.stats.loaded / 1024).toFixed(0)} KB ${Math.round(f.stats.loading.end - f.stats.loading.start)} ms`);
+        });
+        h.on(E.FRAG_LOAD_EMERGENCY_ABORTED, (_, d) => log(`<em>EMERGENCY_ABORTED</em> 放棄 ${h.levels[d.frag.level].height}p 片段並降級`, true));
+        h.on(E.ERROR, (_, d) => log(`<em>ERROR</em> ${d.details}${d.fatal ? "（致命）" : ""}`, true));
+      });
+      ctx.on(box, "click", (e) => {
+        const b = e.target.closest("button");
+        if (!b) return;
+        const i = +b.dataset.i;
+        hls.currentLevel = i;
+        log(i < 0 ? "切回自動畫質選擇" : `手動鎖定 ${hls.levels[i].height}p，清除前方緩衝`);
+        refresh();
+      });
+      ctx.interval(() => {
+        const bw = hls.bandwidthEstimate;
+        if (bw) { bwHist.push(bw); if (bwHist.length > 60) bwHist.shift(); }
+        setS(ctx, "bw", kbps(bw));
+        setS(ctx, "n", fragN);
+        const q = v.getVideoPlaybackQuality && v.getVideoPlaybackQuality();
+        setS(ctx, "drop", q ? q.droppedVideoFrames : "-");
+        const c = ctx.$(".hj-bw");
+        if (!c.offsetParent || bwHist.length < 2) return;
+        const [g, w, h] = fit(c), max = Math.max(...bwHist) * 1.15;
+        g.beginPath();
+        bwHist.forEach((b, i) => { const x = (i / (bwHist.length - 1)) * w, y = h - (b / max) * (h - 4) - 2; i ? g.lineTo(x, y) : g.moveTo(x, y); });
+        g.strokeStyle = C[0]; g.lineWidth = 2; g.stroke();
+        g.lineTo(w, h); g.lineTo(0, h); g.fillStyle = "rgba(247,223,30,0.12)"; g.fill();
+      }, 1000);
+      ctx.raf(() => {
+        const [g, w, h] = fit(ctx.$(".hj-tl"));
+        const t = v.currentTime || 0, from = Math.max(0, t - 15), span = 60, x = (s) => ((s - from) / span) * w;
+        g.fillStyle = "rgba(255,255,255,0.10)";
+        for (let i = 0; i < v.buffered.length; i++) {
+          const a = v.buffered.start(i), b = v.buffered.end(i);
+          if (b > from && a < from + span) g.fillRect(x(a), 6, x(b) - x(a), h - 22);
+        }
+        for (const f of frags) {
+          if (f.b < from || f.a > from + span) continue;
+          g.fillStyle = LV[f.lv % 5];
+          g.fillRect(x(f.a) + 1, h - 30, Math.max(2, x(f.b) - x(f.a) - 2), 12);
+        }
+        g.fillStyle = "#9b998f"; g.font = `10px ${MONO}`;
+        for (let s = Math.ceil(from / 10) * 10; s <= from + span; s += 10) { g.fillRect(x(s), h - 14, 1, 4); g.fillText(clock(s), x(s) + 3, h - 4); }
+        g.fillStyle = "#ecebe6"; g.fillRect(x(t) - 1, 2, 2, h - 18);
+        const ahead = bufAhead(v);
+        setS(ctx, "buf", sec(ahead));
+        setS(ctx, "bufTag", `緩衝 ${ahead.toFixed(1)} 秒`);
+      });
+    },
+  },
+  {
+    id: "abr", title: "ABR 頻寬模擬",
+    api: "fLoader 自訂 loader；hls.bandwidthEstimate、nextAutoLevel、capLevelToPlayerSize",
+    desc: "自訂 fLoader 把片段延後交付，模擬頻寬上限；hls.js 依實際下載耗時更新 EWMA 頻寬估計，再挑出「估計值 × 0.95」以內最高的層級。",
+    hint: "切換模擬頻寬，看黃線（估計）追上紅虛線（上限），綠階梯（選用層級）跟著升降",
+    mount(ctx) {
+      if (!mse(ctx)) return;
+      ctx.html(`<div class="hj-wrap"><div class="hj-main">${vidHTML(`<span class="on" data-s="lv">載入中</span><span data-s="capTag">不限速</span>`)}<canvas class="hj-cv grow hj-abr"></canvas></div>
+        <div class="hj-side">${stats([["頻寬估計", "bw"], ["TTFB 估計", "ttfb"], ["下一個自動層級", "next"], ["載入層級", "load"], ["前方緩衝", "buf"], ["已載入片段", "n"]])}
+        <h3 class="hj-h hj-wide">層級階梯（每層所需頻寬）</h3><div class="hj-ladder hj-wide"></div></div></div>`);
+      let cap = 0, n = 0;
+      const hist = [], v = ctx.$("video"), p = slot(ctx, v);
+      ctx.select("模擬頻寬", [{ value: "0", label: "不限" }, { value: "4000000", label: "4 Mbps" }, { value: "2000000", label: "2 Mbps" },
+        { value: "1000000", label: "1 Mbps" }, { value: "600000", label: "600 kbps" }, { value: "300000", label: "300 kbps" }], "0", (val) => {
+        cap = +val;
+        setS(ctx, "capTag", cap ? `模擬上限 ${kbps(cap)}` : "不限速");
+      });
+      ctx.toggle("依播放器尺寸限制", false, (on) => { if (p.hls) p.hls.capLevelToPlayerSize = on; });
+      const hls = p.start(MUX, { maxBufferLength: 20, fLoader: fragLoader({ cap: () => cap }) }, (h) => {
+        h.on(E.FRAG_BUFFERED, () => n++);
+        h.on(E.MANIFEST_PARSED, (_, d) => {
+          const max = Math.max(...d.levels.map((l) => l.bitrate));
+          ctx.$(".hj-ladder").innerHTML = d.levels.map((l, i) => ({ l, i })).sort((a, b) => b.l.bitrate - a.l.bitrate)
+            .map(({ l, i }) => `<div class="hj-rung" data-i="${i}"><b>${l.height}p</b><span style="background:${LV[i % 5]};width:${Math.max(6, (l.bitrate / max) * 100)}%"></span><em>${kbps(l.bitrate)}</em></div>`).join("");
+        });
+      });
+      ctx.interval(() => {
+        const lvl = hls.levels[hls.loadLevel];
+        hist.push({ est: hls.bandwidthEstimate, cap, br: lvl ? lvl.bitrate : 0 });
+        if (hist.length > 90) hist.shift();
+        const cur = hls.levels[hls.currentLevel], nx = hls.levels[hls.nextAutoLevel];
+        setS(ctx, "lv", cur ? `${cur.height}p・自動` : "載入中");
+        setS(ctx, "bw", kbps(hls.bandwidthEstimate));
+        setS(ctx, "ttfb", `${Math.round(hls.ttfbEstimate || 0)} ms`);
+        setS(ctx, "next", nx ? `${nx.height}p` : "-");
+        setS(ctx, "load", lvl ? `${lvl.height}p` : "-");
+        setS(ctx, "buf", sec(bufAhead(v)));
+        setS(ctx, "n", n);
+        for (const r of ctx.$$(".hj-rung")) {
+          const i = +r.dataset.i;
+          r.className = `hj-rung${i === hls.loadLevel ? " load" : i === hls.nextAutoLevel ? " next" : ""}`;
+          r.querySelector("em").textContent = i === hls.loadLevel ? "載入中" : i === hls.nextAutoLevel ? "下一個" : kbps(hls.levels[i].bitrate);
+        }
+      }, 400);
+      ctx.raf(() => {
+        const [g, w, h] = fit(ctx.$(".hj-abr"));
+        const lo = Math.log10(1.5e5), hi = Math.log10(4e7), L = 8, R = w - 44, T = 18, B = h - 8;
+        const y = (b) => B - ((Math.log10(Math.max(1.5e5, Math.min(4e7, b))) - lo) / (hi - lo)) * (B - T);
+        const x = (i) => L + (i / 89) * (R - L);
+        g.font = `10px ${MONO}`;
+        hls.levels.forEach((l, i) => {
+          g.strokeStyle = LV[i % 5]; g.globalAlpha = 0.35; g.setLineDash([2, 4]); g.lineWidth = 1;
+          g.beginPath(); g.moveTo(L, y(l.bitrate)); g.lineTo(R, y(l.bitrate)); g.stroke();
+          g.globalAlpha = 1; g.setLineDash([]); g.fillStyle = LV[i % 5]; g.fillText(`${l.height}p`, R + 4, y(l.bitrate) + 3);
+        });
+        const line = (key, color, width, dash, step) => {
+          g.strokeStyle = color; g.lineWidth = width; g.setLineDash(dash); g.beginPath();
+          let started = false, py = 0;
+          hist.forEach((s, i) => {
+            if (!s[key]) { started = false; return; }
+            const yy = y(s[key]);
+            if (!started) { g.moveTo(x(i), yy); started = true; } else { if (step) g.lineTo(x(i), py); g.lineTo(x(i), yy); }
+            py = yy;
+          });
+          g.stroke(); g.setLineDash([]);
+        };
+        line("br", C[3], 3, [], true);
+        line("cap", C[2], 1.5, [6, 4], false);
+        line("est", C[0], 2, [], false);
+        g.font = `11px ${FONT}`;
+        [["頻寬估計", C[0]], ["模擬上限", C[2]], ["選用層級", C[3]]].forEach(([t, c], i) => { g.fillStyle = c; g.fillRect(L + i * 78, 6, 10, 3); g.fillText(t, L + 14 + i * 78, 11); });
+      });
+    },
+  },
+  {
+    id: "events", title: "事件時間軸",
+    api: "hls.on(Hls.Events.*)；frag.stats.loading / parsing / buffering",
+    desc: "訂閱 Hls.Events 全部事件並計數；每個片段的 stats 拆成下載、解析轉封裝（TS 轉 fMP4）、寫入 SourceBuffer 三段，畫成泳道就看得到管線怎麼重疊。",
+    hint: "按「跳到 3:00」看 seek 後清單、片段、緩衝依序重來",
+    mount(ctx) {
+      if (!mse(ctx)) return;
+      ctx.html(`<div class="hj-wrap"><div class="hj-main">${vidHTML(`<span class="on" data-s="tot">0 個事件</span>`)}<canvas class="hj-cv grow hj-lanes"></canvas></div>
+        <div class="hj-side"><h3 class="hj-h" data-s="kinds">已觸發事件</h3><div class="hj-evts"></div></div></div>`);
+      const v = ctx.$("video"), p = slot(ctx, v), LANES = [["清單", C[5]], ["下載", C[1]], ["解析", C[3]], ["緩衝", C[2]], ["播放器", C[4]]];
+      let spans = [], counts = {}, total = 0;
+      const span = (lane, a, b, label) => { if (a > 0 && b >= a) spans.push({ lane, a, b, label }); if (spans.length > 400) spans = spans.slice(-300); };
+      const boot = () => {
+        spans = []; counts = {}; total = 0;
+        p.start(MUX, { startLevel: 1, maxBufferLength: 30 }, (h) => {
+          for (const ev of Object.values(E)) h.on(ev, () => { const c = counts[ev] || (counts[ev] = { n: 0, t: 0 }); c.n++; c.t = performance.now(); total++; });
+          h.on(E.MANIFEST_LOADED, (_, d) => span(0, d.stats.loading.start, d.stats.loading.end, "主清單"));
+          h.on(E.LEVEL_LOADED, (_, d) => span(0, d.stats.loading.start, d.stats.loading.end, `L${d.level}`));
+          h.on(E.FRAG_LOADED, (_, d) => d.frag.type === "main" && span(1, d.frag.stats.loading.start, d.frag.stats.loading.end, `#${d.frag.sn}`));
+          h.on(E.FRAG_PARSED, (_, d) => d.frag.type === "main" && span(2, d.frag.stats.parsing.start, d.frag.stats.parsing.end, `#${d.frag.sn}`));
+          h.on(E.FRAG_BUFFERED, (_, d) => d.frag.type === "main" && span(3, d.stats.buffering.start, d.stats.buffering.end, `#${d.frag.sn}`));
+        });
+      };
+      for (const ev of ["playing", "waiting", "seeking", "seeked", "pause"]) ctx.on(v, ev, () => { const t = performance.now(); span(4, t, t, ev); });
+      ctx.button("重新載入", boot);
+      ctx.button("跳到 3:00", () => { v.currentTime = 180; });
+      boot();
+      const list = ctx.$(".hj-evts"), all = Object.values(E).length, keyOf = Object.fromEntries(Object.entries(E).map(([k, v]) => [v, k]));
+      ctx.interval(() => {
+        const now = performance.now(), rows = Object.entries(counts).sort((a, b) => b[1].t - a[1].t).slice(0, 24);
+        list.innerHTML = rows.map(([k, c]) => `<span class="${now - c.t < 700 ? "hot" : ""}">${keyOf[k] || k}</span><b>${c.n}</b>`).join("");
+        setS(ctx, "kinds", `已觸發 ${Object.keys(counts).length}／${all} 種事件（最近在上）`);
+        setS(ctx, "tot", `${total} 個事件`);
+      }, 300);
+      ctx.raf(() => {
+        const [g, w, h] = fit(ctx.$(".hj-lanes"));
+        const now = performance.now(), win = 14000, L = 52, lh = (h - 22) / LANES.length;
+        const x = (t) => L + (1 - (now - t) / win) * (w - L - 6);
+        g.font = `11px ${FONT}`;
+        LANES.forEach(([name, c], i) => {
+          g.fillStyle = "rgba(255,255,255,0.03)"; g.fillRect(L, 4 + i * lh, w - L - 6, lh - 3);
+          g.fillStyle = c; g.fillText(name, 8, 4 + i * lh + lh / 2 + 4);
+        });
+        g.font = `10px ${MONO}`;
+        for (const s of spans) {
+          if (now - s.b > win) continue;
+          const y0 = 4 + s.lane * lh, x0 = Math.max(L, x(s.a)), x1 = x(s.b);
+          g.fillStyle = LANES[s.lane][1];
+          if (s.lane === 4) {
+            g.fillRect(x1 - 1, y0, 2, lh - 3);
+            g.fillText(s.label, x1 + 3, y0 + lh / 2 + 3);
+          } else {
+            g.globalAlpha = 0.85; g.fillRect(x0, y0 + 3, Math.max(2, x1 - x0), lh - 9); g.globalAlpha = 1;
+            if (x1 - x0 > 26) { g.fillStyle = "#0e1013"; g.fillText(s.label, x0 + 3, y0 + lh / 2 + 3); }
+          }
+        }
+        g.fillStyle = "#9b998f";
+        for (let s = 0; s <= 14; s += 2) { const xx = L + (1 - s * 1000 / win) * (w - L - 6); g.fillRect(xx, h - 16, 1, 4); g.fillText(s ? `-${s}s` : "現在", xx - (s ? 10 : 22), h - 3); }
+      });
+    },
+  },
+  {
+    id: "errors", title: "錯誤與重試",
+    api: "fragLoadPolicy.errorRetry；Hls.Events.ERROR 的 errorAction；hls.recoverMediaError()",
+    desc: "自訂 fLoader 讓下一個片段請求回應 503 或 404（不真的發出請求），hls.js 依 fragLoadPolicy 決定重試、換層級或回報致命錯誤；這裡設定最多重試 2 次、間隔 600 ms 起跳。",
+    hint: "按錯誤按鈕會跳到未緩衝的位置，讓片段請求立刻發生",
+    mount(ctx) {
+      if (!mse(ctx)) return;
+      ctx.html(`<div class="hj-wrap"><div class="hj-main">${vidHTML(`<span class="on" data-s="lv">載入中</span><span data-s="q">待注入 0</span>`)}
+        <h3 class="hj-h">片段請求紀錄（綠：成功，紅：注入錯誤）</h3><div class="hj-tries"></div></div>
+        <div class="hj-side">${stats([["成功請求", "ok"], ["失敗請求", "bad"], ["致命錯誤", "fatal"], ["目前層級", "cur"]])}<div class="hj-log"></div></div></div>`);
+      const v = ctx.$("video"), p = slot(ctx, v), log = logger(ctx.$(".hj-log"), 24), tries = ctx.$(".hj-tries");
+      const faults = [];
+      let ok = 0, bad = 0, fatal = 0;
+      const fl = fragLoader({
+        fault: () => (faults.length ? faults.shift() : null),
+        attempt: (c, code) => {
+          code === 200 ? ok++ : bad++;
+          const i = document.createElement("i");
+          i.className = code === 200 ? "" : "err";
+          i.textContent = `#${c.frag.sn} ${p.hls && p.hls.levels[c.frag.level] ? p.hls.levels[c.frag.level].height + "p" : ""} ${code}`;
+          tries.append(i);
+          while (tries.children.length > 30) tries.firstChild.remove();
+        },
+      });
+      const policy = { default: { maxTimeToFirstByteMs: 10000, maxLoadTimeMs: 120000,
+        timeoutRetry: { maxNumRetry: 4, retryDelayMs: 0, maxRetryDelayMs: 0 },
+        errorRetry: { maxNumRetry: 2, retryDelayMs: 600, maxRetryDelayMs: 4000 } } };
+      const hls = p.start(MUX, { startLevel: 2, maxBufferLength: 12, fLoader: fl, fragLoadPolicy: policy }, (h) => {
+        h.on(E.ERROR, (_, d) => {
+          if (d.fatal) fatal++;
+          const a = d.errorAction;
+          log(`<em>${d.details}</em> ${d.response && d.response.code ? d.response.code : ""} ${d.fatal ? "致命" : "非致命"}${a ? `・${ACTIONS[a.action] || a.action}${a.retryCount != null ? `・retryCount ${a.retryCount}` : ""}` : ""}`, true);
+          if (d.fatal) log(d.type === Hls.ErrorTypes.NETWORK_ERROR ? "致命網路錯誤，1.5 秒後呼叫 startLoad()" : "致命媒體錯誤，呼叫 recoverMediaError()");
+        });
+        h.on(E.LEVEL_SWITCHING, (_, d) => log(`<em>LEVEL_SWITCHING</em> 改用 ${d.height}p`));
+        h.on(E.FRAG_LOADED, (_, d) => d.frag.type === "main" && log(`<em>FRAG_LOADED</em> #${d.frag.sn} 成功`));
+        h.on(E.MEDIA_ATTACHED, () => log("<em>MEDIA_ATTACHED</em> 媒體已接上"));
+      });
+      const inject = (codes) => {
+        faults.push(...codes);
+        const end = v.buffered.length ? v.buffered.end(v.buffered.length - 1) : v.currentTime;
+        const t = end + 25 > (v.duration || 600) - 30 ? 15 : end + 25;
+        log(`注入 ${codes.join("、")}，跳到 ${clock(t)}`);
+        v.currentTime = t;
+      };
+      ctx.button("503 一次", () => inject([503]), { primary: true });
+      ctx.button("連續 503 ×4", () => inject([503, 503, 503, 503]));
+      ctx.button("404", () => inject([404]));
+      ctx.button("recoverMediaError()", () => { log("手動呼叫 recoverMediaError()：卸下再接回 MediaSource"); hls.recoverMediaError(); });
+      ctx.interval(() => {
+        setS(ctx, "ok", ok); setS(ctx, "bad", bad); setS(ctx, "fatal", fatal);
+        const l = hls.levels[hls.currentLevel];
+        setS(ctx, "cur", l ? `${l.height}p` : "-");
+        setS(ctx, "lv", l ? `${l.height}p・緩衝 ${bufAhead(v).toFixed(1)} 秒` : "載入中");
+        setS(ctx, "q", `待注入 ${faults.length}`);
+      }, 300);
+    },
+  },
+  {
+    id: "tracks", title: "字幕與音軌",
+    api: "hls.subtitleTracks / subtitleTrack；hls.audioTracks / audioTrack；subtitleDisplay",
+    desc: "主清單宣告了兩條 WebVTT 字幕（中文、法文）與三條替代音軌；hls.js 把字幕轉成 TextTrack cue 交給瀏覽器原生顯示，換音軌時只重新下載音訊片段。",
+    hint: "點字幕或音軌切換；聲音要按「開啟聲音」",
+    mount(ctx) {
+      if (!mse(ctx)) return;
+      ctx.html(`<div class="hj-wrap"><div class="hj-main">${vidHTML(`<span class="on" data-s="sub">字幕載入中</span><span data-s="aud">音軌</span>`)}</div>
+        <div class="hj-side"><h3 class="hj-h">字幕軌</h3><div class="hj-list" data-k="subs"></div><h3 class="hj-h">音軌</h3><div class="hj-list" data-k="auds"></div>
+        <h3 class="hj-h hj-short">目前 cue（activeCues）</h3><div class="hj-cue hj-short"></div><div class="hj-cues hj-wide"></div></div></div>`);
+      const v = ctx.$("video"), p = slot(ctx, v), subs = ctx.$('[data-k="subs"]'), auds = ctx.$('[data-k="auds"]');
+      soundButtons(ctx, v);
+      ctx.toggle("原生字幕顯示", true, (on) => { if (p.hls) p.hls.subtitleDisplay = on; });
+      const render = () => {
+        const h = p.hls;
+        subs.innerHTML = `<button data-i="-1" class="${h.subtitleTrack < 0 ? "sel" : ""}"><span>關閉</span></button>` +
+          h.subtitleTracks.map((t, i) => `<button data-i="${i}" class="${i === h.subtitleTrack ? "sel" : ""}"><span>${t.name}</span><small>${t.lang}</small></button>`).join("");
+        auds.innerHTML = h.audioTracks.map((t, i) => `<button data-i="${i}" class="${i === h.audioTrack ? "sel" : ""}"><span>${t.name}</span><small>${t.lang}</small></button>`).join("");
+        const st = h.subtitleTracks[h.subtitleTrack], at = h.audioTracks[h.audioTrack];
+        setS(ctx, "sub", st ? `字幕：${st.name}` : "字幕：關閉");
+        setS(ctx, "aud", at ? `音軌：${at.name}` : "音軌");
+      };
+      p.start(ED, { startPosition: 14, startLevel: 0, subtitlePreference: { lang: "zh" } }, (h) => {
+        h.on(E.SUBTITLE_TRACKS_UPDATED, (_, d) => {
+          const zh = d.subtitleTracks.findIndex((t) => t.lang === "zh");
+          if (h.subtitleTrack < 0 && zh >= 0) h.subtitleTrack = zh;
+          render();
+        });
+        h.on(E.AUDIO_TRACKS_UPDATED, render);
+        h.on(E.SUBTITLE_TRACK_SWITCH, render);
+        h.on(E.AUDIO_TRACK_SWITCHED, render);
+      });
+      ctx.on(subs, "click", (e) => { const b = e.target.closest("button"); if (b) { p.hls.subtitleTrack = +b.dataset.i; render(); } });
+      ctx.on(auds, "click", (e) => { const b = e.target.closest("button"); if (b) { p.hls.audioTrack = +b.dataset.i; render(); } });
+      const cueBox = ctx.$(".hj-cue"), cueList = ctx.$(".hj-cues");
+      ctx.interval(() => {
+        const tt = [...v.textTracks].find((t) => t.mode !== "disabled");
+        const act = tt && tt.activeCues ? [...tt.activeCues].map((c) => c.text.replace(/\|/g, "\n")).join("\n") : "";
+        if (cueBox.textContent !== act) cueBox.textContent = act || "（此刻沒有字幕）";
+        if (!tt || !tt.cues || !cueList.offsetParent) return;
+        const cues = [...tt.cues], t = v.currentTime;
+        let i = cues.findIndex((c) => c.endTime > t);
+        if (i < 0) i = cues.length;
+        cueList.innerHTML = cues.slice(Math.max(0, i - 1), i + 6).map((c) =>
+          `<div class="${c.startTime <= t && c.endTime > t ? "now" : ""}"><b>${clock(c.startTime)}</b>${c.text.replace(/\|/g, " ").replace(/</g, "&lt;")}</div>`).join("");
+      }, 250);
+    },
+  },
+  {
+    id: "live", title: "直播延遲",
+    api: "liveSyncDurationCount；hls.latency / targetLatency / liveSyncPosition / drift",
+    desc: "自訂 pLoader 每次重新載入時產生一份滑動視窗清單（每 10 秒多一段，只留最後 8 段，片段取自 Mux 測試片），hls.js 依 liveSyncDurationCount × 片段長度決定目標延遲並追趕直播邊緣。",
+    hint: "切換同步段數會重建播放器；倒退後按「回到直播」",
+    mount(ctx) {
+      if (!mse(ctx)) return;
+      ctx.html(`<div class="hj-wrap"><div class="hj-main">${vidHTML(`<span class="on">模擬直播</span><span data-s="lat">延遲 -</span>`)}<canvas class="hj-cv hj-live" style="height:84px"></canvas></div>
+        <div class="hj-side">${stats([["實際延遲 latency", "latency"], ["目標延遲", "target"], ["drift", "drift"], ["播放速率", "rate"], ["播放時刻", "date"], ["清單更新次數", "reloads"], ["視窗片段", "win"], ["前方緩衝", "buf"]])}</div></div>`);
+      const SEG = 10, WIN = 8, MAX = 63, epoch = performance.now() - (WIN * SEG + 0.5) * 1000, wall0 = Date.now() - (WIN * SEG + 0.5) * 1000;
+      let reloads = 0, count = 3, rate = 1.5;
+      const live = () => {
+        const avail = Math.min(MAX, Math.floor((performance.now() - epoch) / 1000 / SEG)), first = Math.max(0, avail - WIN);
+        reloads++;
+        let s = `#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:${SEG}\n#EXT-X-MEDIA-SEQUENCE:${first}\n`;
+        for (let k = first; k < avail; k++) s += `#EXT-X-PROGRAM-DATE-TIME:${new Date(wall0 + k * SEG * 1000).toISOString()}\n#EXTINF:${SEG}.000,\n${MUX_SEG}url_${846 + k}/193039199_mp4_h264_aac_hq_7.ts\n`;
+        return avail >= MAX ? s + "#EXT-X-ENDLIST\n" : s;
+      };
+      const v = ctx.$("video"), p = slot(ctx, v);
+      const boot = () => p.start("mem://live/index.m3u8", { liveSyncDurationCount: count, maxLiveSyncPlaybackRate: rate, pLoader: memLoader((u) => (u.startsWith("mem://live/") ? live() : null)) });
+      ctx.group(["同步 1 段", "2 段", "3 段", "4 段"], 2, (i) => { count = i + 1; boot(); });
+      ctx.toggle("追趕加速 1.5×", true, (on) => { rate = on ? 1.5 : 1; if (p.hls) p.hls.config.maxLiveSyncPlaybackRate = rate; });
+      ctx.button("倒退 15 秒", () => { v.currentTime = Math.max(0, v.currentTime - 15); });
+      ctx.button("回到直播", () => { if (p.hls && p.hls.liveSyncPosition != null) v.currentTime = p.hls.liveSyncPosition; });
+      boot();
+      ctx.interval(() => {
+        const h = p.hls;
+        if (!h) return;
+        const d = h.latestLevelDetails, pd = h.playingDate;
+        setS(ctx, "latency", sec(h.latency));
+        setS(ctx, "lat", `延遲 ${sec(h.latency)}`);
+        setS(ctx, "target", sec(h.targetLatency));
+        setS(ctx, "drift", h.drift != null ? h.drift.toFixed(2) : "-");
+        setS(ctx, "rate", `${v.playbackRate.toFixed(2)}×`);
+        setS(ctx, "date", pd ? pd.toLocaleTimeString("zh-TW", { hour12: false }) : "-");
+        setS(ctx, "reloads", reloads);
+        setS(ctx, "win", d && d.fragments.length ? `sn ${d.startSN}～${d.endSN}` : "-");
+        setS(ctx, "buf", sec(bufAhead(v)));
+      }, 300);
+      ctx.raf(() => {
+        const h = p.hls, d = h && h.latestLevelDetails;
+        const [g, w, hh] = fit(ctx.$(".hj-live"));
+        if (!d || !d.fragments.length) return;
+        const edge = d.edge, from = edge - (WIN + 0.6) * SEG, to = edge + 4, x = (s) => 8 + ((s - from) / (to - from)) * (w - 16);
+        g.font = `10px ${MONO}`;
+        for (const f of d.fragments) {
+          g.fillStyle = "rgba(76,201,240,0.18)"; g.fillRect(x(f.start) + 1, 8, x(f.start + f.duration) - x(f.start) - 2, 22);
+          g.fillStyle = C[1]; g.fillText(`sn ${f.sn}`, x(f.start) + 4, 23);
+        }
+        g.fillStyle = "rgba(255,255,255,0.22)";
+        for (let i = 0; i < v.buffered.length; i++) g.fillRect(x(Math.max(from, v.buffered.start(i))), 34, Math.max(0, x(v.buffered.end(i)) - x(Math.max(from, v.buffered.start(i)))), 8);
+        const mark = (t, c, label, row) => {
+          if (t == null || !isFinite(t)) return;
+          g.fillStyle = c; g.fillRect(x(t) - 1, 6, 2, 42);
+          g.font = `11px ${FONT}`; const tw = g.measureText(label).width;
+          g.fillText(label, Math.min(w - tw - 4, Math.max(4, x(t) - tw / 2)), 60 + row * 14);
+        };
+        mark(edge, C[2], "直播邊緣", 0);
+        mark(h.liveSyncPosition, C[3], "目標位置", 1);
+        mark(v.currentTime, "#ecebe6", "播放頭", 0);
+      });
+    },
+  },
+  {
+    id: "support", title: "支援度偵測",
+    api: "Hls.isSupported()、Hls.isMSESupported()、Hls.getMediaSource()、MediaSource.isTypeSupported()",
+    desc: "hls.js 只在有 MediaSource（或 iOS 17.1 起的 ManagedMediaSource）時才能運作；沒有時應改走 video 原生 HLS。下表是這個瀏覽器的實測結果，不是寫死的清單。",
+    hint: "換個瀏覽器（Safari、Firefox、手機）開同一頁比較",
+    mount(ctx) {
+      ctx.el.classList.add("scroll");
+      const ok = (b) => `<b class="${b ? "hj-ok" : "hj-no"}">${b ? "支援" : "不支援"}</b>`;
+      const MS = Hls.getMediaSource && Hls.getMediaSource();
+      const nativeHls = document.createElement("video").canPlayType("application/vnd.apple.mpegurl");
+      const env = [
+        ["Hls.version", `<b>${Hls.version}</b>`],
+        ["Hls.isMSESupported()", ok(Hls.isMSESupported())],
+        ["Hls.isSupported()", ok(Hls.isSupported())],
+        ["Hls.getMediaSource()", `<b>${MS ? MS.name : "無"}</b>`],
+        ["window.ManagedMediaSource", ok(!!window.ManagedMediaSource)],
+        ["video.canPlayType(HLS)", `<b class="${nativeHls ? "hj-ok" : "hj-no"}">${nativeHls || "空字串"}</b>`],
+      ];
+      const codecs = [
+        ["H.264 Baseline", 'video/mp4; codecs="avc1.42000d"'], ["H.264 Main", 'video/mp4; codecs="avc1.4d401f"'], ["H.264 High", 'video/mp4; codecs="avc1.640028"'],
+        ["HEVC", 'video/mp4; codecs="hvc1.1.6.L93.B0"'], ["AV1", 'video/mp4; codecs="av01.0.05M.08"'], ["VP9", 'video/mp4; codecs="vp09.00.10.08"'],
+        ["AAC-LC", 'audio/mp4; codecs="mp4a.40.2"'], ["HE-AAC", 'audio/mp4; codecs="mp4a.40.5"'], ["E-AC-3", 'audio/mp4; codecs="ec-3"'], ["Opus", 'audio/mp4; codecs="opus"'],
+      ].map(([n, t]) => [`${n}<code>${t.split('"')[1]}</code>`, ok(MS ? MS.isTypeSupported(t) : false)]);
+      const D = Hls.DefaultConfig;
+      const cfg = [["maxBufferLength", `${D.maxBufferLength} s`], ["backBufferLength", `${D.backBufferLength}`], ["liveSyncDurationCount", D.liveSyncDurationCount],
+        ["lowLatencyMode", D.lowLatencyMode], ["enableWorker", D.enableWorker], ["abrEwmaDefaultEstimate", kbps(D.abrEwmaDefaultEstimate)],
+        ["abrBandWidthFactor", D.abrBandWidthFactor], ["capLevelToPlayerSize", D.capLevelToPlayerSize]].map(([k, val]) => [`<code>${k}</code>`, `<b>${val}</b>`]);
+      const rows = (list) => list.map(([a, b]) => `<div class="hj-row"><span>${a}</span>${b}</div>`).join("");
+      const advice = Hls.isSupported() ? "建議路徑：<b>使用 hls.js</b>（new Hls().attachMedia(video)），可取得 ABR、事件與錯誤控制。"
+        : nativeHls ? "建議路徑：<b>原生播放</b>，直接 video.src = '….m3u8'，但拿不到 hls.js 的事件與層級控制。"
+        : "建議路徑：<b>無法播放 HLS</b>，請提供 MP4 備援檔。";
+      ctx.html(`<div class="hj-sup"><div class="panel hj-card"><h2>播放環境<small>本機實測</small></h2>${rows(env)}<div class="hj-advice">${advice}</div></div>
+        <div class="panel hj-card"><h2>編碼支援<small>MediaSource.isTypeSupported</small></h2>${rows(codecs)}</div>
+        <div class="panel hj-card"><h2>預設設定重點<small>Hls.DefaultConfig</small></h2>${rows(cfg)}</div></div>`);
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "new Hls({ pLoader }).loadSource(url) → LEVEL_LOADED",
+    desc: "產生含 N 個片段的 VOD 媒體清單，交給 hls.js 的 M3U8 parser 解析成 Fragment 物件，量從 loadSource 到 LEVEL_LOADED 的時間（含建立實例與銷毀）。",
+    hint: "按「開始測試」；開啟 PROGRAM-DATE-TIME 後再測一次比較",
+    mount(ctx) {
+      ctx.html(`<div class="hj-stress panel"><h3 class="hj-h">最近一次解析結果</h3>
+        ${stats([["片段數", "frags"], ["總長度", "dur"], ["parser 耗時", "parse"], ["每萬片段", "per"], ["清單大小", "size"], ["PROGRAM-DATE-TIME", "pdt"]])}
+        <h3 class="hj-h">各級距總耗時</h3><canvas class="hj-cv hj-bars"></canvas></div>`);
+      let pdt = false, cur = null;
+      const URL_ = "mem://bench/playlist.m3u8", hist = [];
+      ctx.onCleanup(() => cur && cur.destroy());
+      ctx.toggle("含 PROGRAM-DATE-TIME", false, (on) => (pdt = on));
+      ctx.controls.classList.add("bottom");
+      const draw = () => {
+        const [g, w, h] = fit(ctx.$(".hj-bars"));
+        if (!hist.length) { g.fillStyle = "#9b998f"; g.font = `12px ${FONT}`; g.fillText("按「開始測試」後顯示", 10, 22); return; }
+        const max = Math.max(...hist.map((r) => r.ms)), bw = Math.min(70, (w - 20) / hist.length - 8);
+        g.font = `10px ${MONO}`;
+        hist.forEach((r, i) => {
+          const bh = Math.max(2, (r.ms / max) * (h - 40)), x = 10 + i * (bw + 8);
+          g.fillStyle = r.pdt ? C[5] : C[1]; g.fillRect(x, h - 18 - bh, bw, bh);
+          g.fillStyle = "#ecebe6"; g.fillText(Showcase.fmtMs(r.ms), x, h - 22 - bh);
+          g.fillStyle = "#9b998f"; g.fillText(Showcase.fmtCompact(r.n), x, h - 5);
+        });
+      };
+      draw();
+      ctx.onResize(draw);
+      ctx.bench({
+        label: "片段數", unit: "段", sizes: [1000, 5000, 20000, 50000, 100000, 250000, 500000, 1000000],
+        prepare(n) {
+          const t0 = Date.UTC(2026, 0, 1), parts = ["#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:VOD\n"];
+          for (let i = 0; i < n; i++) parts.push(`${pdt ? `#EXT-X-PROGRAM-DATE-TIME:${new Date(t0 + i * 4000).toISOString()}\n` : ""}#EXTINF:4.000,\nseg-${i}.ts\n`);
+          parts.push("#EXT-X-ENDLIST\n");
+          return parts.join("");
+        },
+        async run(n, text) {
+          const hls = (cur = new Hls({ loader: SoftXhr, autoStartLoad: false, enableWorker: false, pLoader: memLoader((u) => (u === URL_ ? text : null)) }));
+          const d = await new Promise((res, rej) => {
+            hls.on(E.LEVEL_LOADED, (_, data) => res(data));
+            hls.on(E.ERROR, (_, data) => data.fatal && rej(new Error(data.details)));
+            hls.loadSource(URL_);
+          });
+          hls.destroy();
+          cur = null;
+          const det = d.details, ps = d.stats.parsing, parse = ps.end > ps.start ? ps.end - ps.start : NaN;
+          setS(ctx, "frags", Showcase.fmt(det.fragments.length));
+          setS(ctx, "dur", `${(det.totalduration / 3600).toFixed(1)} 小時`);
+          setS(ctx, "parse", isFinite(parse) ? Showcase.fmtMs(parse) : "-");
+          setS(ctx, "per", isFinite(parse) ? Showcase.fmtMs(parse / n * 1e4) : "-");
+          setS(ctx, "size", `${(text.length / 1048576).toFixed(1)} MB`);
+          setS(ctx, "pdt", det.hasProgramDateTime ? "有" : "無");
+          ctx.timeout(() => { hist.push({ n, ms: d.stats.parsing.end - d.stats.loading.start, pdt }); if (hist.length > 8) hist.shift(); draw(); }, 0);
+          return isFinite(parse) ? `解析 ${Showcase.fmtMs(parse)}` : "";
+        },
+        note: "瓶頸在 parser 逐行比對正規表示式並為每段建立 Fragment 物件，耗時與記憶體大致隨片段數線性成長。PROGRAM-DATE-TIME 每段多一次日期解析，會明顯變慢。實務上長時間 DVR 直播清單才會到萬段等級。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

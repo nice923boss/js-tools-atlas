@@ -3,32 +3,108 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Apache ECharts 示範：臺灣縣市數據大屏</title>
+<title>Apache ECharts 示範：八個場景看懂圖表系列、轉場與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","note":"地圖邊界來自 taiwan-atlas（內政部開放資料），數值為示意資料"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["縣市數據大屏","系列圖鑑","dataset 與 transform","縮放與標記","全域轉場","地理線條","渲染器與主題","極限測試"],"note":"地圖邊界來自 taiwan-atlas（內政部開放資料），所有數值皆為示意資料"}</script>
 <style>
-  body { background: radial-gradient(70% 90% at 30% 50%, #14202b 0%, var(--bg) 70%); }
-  #chart { position: fixed; inset: 0; }
+  .ec-box { position: absolute; inset: calc(var(--sc-ctl-h, 0px) + 4px) 6px calc(var(--sc-ctl-b, 0px) + 6px) 6px; }
+  .ec-col { position: absolute; inset: calc(var(--sc-ctl-h, 0px) + 4px) 8px 8px; display: flex; flex-direction: column; gap: 4px; }
+  .ec-col > .ec-chart { flex: 1; min-height: 0; position: relative; }
+  .ec-head { flex: none; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; padding: 0 4px; font: 12.5px/1.5 var(--font); color: var(--muted); }
+  .ec-head b { color: var(--fg); font-weight: 600; }
+  .ec-num { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--accent); }
+  .ec-code { font: 11.5px/1.5 var(--mono); color: var(--c2); }
+  .ec-grid { position: absolute; inset: calc(var(--sc-ctl-h, 0px) + 4px) 8px 8px; display: grid; gap: 8px;
+    grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+  .ec-cell { position: relative; min-width: 0; min-height: 0; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.02); overflow: hidden; }
+  .ec-cell > .ec-chart { position: absolute; inset: 0; }
+  .ec-cap { position: absolute; left: 8px; top: 5px; z-index: 2; pointer-events: none; display: flex; align-items: baseline; gap: 6px; font: 600 12px/1.4 var(--font); color: var(--fg); }
+  .ec-cap code { font: 400 10.5px var(--mono); color: var(--muted); }
+  .ec-pill { position: absolute; left: 8px; top: 6px; z-index: 2; pointer-events: none; padding: 2px 9px; border-radius: 999px; background: rgba(14,16,19,.84);
+    border: 1px solid var(--line); font: 12px/1.5 var(--font); color: #ecebe6; white-space: nowrap; }
+  .ec-pill .ec-num { margin-left: 2px; }
+  .ec-pair { position: absolute; inset: calc(var(--sc-ctl-h, 0px) + 4px) 8px 8px; display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ec-pair .ec-cell.white { background: #fff; }
+  .ec-tag { position: absolute; left: 12px; bottom: 10px; z-index: 5; pointer-events: none; padding: 3px 10px; border-radius: 999px;
+    background: rgba(14,16,19,.8); border: 1px solid var(--line); font: 11.5px/1.4 var(--font); color: var(--muted); }
+  .ec-stress { position: absolute; inset: 8px 8px 8px 350px; }
+  @media (max-width: 760px) {
+    .ec-stress { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px); }
+    /* Keep the lab panel above the bottom mode switch instead of covering it. */
+    .sc-scene[data-scene="stress"] .sc-lab { max-height: calc(100% - 30px - var(--sc-ctl-b, 0px)); }
+  }
+  @media (max-width: 560px) { .ec-pair { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+    .ec-grid { overflow-y: auto; overscroll-behavior: contain; grid-template-columns: minmax(0, 1fr); grid-template-rows: none; grid-auto-rows: 250px; } }
 </style>
 </head>
 <body>
-<div id="chart"></div>
-<div class="controls">
-  <button class="btn" data-k="rain" aria-pressed="true">年雨量</button>
-  <button class="btn" data-k="temp">年均溫</button>
-  <button class="btn" data-k="dens">人口密度</button>
-</div>
-<div class="hint">滑過縣市連動長條・拖曳色階篩選・滾輪縮放地圖</div>
-
 <script src="https://cdn.jsdelivr.net/npm/echarts@6.1.0/dist/echarts.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Taiwan county choropleth + realtime-sorted bar ranking in one ECharts instance (dark theme).
+// Apache ECharts showcase: map dashboard, series gallery, dataset transforms, zoom/marks, universal transition,
+// geo lines, renderers/themes and a per-frame setOption stress ramp.
+const css = getComputedStyle(document.documentElement);
+const PAL = ["--c2", "--c1", "--c3", "--c4", "--c5", "--c6"].map((v) => css.getPropertyValue(v).trim());
+const FONT = css.getPropertyValue("--font").trim();
+const MONO = css.getPropertyValue("--mono").trim();
+const FG = "#ecebe6", MUTED = "#9b998f", ACC = "#f7df1e";
+const nf = new Intl.NumberFormat("zh-TW");
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const sum = (o) => Object.values(o).reduce((a, b) => a + b, 0);
+const rgba = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`; };
+function rng(seed) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Call fn({ width, height }) now and whenever el changes size.
+function fit(ctx, el, fn) {
+  let w = -1, h = -1, queued = 0;
+  const run = () => {
+    queued = 0;
+    const r = el.getBoundingClientRect(), width = Math.round(r.width), height = Math.round(r.height);
+    if (width < 20 || height < 20 || (width === w && height === h)) return;
+    w = width; h = height;
+    fn({ width, height });
+  };
+  const ro = new ResizeObserver(() => { if (!queued) queued = requestAnimationFrame(run); });
+  ro.observe(el);
+  ctx.onCleanup(() => { ro.disconnect(); cancelAnimationFrame(queued); });
+  run();
+}
+// echarts.init bound to the scene lifecycle: disposed on cleanup, resized with its box.
+// The first onFit is deferred to a microtask so callers can reference the returned chart inside it.
+function mk(ctx, el, onFit, { theme = "dark", renderer = "canvas" } = {}) {
+  const chart = echarts.init(el, theme, { renderer });
+  ctx.onCleanup(() => chart.dispose());
+  let sync = true;
+  fit(ctx, el, (s) => {
+    chart.resize();
+    if (!onFit) return;
+    if (sync) queueMicrotask(() => ctx.active && onFit(s));
+    else onFit(s);
+  });
+  sync = false;
+  return chart;
+}
+const TIP = { backgroundColor: "rgba(18,20,24,.94)", borderColor: "rgba(255,255,255,.15)", confine: true, textStyle: { color: FG, fontFamily: FONT, fontSize: 12 } };
+const AX = { axisLine: { lineStyle: { color: "rgba(255,255,255,.22)" } }, axisTick: { show: false },
+  axisLabel: { color: MUTED, fontSize: 10 }, splitLine: { lineStyle: { color: "rgba(255,255,255,.07)" } }, nameTextStyle: { color: MUTED, fontSize: 10 } };
+const ax = (o = {}) => ({ ...AX, ...o, axisLabel: { ...AX.axisLabel, ...o.axisLabel } });
+const base = (o) => ({ backgroundColor: "transparent", color: PAL, textStyle: { fontFamily: FONT }, ...o });
+const MONTHS = Array.from({ length: 12 }, (_, i) => `${i + 1}月`);
+
+// ---------- shared Taiwan data (illustrative, rounded) ----------
 const NAMES = { A: "臺北市", B: "臺中市", C: "基隆市", D: "臺南市", E: "高雄市", F: "新北市", G: "宜蘭縣", H: "桃園市",
   I: "嘉義市", J: "新竹縣", K: "苗栗縣", M: "南投縣", N: "彰化縣", O: "新竹市", P: "雲林縣", Q: "嘉義縣", T: "屏東縣",
   U: "花蓮縣", V: "臺東縣", W: "金門縣", X: "澎湖縣", Z: "連江縣" };
-// Illustrative values (rounded, not official statistics).
+const ID_OF = Object.fromEntries(Object.entries(NAMES).map(([k, v]) => [v, k]));
 const VALUES = {
   rain: { A: 2400, B: 1700, C: 3700, D: 1750, E: 1900, F: 2700, G: 2800, H: 1800, I: 1850, J: 1750, K: 1700, M: 2300, N: 1300,
     O: 1700, P: 1250, Q: 1950, T: 2500, U: 2150, V: 1850, W: 1050, X: 1000, Z: 1150 },
@@ -43,113 +119,706 @@ const META = {
   dens: { title: "人口密度", unit: "人/km²", colors: ["#1d2a1f", "#2f7d4f", "#7bd389", "#f7df1e"],
     pieces: [{ lt: 200 }, { gte: 200, lt: 500 }, { gte: 500, lt: 1000 }, { gte: 1000, lt: 2000 }, { gte: 2000, lt: 5000 }, { gte: 5000 }] },
 };
+const REGIONS = ["北部", "中部", "南部", "東部", "離島"];
+// Population in 10k people and area in km2 (approximate).
+const POP = { 北部: { 新北市: 405, 臺北市: 249, 桃園市: 232, 新竹縣: 59, 新竹市: 46, 宜蘭縣: 45, 基隆市: 36 },
+  中部: { 臺中市: 286, 彰化縣: 123, 雲林縣: 66, 苗栗縣: 53, 南投縣: 47 },
+  南部: { 高雄市: 273, 臺南市: 186, 屏東縣: 79, 嘉義縣: 48, 嘉義市: 26 },
+  東部: { 花蓮縣: 32, 臺東縣: 21 }, 離島: { 金門縣: 14, 澎湖縣: 11, 連江縣: 1.4 } };
+const AREA = { 臺北市: 272, 新北市: 2053, 桃園市: 1221, 新竹縣: 1428, 新竹市: 104, 宜蘭縣: 2144, 基隆市: 133, 臺中市: 2215, 彰化縣: 1074,
+  雲林縣: 1291, 苗栗縣: 1820, 南投縣: 4106, 高雄市: 2952, 臺南市: 2192, 屏東縣: 2776, 嘉義縣: 1904, 嘉義市: 60, 花蓮縣: 4629,
+  臺東縣: 3515, 金門縣: 152, 澎湖縣: 127, 連江縣: 29 };
+const REG_COLOR = { 北部: PAL[0], 中部: PAL[3], 南部: PAL[4], 東部: PAL[5], 離島: PAL[2] };
+const REGION_OF = {}, POP_OF = {};
+for (const r of REGIONS) for (const [n, v] of Object.entries(POP[r])) { REGION_OF[n] = r; POP_OF[n] = v; }
+const COUNTY_LIST = Object.keys(REGION_OF);
+const TOTALS = REGIONS.map((r) => Math.round(sum(POP[r])));
+const TPE_T = [16.1, 16.5, 18.5, 21.9, 25.2, 27.7, 29.6, 29.2, 27.4, 24.5, 21.5, 17.9];
+const KHH_T = [19.3, 20.3, 22.6, 25.3, 27.6, 28.6, 29.2, 28.7, 28.1, 26.8, 24.2, 20.8];
+
 // Kinmen and Matsu are moved closer as insets so the main island stays large.
 const SHIFT = { W: [0.95, 0.5], Z: [-0.2, -0.6] };
-
-const chart = echarts.init(document.getElementById("chart"), "dark", { renderer: "canvas" });
-chart.showLoading({ text: "載入地圖中…", color: "#f7df1e", textColor: "#ecebe6", maskColor: "rgba(14,16,19,.6)" });
-let metric = "rain";
-
-function shiftCoords(coords, [dx, dy]) {
-  return typeof coords[0] === "number" ? [coords[0] + dx, coords[1] + dy] : coords.map((c) => shiftCoords(c, [dx, dy]));
-}
-
-function layout() {
-  const w = chart.getWidth(), h = chart.getHeight();
-  const narrow = w < 640;
-  return narrow
-    ? { center: ["56%", "40%"], size: Math.min(w, h * 0.5) * 0.95, grid: { left: 64, right: 52, top: "67%", bottom: 58 }, rows: 5,
-        titleTop: 50, vm: { left: 10, top: 112, itemHeight: 70 } }
-    : { center: ["31%", "53%"], size: Math.min(w * 0.6, h) * 0.9, grid: { left: "62%", right: 56, top: 72, bottom: 48 }, rows: 22,
-        titleTop: 10, vm: { left: 18, bottom: 50, itemHeight: 120 } };
-}
-
-function seriesData(k) {
-  return Object.keys(NAMES).map((id) => ({ name: NAMES[id], value: VALUES[k][id] }));
-}
-
-// Bars reuse the map palette: piecewise metrics by bucket, continuous ones by linear position.
-function barColor(v) {
-  const m = META[metric], vals = Object.values(VALUES[metric]);
-  if (m.pieces) {
-    const i = m.pieces.findIndex((p) => (p.gte === undefined || v >= p.gte) && (p.lt === undefined || v < p.lt));
-    return echarts.color.lerp(i / (m.pieces.length - 1), m.colors);
-  }
-  const lo = Math.min(...vals), hi = Math.max(...vals);
-  return echarts.color.lerp(0.25 + 0.75 * ((v - lo) / (hi - lo)), m.colors);
-}
-
-function build() {
-  const m = META[metric], L = layout(), data = seriesData(metric);
-  const vals = data.map((d) => d.value);
-  const common = { id: "vm", seriesIndex: 0, inRange: { color: m.colors }, outOfRange: { color: "#2a2d33" }, textStyle: { color: "#9b998f" }, ...L.vm };
-  const visualMap = m.pieces
-    ? { ...common, type: "piecewise", pieces: m.pieces, itemWidth: 14, itemHeight: 10, itemGap: 4 }
-    : { ...common, type: "continuous", min: Math.min(...vals), max: Math.max(...vals), calculable: true, realtime: true, text: ["高", "低"], itemWidth: 12 };
-  chart.setOption({
-    backgroundColor: "transparent",
-    textStyle: { fontFamily: "Noto Sans TC, Microsoft JhengHei, sans-serif" },
-    title: { text: `臺灣縣市${m.title}`, subtext: `單位：${m.unit}｜示意資料`, left: 16, top: L.titleTop,
-      textStyle: { fontSize: 16, color: "#ecebe6" }, subtextStyle: { color: "#9b998f" } },
-    tooltip: { trigger: "item", backgroundColor: "rgba(18,20,24,.92)", borderColor: "rgba(255,255,255,.15)",
-      textStyle: { color: "#ecebe6" }, formatter: (p) => `${p.name}<br><b>${Number(p.value).toLocaleString()}</b> ${m.unit}` },
-    visualMap: [visualMap],
-    grid: { ...L.grid, containLabel: false },
-    xAxis: { type: "value", splitLine: { lineStyle: { color: "rgba(255,255,255,.06)" } }, axisLabel: { color: "#9b998f", fontSize: 10 },
-      max: (v) => v.max * 1.15 },
-    yAxis: { type: "category", inverse: true, max: L.rows - 1, data: data.map((d) => d.name),
-      axisLabel: { color: "#ecebe6", fontSize: 11 }, axisLine: { show: false }, axisTick: { show: false }, animationDuration: 300, animationDurationUpdate: 600 },
-    series: [
-      { id: "map", type: "map", map: "taiwan", roam: true, scaleLimit: { min: 0.8, max: 6 }, aspectScale: 0.92,
-        layoutCenter: L.center, layoutSize: L.size, selectedMode: false, data,
-        itemStyle: { borderColor: "rgba(14,16,19,.9)", borderWidth: 0.8 },
-        emphasis: { label: { show: true, color: "#0e1013", fontWeight: 700, backgroundColor: "#f7df1e", padding: [3, 6], borderRadius: 4 },
-          itemStyle: { areaColor: "#f7df1e", shadowBlur: 12, shadowColor: "rgba(247,223,30,.6)" } } },
-      { id: "bar", type: "bar", realtimeSort: true, data: data.map((d) => d.value), barWidth: "62%",
-        itemStyle: { borderRadius: [0, 4, 4, 0], color: (p) => barColor(p.value) },
-        label: { show: true, position: "right", color: "#ecebe6", fontSize: 10, valueAnimation: true,
-          formatter: (p) => Number(p.value).toLocaleString() },
-        emphasis: { itemStyle: { color: "#f7df1e" } } },
-    ],
-    animationDuration: 800, animationDurationUpdate: 900, animationEasingUpdate: "cubicInOut",
-  }, { replaceMerge: ["visualMap"] });
-}
-
-fetch("https://cdn.jsdelivr.net/npm/taiwan-atlas@2021.9.20/counties-10t.json")
-  .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-  .then((topo) => {
-    const geo = topojson.feature(topo, topo.objects.counties);
-    geo.features.forEach((f) => {
-      const id = f.properties.COUNTYID;
-      f.properties = { name: NAMES[id] || f.properties.COUNTYNAME };
-      if (SHIFT[id]) f.geometry.coordinates = shiftCoords(f.geometry.coordinates, SHIFT[id]);
-    });
-    echarts.registerMap("taiwan", geo);
-    chart.hideLoading();
-    build();
-  })
-  .catch((err) => {
-    chart.hideLoading();
-    console.error("Map load failed", err);
-    chart.setOption({ title: { text: "地圖資料載入失敗，請檢查網路連線", left: "center", top: "middle", textStyle: { color: "#ecebe6" } } });
+const shiftCoords = (c, [dx, dy]) => (typeof c[0] === "number" ? [c[0] + dx, c[1] + dy] : c.map((x) => shiftCoords(x, [dx, dy])));
+let TW = null;
+async function loadTaiwan(ctx) {
+  if (TW) return TW;
+  await ctx.load("https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js");
+  const res = await fetch("https://cdn.jsdelivr.net/npm/taiwan-atlas@2021.9.20/counties-10t.json", { signal: ctx.signal });
+  if (!res.ok) throw new Error(`地圖資料載入失敗（HTTP ${res.status}）`);
+  const topo = await res.json();
+  const geo = topojson.feature(topo, topo.objects.counties);
+  geo.features.forEach((f) => {
+    const id = f.properties.COUNTYID;
+    f.properties = { name: NAMES[id] || f.properties.COUNTYNAME };
+    if (SHIFT[id]) f.geometry.coordinates = shiftCoords(f.geometry.coordinates, SHIFT[id]);
   });
+  echarts.registerMap("taiwan", geo);
+  TW = geo;
+  return TW;
+}
 
-// Link hover between the map and the bar ranking.
-chart.on("mouseover", (p) => {
-  if (p.seriesId === "map") chart.dispatchAction({ type: "highlight", seriesId: "bar", name: p.name });
-  if (p.seriesId === "bar") chart.dispatchAction({ type: "highlight", seriesId: "map", name: p.name });
+// ---------- gallery data ----------
+const COMMUTE = (() => {
+  const r = rng(21), g = () => Math.sqrt(-2 * Math.log(r() + 1e-9)) * Math.cos(2 * Math.PI * r());
+  return [["臺北", 38, 11], ["新北", 47, 15], ["桃園", 36, 13], ["臺中", 31, 10], ["高雄", 33, 11]].map(([name, m, sd]) => ({
+    name, samples: Array.from({ length: 70 }, () => Math.max(5, Math.round(m + g() * sd + (r() < 0.04 ? 35 : 0)))),
+  }));
+})();
+const HEAT = (() => {
+  const pk = (h, c, w) => Math.exp(-(((h - c) / w) ** 2) / 2), out = [];
+  for (let d = 0; d < 7; d++) for (let h = 0; h < 24; h++) {
+    const v = h < 6 ? 0 : d < 5 ? 12 + 100 * pk(h, 8, 1.1) + 85 * pk(h, 18, 1.4) + 15 * pk(h, 12.5, 2)
+      : 10 + 45 * pk(h, 15, 3.2) + (d === 5 ? 18 * pk(h, 21, 1.5) : 0);
+    out.push([h, d, Math.round(v)]);
+  }
+  return out;
+})();
+const KLINE = (() => {
+  const r = rng(5), dates = [], ohlc = [], day = new Date(2025, 8, 1);
+  let p = 22000;
+  while (ohlc.length < 30) {
+    if (day.getDay() % 6) {
+      const o = p, c = o * (1 + (r() - 0.47) * 0.026);
+      ohlc.push([o, c, Math.min(o, c) * (1 - r() * 0.008), Math.max(o, c) * (1 + r() * 0.008)].map(Math.round));
+      dates.push(`${day.getMonth() + 1}/${day.getDate()}`);
+      p = c;
+    }
+    day.setDate(day.getDate() + 1);
+  }
+  const ma5 = ohlc.map((_, i) => (i < 4 ? "-" : Math.round(ohlc.slice(i - 4, i + 1).reduce((a, k) => a + k[1], 0) / 5)));
+  return { dates, ohlc, ma5 };
+})();
+const EC_GRAPH = (() => {
+  const groups = [["座標系", ["grid", "polar", "geo", "calendar", "parallel", "singleAxis"]], ["元件", ["tooltip", "legend", "dataZoom", "visualMap", "toolbox", "timeline"]],
+    ["系列", ["line", "bar", "pie", "scatter", "map", "graph", "sankey"]]];
+  const nodes = [{ name: "ECharts", category: 0, symbolSize: 26 }], links = [];
+  groups.forEach(([g, kids], i) => {
+    nodes.push({ name: g, category: i + 1, symbolSize: 17 });
+    links.push({ source: "ECharts", target: g });
+    kids.forEach((k) => { nodes.push({ name: k, category: i + 1, symbolSize: 8 }); links.push({ source: g, target: k }); });
+  });
+  links.push({ source: "dataZoom", target: "grid" }, { source: "map", target: "geo" }, { source: "visualMap", target: "map" }, { source: "bar", target: "polar" });
+  return { nodes, links, categories: [{ name: "核心" }, ...groups.map(([g]) => ({ name: g }))] };
+})();
+const STEPS = (() => {
+  const r = rng(3), out = [];
+  for (let d = new Date(2025, 0, 1); d.getMonth() < 6; d.setDate(d.getDate() + 1)) {
+    const iso = `2025-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    out.push([iso, Math.round((d.getDay() % 6 ? 6500 : 9500) + (r() - 0.4) * 6000)]);
+  }
+  return out;
+})();
+const RIVER = (() => {
+  const r = rng(8), topics = { 颱風: [6, 9, 70], 棒球: [19, 4, 45], 半導體: [10, 8, 25], 美食: [0, 40, 0], 演唱會: [14, 3, 35] }, out = [];
+  for (let w = 0; w < 22; w++) {
+    const d = new Date(2025, 5, 2 + w * 7), iso = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+    for (const [name, [c, wd, amp]] of Object.entries(topics)) {
+      const v = 12 + (name === "美食" ? 8 : 0) + amp * Math.exp(-(((w - c) / (name === "美食" ? 99 : wd)) ** 2)) + r() * 6;
+      out.push([iso, Math.round(v), name]);
+    }
+  }
+  return out;
+})();
+const POP_TREE = REGIONS.map((r) => ({ name: r, itemStyle: { color: REG_COLOR[r] },
+  children: Object.entries(POP[r]).map(([name, value]) => ({ name, value })) }));
+const REGION_SERIES = (row) => REGIONS.map((r) => ({ name: r, color: REG_COLOR[r], data: COUNTY_LIST.filter((n) => REGION_OF[n] === r).map(row) }));
+
+// Four charts per page; opt(small) returns the page-specific part of the option.
+// In small cells the legend drops below the caption so the two never overlap.
+const LG = (s) => ({ right: 8, top: s ? 22 : 5, itemWidth: 10, itemHeight: 8, itemGap: s ? 6 : 10, textStyle: { color: MUTED, fontSize: s ? 9 : 10 } });
+const GT = (s) => (s ? 46 : 34);
+const GALLERY = [
+  { page: "基本", items: [
+    { name: "平滑折線", type: "line", opt: (s) => ({
+      tooltip: { trigger: "axis", ...TIP }, legend: LG(s),
+      grid: { left: 34, right: 12, top: GT(s), bottom: 24 },
+      xAxis: ax({ type: "category", data: MONTHS, boundaryGap: false }), yAxis: ax({ type: "value", min: 10, axisLabel: { formatter: "{value}°" } }),
+      series: [["臺北", TPE_T, PAL[0]], ["高雄", KHH_T, PAL[4]]].map(([name, data, c]) => ({ name, type: "line", data, smooth: true, symbol: "none",
+        lineStyle: { width: 2.5, color: c }, itemStyle: { color: c },
+        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: rgba(c, 0.35) }, { offset: 1, color: rgba(c, 0) }]) } })),
+    }) },
+    { name: "季營收（百萬元）", type: "bar・stack", opt: (s) => ({
+      tooltip: { trigger: "axis", ...TIP }, legend: LG(s),
+      grid: { left: 38, right: 12, top: GT(s) + 6, bottom: 24 },
+      xAxis: ax({ type: "category", data: ["第一季", "第二季", "第三季", "第四季"] }), yAxis: ax({ type: "value" }),
+      series: [["門市", [320, 280, 300, 410]], ["電商", [180, 220, 260, 390]], ["批發", [120, 130, 110, 150]]].map(([name, data], i) => ({
+        name, type: "bar", stack: "營收", data, barWidth: "46%", itemStyle: i === 2 ? { borderRadius: [5, 5, 0, 0] } : {} })),
+    }) },
+    { name: "南丁格爾玫瑰圖", type: "pie・roseType", opt: (s) => ({
+      tooltip: { ...TIP, formatter: "{b}：{c} 萬人次" },
+      series: [{ type: "pie", roseType: "area", radius: ["14%", s ? "64%" : "72%"], center: ["50%", "57%"], itemStyle: { borderRadius: 4, borderColor: "#0e1013", borderWidth: 1 },
+        label: { color: FG, fontSize: s ? 9 : 11 }, labelLine: { length: 4, length2: 6 },
+        data: [["板南線", 52, "#0070bd"], ["淡水信義線", 48, "#e3002c"], ["中和新蘆線", 35, "#f8b61c"], ["松山新店線", 30, "#008659"], ["文湖線", 20, "#c48c31"],
+          ["環狀線", 5, "#ffdb00"]].map(([name, value, color]) => ({ name, value, itemStyle: { color } })) }],
+    }) },
+    { name: "泡泡散佈", type: "scatter", opt: (s) => ({
+      tooltip: { ...TIP, formatter: (p) => `${p.data[3]}<br>密度 ${nf.format(p.data[0])}・均溫 ${p.data[1]}°C・人口 ${p.data[2]} 萬` },
+      legend: { ...LG(s), itemWidth: 8, itemHeight: 8, itemGap: s ? 4 : 8 },
+      grid: { left: 34, right: 16, top: GT(s), bottom: 30 },
+      xAxis: ax({ type: "log", name: "人口密度", nameLocation: "middle", nameGap: 18 }), yAxis: ax({ type: "value", min: 18, max: 26, axisLabel: { formatter: "{value}°" } }),
+      series: REGION_SERIES((n) => [VALUES.dens[ID_OF[n]], VALUES.temp[ID_OF[n]], POP_OF[n], n]).map(({ name, color, data }) => ({
+        name, type: "scatter", data, symbolSize: (v) => 5 + Math.sqrt(v[2]) * 1.5, itemStyle: { color: rgba(color, 0.75), borderColor: color } })),
+    }) },
+  ] },
+  { page: "統計", items: [
+    { name: "通勤分鐘", type: "boxplot", opt: () => ({
+      dataset: [{ source: COMMUTE.map((c) => c.samples) }, { transform: { type: "boxplot", config: { itemNameFormatter: (p) => COMMUTE[p.value].name } } },
+        { fromDatasetIndex: 1, fromTransformResult: 1 }],
+      tooltip: { ...TIP }, grid: { left: 34, right: 12, top: 34, bottom: 24 },
+      xAxis: ax({ type: "category", axisLabel: { color: FG } }), yAxis: ax({ type: "value" }),
+      series: [{ type: "boxplot", datasetIndex: 1, itemStyle: { color: rgba(PAL[0], 0.2), borderColor: PAL[0] } },
+        { type: "scatter", datasetIndex: 2, symbolSize: 5, itemStyle: { color: PAL[2] } }],
+    }) },
+    { name: "熱力圖", type: "heatmap", opt: (s) => ({
+      tooltip: { ...TIP, formatter: (p) => `週${"一二三四五六日"[p.data[1]]} ${p.data[0]} 點：進站指數 ${p.data[2]}` },
+      grid: { left: 34, right: 10, top: 30, bottom: 22 },
+      xAxis: ax({ type: "category", data: Array.from({ length: 24 }, (_, i) => String(i)), splitArea: { show: false }, axisLabel: { interval: s ? 5 : 2 } }),
+      yAxis: ax({ type: "category", inverse: true, data: [..."一二三四五六日"].map((d) => `週${d}`) }),
+      visualMap: { show: false, min: 0, max: 115, inRange: { color: ["#18222c", "#126e8f", "#4cc9f0", "#f7df1e"] } },
+      series: [{ type: "heatmap", data: HEAT, itemStyle: { borderColor: "#0e1013", borderWidth: 1 }, emphasis: { itemStyle: { borderColor: FG } } }],
+    }) },
+    { name: "K 線（紅漲綠跌）", type: "candlestick", opt: () => ({
+      tooltip: { trigger: "axis", ...TIP }, grid: { left: 46, right: 12, top: 34, bottom: 24 },
+      xAxis: ax({ type: "category", data: KLINE.dates }), yAxis: ax({ type: "value", scale: true }),
+      series: [{ type: "candlestick", name: "指數", data: KLINE.ohlc, itemStyle: { color: "#ef4444", color0: "#22c55e", borderColor: "#ef4444", borderColor0: "#22c55e" } },
+        { type: "line", name: "MA5", data: KLINE.ma5, smooth: true, symbol: "none", lineStyle: { width: 1.5, color: ACC } }],
+    }) },
+    { name: "雷達圖", type: "radar", opt: (s) => ({
+      tooltip: { ...TIP }, legend: LG(s),
+      radar: { center: ["50%", s ? "62%" : "58%"], radius: s ? "52%" : "64%", axisName: { color: MUTED, fontSize: s ? 9 : 11 },
+        splitLine: { lineStyle: { color: "rgba(255,255,255,.12)" } }, splitArea: { show: false }, axisLine: { lineStyle: { color: "rgba(255,255,255,.12)" } },
+        indicator: ["交通", "就業", "房價負擔", "空氣", "醫療", "休閒"].map((name) => ({ name, max: 100 })) },
+      series: [{ type: "radar", symbolSize: 4, areaStyle: { opacity: 0.14 }, data: [
+        { name: "臺北", value: [92, 90, 35, 62, 93, 85] }, { name: "臺中", value: [70, 78, 58, 55, 82, 74] }, { name: "高雄", value: [74, 72, 66, 48, 80, 76] }] }],
+    }) },
+  ] },
+  { page: "關係", items: [
+    { name: "力導向關係圖", type: "graph・force", opt: (s) => ({
+      tooltip: { ...TIP }, color: [ACC, PAL[0], PAL[3], PAL[2]],
+      series: [{ type: "graph", layout: "force", roam: true, draggable: true, top: 26, data: EC_GRAPH.nodes, links: EC_GRAPH.links, categories: EC_GRAPH.categories,
+        force: { repulsion: s ? 45 : 90, edgeLength: s ? [10, 30] : [18, 52], gravity: 0.12 },
+        label: { show: true, position: "right", color: FG, fontSize: s ? 8 : 10 }, lineStyle: { color: "source", opacity: 0.45 },
+        emphasis: { focus: "adjacency", lineStyle: { width: 2 } } }],
+    }) },
+    { name: "桑基圖（億度）", type: "sankey", opt: (s) => ({
+      tooltip: { ...TIP },
+      series: [{ type: "sankey", left: 8, right: s ? 46 : 64, top: 32, bottom: 10, nodeWidth: 10, nodeGap: s ? 4 : 8, emphasis: { focus: "adjacency" },
+        lineStyle: { color: "gradient", opacity: 0.35, curveness: 0.5 }, label: { color: FG, fontSize: s ? 8 : 10 },
+        data: ["燃氣", "燃煤", "核能", "太陽光電", "風力", "火力發電", "再生發電", "電網", "工業", "住宅", "商業", "線損"].map((name) => ({ name })),
+        links: [["燃氣", "火力發電", 45], ["燃煤", "火力發電", 36], ["太陽光電", "再生發電", 6], ["風力", "再生發電", 4], ["核能", "電網", 5],
+          ["火力發電", "電網", 81], ["再生發電", "電網", 10], ["電網", "工業", 55], ["電網", "住宅", 19], ["電網", "商業", 17], ["電網", "線損", 5]]
+          .map(([source, target, value]) => ({ source, target, value })) }],
+    }) },
+    { name: "和弦圖（6.0 新增）", type: "chord", opt: (s) => ({
+      tooltip: { ...TIP },
+      series: [{ type: "chord", center: ["50%", "57%"], radius: s ? ["52%", "60%"] : ["62%", "70%"], padAngle: 3, label: { color: FG, fontSize: s ? 9 : 11 },
+        lineStyle: { color: "source", opacity: 0.35 }, emphasis: { focus: "adjacency" },
+        data: REGIONS.map((name) => ({ name, itemStyle: { color: REG_COLOR[name] } })),
+        links: [["中部", "北部", 38], ["南部", "北部", 42], ["東部", "北部", 12], ["離島", "北部", 6], ["北部", "中部", 25], ["南部", "中部", 14],
+          ["北部", "南部", 20], ["中部", "南部", 11], ["東部", "南部", 7], ["北部", "東部", 5], ["離島", "南部", 4]].map(([source, target, value]) => ({ source, target, value })) }],
+    }) },
+    { name: "漏斗圖", type: "funnel", opt: (s) => ({
+      tooltip: { ...TIP, formatter: "{b}：{c} 人" },
+      series: [{ type: "funnel", left: "10%", width: "80%", top: 32, bottom: 8, gap: 2, minSize: "34%", sort: "descending", itemStyle: { borderWidth: 0 },
+        label: { position: "inside", color: "#0e1013", fontSize: s ? 9 : 11, formatter: (p) => `${p.name} ${nf.format(p.value)}` },
+        data: [["瀏覽課程頁", 10000], ["試看影片", 5200], ["加入購物車", 2100], ["完成付款", 1300], ["完課", 620]].map(([name, value]) => ({ name, value })) }],
+    }) },
+  ] },
+  { page: "階層", items: [
+    { name: "放射樹", type: "tree・radial", opt: (s) => ({
+      tooltip: { ...TIP },
+      series: [{ type: "tree", layout: "radial", data: [{ name: "臺灣", children: POP_TREE.map(({ name, children }) => ({ name, children })) }],
+        top: 34, bottom: 14, symbolSize: 5, initialTreeDepth: -1, itemStyle: { color: PAL[0], borderColor: PAL[0] },
+        label: { color: FG, fontSize: s ? 7 : 9 }, lineStyle: { color: "rgba(255,255,255,.25)" }, animationDurationUpdate: 600 }],
+    }) },
+    { name: "矩形樹圖", type: "treemap", opt: (s) => ({
+      tooltip: { ...TIP, formatter: (p) => `${p.name}：${p.value} 萬人` },
+      series: [{ type: "treemap", name: "全臺", top: 28, left: 6, right: 6, bottom: 26, roam: false, nodeClick: "zoomToNode",
+        data: POP_TREE.map((r) => ({ ...r, itemStyle: { color: r.itemStyle.color, borderColor: r.itemStyle.color } })),
+        breadcrumb: { bottom: 4, height: 16, itemStyle: { color: "rgba(255,255,255,.08)", textStyle: { color: FG, fontSize: 10 } } },
+        label: { fontSize: s ? 9 : 11, color: "#0e1013", formatter: "{b}" }, upperLabel: { show: true, height: 16, color: "#0e1013", fontWeight: 700 },
+        levels: [{ itemStyle: { gapWidth: 4, borderWidth: 0, borderColor: "transparent" }, upperLabel: { show: false } },
+          { itemStyle: { gapWidth: 1, borderWidth: 3 } },
+          { colorSaturation: [0.45, 0.8], itemStyle: { gapWidth: 1, borderWidth: 1, borderColor: "rgba(14,16,19,.35)" } }] }],
+    }) },
+    { name: "旭日圖", type: "sunburst", opt: (s) => ({
+      tooltip: { ...TIP, formatter: (p) => `${p.name}：${p.value} 萬人` },
+      series: [{ type: "sunburst", center: ["50%", "56%"], radius: ["10%", "86%"], data: POP_TREE, itemStyle: { borderColor: "#0e1013", borderWidth: 1.5 },
+        label: { color: "#0e1013", fontSize: s ? 8 : 10, minAngle: 7 },
+        levels: [{}, { r0: "10%", r: "42%", label: { rotate: "tangential", fontWeight: 700 } }, { r0: "42%", r: "86%", label: { align: "right" } }] }],
+    }) },
+    { name: "儀表板（每 2 秒更新）", type: "gauge", opt: (s) => ({
+      series: [{ type: "gauge", center: ["50%", "62%"], radius: s ? "72%" : "84%", startAngle: 200, endAngle: -20, min: 0, max: 100,
+        axisLine: { lineStyle: { width: 10, color: [[0.6, PAL[3]], [0.85, ACC], [1, PAL[2]]] } },
+        pointer: { width: 4, length: "62%", itemStyle: { color: "auto" } }, axisTick: { show: false },
+        splitLine: { length: 8, lineStyle: { color: "auto", width: 2 } }, axisLabel: { distance: 14, color: MUTED, fontSize: 9 },
+        title: { offsetCenter: [0, "34%"], color: MUTED, fontSize: 11 },
+        detail: { valueAnimation: true, offsetCenter: [0, "62%"], formatter: "{value}%", color: FG, fontFamily: MONO, fontSize: s ? 16 : 22 },
+        data: [{ value: 72, name: "用電負載率" }] }],
+    }) },
+  ] },
+  { page: "座標系", items: [
+    { name: "日曆熱力圖（每日步數）", type: "calendar", opt: (s) => ({
+      tooltip: { ...TIP, formatter: (p) => `${p.data[0]}：${nf.format(p.data[1])} 步` },
+      visualMap: { show: false, min: 2000, max: 14000, inRange: { color: ["#11161d", "#2f7d4f", "#7bd389", "#f7df1e"] } },
+      calendar: { range: ["2025-01-01", "2025-06-30"], top: 46, left: 26, right: 10, bottom: 10, cellSize: ["auto", "auto"],
+        splitLine: { lineStyle: { color: "rgba(255,255,255,.25)" } }, itemStyle: { color: "transparent", borderColor: "#0e1013", borderWidth: 1 },
+        yearLabel: { show: false }, dayLabel: { firstDay: 1, nameMap: [..."日一二三四五六"], color: MUTED, fontSize: 9 },
+        monthLabel: { nameMap: MONTHS, color: MUTED, fontSize: s ? 8 : 10 } },
+      series: [{ type: "heatmap", coordinateSystem: "calendar", data: STEPS }],
+    }) },
+    { name: "平行座標", type: "parallel", opt: (s) => ({
+      tooltip: { ...TIP, formatter: (p) => p.data[5] },
+      parallel: { left: 26, right: 34, top: 44, bottom: 16, parallelAxisDefault: { nameTextStyle: { color: MUTED, fontSize: s ? 8 : 10 },
+        axisLine: { lineStyle: { color: "rgba(255,255,255,.3)" } }, axisLabel: { color: MUTED, fontSize: 8, formatter: (v) => (v >= 1000 ? `${v / 1000}k` : v) }, splitLine: { show: false } } },
+      parallelAxis: [{ dim: 0, name: "人口", type: "log" }, { dim: 1, name: "面積", type: "log" }, { dim: 2, name: "密度", type: "log" },
+        { dim: 3, name: "雨量", min: 900 }, { dim: 4, name: "均溫", min: 19 }],
+      series: REGION_SERIES((n) => [POP_OF[n], AREA[n], VALUES.dens[ID_OF[n]], VALUES.rain[ID_OF[n]], VALUES.temp[ID_OF[n]], n]).map(({ name, color, data }) => ({
+        name, type: "parallel", data, smooth: true, lineStyle: { color, width: 1.6, opacity: 0.7 } })),
+    }) },
+    { name: "極座標風花圖", type: "polar・bar", opt: (s) => ({
+      tooltip: { ...TIP }, legend: LG(s),
+      polar: { center: ["50%", s ? "62%" : "58%"], radius: ["6%", s ? "58%" : "72%"] },
+      angleAxis: { type: "category", data: ["北", "東北", "東", "東南", "南", "西南", "西", "西北"], startAngle: 112.5, axisLine: { lineStyle: { color: "rgba(255,255,255,.25)" } },
+        axisLabel: { color: FG, fontSize: s ? 9 : 11 }, axisTick: { show: false } },
+      radiusAxis: { axisLabel: { show: false }, axisLine: { show: false }, axisTick: { show: false }, splitLine: { lineStyle: { color: "rgba(255,255,255,.08)" } } },
+      series: [["微風", [6, 9, 4, 2, 3, 6, 3, 4], PAL[0]], ["和風", [5, 10, 3, 1, 2, 5, 2, 3], ACC], ["強風", [3, 7, 1, 0.5, 0.5, 2, 1, 1.5], PAL[2]]].map(([name, data, color]) => ({
+        name, type: "bar", coordinateSystem: "polar", stack: "風", data, itemStyle: { color, borderColor: "#0e1013", borderWidth: 1 } })),
+    }) },
+    { name: "主題河流圖（話題熱度）", type: "themeRiver", opt: (s) => ({
+      tooltip: { trigger: "axis", ...TIP, axisPointer: { type: "line", lineStyle: { color: "rgba(255,255,255,.3)" } } },
+      color: [PAL[0], PAL[3], PAL[5], PAL[4], PAL[2]],
+      singleAxis: { type: "time", top: GT(s), bottom: 26, left: 12, right: 12, axisLabel: { color: MUTED, fontSize: 9, hideOverlap: true, formatter: "{M}/{d}" },
+        axisLine: { lineStyle: { color: "rgba(255,255,255,.2)" } }, axisTick: { show: false }, splitLine: { show: false } },
+      legend: LG(s), series: [{ type: "themeRiver", data: RIVER, label: { show: false }, emphasis: { focus: "self" } }],
+    }) },
+  ] },
+];
+
+// ---------- scene 4 data: daily mean temperature for Taipei, 2025 (illustrative) ----------
+const TEMP = (() => {
+  const r = rng(11), out = [];
+  let noise = 0;
+  for (let d = 0; d < 365; d++) {
+    const seasonal = 23.3 - 7.4 * Math.cos((2 * Math.PI * (d - 25)) / 365);
+    noise = noise * 0.72 + (r() - 0.5) * 2.6;
+    const cold = d >= 20 && d <= 28 ? -6.5 * Math.sin((Math.PI * (d - 19)) / 10) : 0;
+    out.push([new Date(2025, 0, 1 + d).getTime(), +(seasonal + noise + cold).toFixed(1)]);
+  }
+  return out;
+})();
+const day = (m, d) => new Date(2025, m - 1, d).getTime();
+
+// ---------- scene 7: a custom theme registered once ----------
+echarts.registerTheme("atlas", {
+  color: ["#e76f51", "#2a9d8f", "#e9c46a", "#264653", "#f4a261"], backgroundColor: "#fbf6ec",
+  textStyle: { color: "#3d3a33" }, title: { textStyle: { color: "#264653" }, subtextStyle: { color: "#8a8170" } },
+  legend: { textStyle: { color: "#3d3a33" } },
+  categoryAxis: { axisLine: { lineStyle: { color: "#cbbfa6" } }, axisTick: { show: false }, axisLabel: { color: "#6b6252" }, splitLine: { show: false } },
+  valueAxis: { axisLine: { show: false }, axisLabel: { color: "#6b6252" }, nameTextStyle: { color: "#8a8170" }, splitLine: { lineStyle: { color: "#eadfca", type: "dashed" } } },
+  bar: { itemStyle: { borderRadius: [6, 6, 0, 0] } }, line: { symbolSize: 7, lineStyle: { width: 3 } },
+  tooltip: { backgroundColor: "#fffdf8", borderColor: "#cbbfa6", textStyle: { color: "#3d3a33" } },
 });
-chart.on("mouseout", (p) => {
-  chart.dispatchAction({ type: "downplay", seriesId: p.seriesId === "map" ? "bar" : "map", name: p.name });
-});
 
-document.querySelectorAll("[data-k]").forEach((b) => b.addEventListener("click", () => {
-  metric = b.dataset.k;
-  document.querySelectorAll("[data-k]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
-  build();
-}));
+Showcase.run({ scenes: [
+  {
+    id: "dash", title: "縣市數據大屏",
+    api: "series: [{ type: \"map\", map: \"taiwan\" }, { type: \"bar\", realtimeSort: true, label: { valueAnimation: true } }]",
+    desc: "地圖與排行長條放在同一個實例：visualMap 把數值轉成地圖顏色，長條用 realtimeSort 即時重排、數字用 valueAnimation 滾動；滑過任一邊以 dispatchAction 連動高亮。",
+    hint: "切換指標・按「隨機擾動」看重排動畫・拖曳色階篩選・滾輪縮放地圖",
+    async mount(ctx) {
+      ctx.html(`<div class="ec-box"></div>`);
+      const KEYS = ["rain", "temp", "dens"];
+      const JITTER = { rain: (v) => Math.round((v * (0.75 + Math.random() * 0.5)) / 10) * 10,
+        temp: (v) => +(v + (Math.random() - 0.5) * 3).toFixed(1), dens: (v) => Math.round(v * (0.7 + Math.random() * 0.6)) };
+      let metric = "rain", cur = { ...VALUES.rain }, ready = false;
+      ctx.group(KEYS.map((k) => META[k].title), 0, (i) => { metric = KEYS[i]; cur = { ...VALUES[metric] }; build(); });
+      ctx.button("隨機擾動", () => { for (const id in cur) cur[id] = JITTER[metric](VALUES[metric][id]); build(); });
+      const chart = mk(ctx, ctx.$(".ec-box"), () => ready && build());
+      chart.showLoading({ text: "載入地圖中…", color: ACC, textColor: FG, maskColor: "rgba(14,16,19,.6)" });
+      await loadTaiwan(ctx);
+      chart.hideLoading();
+      ready = true;
+      build();
+      chart.on("mouseover", (p) => chart.dispatchAction({ type: "highlight", seriesId: p.seriesId === "map" ? "bar" : "map", name: p.name }));
+      chart.on("mouseout", (p) => chart.dispatchAction({ type: "downplay", seriesId: p.seriesId === "map" ? "bar" : "map", name: p.name }));
 
-addEventListener("resize", () => { chart.resize(); if (echarts.getMap("taiwan")) build(); });
+      function layout(w, h) {
+        if (w >= h * 1.15 && w >= 520) {
+          const top = 50, bottom = 20;
+          return { center: [w * 0.28, 26 + (h - 26) / 2], size: Math.min(h - 56, w * 0.7), grid: { left: Math.round(w * 0.56) + 46, right: 56, top, bottom },
+            rows: clamp(Math.floor((h - top - bottom) / 18), 6, 22), vm: { left: 4, bottom: 6, itemHeight: clamp(h * 0.2, 50, 120) } };
+        }
+        const mapH = Math.min(h * 0.5, w * 1.15), top = 40 + mapH + 8;
+        return { center: [w * 0.6, 40 + mapH / 2], size: mapH, grid: { left: 50, right: 48, top, bottom: 10 },
+          rows: clamp(Math.floor((h - top - 10) / 17), 3, 22), vm: { left: 4, top: 50, itemHeight: clamp(mapH * 0.4, 40, 80) } };
+      }
+      function barColor(v, vals) {
+        const m = META[metric];
+        if (m.pieces) {
+          const i = m.pieces.findIndex((p) => (p.gte === undefined || v >= p.gte) && (p.lt === undefined || v < p.lt));
+          return echarts.color.lerp(i / (m.pieces.length - 1), m.colors);
+        }
+        const lo = Math.min(...vals), hi = Math.max(...vals);
+        return echarts.color.lerp(0.25 + 0.75 * ((v - lo) / (hi - lo || 1)), m.colors);
+      }
+      function build() {
+        const m = META[metric], L = layout(chart.getWidth(), chart.getHeight());
+        const data = Object.keys(NAMES).map((id) => ({ name: NAMES[id], value: cur[id] })), vals = data.map((d) => d.value);
+        const vmBase = { id: "vm", seriesIndex: 0, inRange: { color: m.colors }, outOfRange: { color: "#2a2d33" }, textStyle: { color: MUTED, fontSize: 10 }, ...L.vm };
+        const visualMap = m.pieces
+          ? { ...vmBase, type: "piecewise", pieces: m.pieces, itemWidth: 12, itemHeight: 9, itemGap: 3 }
+          : { ...vmBase, type: "continuous", min: Math.min(...vals), max: Math.max(...vals), calculable: true, realtime: true, text: ["高", "低"], itemWidth: 11 };
+        chart.setOption(base({
+          title: { text: `臺灣縣市${m.title}`, subtext: `單位：${m.unit}｜示意資料`, left: 4, top: 0, itemGap: 3,
+            textStyle: { fontSize: 15, color: FG }, subtextStyle: { color: MUTED, fontSize: 11 } },
+          tooltip: { trigger: "item", ...TIP, formatter: (p) => `${p.name}<br><b>${nf.format(p.value)}</b> ${m.unit}` },
+          visualMap: [visualMap],
+          grid: L.grid,
+          xAxis: ax({ type: "value", max: (v) => v.max * 1.15, axisLabel: { fontFamily: MONO, hideOverlap: true } }),
+          yAxis: { type: "category", inverse: true, max: L.rows - 1, data: data.map((d) => d.name), axisLabel: { color: FG, fontSize: 11 },
+            axisLine: { show: false }, axisTick: { show: false }, animationDuration: 300, animationDurationUpdate: 600 },
+          series: [
+            { id: "map", type: "map", map: "taiwan", roam: true, scaleLimit: { min: 0.8, max: 6 }, aspectScale: 0.92, layoutCenter: L.center, layoutSize: L.size,
+              selectedMode: false, data, itemStyle: { borderColor: "rgba(14,16,19,.9)", borderWidth: 0.8 },
+              emphasis: { label: { show: true, color: "#0e1013", fontWeight: 700, backgroundColor: ACC, padding: [3, 6], borderRadius: 4 },
+                itemStyle: { areaColor: ACC, shadowBlur: 12, shadowColor: "rgba(247,223,30,.6)" } } },
+            { id: "bar", type: "bar", realtimeSort: true, data: vals, barWidth: "62%",
+              itemStyle: { borderRadius: [0, 4, 4, 0], color: (p) => barColor(p.value, vals) },
+              label: { show: true, position: "right", color: FG, fontSize: 10, fontFamily: MONO, valueAnimation: true, formatter: (p) => nf.format(p.value) },
+              emphasis: { itemStyle: { color: ACC } } },
+          ],
+          animationDuration: 800, animationDurationUpdate: 900, animationEasingUpdate: "cubicInOut",
+        }), { replaceMerge: ["visualMap"] });
+      }
+    },
+  },
+  {
+    id: "gallery", title: "系列圖鑑",
+    api: "chart.setOption(option, true)・type: \"boxplot\" | \"sankey\" | \"chord\" | \"themeRiver\" …",
+    desc: "五頁共 20 種系列，每格是獨立的 echarts 實例，切頁時以 notMerge 換掉整份 option。盒鬚圖用內建的 boxplot 資料轉換算四分位，和弦圖是 6.0 新增的系列。",
+    hint: "切換分類・滑過看數值・關係圖可拖曳節點・矩形樹圖可點擊下鑽・平行座標可在軸上刷選",
+    mount(ctx) {
+      ctx.html(`<div class="ec-grid">${"<div class=\"ec-cell\"><div class=\"ec-cap\"></div><div class=\"ec-chart\"></div></div>".repeat(4)}</div>`);
+      let page = 0;
+      const cells = ctx.$$(".ec-cell"), small = [false, false, false, false];
+      const charts = cells.map((cell, i) => mk(ctx, cell.querySelector(".ec-chart"), ({ width }) => {
+        if ((width < 360) !== small[i]) { small[i] = width < 360; draw(i); }
+      }));
+      ctx.group(GALLERY.map((g) => g.page), 0, (i) => { page = i; charts.forEach((_, k) => draw(k)); });
+      charts.forEach((_, k) => draw(k));
+      ctx.interval(() => {
+        if (page !== 3) return;
+        const v = clamp(Math.round(72 + (Math.random() - 0.5) * 36), 30, 98);
+        charts[3].setOption({ series: [{ data: [{ value: v, name: "用電負載率" }] }] });
+      }, 2000);
+      function draw(k) {
+        const item = GALLERY[page].items[k];
+        cells[k].querySelector(".ec-cap").innerHTML = `${item.name}<code>${item.type}</code>`;
+        charts[k].setOption(base(item.opt(small[k])), true);
+      }
+    },
+  },
+  {
+    id: "dataset", title: "dataset 與 transform",
+    api: "dataset: [{ source }, { fromDatasetId: \"raw\", transform: [{ type: \"filter\" }, { type: \"sort\" }] }]",
+    desc: "22 筆縣市資料只放一次在 dataset，filter 與 sort 組成轉換鏈產生新資料集；長條與圓餅都用 encode 指定欄位，同一份結果兩種畫法。",
+    hint: "切換區域篩選・選擇排序欄位・滑過看數值",
+    mount(ctx) {
+      ctx.html(`<div class="ec-col"><div class="ec-head"></div><div class="ec-chart"></div></div>`);
+      const UNIT = { 人口: "萬人", 面積: "km²", 密度: "人/km²" };
+      let region = 0, key = "人口", W = 800, H = 500;
+      ctx.group(["全部", ...REGIONS], 0, (i) => { region = i; update(); });
+      ctx.select("", Object.keys(UNIT).map((k) => ({ value: k, label: `依${k}排序` })), key, (v) => { key = v; update(); });
+      const head = ctx.$(".ec-head");
+      const rows = COUNTY_LIST.map((n) => [n, REGION_OF[n], POP_OF[n], AREA[n], Math.round((POP_OF[n] * 1e4) / AREA[n])]);
+      const chart = mk(ctx, ctx.$(".ec-chart"), ({ width, height }) => { W = width; H = height; update(); });
+
+      function update() {
+        const reg = REGIONS[region - 1];
+        const transform = [...(reg ? [{ type: "filter", config: { dimension: "區域", "=": reg } }] : []), { type: "sort", config: { dimension: key, order: "desc" } }];
+        const count = reg ? rows.filter((r) => r[1] === reg).length : rows.length;
+        head.innerHTML = `<span class="ec-code">transform: [${reg ? `filter(區域 = ${reg}), ` : ""}sort(${key} desc)]</span><span>產出 <span class="ec-num">${count}</span> 筆，長條與圓餅共用同一個資料集</span>`;
+        const many = count > 12, wide = W >= 560;
+        // Narrow: bars on top, pie below; the pie radius is whatever fits the leftover band.
+        const barBottom = Math.round(H * 0.46), band = barBottom - (many ? 44 : 26) - 8;
+        const r = Math.max(30, Math.min(band / 2 - 10, W / 2 - 64));
+        chart.setOption(base({
+          dataset: [{ id: "raw", dimensions: ["縣市", "區域", "人口", "面積", "密度"], source: rows }, { id: "view", fromDatasetId: "raw", transform }],
+          tooltip: { trigger: "item", ...TIP, formatter: (p) => `${p.data[0]}（${p.data[1]}）<br>${key} <b>${nf.format(p.data[{ 人口: 2, 面積: 3, 密度: 4 }[key]])}</b> ${UNIT[key]}` },
+          grid: wide ? { left: 50, right: "44%", top: 30, bottom: many ? 44 : 28 } : { left: 46, right: 10, top: 28, bottom: barBottom },
+          xAxis: ax({ type: "category", axisLabel: { color: FG, interval: 0, fontSize: many ? 10 : 11, lineHeight: 11, formatter: (v) => (many ? [...v].join("\n") : v) } }),
+          yAxis: ax({ type: "value", name: `${key}（${UNIT[key]}）`, axisLabel: { fontFamily: MONO } }),
+          series: [
+            { type: "bar", datasetId: "view", encode: { x: "縣市", y: key }, barMaxWidth: 34,
+              itemStyle: { borderRadius: [4, 4, 0, 0], color: (p) => REG_COLOR[p.data[1]] } },
+            { type: "pie", datasetId: "view", encode: { itemName: "縣市", value: key },
+              center: wide ? [W < 760 ? "75%" : "78%", "54%"] : ["50%", H - 8 - band / 2], radius: wide ? (W < 760 ? ["24%", "52%"] : ["26%", "58%"]) : [r * 0.42, r],
+              itemStyle: { color: (p) => echarts.color.lift(REG_COLOR[p.data[1]], (p.dataIndex % 3) * 0.14), borderColor: "#0e1013", borderWidth: 1.5 },
+              label: { color: FG, fontSize: wide ? 10 : 9, formatter: "{b}" }, labelLine: { length: 6, length2: 6 }, labelLayout: { hideOverlap: true }, minShowLabelAngle: wide ? 6 : 12 },
+          ],
+          animationDurationUpdate: 700,
+        }), { replaceMerge: ["dataset"] });
+      }
+    },
+  },
+  {
+    id: "zoom", title: "縮放與標記",
+    api: "dataZoom: [{ type: \"inside\" }, { type: \"slider\" }]・visualMap.pieces・markPoint／markLine／markArea・toolbox",
+    desc: "臺北 2025 每日均溫（示意）：visualMap 依溫度把折線分段上色，markPoint 標最高最低、markLine 標平均、markArea 標梅雨季；dataZoom 與 toolbox 提供縮放、切換長條與還原。",
+    hint: "滾輪或拖曳下方滑桿縮放・按季節快速跳轉・右上工具列可框選縮放、切換長條、存圖",
+    mount(ctx) {
+      ctx.html(`<div class="ec-col"><div class="ec-head"></div><div class="ec-chart"></div></div>`);
+      const RANGES = [null, [day(5, 15), day(6, 30)], [day(6, 1), day(8, 31)], [day(1, 12), day(2, 9)]];
+      ctx.group(["全年", "梅雨季", "夏季", "寒流"], 0, (i) => {
+        const r = RANGES[i];
+        chart.dispatchAction({ type: "dataZoom", ...(r ? { startValue: r[0], endValue: r[1] } : { start: 0, end: 100 }) });
+      });
+      const head = ctx.$(".ec-head");
+      const T0 = TEMP[0][0], T1 = TEMP[TEMP.length - 1][0];
+      const md = (t) => { const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()}`; };
+      const stats = () => {
+        const dz = chart.getOption().dataZoom[0];
+        const a = T0 + ((T1 - T0) * dz.start) / 100, b = T0 + ((T1 - T0) * dz.end) / 100;
+        const vs = TEMP.filter((p) => p[0] >= a - 864e5 / 2 && p[0] <= b + 864e5 / 2).map((p) => p[1]);
+        if (!vs.length) return;
+        const avg = vs.reduce((x, y) => x + y, 0) / vs.length;
+        head.innerHTML = `<span>區間 <b>${md(a)}～${md(b)}</b>（<span class="ec-num">${vs.length}</span> 天）</span>` +
+          `<span>平均 <span class="ec-num">${avg.toFixed(1)}°C</span></span><span>最高 <span class="ec-num">${Math.max(...vs).toFixed(1)}°C</span></span>` +
+          `<span>最低 <span class="ec-num">${Math.min(...vs).toFixed(1)}°C</span></span><span>示意資料</span>`;
+      };
+      const chart = mk(ctx, ctx.$(".ec-chart"), ({ width }) => {
+        const narrow = width < 520;
+        chart.setOption({ toolbox: { top: narrow ? 24 : 0 }, grid: { top: narrow ? 66 : 44 }, visualMap: { itemGap: narrow ? 3 : 8 } });
+      });
+      const pieces = [[null, 15, "#9d8cff", "< 15°"], [15, 20, "#4cc9f0", "15～20°"], [20, 25, "#7bd389", "20～25°"], [25, 30, "#f7df1e", "25～30°"], [30, null, "#f72585", "≥ 30°"]]
+        .map(([gte, lt, color, label]) => ({ ...(gte != null && { gte }), ...(lt != null && { lt }), color, label }));
+      chart.setOption(base({
+        tooltip: { trigger: "axis", ...TIP, valueFormatter: (v) => `${Number(v).toFixed(1)} °C` },
+        grid: { left: 36, right: 14, top: 44, bottom: 62 },
+        toolbox: { right: 0, top: 0, itemSize: 14, iconStyle: { borderColor: MUTED }, emphasis: { iconStyle: { borderColor: ACC } },
+          feature: { dataZoom: { yAxisIndex: "none", title: { zoom: "框選縮放", back: "還原縮放" } }, magicType: { type: ["line", "bar"], title: { line: "折線", bar: "長條" } },
+            restore: { title: "重置" }, saveAsImage: { title: "存成圖片", name: "taipei-temperature", backgroundColor: "#0e1013" } } },
+        visualMap: { type: "piecewise", top: 2, left: 0, orient: "horizontal", dimension: 1, seriesIndex: 0, itemWidth: 12, itemHeight: 8, itemGap: 8,
+          textStyle: { color: MUTED, fontSize: 10 }, pieces },
+        xAxis: ax({ type: "time", axisLabel: { hideOverlap: true, formatter: { year: "{yyyy}", month: "{M}月", day: "{M}/{d}" } } }),
+        yAxis: ax({ type: "value", min: 5, max: 40, axisLabel: { formatter: "{value}°", fontFamily: MONO } }),
+        dataZoom: [{ type: "inside" }, { type: "slider", height: 20, bottom: 8, borderColor: "rgba(255,255,255,.12)", textStyle: { color: MUTED, fontSize: 10 },
+          labelFormatter: (v) => md(v), dataBackground: { lineStyle: { color: "rgba(255,255,255,.3)" }, areaStyle: { color: "rgba(255,255,255,.06)" } } }],
+        series: [{ type: "line", name: "日均溫", data: TEMP, showSymbol: false, lineStyle: { width: 1.8 },
+          markPoint: { symbolSize: 42, label: { fontSize: 10, fontFamily: MONO, color: "#0e1013", formatter: (p) => p.value.toFixed(1) },
+            data: [{ type: "max", name: "最高" }, { type: "min", name: "最低" }] },
+          markLine: { symbol: "none", lineStyle: { color: ACC, type: "dashed" }, label: { position: "insideEndTop", color: ACC, fontSize: 10, formatter: (p) => `平均 ${p.value.toFixed(1)}°` },
+            data: [{ type: "average", name: "平均" }] },
+          markArea: { itemStyle: { color: "rgba(76,201,240,.09)" }, label: { position: "insideTop", color: MUTED, fontSize: 10 },
+            data: [[{ name: "梅雨季", xAxis: day(5, 15) }, { xAxis: day(6, 30) }]] } }],
+      }));
+      chart.on("datazoom", stats);
+      chart.on("restore", stats);
+      stats();
+    },
+  },
+  {
+    id: "morph", title: "全域轉場",
+    api: "universalTransition: { enabled: true, seriesKey: [...], divideShape: \"clone\" }",
+    desc: "同一組資料在長條、圓餅、散佈之間 setOption，形狀自動補間；長條的 groupId 對上下一層的 dataGroupId，點擊時一根長條會拆成多根縣市長條。",
+    hint: "切換三種圖形看變形・點長條或扇形下鑽到縣市・按「返回上層」合併回去",
+    mount(ctx) {
+      ctx.html(`<div class="ec-box"></div>`);
+      let mode = 0, drill = null;
+      ctx.group(["長條", "圓餅", "散佈"], 0, (i) => { mode = i; drill = null; render(); });
+      const back = ctx.button("返回上層", () => { drill = null; render(); });
+      const chart = mk(ctx, ctx.$(".ec-box"));
+      const UT = () => ({ enabled: true, seriesKey: [...REGIONS], divideShape: "clone" });
+      const title = (text, subtext) => ({ text, subtext, left: 4, top: 0, itemGap: 3, textStyle: { color: FG, fontSize: 15 }, subtextStyle: { color: MUTED, fontSize: 11 } });
+      const views = [
+        () => ({ title: title("各區域人口（萬人）", "示意資料・點長條下鑽"), tooltip: { ...TIP }, grid: { left: 46, right: 16, top: 62, bottom: 28 },
+          xAxis: ax({ type: "category", data: REGIONS, axisLabel: { color: FG, fontSize: 12 } }), yAxis: ax({ type: "value", axisLabel: { fontFamily: MONO } }),
+          series: [{ type: "bar", id: "main", barWidth: "52%", universalTransition: UT(), label: { show: true, position: "top", color: FG, fontFamily: MONO },
+            data: REGIONS.map((r, i) => ({ value: TOTALS[i], groupId: r, itemStyle: { color: REG_COLOR[r], borderRadius: [6, 6, 0, 0] } })) }] }),
+        () => ({ title: title("各區域人口占比", "示意資料・點扇形下鑽"), tooltip: { ...TIP, formatter: "{b}：{c} 萬人（{d}%）" },
+          series: [{ type: "pie", id: "main", center: ["50%", "57%"], radius: ["26%", "64%"], universalTransition: UT(),
+            itemStyle: { borderColor: "#0e1013", borderWidth: 2, borderRadius: 6 }, label: { color: FG, formatter: "{b}\n{c} 萬" },
+            data: REGIONS.map((r, i) => ({ name: r, value: TOTALS[i], groupId: r, itemStyle: { color: REG_COLOR[r] } })) }] }),
+        () => ({ title: title("縣市面積 × 人口（對數座標）", "示意資料・每個區域拆成一組散點"), tooltip: { ...TIP, formatter: (p) => `${p.data.name}<br>面積 ${nf.format(p.data.value[0])} km²・人口 ${p.data.value[1]} 萬` },
+          legend: { right: 6, top: 4, itemWidth: 10, itemHeight: 10, textStyle: { color: MUTED, fontSize: 11 } }, grid: { left: 46, right: 20, top: 62, bottom: 34 },
+          xAxis: ax({ type: "log", name: "面積 km²", nameLocation: "middle", nameGap: 22, axisLabel: { fontFamily: MONO } }),
+          yAxis: ax({ type: "log", name: "人口（萬）", axisLabel: { fontFamily: MONO } }),
+          series: REGIONS.map((r) => ({ type: "scatter", id: r, name: r, dataGroupId: r, universalTransition: { enabled: true, divideShape: "clone" },
+            itemStyle: { color: REG_COLOR[r] }, symbolSize: (v) => 8 + Math.sqrt(v[1]) * 1.4,
+            label: { show: true, position: "right", color: MUTED, fontSize: 10, formatter: (p) => (p.data.value[1] >= 100 ? p.data.name : "") },
+            data: Object.keys(POP[r]).map((n) => ({ name: n, value: [AREA[n], POP_OF[n]] })) })) }),
+      ];
+      const drillView = (r) => {
+        const names = Object.keys(POP[r]);
+        return { title: title(`${r}各縣市人口（萬人）`, "示意資料・按「返回上層」合併"), tooltip: { ...TIP }, grid: { left: 46, right: 16, top: 62, bottom: 28 },
+          xAxis: ax({ type: "category", data: names, axisLabel: { color: FG, interval: 0, fontSize: names.length > 5 ? 10 : 12 } }),
+          yAxis: ax({ type: "value", axisLabel: { fontFamily: MONO } }),
+          series: [{ type: "bar", id: "main", dataGroupId: r, barWidth: "52%", universalTransition: UT(), label: { show: true, position: "top", color: FG, fontFamily: MONO },
+            data: names.map((n) => ({ value: POP_OF[n], itemStyle: { color: REG_COLOR[r], borderRadius: [6, 6, 0, 0] } })) }] };
+      };
+      function render() {
+        back.style.display = drill ? "" : "none";
+        chart.setOption(base({ ...(drill ? drillView(drill) : views[mode]()), animationDurationUpdate: 900 }), true);
+      }
+      chart.on("click", (p) => { if (!drill && mode < 2 && p.data && p.data.groupId) { drill = p.data.groupId; render(); } });
+      render();
+    },
+  },
+  {
+    id: "geo", title: "地理線條",
+    api: "geo: { map: \"taiwan\", roam: true }・{ type: \"lines\", effect: { trailLength } }・{ type: \"effectScatter\" }",
+    desc: "geo 元件當底圖，lines 系列畫高鐵折線與國內航線弧線，effect 讓光點沿線移動並拖出尾巴，effectScatter 為站點加上漣漪。",
+    hint: "切換路線・調整拖尾長度・滾輪縮放、拖曳平移地圖",
+    async mount(ctx) {
+      ctx.html(`<div class="ec-box"></div><div class="ec-tag">路線與站點為概略位置（示意）</div>`);
+      let mode = 2, anim = true, trail = 0.4;
+      ctx.group(["高鐵", "國內航線", "全部"], mode, (i) => { mode = i; render(); });
+      ctx.toggle("光點", anim, (v) => { anim = v; render(); });
+      ctx.slider("拖尾", { min: 0, max: 0.8, step: 0.1, value: trail, format: (v) => v.toFixed(1) }, (v) => { trail = v; render(); });
+      const chart = mk(ctx, ctx.$(".ec-box"));
+      chart.showLoading({ text: "載入地圖中…", color: ACC, textColor: FG, maskColor: "rgba(14,16,19,.6)" });
+      await loadTaiwan(ctx);
+      chart.hideLoading();
+      const HSR = [["南港", [121.607, 25.053]], ["台北", [121.517, 25.048]], ["板橋", [121.464, 25.014]], ["桃園", [121.215, 25.013]], ["新竹", [121.04, 24.808]],
+        ["苗栗", [120.826, 24.605]], ["台中", [120.616, 24.112]], ["彰化", [120.575, 23.874]], ["雲林", [120.416, 23.736]], ["嘉義", [120.323, 23.459]],
+        ["台南", [120.286, 22.925]], ["左營", [120.308, 22.687]]];
+      const AP = { 松山: [121.552, 25.069], 臺中: [120.621, 24.264], 高雄: [120.35, 22.577], 花蓮: [121.617, 24.023], 臺東: [121.102, 22.755],
+        馬公: [119.628, 23.569], 金門: shiftCoords([118.359, 24.428], SHIFT.W), 南竿: shiftCoords([119.958, 26.159], SHIFT.Z) };
+      const ROUTES = [["松山", "金門"], ["松山", "馬公"], ["松山", "花蓮"], ["松山", "臺東"], ["松山", "南竿"], ["臺中", "金門"], ["臺中", "馬公"],
+        ["高雄", "金門"], ["高雄", "馬公"], ["高雄", "花蓮"]];
+      const PLANE = "path://M12 1L13.6 9L22 13.5V15.5L13.6 12.8L13 19.2L16 21.3V22.8L12 21.8L8 22.8V21.3L11 19.2L10.4 12.8L2 15.5V13.5L10.4 9Z";
+      const label = (position) => ({ show: true, position, formatter: "{b}", color: FG, fontSize: 10, textBorderColor: "#0e1013", textBorderWidth: 2 });
+      chart.setOption(base({
+        tooltip: { ...TIP, formatter: (p) => (p.seriesType === "lines" ? `${p.data.fromName || "高鐵"} → ${p.data.toName || "全線"}` : p.name) },
+        geo: { map: "taiwan", roam: true, scaleLimit: { min: 0.8, max: 6 }, aspectScale: 0.92, layoutCenter: ["50%", "51%"], layoutSize: "96%", selectedMode: false,
+          itemStyle: { areaColor: "#17222d", borderColor: "rgba(76,201,240,.4)", borderWidth: 0.8, shadowColor: "rgba(76,201,240,.25)", shadowBlur: 14 },
+          emphasis: { disabled: true }, tooltip: { show: false } },
+      }));
+      render();
+      function render() {
+        const coords = HSR.map((s) => s[1]);
+        const hsr = [
+          { id: "hsr", type: "lines", coordinateSystem: "geo", polyline: true, data: [{ coords }, { coords: [...coords].reverse() }],
+            lineStyle: { color: PAL[4], width: 3, opacity: 0.75 }, effect: { show: anim, period: 7, trailLength: trail, symbol: "circle", symbolSize: 6, color: "#fff" } },
+          { id: "hsrSt", type: "effectScatter", coordinateSystem: "geo", data: HSR.map(([name, value]) => ({ name, value })), symbolSize: 6,
+            rippleEffect: { brushType: "stroke", scale: 3.2, period: 3 }, itemStyle: { color: PAL[4] }, label: label("left") },
+        ];
+        const air = [
+          { id: "air", type: "lines", coordinateSystem: "geo", data: ROUTES.map(([a, b]) => ({ fromName: a, toName: b, coords: [AP[a], AP[b]] })),
+            lineStyle: { color: PAL[0], width: 1.4, opacity: 0.55, curveness: 0.25 }, effect: { show: anim, period: 4, trailLength: trail, symbol: PLANE, symbolSize: 11, color: "#fff" } },
+          { id: "ap", type: "effectScatter", coordinateSystem: "geo", data: Object.entries(AP).map(([name, value]) => ({ name, value })), symbolSize: 7,
+            rippleEffect: { brushType: "stroke", scale: 3, period: 4 }, itemStyle: { color: PAL[0] }, label: label("right") },
+        ];
+        chart.setOption({ series: [[hsr, air, [...hsr, ...air]][mode]].flat() }, { replaceMerge: ["series"] });
+      }
+    },
+  },
+  {
+    id: "render", title: "渲染器與主題",
+    api: "echarts.init(el, \"dark\", { renderer: \"svg\" })・chart.setTheme(name)・chart.renderToSVGString()",
+    desc: "同一份 option 同時交給 Canvas 與 SVG 兩種渲染器；6.0 的 setTheme 不必重建實例就能切換內建深色、預設與自訂主題。SVG 端顯示 DOM 節點數與匯出字串大小。",
+    hint: "切換主題・按「更新資料」比較兩種渲染器的動畫",
+    mount(ctx) {
+      ctx.html(`<div class="ec-pair">${["canvas", "svg"].map((r) => `<div class="ec-cell" data-r="${r}"><div class="ec-pill"></div><div class="ec-chart"></div></div>`).join("")}</div>`);
+      const THEMES = ["dark", "default", "atlas"];
+      let use = [210, 190, 205, 230, 270, 320, 360, 365, 330, 270, 230, 215], temp = TPE_T.slice(), compact = false;
+      ctx.group(["深色", "預設", "自訂"], 0, (i) => {
+        charts.forEach((c, k) => { cells[k].classList.toggle("white", THEMES[i] === "default"); c.setTheme(THEMES[i]); });
+      });
+      ctx.button("更新資料", () => {
+        use = use.map((v) => Math.round(v * (0.85 + Math.random() * 0.3)));
+        temp = TPE_T.map((v) => +(v + (Math.random() - 0.5) * 3).toFixed(1));
+        charts.forEach((c) => c.setOption({ series: [{ data: use }, { data: temp }] }));
+      });
+      const cells = ctx.$$(".ec-cell");
+      const option = () => ({
+        textStyle: { fontFamily: FONT },
+        title: { show: !compact, text: "月用電與氣溫", subtext: "示意資料", left: 10, top: 32, itemGap: 2, textStyle: { fontSize: 14 } },
+        tooltip: { trigger: "axis" }, legend: { top: compact ? 32 : 38, right: 10, itemWidth: 12, itemHeight: 8 },
+        grid: { left: 40, right: 32, top: compact ? 56 : 82, bottom: 26 },
+        xAxis: { type: "category", data: MONTHS, axisLabel: { fontSize: 10 } },
+        yAxis: [{ type: "value", axisLabel: { fontSize: 10 } }, { type: "value", min: 10, max: 35, splitLine: { show: false }, axisLabel: { fontSize: 10 } }],
+        series: [{ name: "用電（億度）", type: "bar", data: use, barWidth: "50%" }, { name: "氣溫（°C）", type: "line", yAxisIndex: 1, data: temp, smooth: true }],
+      });
+      const charts = cells.map((cell) => {
+        const el = cell.querySelector(".ec-chart"), pill = cell.querySelector(".ec-pill"), svg = cell.dataset.r === "svg";
+        const chart = mk(ctx, el, ({ width, height }) => {
+          const c = height < 260 || width < 380;
+          if (c !== compact) { compact = c; charts.forEach((ch) => ch.setOption(option())); }
+        }, { renderer: cell.dataset.r });
+        chart.setOption(option());
+        const paint = () => {
+          pill.innerHTML = svg
+            ? `SVG・<span class="ec-num">${nf.format(el.getElementsByTagName("*").length)}</span> 個節點・匯出 <span class="ec-num">${(chart.renderToSVGString().length / 1024).toFixed(1)} KB</span>`
+            : `Canvas・<span class="ec-num">${el.getElementsByTagName("canvas").length}</span> 個 canvas・DPR <span class="ec-num">${chart.getDevicePixelRatio()}</span>`;
+        };
+        chart.on("finished", paint);
+        paint();
+        return chart;
+      });
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "chart.setOption({ series: [{ id, data: Float32Array }] })・large: true・progressive: 0",
+    desc: "每一格把 N 個點依半徑旋轉後整批 setOption，量 ECharts 資料處理加繪製的總吞吐量；可切換 large 批次繪製、逐點圖形與 SVG 渲染器。",
+    hint: "按「自動加壓」開始，或切換繪製模式比較",
+    mount(ctx) {
+      ctx.html(`<div class="ec-stress"></div>`);
+      ctx.controls.classList.add("bottom");
+      const box = ctx.$(".ec-stress");
+      const MODES = [{ label: "large 批次", renderer: "canvas", large: true }, { label: "逐點圖形", renderer: "canvas", large: false }, { label: "SVG", renderer: "svg", large: false }];
+      const RINGS = 24;
+      let mode = 0, chart = null, n = 0, aspect = 1, cost = 0;
+      let bx = new Float32Array(0), by = new Float32Array(0), ring = new Uint8Array(0), buf = new Float32Array(0);
+      ctx.group(MODES.map((m) => m.label), 0, (i) => { mode = i; create(); });
+      ctx.onCleanup(() => chart && chart.dispose());
+      fit(ctx, box, ({ width, height }) => {
+        aspect = width / height;
+        if (chart) { chart.resize(); chart.setOption({ xAxis: { min: -1.08 * aspect, max: 1.08 * aspect } }); }
+      });
+      create();
+
+      function create() {
+        if (chart) chart.dispose();
+        const m = MODES[mode];
+        chart = echarts.init(box, "dark", { renderer: m.renderer });
+        chart.setOption({
+          backgroundColor: "transparent", animation: false, grid: { left: 0, right: 0, top: 0, bottom: 0 },
+          xAxis: { type: "value", min: -1.08 * aspect, max: 1.08 * aspect, show: false }, yAxis: { type: "value", min: -1.08, max: 1.08, show: false },
+          series: [{ id: "pts", type: "scatter", large: m.large, largeThreshold: 1, progressive: 0, silent: true, dimensions: ["x", "y"], symbolSize: 2.4,
+            itemStyle: { color: PAL[0], opacity: 0.55 }, data: buf.subarray(0, n * 2) }],
+        });
+      }
+      // Spiral galaxy: base positions plus a ring index that sets each point's angular speed.
+      function setCount(count) {
+        const r = rng(count);
+        bx = new Float32Array(count); by = new Float32Array(count); ring = new Uint8Array(count); buf = new Float32Array(count * 2);
+        for (let i = 0; i < count; i++) {
+          const rad = Math.pow(r(), 0.7), arm = (i % 3) * ((2 * Math.PI) / 3), a = arm + rad * 5 + (r() - 0.5) * (0.9 - rad * 0.5);
+          bx[i] = Math.cos(a) * rad; by[i] = Math.sin(a) * rad; ring[i] = Math.min(RINGS - 1, Math.floor(rad * RINGS));
+        }
+        n = count;
+      }
+      const cs = new Float32Array(RINGS), sn = new Float32Array(RINGS);
+      ctx.raf((t) => {
+        if (!n || !chart) return;
+        for (let k = 0; k < RINGS; k++) { const a = (t / 1000) * (0.9 / (0.25 + k / RINGS)); cs[k] = Math.cos(a); sn[k] = Math.sin(a); }
+        for (let i = 0, j = 0; i < n; i++, j += 2) { const k = ring[i]; buf[j] = bx[i] * cs[k] - by[i] * sn[k]; buf[j + 1] = bx[i] * sn[k] + by[i] * cs[k]; }
+        const t0 = performance.now();
+        chart.setOption({ series: [{ id: "pts", data: buf }] });
+        cost = cost * 0.8 + (performance.now() - t0) * 0.2;
+      });
+      ctx.ramp({
+        label: "資料點", steps: [1000, 5000, 20000, 50000, 100000, 200000, 500000, 1000000, 2000000],
+        apply: setCount,
+        metrics: () => ({ 模式: MODES[mode].label, "setOption 耗時": `${cost.toFixed(1)} ms`, ...(MODES[mode].renderer === "svg" ? { "DOM 節點": box.getElementsByTagName("*").length } : {}) }),
+        note: "每一格先在 JS 端旋轉所有點，再把整個 Float32Array 交給 setOption（animation 關閉、progressive: 0 讓整批在同一格畫完），所以量到的是資料處理加繪製的總成本。large 模式把所有點合成一條路徑批次繪製；逐點圖形為每個點建立一個 zrender 圖元；SVG 每個點是一個 DOM 節點。靜態大量資料在實務上可改用 progressive 分批或 appendData。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

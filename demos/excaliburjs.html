@@ -3,253 +3,1280 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Excalibur.js 示範：霓虹打磚塊</title>
+<title>Excalibur.js 示範：8 個場景看懂 2D 遊戲引擎與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["霓虹打磚塊","物理求解器","動作佇列","粒子","TileMap 與攝影機","場景轉場","材質與後製","極限測試"]}</script>
 <style>
-  body { background: radial-gradient(90% 70% at 50% 0%, #1b1f33, #0e1013 70%); }
-  canvas { touch-action: none; position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); }
-  .overlay { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; pointer-events: none; transition: opacity .3s; }
-  .overlay.hide { opacity: 0; }
-  .overlay .card { text-align: center; padding: 16px 26px; border-radius: 16px; background: rgba(14, 16, 19, .7); backdrop-filter: blur(4px); border: 1px solid var(--line); }
-  .overlay h1 { margin: 0; font-size: clamp(26px, 6vw, 44px); letter-spacing: 3px;
+  .ex-box { position: absolute; inset: 0; overflow: hidden; }
+  .ex-box canvas, .ex-stress canvas { display: block; outline: none; touch-action: none; }
+  .ex-center { display: grid; place-items: center; }
+  .sc-scene.ex-neon { background: radial-gradient(90% 70% at 50% 0%, #1b1f33, #0e1013 70%); }
+  .sc-scene.ex-dusk { background: linear-gradient(#1d2442, #141a2c 55%, #0e1013); }
+  .sc-scene.ex-studio { background: radial-gradient(70% 90% at 50% 40%, #20232c, #0e1013); }
+  .ex-readout {
+    position: absolute; left: 10px; bottom: 10px; z-index: 20; max-width: calc(100% - 20px); padding: 6px 10px; border-radius: 8px;
+    background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(6px); pointer-events: none;
+    font: 500 11.5px/1.45 var(--font); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ex-readout b { font-family: var(--mono); color: var(--accent); font-weight: 600; }
+  .ex-readout code { font-family: var(--mono); color: var(--fg); }
+  .ex-ov { position: absolute; inset: 0; z-index: 15; display: grid; place-items: center; pointer-events: none; transition: opacity .3s; }
+  .ex-ov.hide { opacity: 0; }
+  .ex-ov-card { text-align: center; padding: 16px 26px; border-radius: 16px; background: rgba(14, 16, 19, .7); backdrop-filter: blur(4px); border: 1px solid var(--line); max-width: calc(100% - 32px); }
+  .ex-ov h1 { margin: 0; font: 800 clamp(26px, 6vw, 44px)/1.25 var(--font); letter-spacing: 3px;
     background: linear-gradient(90deg, var(--c3), var(--c5), var(--c1), var(--c4), var(--c2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
-  .overlay p { margin: 6px 0 0; }
-  .overlay .blink { color: var(--c2); animation: blink 1.2s steps(2) infinite; }
-  @keyframes blink { 50% { opacity: .25; } }
+  .ex-ov p { margin: 6px 0 0; font-family: var(--font); }
+  .ex-blink { color: var(--c2); animation: ex-blink 1.2s steps(2) infinite; }
+  @keyframes ex-blink { 50% { opacity: .25; } }
+  .ex-log {
+    position: absolute; left: 10px; bottom: 10px; z-index: 20; width: min(380px, calc(100% - 20px)); padding: 8px 10px; border-radius: 10px;
+    background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(6px); pointer-events: none;
+    font: 500 11.5px/1.55 var(--font); color: var(--muted);
+  }
+  .ex-log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ex-log div:last-child { color: var(--fg); }
+  .ex-log code { font-family: var(--mono); color: var(--c2); }
+  .ex-log .t { font-family: var(--mono); color: var(--muted); margin-right: 6px; }
+  .ex-bar { height: 3px; border-radius: 2px; background: var(--line); margin-bottom: 6px; overflow: hidden; }
+  .ex-bar i { display: block; height: 100%; width: 0; background: var(--accent); }
+  .ex-stress {
+    position: absolute; top: 8px; right: 8px; bottom: calc(var(--sc-ctl-b, 0px) + 8px); left: 350px;
+    border-radius: 12px; border: 1px solid var(--line); background: rgba(255,255,255,.02); overflow: hidden;
+  }
+  @media (max-width: 760px) { .ex-stress { left: 8px; } }
 </style>
 </head>
 <body>
-<div class="overlay" id="overlay">
-  <div class="card">
-    <h1 id="ov-title">霓虹打磚塊</h1>
-    <p id="ov-sub">擊破全部磚塊，球打在擋板邊緣會斜飛</p>
-    <p class="blink" id="ov-go">按任意鍵或點擊開始</p>
-  </div>
-</div>
-<div class="hint">滑鼠或手指移動擋板，← → 也可以，空白鍵或點擊發球</div>
-
 <script src="https://cdn.jsdelivr.net/npm/excalibur@0.32.0/build/dist/excalibur.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Excalibur.js breakout: Actors, collision events, Canvas graphics, ParticleEmitter, actions, camera shake.
-// portrait screens get a taller board with fewer columns (resolution is picked once at load)
-const PORTRAIT = innerHeight > innerWidth * 1.1;
-const W = PORTRAIT ? 480 : 720, H = PORTRAIT ? 700 : 480, FONT = "Noto Sans TC, Microsoft JhengHei, PingFang TC, sans-serif";
-const COLORS = ["#f72585", "#ff8c42", "#f7df1e", "#7bd389", "#4cc9f0", "#9d8cff"];
-const $ = (id) => document.getElementById(id);
+// Excalibur.js showcase: eight scenes from the original neon breakout to an Actor-count stress ramp.
+const rootCss = getComputedStyle(document.documentElement);
+const cssVar = (name, fallback) => rootCss.getPropertyValue(name).trim() || fallback;
+const C = {
+  c1: cssVar("--c1", "#f7df1e"), c2: cssVar("--c2", "#4cc9f0"), c3: cssVar("--c3", "#f72585"),
+  c4: cssVar("--c4", "#7bd389"), c5: cssVar("--c5", "#ff8c42"), c6: cssVar("--c6", "#9d8cff"),
+  fg: cssVar("--fg", "#ecebe6"), muted: cssVar("--muted", "#9b998f"),
+};
+const COLORS = [C.c1, C.c2, C.c3, C.c4, C.c5, C.c6];
+const FONT = cssVar("--font", "sans-serif");
+const MONO = cssVar("--mono", "monospace");
+const DPR = Math.min(2, devicePixelRatio || 1);
+const TAU = Math.PI * 2;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const rnd = (lo, hi) => lo + Math.random() * (hi - lo);
+const fmtN = (n) => Math.round(n).toLocaleString("en-US");
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+// Y just below the top-right control cluster, so scene content starts under the buttons.
+const belowControls = (ctx) => ctx.controls.offsetHeight + 20;
+const PHOTO = (i) => `_shared/img/photo-${i}.jpg`;
+const unmounted = () => new DOMException("Scene unmounted", "AbortError");
+const hex = (s) => ex.Color.fromHex(s);
+const vec = (x, y) => ex.vec(x, y);
 
-const game = new ex.Engine({
-  width: W, height: H,
-  displayMode: ex.DisplayMode.FitScreen,
-  backgroundColor: ex.Color.Transparent,
-  suppressPlayButton: true,
-  antialiasing: true,
-});
-
-// ScaleTo leaves a residual scale velocity behind, so zero it once the tween is done
-const settle = (a) => () => { a.get(ex.MotionComponent).scaleFactor = ex.vec(0, 0); };
-
-function pill(w, h, hex, r = 6) {
+function canvas2d(w, h, draw) {
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  draw(c.getContext("2d"), w, h);
+  return c;
+}
+// Six shaded balls in one 96x16 strip.
+function ballAtlas() {
+  return canvas2d(96, 16, (g) => COLORS.forEach((c, i) => {
+    const grd = g.createRadialGradient(i * 16 + 6, 6, 1, i * 16 + 8, 8, 8);
+    grd.addColorStop(0, "#ffffff");
+    grd.addColorStop(0.35, c);
+    grd.addColorStop(1, c);
+    g.fillStyle = grd;
+    g.beginPath();
+    g.arc(i * 16 + 8, 8, 7.5, 0, TAU);
+    g.fill();
+  }));
+}
+// Status line in the bottom-left corner; returns a setter that takes HTML.
+function readout(ctx) {
+  const el = document.createElement("div");
+  el.className = "ex-readout";
+  ctx.el.append(el);
+  return (html) => { el.innerHTML = html; };
+}
+async function fontsReady(ctx) {
+  await document.fonts.ready;
+  if (!ctx.active) throw unmounted();
+}
+function font(size, color, { bold = false, mono = false, align = ex.TextAlign.Left, base = ex.BaseAlign.Alphabetic, shadow = false } = {}) {
+  return new ex.Font({
+    family: mono ? MONO : FONT, size, unit: ex.FontUnit.Px, color: hex(color), bold, textAlign: align, baseAlign: base,
+    ...(shadow ? { shadow: { blur: 6, offset: vec(0, 2), color: ex.Color.fromRGB(0, 0, 0, 0.75) } } : {}),
+  });
+}
+function label(scene, text, x, y, f, z = 10) {
+  const l = new ex.Label({ text, pos: vec(x, y), font: f, z });
+  scene.add(l);
+  return l;
+}
+// Cached rounded pill with a glossy top band (the original breakout look).
+function pill(w, h, color, r = 6) {
   return new ex.Canvas({
-    width: w, height: h, cache: true,
-    draw: (ctx) => {
-      ctx.fillStyle = hex;
-      ctx.beginPath(); ctx.roundRect(0, 0, w, h, r); ctx.fill();
-      ctx.fillStyle = "rgba(255,255,255,.32)";
-      ctx.beginPath(); ctx.roundRect(3, 2, w - 6, h * 0.36, r / 2); ctx.fill();
+    width: w, height: h, cache: true, quality: DPR,
+    draw: (g) => {
+      g.fillStyle = color;
+      g.beginPath(); g.roundRect(0, 0, w, h, r); g.fill();
+      g.fillStyle = "rgba(255,255,255,.32)";
+      g.beginPath(); g.roundRect(3, 2, w - 6, h * 0.36, r / 2); g.fill();
     },
   });
 }
+// Shaded disc with a dark spot, so rolling is visible.
+function disc(r, color) {
+  return new ex.Canvas({
+    width: r * 2, height: r * 2, cache: true, quality: DPR,
+    draw: (g) => {
+      const grd = g.createRadialGradient(r * 0.7, r * 0.7, r * 0.1, r, r, r);
+      grd.addColorStop(0, "#ffffff"); grd.addColorStop(0.35, color); grd.addColorStop(1, color);
+      g.fillStyle = grd; g.beginPath(); g.arc(r, r, r - 0.5, 0, TAU); g.fill();
+      g.fillStyle = "rgba(0,0,0,.35)"; g.beginPath(); g.arc(r * 1.5, r, r * 0.2, 0, TAU); g.fill();
+    },
+  });
+}
+// Card background with optional decorations drawn in card-local pixels.
+function panel(w, h, draw) {
+  return new ex.Canvas({
+    width: w, height: h, cache: true, quality: DPR,
+    draw: (g) => {
+      g.fillStyle = "rgba(255,255,255,.035)"; g.strokeStyle = "rgba(255,255,255,.12)"; g.lineWidth = 1;
+      g.beginPath(); g.roundRect(0.5, 0.5, w - 1, h - 1, 12); g.fill(); g.stroke();
+      if (draw) draw(g);
+    },
+  });
+}
+// ScaleTo leaves a residual scale velocity behind, so zero it once the tween is done.
+const settle = (a) => () => { a.get(ex.MotionComponent).scaleFactor = vec(0, 0); };
+const fpsOf = (e) => Math.round(e.stats.currFrame.fps || 0);
 
-// walls glow frame
-const frame = new ex.Actor({ x: W / 2, y: H / 2, z: -5 });
-frame.graphics.use(new ex.Canvas({
-  width: W, height: H, cache: true,
-  draw: (ctx) => {
-    ctx.strokeStyle = "rgba(76,201,240,.35)"; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.roundRect(2, 2, W - 4, H + 40, 14); ctx.stroke();
+// ---------- one Excalibur engine per scene ----------
+// Each scene owns an Engine on its own canvas, sized to the box. A size change rebuilds it after a short
+// debounce; on unmount the engine is disposed and its WebGL context released.
+function engineIn(ctx, box, { options, build, start } = {}) {
+  let engine = null, canvas = null, teardown = null, w0 = 0, h0 = 0, timer = 0;
+  const size = () => [Math.max(1, Math.floor(box.clientWidth)), Math.max(1, Math.floor(box.clientHeight))];
+  function dispose() {
+    const e = engine;
+    if (!e) return;
+    engine = null;
+    if (teardown) teardown();
+    teardown = null;
+    const gl = e.graphicsContext.__gl;
+    e.stop();
+    e.dispose();
+    if (gl) gl.getExtension("WEBGL_lose_context")?.loseContext();
+    canvas.remove();
+  }
+  function create() {
+    dispose();
+    const [w, h] = size();
+    w0 = w; h0 = h;
+    canvas = document.createElement("canvas");
+    box.append(canvas);
+    const e = new ex.Engine({
+      canvasElement: canvas, width: w, height: h, displayMode: ex.DisplayMode.Fixed, pixelRatio: DPR,
+      backgroundColor: ex.Color.Transparent, enableCanvasTransparency: true, antialiasing: true,
+      suppressPlayButton: true, suppressConsoleBootMessage: true, grabWindowFocus: false,
+      // the default handler reports a fatal error when dispose releases the context on purpose
+      handleContextLost: () => {},
+      ...(options ? options(w, h) : {}),
+    });
+    engine = e;
+    teardown = build(e, w, h) || null;
+    Promise.resolve(start ? start(e) : e.start()).catch((err) => { if (engine === e) console.error(err); });
+    return e;
+  }
+  const ro = new ResizeObserver(() => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      if (!ctx.active || !engine) return;
+      const [w, h] = size();
+      if (w !== w0 || h !== h0) create();
+    }, 200);
+  });
+  ro.observe(box);
+  ctx.onCleanup(() => { ro.disconnect(); clearTimeout(timer); dispose(); });
+  create();
+  return { get engine() { return engine; }, rebuild: create };
+}
+// Smoothed frame timings from engine.stats (filled before "postframe" fires).
+function frameStats(e) {
+  const st = { upd: 0, drw: 0, dc: 0, contacts: 0 };
+  e.on("postframe", () => {
+    const f = e.stats.currFrame;
+    st.upd += (f.duration.update - st.upd) * 0.1;
+    st.drw += (f.duration.draw - st.drw) * 0.1;
+    st.dc = f.graphics.drawCalls;
+    st.contacts = f.physics.contacts.size;
+  });
+  return st;
+}
+
+// ---------- GLSL for scene 7 ----------
+const MAT_HEAD = `#version 300 es
+precision highp float;
+uniform sampler2D u_graphic;
+uniform float u_time_ms;
+uniform float u_amt;
+uniform vec2 u_size;
+in vec2 v_uv;
+out vec4 fragColor;
+float seconds() { return mod(u_time_ms, 100000.0) * 0.001; }
+`;
+const MATERIALS = [
+  { name: "波浪", api: "uv 正弦位移", src: `${MAT_HEAD}
+void main() {
+  float t = seconds();
+  vec2 uv = v_uv;
+  uv.x += sin(uv.y * 16.0 + t * 3.0) * 0.045 * u_amt;
+  uv.y += cos(uv.x * 12.0 + t * 2.2) * 0.03 * u_amt;
+  vec4 c = texture(u_graphic, clamp(uv, 0.0, 1.0));
+  c.rgb *= c.a;
+  fragColor = c;
+}` },
+  { name: "像素化", api: "u_size 對齊格子", src: `${MAT_HEAD}
+void main() {
+  vec2 cell = vec2(mix(1.0, 24.0, u_amt)) / max(u_size, vec2(1.0));
+  vec2 uv = (floor(v_uv / cell) + 0.5) * cell;
+  vec4 c = texture(u_graphic, u_amt < 0.02 ? v_uv : uv);
+  c.rgb *= c.a;
+  fragColor = c;
+}` },
+  { name: "色差掃光", api: "RGB 分離取樣", src: `${MAT_HEAD}
+void main() {
+  float t = seconds();
+  float off = 0.014 * u_amt;
+  vec4 c = texture(u_graphic, v_uv);
+  float r = texture(u_graphic, clamp(v_uv + vec2(off, 0.0), 0.0, 1.0)).r;
+  float b = texture(u_graphic, clamp(v_uv - vec2(off, 0.0), 0.0, 1.0)).b;
+  float sweep = fract(t * 0.35) * 1.8 - 0.4;
+  float band = smoothstep(0.12, 0.0, abs(v_uv.x + v_uv.y * 0.35 - sweep));
+  vec3 col = vec3(r, c.g, b) + band * 0.4 * u_amt;
+  fragColor = vec4(col * c.a, c.a);
+}` },
+  { name: "溶解", api: "雜訊 discard", src: `${MAT_HEAD}
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float noise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+void main() {
+  float t = seconds();
+  float n = noise(v_uv * 7.0) * 0.65 + noise(v_uv * 19.0) * 0.35;
+  float th = (0.5 - 0.5 * cos(t * 0.9)) * u_amt * 1.05;
+  if (n < th) discard;
+  vec4 c = texture(u_graphic, v_uv);
+  float edge = smoothstep(th + 0.07, th, n) * step(0.001, th);
+  c.rgb = mix(c.rgb, vec3(1.0, 0.55, 0.26), edge);
+  c.rgb *= c.a;
+  fragColor = c;
+}` },
+];
+const POST_HEAD = `#version 300 es
+precision highp float;
+uniform sampler2D u_image;
+uniform vec2 u_resolution;
+in vec2 v_uv;
+out vec4 fragColor;
+`;
+const POSTS = [
+  null,
+  { name: "CRT", src: `${POST_HEAD}
+void main() {
+  vec2 cc = v_uv - 0.5;
+  vec2 uv = 0.5 + cc * (1.0 + 0.14 * dot(cc, cc));
+  vec4 c = texture(u_image, uv);
+  c.rgb *= 0.8 + 0.2 * sin(uv.y * u_resolution.y * 1.5708);
+  c.rgb *= 1.0 - 0.7 * dot(cc, cc);
+  if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) c = vec4(0.0);
+  fragColor = c;
+}` },
+  { name: "暈影", src: `${POST_HEAD}
+void main() {
+  vec4 c = texture(u_image, v_uv);
+  float d = length((v_uv - 0.5) * vec2(u_resolution.x / max(u_resolution.y, 1.0), 1.0));
+  c.rgb *= smoothstep(0.95, 0.3, d);
+  c.rgb += vec3(0.05, 0.02, 0.0) * c.a;
+  fragColor = c;
+}` },
+  { name: "灰階", src: `${POST_HEAD}
+void main() {
+  vec4 c = texture(u_image, v_uv);
+  float l = dot(c.rgb, vec3(0.299, 0.587, 0.114));
+  fragColor = vec4(vec3(l), c.a);
+}` },
+];
+// A post processor wraps a ScreenShader; addPostProcessor() calls initialize() each time it is added.
+function postProcessor(src) {
+  return {
+    shader: null,
+    initialize(gc) { if (!this.shader) this.shader = new ex.ScreenShader(gc, src); },
+    getShader() { return this.shader.getShader(); },
+    getLayout() { return this.shader.getLayout(); },
+  };
+}
+
+Showcase.run({ scenes: [
+  {
+    id: "breakout", title: "霓虹打磚塊",
+    api: "new ex.Engine({ resolution, viewport })・ex.Actor + CollisionType・on('collisionstart')・actions.scaleTo().fade().die()・ParticleEmitter・camera.shake()",
+    desc: "原版小遊戲：擋板、球和磚塊都是 Actor，球是 Passive 碰撞體，靠 collisionstart 事件判斷撞到誰，再依 mtv 決定反彈方向。磚塊破掉時用動作佇列放大、淡出再移除，同時噴粒子並讓攝影機震動。",
+    hint: "滑鼠或手指移動擋板，← → 也可以・空白鍵或點擊發球",
+    async mount(ctx) {
+      ctx.el.classList.add("ex-neon");
+      ctx.html(`<div class="ex-box ex-center"></div>
+        <div class="ex-ov"><div class="ex-ov-card"><h1></h1><p class="sub"></p><p class="ex-blink"></p></div></div>`);
+      await fontsReady(ctx);
+      const box = ctx.$(".ex-box"), ov = ctx.$(".ex-ov");
+      const overlay = (title, sub, go) => {
+        ov.querySelector("h1").textContent = title;
+        ov.querySelector(".sub").textContent = sub;
+        ov.querySelector(".ex-blink").textContent = go;
+        ov.classList.remove("hide");
+      };
+      let act = () => {};
+      // clicks on the letterbox around the canvas also serve
+      ctx.on(box, "pointerdown", (e) => { if (e.target === box) act(); });
+      engineIn(ctx, box, {
+        // portrait boxes get a taller board with fewer columns; the board is scaled to fit the box
+        options: (bw, bh) => {
+          const portrait = bh > bw * 1.1, W = portrait ? 480 : 720, H = portrait ? 700 : 480, z = Math.min(bw / W, bh / H);
+          return { resolution: { width: W, height: H }, viewport: { width: Math.floor(W * z), height: Math.floor(H * z) }, pixelRatio: Math.min(3, DPR * Math.max(1, z)) };
+        },
+        build(game) {
+          const { width: W, height: H } = game.screen.resolution;
+          const PORTRAIT = H > W;
+          const BRICKS = [C.c3, C.c5, C.c1, C.c4, C.c2, C.c6];
+          const frame = new ex.Actor({ x: W / 2, y: H / 2, z: -5 });
+          frame.graphics.use(new ex.Canvas({
+            width: W, height: H, cache: true,
+            draw: (g) => {
+              g.strokeStyle = "rgba(76,201,240,.35)"; g.lineWidth = 3;
+              g.beginPath(); g.roundRect(2, 2, W - 4, H + 40, 14); g.stroke();
+            },
+          }));
+          game.add(frame);
+          const paddle = new ex.Actor({ x: W / 2, y: H - (PORTRAIT ? 84 : 34), width: 112, height: 14, collisionType: ex.CollisionType.Fixed });
+          paddle.graphics.use(pill(112, 14, C.c1, 7));
+          game.add(paddle);
+          const ball = new ex.Actor({ x: W / 2, y: H - 60, radius: 8, collisionType: ex.CollisionType.Passive });
+          ball.graphics.use(new ex.Circle({ radius: 8, color: ex.Color.White }));
+          game.add(ball);
+          ball.addChild(new ex.ParticleEmitter({
+            emitterType: ex.EmitterType.Circle, radius: 3, emitRate: 90, isEmitting: true,
+            particle: { life: 320, minSpeed: 0, maxSpeed: 12, beginColor: hex(C.c2), endColor: hex(C.c6), startSize: 9, endSize: 1, fade: true, opacity: 0.6 },
+          }));
+          const burst = new ex.ParticleEmitter({
+            emitterType: ex.EmitterType.Circle, radius: 14, isEmitting: false,
+            particle: { life: 700, minSpeed: 60, maxSpeed: 260, startSize: 7, endSize: 1, fade: true, acc: vec(0, 500), beginColor: ex.Color.White, endColor: ex.Color.White },
+          });
+          game.add(burst);
+          const scoreLabel = new ex.Label({ text: "", pos: vec(18, 30), font: font(18, C.c1, { bold: true }) });
+          const livesLabel = new ex.Label({ text: "", pos: vec(W - 18, 30), font: font(18, C.c3, { bold: true, align: ex.TextAlign.Right }) });
+          game.add(scoreLabel);
+          game.add(livesLabel);
+
+          let bricks = new Set();
+          let mode = "demo"; // demo | ready | play | over
+          let score = 0, lives = 3, level = 1, speed = 360, flipped = false, targetX = W / 2;
+          function buildBricks() {
+            for (const b of bricks) b.kill();
+            bricks = new Set();
+            const cols = PORTRAIT ? 7 : 10, rows = 6, gap = 6, bh = 20, bw = Math.floor((W - 40 - (cols - 1) * gap) / cols);
+            const x0 = (W - (cols * bw + (cols - 1) * gap)) / 2 + bw / 2;
+            for (let r = 0; r < rows; r++) {
+              for (let c = 0; c < cols; c++) {
+                const b = new ex.Actor({ x: x0 + c * (bw + gap), y: 70 + r * (bh + gap), width: bw, height: bh, collisionType: ex.CollisionType.Fixed });
+                b.graphics.use(pill(bw, bh, BRICKS[r]));
+                b.color0 = BRICKS[r];
+                b.scale = vec(0.2, 0.2);
+                b.actions.delay((r * cols + c) * 12).scaleTo({ scale: vec(1, 1), duration: 220 }).callMethod(settle(b));
+                bricks.add(b);
+                game.add(b);
+              }
+            }
+          }
+          function hud() {
+            scoreLabel.text = mode === "demo" ? "展示模式" : `分數 ${score}　第 ${level} 關`;
+            livesLabel.text = mode === "demo" ? "" : "♥".repeat(lives);
+          }
+          function serve() { ball.pos = vec(paddle.pos.x, paddle.pos.y - 22); ball.vel = vec(0, 0); }
+          function launch() {
+            const a = (Math.random() - 0.5) * 0.9;
+            ball.vel = vec(Math.sin(a) * speed, -Math.cos(a) * speed);
+          }
+          function newGame() {
+            score = 0; lives = 3; level = 1; speed = 360;
+            buildBricks();
+            mode = "ready";
+            serve();
+            ov.classList.add("hide");
+            hud();
+          }
+          function action() {
+            if (mode === "demo" || mode === "over") newGame();
+            else if (mode === "ready") { mode = "play"; launch(); }
+          }
+          act = action;
+          function breakBrick(b) {
+            bricks.delete(b);
+            b.body.collisionType = ex.CollisionType.PreventCollision;
+            burst.pos = b.pos.clone();
+            burst.particle.beginColor = hex(b.color0);
+            burst.particle.endColor = hex(b.color0);
+            burst.emitParticles(22);
+            b.actions.clearActions();
+            b.actions.scaleTo({ scale: vec(1.35, 1.6), duration: 70 }).callMethod(settle(b)).fade(0, 140).die();
+            if (mode !== "demo") score += 10 * level;
+            speed = Math.min(620, speed + 3);
+            ball.vel = ball.vel.normalize().scale(speed);
+            game.currentScene.camera.shake(3, 3, 90);
+            hud();
+            if (bricks.size === 0) {
+              if (mode === "demo") { buildBricks(); return; }
+              level++;
+              speed = 360 + level * 30;
+              buildBricks();
+              mode = "ready";
+              serve();
+            }
+          }
+          ball.on("collisionstart", (ev) => {
+            const other = ev.other.owner;
+            if (other === paddle) {
+              const a = clamp((ball.pos.x - paddle.pos.x) / 56, -1, 1) * 1.05;
+              ball.vel = vec(Math.sin(a) * speed, -Math.abs(Math.cos(a) * speed));
+              paddle.actions.clearActions();
+              paddle.scale = vec(1.15, 0.7);
+              paddle.actions.scaleTo({ scale: vec(1, 1), duration: 160 }).callMethod(settle(paddle));
+              return;
+            }
+            if (bricks.has(other)) {
+              breakBrick(other);
+              if (!flipped) {
+                const n = ev.contact.mtv;
+                if (Math.abs(n.x) > Math.abs(n.y)) ball.vel.x *= -1; else ball.vel.y *= -1;
+                flipped = true;
+              }
+            }
+          });
+          const director = new ex.Actor();
+          director.onPreUpdate = (engine, ms) => {
+            flipped = false;
+            const kb = engine.input.keyboard;
+            const dir = (kb.isHeld(ex.Keys.Right) || kb.isHeld(ex.Keys.D) ? 1 : 0) - (kb.isHeld(ex.Keys.Left) || kb.isHeld(ex.Keys.A) ? 1 : 0);
+            if (dir) targetX += dir * 620 * (ms / 1000);
+            if (mode === "demo") targetX = ball.pos.x + Math.sin(performance.now() / 400) * 30;
+            targetX = clamp(targetX, 56, W - 56);
+            paddle.pos.x += (targetX - paddle.pos.x) * Math.min(1, ms / 40);
+            if (mode === "ready") serve();
+            const r = 8;
+            if (ball.pos.x < r) { ball.pos.x = r; ball.vel.x = Math.abs(ball.vel.x); }
+            if (ball.pos.x > W - r) { ball.pos.x = W - r; ball.vel.x = -Math.abs(ball.vel.x); }
+            if (ball.pos.y < r) { ball.pos.y = r; ball.vel.y = Math.abs(ball.vel.y); }
+            if (ball.pos.y > H + 20) {
+              if (mode === "demo") { serve(); launch(); return; }
+              lives--;
+              engine.currentScene.camera.shake(10, 10, 300);
+              hud();
+              if (lives <= 0) {
+                mode = "over";
+                ball.vel = vec(0, 0);
+                ball.pos = vec(W / 2, H + 60);
+                overlay("遊戲結束", `分數 ${score}，撐到第 ${level} 關`, "按任意鍵或點擊再玩一次");
+              } else {
+                mode = "ready";
+                serve();
+              }
+            }
+          };
+          game.add(director);
+          game.input.pointers.primary.on("move", (e) => { targetX = e.worldPos.x; });
+          game.input.pointers.primary.on("down", (e) => { targetX = e.worldPos.x; action(); });
+          game.input.keyboard.on("press", (e) => {
+            if (mode === "demo" || mode === "over" || e.key === ex.Keys.Space || e.key === ex.Keys.Up) action();
+          });
+          overlay("霓虹打磚塊", "擊破全部磚塊，球打在擋板邊緣會斜飛", "按任意鍵或點擊開始");
+          buildBricks();
+          hud();
+          launch();
+        },
+      });
+    },
   },
-}));
-game.add(frame);
+  {
+    id: "physics", title: "物理求解器",
+    api: "physics: { solver: SolverStrategy.Realistic | Arcade, gravity }・CollisionType.Active / Fixed・PolygonCollider・new ex.Timer()・showDebug()",
+    desc: "同一組箱子、圓球和三角形，切換 Realistic 真實求解器（會旋轉、摩擦、疊得穩）與 Arcade 街機求解器（只沿軸推開、不旋轉）。打開碰撞體可看到幾何形狀、接觸點和速度向量。",
+    hint: "點畫面丟出新物體・切換求解器比較堆疊行為",
+    async mount(ctx) {
+      ctx.el.classList.add("ex-studio");
+      ctx.html(`<div class="ex-box"></div>`);
+      const SOLVERS = ["Realistic 真實", "Arcade 街機"];
+      let solver = 0, debug = false, eng = null, st = null;
+      ctx.group(SOLVERS, 0, (i) => { solver = i; if (eng) eng.rebuild(); });
+      ctx.toggle("顯示碰撞體", false, (v) => { debug = v; if (eng && eng.engine) eng.engine.showDebug(v); });
+      ctx.button("重新堆疊", () => eng.rebuild());
+      const show = readout(ctx);
+      let bodies = [];
+      eng = engineIn(ctx, ctx.$(".ex-box"), {
+        options: () => ({ physics: { solver: solver ? ex.SolverStrategy.Arcade : ex.SolverStrategy.Realistic, gravity: vec(0, 900) } }),
+        build(e, w, h) {
+          st = frameStats(e);
+          const d = e.debug;
+          d.entity.showId = false; d.entity.showName = false; d.transform.showPosition = false; d.graphics.showBounds = false;
+          d.collider.showBounds = false; d.collider.showGeometry = true; d.collider.geometryColor = hex(C.c2);
+          d.physics.showCollisionContacts = true; d.physics.collisionContactColor = hex(C.c1); d.physics.contactSize = 6;
+          e.showDebug(debug);
+          const s = clamp(Math.round(w / 26), 18, 30), Fixed = ex.CollisionType.Fixed, Active = ex.CollisionType.Active;
+          const ground = new ex.Actor({ x: w / 2, y: h - 14, width: w + 400, height: 28, collisionType: Fixed });
+          ground.graphics.use(new ex.Rectangle({ width: w, height: 28, color: hex("#2a3040") }));
+          e.add(ground);
+          for (const x of [-20, w + 20]) e.add(new ex.Actor({ x, y: h / 2 - h, width: 40, height: h * 4, collisionType: Fixed }));
+          const plankW = Math.round(w * 0.26);
+          const plank = new ex.Actor({ x: w * 0.2, y: h * 0.5, width: plankW, height: 14, rotation: 0.32, collisionType: Fixed });
+          plank.graphics.use(pill(plankW, 14, C.c6, 7));
+          e.add(plank);
+          const barW = Math.round(Math.min(w * 0.22, 200));
+          const bar = new ex.Actor({ x: w * 0.8, y: h * 0.56, width: barW, height: 14, collisionType: Fixed });
+          bar.graphics.use(pill(barW, 14, C.c5, 7));
+          bar.angularVelocity = 1.4;
+          e.add(bar);
+          bodies = [];
+          const spawn = (kind, x, y, color) => {
+            let a;
+            if (kind === 0) {
+              a = new ex.Actor({ x, y, width: s, height: s, collisionType: Active });
+              a.graphics.use(pill(s, s, color, 5));
+            } else if (kind === 1) {
+              a = new ex.Actor({ x, y, radius: s / 2, collisionType: Active });
+              a.graphics.use(disc(s / 2, color));
+            } else {
+              const r = s * 0.62, pts = [vec(0, -r), vec(r, r), vec(-r, r)];
+              a = new ex.Actor({ x, y, collider: new ex.PolygonCollider({ points: pts }), collisionType: Active });
+              a.graphics.use(new ex.Polygon({ points: pts, color: hex(color) }));
+            }
+            a.rotation = kind ? rnd(0, TAU) : 0;
+            e.add(a);
+            bodies.push(a);
+            // keep the pile bounded: the oldest body fades out and is removed
+            while (bodies.length > 60) bodies.shift().actions.fade(0, 300).die();
+          };
+          // pyramid of boxes in the middle
+          const base = clamp(Math.floor((w * 0.32) / s), 4, 8);
+          for (let r = 0; r < base; r++) {
+            for (let i = 0; i < base - r; i++) spawn(0, w / 2 + (i - (base - r - 1) / 2) * (s + 1), h - 28 - s / 2 - r * s - 0.5, COLORS[r % 6]);
+          }
+          const timer = new ex.Timer({ interval: 900, repeats: true, action: () => spawn(Math.floor(rnd(0, 3)), rnd(w * 0.3, w * 0.7), -s, pick(COLORS)) });
+          e.add(timer);
+          timer.start();
+          e.input.pointers.primary.on("down", (pe) => spawn(Math.floor(rnd(0, 3)), pe.worldPos.x, pe.worldPos.y, pick(COLORS)));
+          const sweeper = new ex.Actor();
+          sweeper.onPreUpdate = () => {
+            bodies = bodies.filter((b) => {
+              if (b.pos.y < h + 200) return true;
+              b.kill();
+              return false;
+            });
+          };
+          e.add(sweeper);
+        },
+      });
+      ctx.interval(() => {
+        const e = eng.engine;
+        if (!e || !st) return;
+        show(`求解器 <b>${SOLVERS[solver].split(" ")[0]}</b>・剛體 <b>${bodies.length}</b>・接觸 <b>${st.contacts}</b>・更新 <b>${st.upd.toFixed(1)}</b> ms・<b>${fpsOf(e)}</b> FPS`);
+      }, 250);
+    },
+  },
+  {
+    id: "actions", title: "動作佇列",
+    api: "actions.moveTo({ pos, duration, easing })・repeatForever()・new ParallelActions([...])・curveTo({ controlPoints, mode })・follow() / meet()・engine.timescale",
+    desc: "每個 Actor 都有一條 actions 動作佇列，依序執行移動、旋轉、縮放、等待和回呼。四張卡片分別比較緩動函式、依序與並行、貝茲曲線的等速與原始參數模式，以及跟隨與追擊。",
+    hint: "拖動時間倍率讓全部動作變慢或變快・按重播從頭開始",
+    async mount(ctx) {
+      ctx.html(`<div class="ex-box"></div>`);
+      let eng = null, timescale = 1;
+      ctx.slider("時間倍率", { min: 0.25, max: 2, step: 0.05, value: 1, format: (v) => `${v.toFixed(2)}×` }, (v) => {
+        timescale = v;
+        if (eng && eng.engine) eng.engine.timescale = v;
+      });
+      ctx.button("重播", () => eng.rebuild());
+      const show = readout(ctx);
+      await fontsReady(ctx);
+      eng = engineIn(ctx, ctx.$(".ex-box"), {
+        build(e, w, h) {
+          e.timescale = timescale;
+          const top = belowControls(ctx), bottom = h - 46, pad = 12;
+          const cols = w >= 960 ? 4 : 2, rows = 4 / cols;
+          const cw = (w - pad * (cols + 1)) / cols, ch = (bottom - top - pad * (rows - 1)) / rows;
+          const wide = cw >= 230 && ch >= 180;
+          const TITLES = [["緩動函式", "moveTo({ easing })"], ["依序與並行", "ParallelActions"], ["貝茲曲線", "curveTo({ mode })"], ["跟隨與追擊", "follow() / meet()"]];
+          const dot = (x, y, r, color, z = 3) => {
+            const a = new ex.Actor({ x, y, z });
+            a.graphics.use(new ex.Circle({ radius: r, color: hex(color) }));
+            e.add(a);
+            return a;
+          };
+          const cards = [0, 1, 2, 3].map((i) => {
+            const x = pad + (i % cols) * (cw + pad), y = top + Math.floor(i / cols) * (ch + pad);
+            return { x, y, w: cw, h: ch, x0: x + 14, x1: x + cw - 14, y0: y + (wide ? 46 : 32), y1: y + ch - 12 };
+          });
+          const card = (c, i, deco) => {
+            const a = new ex.Actor({ x: c.x + c.w / 2, y: c.y + c.h / 2, z: -5 });
+            a.graphics.use(panel(Math.round(c.w), Math.round(c.h), deco && ((g) => { g.translate(-c.x, -c.y); deco(g); })));
+            e.add(a);
+            label(e, TITLES[i][0], c.x + 14, c.y + 22, font(13, C.fg, { bold: true }));
+            if (wide) label(e, TITLES[i][1], c.x + 14, c.y + 38, font(10.5, C.muted, { mono: true }));
+          };
 
-const paddle = new ex.Actor({ x: W / 2, y: H - (PORTRAIT ? 84 : 34), width: 112, height: 14, collisionType: ex.CollisionType.Fixed });
-paddle.graphics.use(pill(112, 14, "#f7df1e", 7));
-game.add(paddle);
+          // 1. easing lanes: the same moveTo() with four easing functions
+          const EASE = [["linear", ex.linear], ["easeInOutCubic", ex.easeInOutCubic], ["easeOutBack", ex.easeOutBack], ["easeOutBounce", ex.easeOutBounce]];
+          const c1 = cards[0], laneH = (c1.y1 - c1.y0) / 4, lx0 = c1.x0 + 6, lx1 = c1.x1 - 18;
+          card(c1, 0, (g) => {
+            g.strokeStyle = "rgba(255,255,255,.14)"; g.lineWidth = 2;
+            for (let i = 0; i < 4; i++) {
+              const ly = c1.y0 + (i + 0.62) * laneH;
+              g.beginPath(); g.moveTo(lx0, ly); g.lineTo(lx1, ly); g.stroke();
+            }
+          });
+          EASE.forEach(([name, fn], i) => {
+            const ly = c1.y0 + (i + 0.62) * laneH;
+            label(e, name, c1.x0, ly - 8, font(9.5, C.muted, { mono: true }));
+            const a = dot(lx0, ly, 5, COLORS[i]);
+            a.actions.repeatForever((q) => q.delay(300).moveTo({ pos: vec(lx1, ly), duration: 1400, easing: fn }).delay(500)
+              .moveTo({ pos: vec(lx0, ly), duration: 1400, easing: fn }).delay(200));
+          });
 
-const ball = new ex.Actor({ x: W / 2, y: H - 60, radius: 8, collisionType: ex.CollisionType.Passive });
-ball.graphics.use(new ex.Circle({ radius: 8, color: ex.Color.White }));
-game.add(ball);
+          // 2. sequence vs parallel: both loops last 2700 ms
+          const c2 = cards[1], my = (c2.y0 + c2.y1) / 2 - 6, sq = Math.min(c2.w * 0.15, (c2.y1 - c2.y0 - 18) / 2.3);
+          card(c2, 1);
+          const square = (x, color) => {
+            const a = new ex.Actor({ x, y: my, z: 3 });
+            a.graphics.use(pill(Math.round(sq), Math.round(sq), color, 4));
+            e.add(a);
+            return a;
+          };
+          const seq = square(c2.x + c2.w * 0.28, C.c2), par = square(c2.x + c2.w * 0.72, C.c3);
+          label(e, "依序", seq.pos.x, c2.y1 - 2, font(11, C.muted, { align: ex.TextAlign.Center }));
+          label(e, "並行", par.pos.x, c2.y1 - 2, font(11, C.muted, { align: ex.TextAlign.Center }));
+          seq.actions.repeatForever((q) => q.rotateBy({ angleRadiansOffset: Math.PI / 2, duration: 600 }).scaleTo({ scale: vec(1.5, 1.5), duration: 600 }).callMethod(settle(seq))
+            .rotateBy({ angleRadiansOffset: Math.PI / 2, duration: 600 }).scaleTo({ scale: vec(1, 1), duration: 600 }).callMethod(settle(seq)).delay(300));
+          const both = (s) => new ex.ParallelActions([
+            new ex.RotateByWithOptions(par, { angleRadiansOffset: Math.PI / 2, duration: 600 }),
+            new ex.ScaleToWithOptions(par, { scale: vec(s, s), duration: 600 }),
+          ]);
+          par.actions.repeatForever((q) => q.runAction(both(1.5)).callMethod(settle(par)).runAction(both(1)).callMethod(settle(par)).delay(1500));
 
-const trail = new ex.ParticleEmitter({
-  emitterType: ex.EmitterType.Circle, radius: 3, emitRate: 90, isEmitting: true,
-  particle: { life: 320, minSpeed: 0, maxSpeed: 12, beginColor: ex.Color.fromHex("#4cc9f0"), endColor: ex.Color.fromHex("#9d8cff"),
-    startSize: 9, endSize: 1, fade: true, opacity: 0.6 },
-});
-ball.addChild(trail);
+          // 3. one cubic curve, two parameterisations: 'uniform' keeps constant speed, 'dynamic' follows t
+          const c3 = cards[2], L = c3.x1 - c3.x0 - 12, A = (c3.y1 - c3.y0) * 0.16;
+          const lanes = [["uniform", c3.y0 + (c3.y1 - c3.y0) * 0.27, C.c4], ["dynamic", c3.y0 + (c3.y1 - c3.y0) * 0.72, C.c5]].map(([mode, ly, color]) => {
+            const s = vec(c3.x0 + 6, ly);
+            return { mode, color, s, p1: vec(s.x + L * 0.04, ly - A * 2.5), p2: vec(s.x + L * 0.3, ly + A * 2.5), end: vec(s.x + L, ly) };
+          });
+          card(c3, 2, (g) => {
+            g.lineWidth = 2; g.setLineDash([4, 5]);
+            for (const ln of lanes) {
+              g.strokeStyle = "rgba(255,255,255,.18)";
+              g.beginPath(); g.moveTo(ln.s.x, ln.s.y); g.bezierCurveTo(ln.p1.x, ln.p1.y, ln.p2.x, ln.p2.y, ln.end.x, ln.end.y); g.stroke();
+            }
+          });
+          for (const ln of lanes) {
+            label(e, ln.mode, c3.x1, ln.s.y - A - 4, font(9.5, C.muted, { mono: true, align: ex.TextAlign.Right }));
+            const comet = dot(ln.s.x, ln.s.y, 5, ln.color, 4);
+            comet.addChild(new ex.ParticleEmitter({
+              emitterType: ex.EmitterType.Circle, radius: 1, emitRate: 70, isEmitting: true,
+              particle: { life: 450, minSpeed: 0, maxSpeed: 6, beginColor: hex(ln.color), endColor: hex(C.c6), startSize: 6, endSize: 1, fade: true, opacity: 0.7 },
+            }));
+            // flash() builds its material from scene.engine, which only exists once the actor is initialized
+            comet.onInitialize = () => comet.actions.repeatForever((q) => q.curveTo({ controlPoints: [ln.p1, ln.p2, ln.end], duration: 2200, mode: ln.mode })
+              .flash(ex.Color.White, 300).delay(250).callMethod(() => { comet.pos = ln.s.clone(); }).delay(150));
+          }
 
-const burst = new ex.ParticleEmitter({
-  emitterType: ex.EmitterType.Circle, radius: 14, isEmitting: false,
-  particle: { life: 700, minSpeed: 60, maxSpeed: 260, startSize: 7, endSize: 1, fade: true, acc: ex.vec(0, 500),
-    beginColor: ex.Color.White, endColor: ex.Color.White },
-});
-game.add(burst);
+          // 4. follow keeps a distance behind the leader; meet chases it down, blinks and starts over
+          const c4 = cards[3], rx0 = c4.x0 + 14, rx1 = c4.x1 - 14, ry0 = c4.y0 + 12, ry1 = c4.y1 - 14;
+          const corners = [vec(rx0, ry0), vec(rx1, ry0), vec(rx1, ry1), vec(rx0, ry1)], SIDE = 1100;
+          card(c4, 3, (g) => {
+            g.strokeStyle = "rgba(255,255,255,.12)"; g.lineWidth = 1; g.setLineDash([3, 4]);
+            g.strokeRect(rx0, ry0, rx1 - rx0, ry1 - ry0);
+          });
+          const tag = (a, text) => a.addChild(new ex.Label({ text, pos: vec(0, -10), font: font(10, C.fg, { align: ex.TextAlign.Center }) }));
+          const leader = dot(rx0, ry0, 7, C.c1, 5);
+          tag(leader, "領頭");
+          leader.actions.repeatForever((q) => corners.slice(1).concat(corners[0]).forEach((p) => q.moveTo({ pos: p, duration: SIDE })));
+          const follower = dot(rx0 - 30, ry0, 6, C.c2, 4);
+          tag(follower, "跟隨");
+          follower.actions.follow(leader, 34);
+          const home = vec((rx0 + rx1) / 2, (ry0 + ry1) / 2);
+          const chaser = dot(home.x, home.y, 6, C.c3, 4);
+          tag(chaser, "追擊");
+          const chase = (1.5 * Math.max(rx1 - rx0, ry1 - ry0)) / (SIDE / 1000);
+          chaser.actions.repeatForever((q) => q.meet(leader, chase).blink(90, 90, 3).callMethod(() => { chaser.pos = home.clone(); }).delay(700));
+        },
+      });
+      ctx.interval(() => {
+        const e = eng.engine;
+        if (!e) return;
+        show(`時間倍率 <b>${e.timescale.toFixed(2)}×</b>・Actor <b>${e.currentScene.actors.length}</b>・<b>${fpsOf(e)}</b> FPS`);
+      }, 250);
+    },
+  },
+  {
+    id: "particles", title: "粒子",
+    api: "new ParticleEmitter({ emitRate, particle })・new GpuParticleEmitter({ maxParticles })・emitParticles(n)・new ex.Timer()",
+    desc: "同一組粒子參數同時交給兩種發射器：CPU 版每顆粒子都是場景裡的 Entity，由 JS 逐顆更新；GPU 版把整批粒子放進 WebGL 緩衝區，由著色器模擬。拉高發射率，比較兩邊的數量與更新、繪製時間。",
+    hint: "點畫面把發射器移過去（煙火則在該處炸開）・拉高發射率比較 CPU 與 GPU",
+    async mount(ctx) {
+      ctx.el.classList.add("ex-studio");
+      ctx.html(`<div class="ex-box"></div>`);
+      const PRESETS = ["噴泉", "火焰", "煙火"];
+      let preset = 0, rate = 300, eng = null, st = null, emitters = [], life = 1000;
+      ctx.select("樣式", PRESETS.map((p, i) => ({ value: String(i), label: p })), "0", (v) => { preset = Number(v); if (eng) eng.rebuild(); });
+      ctx.slider("發射率", { min: 50, max: 2000, step: 50, value: rate, format: (v) => `${v}/秒` }, (v) => {
+        rate = v;
+        if (preset !== 2) for (const em of emitters) em.emitRate = v;
+      });
+      const show = readout(ctx);
+      const burstSize = () => clamp(Math.round(rate / 5), 10, 400);
+      await fontsReady(ctx);
+      eng = engineIn(ctx, ctx.$(".ex-box"), {
+        build(e, w, h) {
+          st = frameStats(e);
+          const top = belowControls(ctx), bottom = h - 46, rh = bottom - top;
+          const stack = rh > w * 1.05;
+          const halves = stack
+            ? [{ x: 0, y: top, w, h: rh / 2 }, { x: 0, y: top + rh / 2, w, h: rh / 2 }]
+            : [{ x: 0, y: top, w: w / 2, h: rh }, { x: w / 2, y: top, w: w / 2, h: rh }];
+          const div = new ex.Actor({ x: stack ? w / 2 : w / 2, y: stack ? top + rh / 2 : top + rh / 2, z: -1 });
+          div.graphics.use(new ex.Rectangle({ width: stack ? w - 40 : 1, height: stack ? 1 : rh - 20, color: ex.Color.fromRGB(255, 255, 255, 0.14) }));
+          e.add(div);
+          const hh = halves[0].h;
+          const conf = () => {
+            if (preset === 0) {
+              const acc = 420, vmax = Math.sqrt(2 * acc * (hh - 60) * 0.85);
+              life = Math.round((2000 * vmax) / acc);
+              return { emitterType: ex.EmitterType.Circle, radius: 3, particle: { life, minSpeed: vmax * 0.85, maxSpeed: vmax, minAngle: -Math.PI / 2 - 0.28, maxAngle: -Math.PI / 2 + 0.28,
+                acc: vec(0, acc), beginColor: hex(C.c2), endColor: hex(C.c6), startSize: 5, endSize: 2, fade: true } };
+            }
+            if (preset === 1) {
+              life = 1100;
+              return { emitterType: ex.EmitterType.Circle, radius: 16, particle: { life, minSpeed: 20, maxSpeed: 80, minAngle: -Math.PI / 2 - 0.5, maxAngle: -Math.PI / 2 + 0.5,
+                acc: vec(0, -160), beginColor: hex(C.c1), endColor: hex(C.c3), startSize: 16, endSize: 2, fade: true } };
+            }
+            life = 1300;
+            return { emitterType: ex.EmitterType.Circle, radius: 6, particle: { life, minSpeed: 60, maxSpeed: 240, minAngle: 0, maxAngle: TAU,
+              acc: vec(0, 160), beginColor: hex(C.c1), endColor: hex(C.c3), startSize: 5, endSize: 1, fade: true } };
+          };
+          const homes = halves.map((r) => vec(r.x + r.w / 2, preset === 1 ? r.y + r.h - 30 : r.y + r.h - 12));
+          emitters = halves.map((r, i) => {
+            const opts = { x: homes[i].x, y: homes[i].y, emitRate: rate, isEmitting: preset !== 2, ...conf() };
+            const em = i === 0 ? new ex.ParticleEmitter(opts) : new ex.GpuParticleEmitter({ ...opts, maxParticles: 20000 });
+            e.add(em);
+            label(e, i === 0 ? "CPU 粒子（每顆是 Entity）" : "GPU 粒子（著色器模擬）", r.x + r.w / 2, r.y + 18, font(13, C.fg, { bold: true, align: ex.TextAlign.Center }));
+            label(e, i === 0 ? "ParticleEmitter" : "GpuParticleEmitter", r.x + r.w / 2, r.y + 34, font(10.5, C.muted, { mono: true, align: ex.TextAlign.Center }));
+            return em;
+          });
+          const pop = (em, r, p) => {
+            em.pos = p || vec(rnd(r.x + r.w * 0.2, r.x + r.w * 0.8), rnd(r.y + r.h * 0.3, r.y + r.h * 0.65));
+            em.emitParticles(burstSize());
+          };
+          if (preset === 2) {
+            const timer = new ex.Timer({ interval: 650, repeats: true, action: () => emitters.forEach((em, i) => pop(em, halves[i])) });
+            e.add(timer);
+            timer.start();
+          }
+          e.input.pointers.primary.on("down", (pe) => {
+            const p = pe.worldPos, i = halves.findIndex((r) => p.x >= r.x && p.x < r.x + r.w && p.y >= r.y && p.y < r.y + r.h);
+            if (i < 0) return;
+            const em = emitters[i];
+            if (preset === 2) { pop(em, halves[i], p.clone()); return; }
+            em.actions.clearActions();
+            em.vel = vec(0, 0);
+            em.pos = p.clone();
+            em.actions.delay(1200).moveTo({ pos: homes[i], duration: 700, easing: ex.easeInOutCubic });
+          });
+        },
+      });
+      ctx.interval(() => {
+        const e = eng.engine;
+        if (!e || !st) return;
+        let cpu = 0;
+        for (const ent of e.currentScene.world.entities) if (ent instanceof ex.Particle) cpu++;
+        // the GPU emitter keeps no readable count, so estimate it from rate and lifetime
+        const gpu = preset === 2 ? burstSize() * Math.ceil(life / 650) : Math.min(20000, (rate * life) / 1000);
+        show(`CPU 粒子 <b>${fmtN(cpu)}</b>・GPU 粒子約 <b>${fmtN(gpu)}</b>・更新 <b>${st.upd.toFixed(1)}</b> ms・繪製 <b>${st.drw.toFixed(1)}</b> ms・<b>${fpsOf(e)}</b> FPS`);
+      }, 250);
+    },
+  },
+  {
+    id: "tilemap", title: "TileMap 與攝影機",
+    api: "new TileMap({ tileWidth, columns, rows })・tile.solid / addGraphic()・camera.strategy.lockToActor / elasticToActor / radiusAroundActor・limitCameraBounds()・ParallaxComponent",
+    desc: "地形是一張 TileMap，標成 solid 的格子會合併成碰撞體，畫面外的格子不繪製。角色自動往右跑，遇到坑或台階就跳；攝影機可切換鎖定、彈性、半徑範圍三種策略並限制在地圖內，遠山用 ParallaxComponent 做視差。",
+    hint: "點畫面或按空白鍵跳躍・切換攝影機策略與縮放",
+    async mount(ctx) {
+      ctx.el.classList.add("ex-dusk");
+      ctx.html(`<div class="ex-box"></div>`);
+      const CAMS = ["鎖定", "彈性", "半徑範圍"];
+      let cam = 1, zoom = 1, eng = null, world = null;
+      ctx.group(CAMS, cam, (i) => { cam = i; if (world) world.applyCam(); });
+      ctx.slider("縮放", { min: 0.6, max: 1.6, step: 0.05, value: zoom, format: (v) => `${v.toFixed(2)}×` }, (v) => { zoom = v; if (world) world.applyCam(); });
+      const show = readout(ctx);
+      eng = engineIn(ctx, ctx.$(".ex-box"), {
+        options: () => ({ physics: { solver: ex.SolverStrategy.Arcade, gravity: vec(0, 1500) } }),
+        build(e, w, h) {
+          const TS = 32, COLS = 90, ROWS = Math.max(18, Math.ceil(h / (TS * 0.6)) + 2), LW = COLS * TS, LH = ROWS * TS;
+          let seed = 7;
+          const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+          const pit = (c) => c > 8 && c < COLS - 8 && c % 13 < 2;
+          const top = [];
+          let ht = ROWS - 4;
+          for (let c = 0; c < COLS; c++) {
+            if (c % 4 === 0 && c > 6) ht = clamp(ht + Math.round(rand() * 2 - 1), ROWS - 8, ROWS - 2);
+            top.push(ht);
+          }
+          // the ground right after a pit matches the ground before it, so the landing never meets a wall
+          for (let c = 1; c < COLS - 3; c++) if (pit(c) && !pit(c - 1)) top[c + 2] = top[c + 3] = top[c - 1];
+          const grass = new ex.Canvas({ width: TS, height: TS, cache: true, draw: (g) => {
+            g.fillStyle = "#262c3a"; g.fillRect(0, 0, TS, TS);
+            g.fillStyle = "#30384a"; g.fillRect(5, 16, 6, 6); g.fillRect(20, 24, 7, 5);
+            g.fillStyle = C.c4; g.fillRect(0, 0, TS, 8);
+            g.fillStyle = "#5cb06b"; g.fillRect(0, 8, TS, 3);
+          } });
+          const dirt = new ex.Canvas({ width: TS, height: TS, cache: true, draw: (g) => {
+            g.fillStyle = "#262c3a"; g.fillRect(0, 0, TS, TS);
+            g.fillStyle = "#30384a"; g.fillRect(4, 6, 6, 6); g.fillRect(19, 18, 8, 6);
+          } });
+          const tm = new ex.TileMap({ pos: vec(0, 0), tileWidth: TS, tileHeight: TS, columns: COLS, rows: ROWS });
+          for (let c = 0; c < COLS; c++) {
+            if (pit(c)) continue;
+            for (let r = top[c]; r < ROWS; r++) {
+              const t = tm.getTile(c, r);
+              t.solid = true;
+              t.addGraphic(r === top[c] ? grass : dirt);
+            }
+          }
+          e.add(tm);
+          // parallax mountains: a layer drawn at factor f needs V + LW * f pixels to cover the whole run
+          const V = w / 0.6 + 200;
+          [[0.2, "#262d4a", 300, 11], [0.45, "#30385c", 210, 23]].forEach(([f, color, mh, s0], i) => {
+            const lw = Math.min(4096, Math.ceil(V + LW * f));
+            let s = s0;
+            const r = () => (s = (s * 16807) % 2147483647) / 2147483647;
+            const layer = new ex.Actor({ x: -V / 2, y: LH - TS * 2, anchor: vec(0, 1), z: -20 + i * 5 });
+            layer.graphics.use(new ex.Canvas({ width: lw, height: mh, cache: true, draw: (g) => {
+              g.fillStyle = color;
+              g.beginPath(); g.moveTo(0, mh);
+              for (let x = 0; x <= lw; x += 60) g.lineTo(x, mh * (0.15 + r() * 0.55));
+              g.lineTo(lw, mh); g.closePath(); g.fill();
+            } }));
+            layer.addComponent(new ex.ParallaxComponent(vec(f, 1)));
+            e.add(layer);
+          });
+          // player
+          const start = vec(TS * 3, (top[3] - 1) * TS - 14);
+          const player = new ex.Actor({ x: start.x, y: start.y, width: 22, height: 28, collisionType: ex.CollisionType.Active, z: 5 });
+          player.graphics.use(new ex.Canvas({ width: 22, height: 28, cache: true, quality: DPR, draw: (g) => {
+            g.fillStyle = C.c1; g.beginPath(); g.roundRect(0, 0, 22, 28, 7); g.fill();
+            g.fillStyle = "#1a1a14"; g.fillRect(13, 8, 4, 6);
+          } }));
+          e.add(player);
+          let groundT = 0, jumpBuf = 0, got = 0;
+          player.on("postcollision", (ev) => { if (ev.side === ex.Side.Bottom) groundT = 2; });
+          // coins every five columns, floating above the ground (or above the gap)
+          let coins = [];
+          const placeCoins = () => {
+            for (const c of coins) c.kill();
+            coins = [];
+            for (let c = 7; c < COLS - 4; c += 5) {
+              const ground = pit(c) ? top[c - 2] : top[c];
+              const coin = new ex.Actor({ x: c * TS + TS / 2, y: (ground - 2.5) * TS, radius: 8, collisionType: ex.CollisionType.Passive, z: 4 });
+              coin.body.useGravity = false;
+              coin.graphics.use(new ex.Circle({ radius: 8, color: hex(C.c1), strokeColor: hex("#8a7a00"), lineWidth: 3 }));
+              coin.on("collisionstart", (ev) => {
+                if (ev.other.owner !== player) return;
+                coin.body.collisionType = ex.CollisionType.PreventCollision;
+                got++;
+                coin.actions.moveBy({ offset: vec(0, -40), duration: 300 }).fade(0, 200).die();
+              });
+              coins.push(coin);
+              e.add(coin);
+            }
+          };
+          placeCoins();
+          const reset = () => { player.pos = start.clone(); player.vel = vec(0, 0); got = 0; placeCoins(); };
+          player.onPreUpdate = (engine, ms) => {
+            const grounded = groundT > 0;
+            if (groundT > 0) groundT--;
+            jumpBuf = Math.max(0, jumpBuf - ms);
+            player.vel.x = 190;
+            const col = Math.floor(player.pos.x / TS), ahead = Math.floor((player.pos.x + 37) / TS);
+            // autopilot: jump just before a pit or a step up
+            const needJump = pit(ahead) || (ahead < COLS && !pit(col) && top[ahead] < top[col]);
+            if (grounded && (jumpBuf > 0 || needJump)) { player.vel.y = -640; groundT = 0; jumpBuf = 0; }
+            if (player.pos.y > LH + 100 || player.pos.x > LW - TS * 2) reset();
+          };
+          e.input.pointers.primary.on("down", () => { jumpBuf = 150; });
+          e.input.keyboard.on("press", (ev) => { if (ev.key === ex.Keys.Space || ev.key === ex.Keys.Up) jumpBuf = 150; });
+          const applyCam = () => {
+            const camera = e.currentScene.camera;
+            camera.clearAllStrategies();
+            if (cam === 0) camera.strategy.lockToActor(player);
+            else if (cam === 1) camera.strategy.elasticToActor(player, 0.12, 0.6);
+            else camera.strategy.radiusAroundActor(player, Math.min(w, h) * 0.22);
+            camera.strategy.limitCameraBounds(new ex.BoundingBox(0, 0, LW, LH));
+            camera.zoom = zoom;
+          };
+          applyCam();
+          world = { applyCam, tm, total: COLS * ROWS, coins: () => got, of: () => coins.length };
+          return () => { world = null; };
+        },
+      });
+      ctx.interval(() => {
+        const e = eng.engine;
+        if (!e || !world) return;
+        const p = e.currentScene.camera.pos;
+        show(`繪製中格子 <b>${world.tm.getOnScreenTiles().length}</b> / ${fmtN(world.total)}・攝影機 <b>${Math.round(p.x)}, ${Math.round(p.y)}</b>・策略 <b>${CAMS[cam]}</b>・縮放 <b>${zoom.toFixed(2)}×</b>・金幣 <b>${world.coins()}</b> / ${world.of()}`);
+      }, 250);
+    },
+  },
+  {
+    id: "transitions", title: "場景轉場",
+    api: "class extends ex.Scene・onInitialize / onActivate / onDeactivate・goToScene(name, { sourceOut, destinationIn })・FadeInOut / CrossFade / Slide・director.events",
+    desc: "標題、關卡、結算是三個 ex.Scene 子類別，用 goToScene() 切換，進出場可套 FadeInOut、CrossFade 或 Slide 轉場。左下角記錄 Director 發出的導覽事件和各場景的生命週期回呼，onInitialize 只在第一次進入時呼叫。",
+    hint: "按下一個或點畫面切換場景・換一種轉場再看一次",
+    async mount(ctx) {
+      ctx.html(`<div class="ex-box"></div><div class="ex-log"><div class="ex-bar"><i></i></div><div class="lines"></div></div>`);
+      const KINDS = ["淡入淡出", "交叉淡化", "滑動"], ORDER = ["title", "level", "result"], AUTO_MS = 3200;
+      let kind = 0, auto = true, eng = null;
+      ctx.group(KINDS, 0, (i) => { kind = i; });
+      ctx.toggle("自動輪播", true, (v) => { auto = v; });
+      ctx.button("下一個", () => next(), { primary: true });
+      const lines = ctx.$(".ex-log .lines"), bar = ctx.$(".ex-bar i"), entries = [];
+      const t0 = performance.now();
+      const log = (html) => {
+        entries.push(`<span class="t">${((performance.now() - t0) / 1000).toFixed(1).padStart(5, " ")}s</span>${html}`);
+        if (entries.length > 7) entries.shift();
+        lines.innerHTML = entries.map((x) => `<div>${x}</div>`).join("");
+      };
+      function transition() {
+        if (kind === 0) {
+          return { sourceOut: new ex.FadeInOut({ duration: 450, direction: "out", color: ex.Color.Black }),
+            destinationIn: new ex.FadeInOut({ duration: 450, direction: "in", color: ex.Color.Black }) };
+        }
+        if (kind === 1) return { destinationIn: new ex.CrossFade({ duration: 800 }) };
+        return { destinationIn: new ex.Slide({ duration: 800, slideDirection: "left", easingFunction: ex.EasingFunctions.EaseInOutCubic }) };
+      }
+      function next() {
+        const e = eng && eng.engine;
+        if (!e || e.director.isTransitioning) return;
+        const to = ORDER[(ORDER.indexOf(e.director.currentSceneName) + 1) % ORDER.length];
+        e.goToScene(to, transition());
+      }
+      class DemoScene extends ex.Scene {
+        constructor(key, bg, setup) {
+          super();
+          this.demoKey = key;
+          this.backgroundColor = hex(bg);
+          this.setupFn = setup;
+          this.hooks = {};
+        }
+        onInitialize(engine) {
+          log(`<code>${this.demoKey}</code>.onInitialize()`);
+          this.hooks = this.setupFn(this, engine.drawWidth, engine.drawHeight) || {};
+          this.timer = new ex.Timer({ interval: AUTO_MS, repeats: true, action: () => { if (auto) next(); } });
+          this.add(this.timer);
+        }
+        onActivate() {
+          log(`<code>${this.demoKey}</code>.onActivate()`);
+          this.timer.reset();
+          this.timer.start();
+          if (this.hooks.activate) this.hooks.activate();
+        }
+        onDeactivate() {
+          log(`<code>${this.demoKey}</code>.onDeactivate()`);
+          this.timer.stop();
+        }
+        onPreUpdate(engine, ms) { if (this.hooks.update) this.hooks.update(ms); }
+      }
+      const heading = (scene, text, sub, color, w, h) => {
+        label(scene, text, w / 2, h * 0.4, font(clamp(w / 14, 24, 46), color, { bold: true, align: ex.TextAlign.Center, base: ex.BaseAlign.Middle, shadow: true }));
+        label(scene, sub, w / 2, h * 0.4 + clamp(w / 14, 24, 46) * 0.9, font(12, C.muted, { mono: true, align: ex.TextAlign.Center, base: ex.BaseAlign.Middle }));
+      };
+      const SCENES = {
+        title: ["#1b1f33", (scene, w, h) => {
+          heading(scene, "標題畫面", "scene: title", C.c1, w, h);
+          const ring = new ex.Actor({ x: w / 2, y: h * 0.4 });
+          const R = clamp(Math.min(w, h) * 0.3, 70, 170);
+          for (let i = 0; i < 12; i++) {
+            const a = (i / 12) * TAU, d = new ex.Actor({ x: Math.cos(a) * R, y: Math.sin(a) * R * 0.55 });
+            d.graphics.use(new ex.Circle({ radius: 5, color: hex(COLORS[i % 6]) }));
+            ring.addChild(d);
+          }
+          ring.angularVelocity = 0.5;
+          scene.add(ring);
+        }],
+        level: ["#13261d", (scene, w, h) => {
+          heading(scene, "第 1 關", "scene: level", C.c4, w, h);
+          const balls = Array.from({ length: 14 }, (_, i) => {
+            const b = new ex.Actor({ x: rnd(20, w - 20), y: rnd(20, h - 20), z: -1 });
+            b.graphics.use(new ex.Circle({ radius: rnd(6, 14), color: hex(COLORS[i % 6]).clone() }));
+            b.graphics.opacity = 0.75;
+            b.vel = vec(rnd(-160, 160), rnd(-160, 160));
+            scene.add(b);
+            return b;
+          });
+          return { update: () => {
+            for (const b of balls) {
+              if (b.pos.x < 10 || b.pos.x > w - 10) b.vel.x = Math.sign(w / 2 - b.pos.x) * Math.abs(b.vel.x);
+              if (b.pos.y < 10 || b.pos.y > h - 10) b.vel.y = Math.sign(h / 2 - b.pos.y) * Math.abs(b.vel.y);
+            }
+          } };
+        }],
+        result: ["#2a1630", (scene, w, h) => {
+          heading(scene, "結算畫面", "scene: result", C.c3, w, h);
+          const fs = clamp(w / 30, 14, 22);
+          const score = label(scene, "", w / 2, h * 0.4 + fs * 3.4, font(fs, C.fg, { bold: true, align: ex.TextAlign.Center }));
+          const star = (r) => Array.from({ length: 10 }, (_, i) => {
+            const a = -Math.PI / 2 + (i * Math.PI) / 5, k = i % 2 ? r * 0.45 : r;
+            return vec(Math.cos(a) * k, Math.sin(a) * k);
+          });
+          const sr = clamp(w / 40, 12, 24);
+          const stars = [-1, 0, 1].map((i) => {
+            const s = new ex.Actor({ x: w / 2 + i * sr * 2.6, y: h * 0.4 - fs * 2.6 });
+            s.graphics.use(new ex.Polygon({ points: star(sr), color: hex(C.c1) }));
+            scene.add(s);
+            return s;
+          });
+          let tStart = 0;
+          return {
+            activate() {
+              tStart = performance.now();
+              stars.forEach((s, i) => {
+                s.actions.clearActions();
+                s.scale = vec(0, 0);
+                s.actions.delay(250 + i * 220).scaleTo({ scale: vec(1, 1), duration: 300 }).callMethod(settle(s));
+              });
+            },
+            update() { score.text = `分數 ${fmtN(12800 * Math.min(1, (performance.now() - tStart) / 1200))}`; },
+          };
+        }],
+      };
+      eng = engineIn(ctx, ctx.$(".ex-box"), {
+        build(e) {
+          for (const key of ORDER) e.addScene(key, new DemoScene(key, ...SCENES[key]));
+          e.director.events.on("navigationstart", (ev) => log(`navigationstart：<code>${ev.sourceName}</code> → <code>${ev.destinationName}</code>（${KINDS[kind]}）`));
+          e.director.events.on("navigationend", (ev) => log(`navigationend：<code>${ev.destinationName}</code>`));
+          e.input.pointers.primary.on("down", () => next());
+        },
+        start: (e) => e.start().then(() => e.goToScene("title", { destinationIn: new ex.FadeInOut({ duration: 600, direction: "in", color: ex.Color.Black }) })),
+      });
+      ctx.raf(() => {
+        const e = eng.engine, sc = e && e.currentScene;
+        const left = auto && sc && sc.timer && sc.timer.isRunning ? sc.timer.timeToNextAction / AUTO_MS : 0;
+        bar.style.width = `${(clamp(left, 0, 1) * 100).toFixed(1)}%`;
+      });
+    },
+  },
+  {
+    id: "materials", title: "材質與後製",
+    api: "graphicsContext.createMaterial({ fragmentSource })・actor.graphics.material・material.update(s => s.trySetUniformFloat())・addPostProcessor(ScreenShader)",
+    desc: "每張照片是一個帶 Sprite 的 Actor，各自掛上自訂 GLSL 材質：波浪、像素化、色差掃光、溶解，強度用 uniform 傳進去。最下層再套一個全畫面後製 ScreenShader，可切換 CRT、暈影或灰階。",
+    hint: "拖動材質強度・切換全畫面後製・滑過照片會放大",
+    async mount(ctx) {
+      ctx.el.classList.add("ex-studio");
+      ctx.html(`<div class="ex-box"></div>`);
+      let amt = 0.6, post = 0, eng = null, cur = null;
+      ctx.slider("材質強度", { min: 0, max: 1, step: 0.05, value: amt, format: (v) => v.toFixed(2) }, (v) => { amt = v; if (cur) cur.setAmt(); });
+      ctx.group(POSTS.map((p) => (p ? p.name : "無")), 0, (i) => { post = i; if (cur) cur.setPost(); });
+      const show = readout(ctx);
+      const photos = [1, 2, 3, 4].map((i) => new ex.ImageSource(PHOTO(i)));
+      await Promise.all(photos.map((p) => p.load()));
+      await fontsReady(ctx);
+      if (!ctx.active) throw unmounted();
+      eng = engineIn(ctx, ctx.$(".ex-box"), {
+        build(e, w, h) {
+          const gc = e.graphicsContext;
+          const mats = MATERIALS.map((m, i) => gc.createMaterial({ name: `ex-mat-${i}`, fragmentSource: m.src }));
+          const posts = POSTS.map((p) => p && postProcessor(p.src));
+          const setAmt = () => mats.forEach((m) => m.update((s) => s.trySetUniformFloat("u_amt", amt)));
+          const setPost = () => { gc.clearPostProcessors(); if (posts[post]) gc.addPostProcessor(posts[post]); };
+          const top = belowControls(ctx), bottom = h - 46, pad = 14;
+          const cols = w >= 900 ? 4 : 2, rows = 4 / cols;
+          const sw = (w - pad * (cols + 1)) / cols, sh = (bottom - top - pad * (rows - 1)) / rows;
+          const iw = Math.round(sw), ih = Math.round(Math.max(40, sh - 28));
+          let hover = -1;
+          const cards = photos.map((src, i) => {
+            const x = pad + (i % cols) * (sw + pad) + sw / 2, y = top + Math.floor(i / cols) * (sh + pad) + ih / 2;
+            // crop the 3:2 photo to the card aspect around its centre
+            const ar = iw / ih, pw = src.width, ph = src.height;
+            const cwid = Math.min(pw, ph * ar), chei = cwid / ar;
+            const a = new ex.Actor({ x, y });
+            a.graphics.use(new ex.Sprite({ image: src, sourceView: { x: (pw - cwid) / 2, y: (ph - chei) / 2, width: cwid, height: chei }, destSize: { width: iw, height: ih } }));
+            a.graphics.material = mats[i];
+            a.onPreUpdate = () => {
+              const s = a.scale.x + ((hover === i ? 1.05 : 1) - a.scale.x) * 0.2;
+              a.scale = vec(s, s);
+            };
+            e.add(a);
+            label(e, `${MATERIALS[i].name}`, x - iw / 2 + 2, y + ih / 2 + 18, font(13, C.fg, { bold: true, shadow: true }));
+            label(e, MATERIALS[i].api, x + iw / 2 - 2, y + ih / 2 + 18, font(10.5, C.muted, { mono: false, align: ex.TextAlign.Right }));
+            return { x, y };
+          });
+          e.input.pointers.primary.on("move", (pe) => {
+            const p = pe.worldPos;
+            hover = cards.findIndex((c) => Math.abs(p.x - c.x) < iw / 2 && Math.abs(p.y - c.y) < ih / 2);
+          });
+          setAmt();
+          setPost();
+          cur = { setAmt, setPost, mats };
+          return () => { cur = null; };
+        },
+      });
+      ctx.interval(() => {
+        const e = eng.engine;
+        if (!e || !cur) return;
+        const st = e.stats.prevFrame;
+        show(`自訂材質 <b>${cur.mats.length}</b>・後製 <b>${POSTS[post] ? POSTS[post].name : "無"}</b>・強度 <b>${amt.toFixed(2)}</b>・draw call <b>${st.graphics.drawCalls}</b>・<b>${fpsOf(e)}</b> FPS`);
+      }, 250);
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "new ex.Actor({ radius, collisionType })・SpriteSheet.fromImageSource()・scene.on('postdraw', e => e.ctx.drawImage())・engine.stats.currFrame",
+    desc: "同一張 6 色圖集的小球逐級加量，直到掉到 30 FPS 以下。可切換：每顆都是帶圓形碰撞體的 Active Actor（Arcade 求解器互相推開）、只是不碰撞的 Actor，或完全不建 Actor、在 postdraw 用 drawImage() 直接畫，比較 ECS、碰撞與繪製各自的成本。",
+    hint: "按「自動加壓」開始・切換三種模式再測一次比較",
+    async mount(ctx) {
+      ctx.html(`<div class="ex-stress"></div>`);
+      ctx.controls.classList.add("bottom");
+      const MODES = ["碰撞 Actor", "純 Actor", "自繪 drawImage"];
+      let mode = 0, ctl = null, eng = null;
+      ctx.group(MODES, 0, (i) => { mode = i; if (ctl) ctl.set(ctl.value); });
+      const atlas = ex.ImageSource.fromHtmlCanvasElement(ballAtlas());
+      await atlas.ready;
+      if (!ctx.active) throw unmounted();
+      const sheet = ex.SpriteSheet.fromImageSource({ image: atlas, grid: { rows: 1, columns: 6, spriteWidth: 16, spriteHeight: 16 } });
+      const sprites = [0, 1, 2, 3, 4, 5].map((i) => sheet.getSprite(i, 0));
 
-const font = (size, hex, align = ex.TextAlign.Left) =>
-  new ex.Font({ family: FONT, size, unit: ex.FontUnit.Px, color: ex.Color.fromHex(hex), bold: true, textAlign: align });
-const scoreLabel = new ex.Label({ text: "", pos: ex.vec(18, 30), font: font(18, "#f7df1e") });
-const livesLabel = new ex.Label({ text: "", pos: ex.vec(W - 18, 30), font: font(18, "#f72585", ex.TextAlign.Right) });
-game.add(scoreLabel);
-game.add(livesLabel);
-
-let bricks = new Set();
-let mode = "demo"; // demo | ready | play | over
-let score = 0, lives = 3, level = 1, speed = 360, flipped = false, targetX = W / 2;
-
-function buildBricks() {
-  for (const b of bricks) b.kill();
-  bricks = new Set();
-  const cols = PORTRAIT ? 7 : 10, rows = 6, gap = 6, bh = 20, bw = Math.floor((W - 40 - (cols - 1) * gap) / cols);
-  const x0 = (W - (cols * bw + (cols - 1) * gap)) / 2 + bw / 2;
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const hex = COLORS[r];
-      const b = new ex.Actor({ x: x0 + c * (bw + gap), y: 70 + r * (bh + gap), width: bw, height: bh, collisionType: ex.CollisionType.Fixed });
-      b.graphics.use(pill(bw, bh, hex));
-      b.hex = hex;
-      b.scale = ex.vec(0.2, 0.2);
-      b.actions.delay((r * cols + c) * 12).scaleTo({ scale: ex.vec(1, 1), duration: 220 }).callMethod(settle(b));
-      bricks.add(b);
-      game.add(b);
-    }
-  }
-}
-
-function hud() {
-  scoreLabel.text = mode === "demo" ? "展示模式" : `分數 ${score}　第 ${level} 關`;
-  livesLabel.text = mode === "demo" ? "" : "♥".repeat(lives);
-}
-
-function serve() {
-  ball.pos = ex.vec(paddle.pos.x, paddle.pos.y - 22);
-  ball.vel = ex.vec(0, 0);
-}
-
-function launch() {
-  const a = (Math.random() - 0.5) * 0.9;
-  ball.vel = ex.vec(Math.sin(a) * speed, -Math.cos(a) * speed);
-}
-
-function overlay(title, sub, go) {
-  $("ov-title").textContent = title;
-  $("ov-sub").textContent = sub;
-  $("ov-go").textContent = go;
-  $("overlay").classList.remove("hide");
-}
-
-function newGame() {
-  score = 0; lives = 3; level = 1; speed = 360;
-  buildBricks();
-  mode = "ready";
-  serve();
-  $("overlay").classList.add("hide");
-  hud();
-}
-
-function action() {
-  if (mode === "demo" || mode === "over") newGame();
-  else if (mode === "ready") { mode = "play"; launch(); }
-}
-
-function breakBrick(b) {
-  bricks.delete(b);
-  b.body.collisionType = ex.CollisionType.PreventCollision;
-  burst.pos = b.pos.clone();
-  burst.particle.beginColor = ex.Color.fromHex(b.hex);
-  burst.particle.endColor = ex.Color.fromHex(b.hex);
-  burst.emitParticles(22);
-  b.actions.clearActions();
-  b.actions.scaleTo({ scale: ex.vec(1.35, 1.6), duration: 70 }).callMethod(settle(b)).fade(0, 140).die();
-  if (mode !== "demo") score += 10 * level;
-  speed = Math.min(620, speed + 3);
-  ball.vel = ball.vel.normalize().scale(speed);
-  game.currentScene.camera.shake(3, 3, 90);
-  hud();
-  if (bricks.size === 0) {
-    if (mode === "demo") { buildBricks(); return; }
-    level++;
-    speed = 360 + level * 30;
-    buildBricks();
-    mode = "ready";
-    serve();
-  }
-}
-
-ball.on("collisionstart", (ev) => {
-  const other = ev.other.owner;
-  if (other === paddle) {
-    const off = Math.max(-1, Math.min(1, (ball.pos.x - paddle.pos.x) / 56));
-    const a = off * 1.05;
-    ball.vel = ex.vec(Math.sin(a) * speed, -Math.abs(Math.cos(a) * speed));
-    paddle.actions.clearActions();
-    paddle.scale = ex.vec(1.15, 0.7);
-    paddle.actions.scaleTo({ scale: ex.vec(1, 1), duration: 160 }).callMethod(settle(paddle));
-    return;
-  }
-  if (bricks.has(other)) {
-    breakBrick(other);
-    if (!flipped) {
-      const n = ev.contact.mtv;
-      if (Math.abs(n.x) > Math.abs(n.y)) ball.vel.x *= -1; else ball.vel.y *= -1;
-      flipped = true;
-    }
-  }
-});
-
-const director = new ex.Actor();
-director.onPreUpdate = (engine, ms) => {
-  flipped = false;
-  const kb = engine.input.keyboard;
-  const dir = (kb.isHeld(ex.Keys.Right) || kb.isHeld(ex.Keys.D) ? 1 : 0) - (kb.isHeld(ex.Keys.Left) || kb.isHeld(ex.Keys.A) ? 1 : 0);
-  if (dir) targetX += dir * 620 * (ms / 1000);
-  if (mode === "demo") targetX = ball.pos.x + Math.sin(performance.now() / 400) * 30;
-  targetX = Math.max(56, Math.min(W - 56, targetX));
-  paddle.pos.x += (targetX - paddle.pos.x) * Math.min(1, ms / 40);
-  if (mode === "ready") serve();
-
-  // walls
-  const r = 8;
-  if (ball.pos.x < r) { ball.pos.x = r; ball.vel.x = Math.abs(ball.vel.x); }
-  if (ball.pos.x > W - r) { ball.pos.x = W - r; ball.vel.x = -Math.abs(ball.vel.x); }
-  if (ball.pos.y < r) { ball.pos.y = r; ball.vel.y = Math.abs(ball.vel.y); }
-  if (ball.pos.y > H + 20) {
-    if (mode === "demo") { serve(); launch(); return; }
-    lives--;
-    engine.currentScene.camera.shake(10, 10, 300);
-    hud();
-    if (lives <= 0) {
-      mode = "over";
-      ball.vel = ex.vec(0, 0);
-      ball.pos = ex.vec(W / 2, H + 60);
-      overlay("遊戲結束", `分數 ${score}，撐到第 ${level} 關`, "按任意鍵或點擊再玩一次");
-    } else {
-      mode = "ready";
-      serve();
-    }
-  }
-};
-game.add(director);
-
-game.input.pointers.primary.on("move", (e) => { targetX = e.worldPos.x; });
-game.input.pointers.primary.on("down", (e) => { targetX = e.worldPos.x; action(); });
-game.input.keyboard.on("press", (e) => {
-  if (mode === "demo" || mode === "over" || e.key === ex.Keys.Space || e.key === ex.Keys.Up) action();
-});
-document.addEventListener("pointerdown", (e) => { if (e.target.tagName !== "CANVAS") action(); });
-
-buildBricks();
-hud();
-game.start().then(launch);
+      const MAX = 50000, CHUNK = 1500;
+      const px = new Float32Array(MAX), py = new Float32Array(MAX), vx = new Float32Array(MAX), vy = new Float32Array(MAX), fr = new Uint8Array(MAX);
+      for (let i = 0; i < MAX; i++) {
+        const a = Math.random() * TAU, s = rnd(60, 160);
+        vx[i] = Math.cos(a) * s; vy[i] = Math.sin(a) * s; fr[i] = i % 6;
+      }
+      let actors = [], count = 0, built = -1, gen = 0, applying = false, W = 1, H = 1;
+      let upd = 0, col = 0, colAcc = 0, drw = 0, dc = 0, contacts = 0;
+      async function apply(n) {
+        applying = true;
+        try {
+          const m = mode;
+          // removing thousands of entities one by one is slow, so shrinking or switching mode starts a fresh engine
+          if (n < count || (built !== m && count > 0)) eng.rebuild();
+          built = m;
+          if (m === 2) {
+            for (let i = count; i < n; i++) { px[i] = rnd(8, W - 8); py[i] = rnd(8, H - 8); }
+            count = n;
+            return;
+          }
+          const g = gen;
+          while (count < n) {
+            const e = eng.engine, end = Math.min(n, count + CHUNK);
+            for (let i = count; i < end; i++) {
+              const a = m === 0
+                ? new ex.Actor({ x: rnd(8, W - 8), y: rnd(8, H - 8), radius: 7, collisionType: ex.CollisionType.Active })
+                : new ex.Actor({ x: rnd(8, W - 8), y: rnd(8, H - 8) });
+              a.graphics.use(sprites[fr[i]]);
+              a.vel = vec(vx[i], vy[i]);
+              e.add(a);
+              actors.push(a);
+            }
+            count = end;
+            if (count < n) {
+              await ctx.frame();
+              if (!ctx.active) throw unmounted();
+              if (g !== gen) return;
+            }
+          }
+        } finally {
+          applying = false;
+        }
+      }
+      ctl = ctx.ramp({
+        label: "小球", unit: "顆", steps: [200, 500, 1000, 2000, 5000, 10000, 20000, 50000], minFps: 30,
+        apply,
+        metrics: () => ({
+          更新: `${upd.toFixed(1)} ms`,
+          碰撞系統: built === 0 ? `${col.toFixed(1)} ms` : "未啟用",
+          繪製: `${drw.toFixed(1)} ms`,
+          "draw call": String(dc),
+          Actor: built === 2 ? "0" : fmtN(count),
+          接觸: built === 0 ? fmtN(contacts) : "未啟用",
+          模式: MODES[mode],
+        }),
+        note: "更新量的是引擎每格 update 階段的總時間（包含碰撞系統）：每個 Actor 都是 ECS 實體，MotionSystem、ActionsSystem 與圖形相關的系統每格都要走過所有實體的元件，數量一多就線性變慢。碰撞系統只量 CollisionSystem 本身：先用 SparseHashGrid 寬相位找出可能相碰的配對，再做圓形窄相位測試，最後交給 Arcade 求解器推開，球越密，配對與接觸就越多。繪製量的是 draw 階段，同一張圖集的精靈會合併成少數幾次 draw call，CPU 主要花在走訪實體、計算變形與填頂點。自繪 drawImage 模式不建 Actor，只在 postdraw 用陣列座標直接呼叫 drawImage()，可以看出 ECS 本身的額外開銷。GPU 是非同步執行，實際瓶頸也可能在顯示卡。",
+      });
+      // size the box for the bottom control bar before the engine reads it
+      ctx.el.style.setProperty("--sc-ctl-b", `${ctx.controls.offsetHeight + 10}px`);
+      eng = engineIn(ctx, ctx.$(".ex-stress"), {
+        options: () => ({ physics: { solver: ex.SolverStrategy.Arcade, gravity: vec(0, 0) } }),
+        build(e, w, h) {
+          W = w; H = h;
+          gen++;
+          actors = []; count = 0; built = -1;
+          const scene = e.currentScene;
+          scene.onPreUpdate = (engine, ms) => {
+            if (built === 2) {
+              const d = ms / 1000;
+              for (let i = 0; i < count; i++) {
+                let x = px[i] + vx[i] * d, y = py[i] + vy[i] * d;
+                if (x < 8) { x = 8; vx[i] = Math.abs(vx[i]); } else if (x > W - 8) { x = W - 8; vx[i] = -Math.abs(vx[i]); }
+                if (y < 8) { y = 8; vy[i] = Math.abs(vy[i]); } else if (y > H - 8) { y = H - 8; vy[i] = -Math.abs(vy[i]); }
+                px[i] = x; py[i] = y;
+              }
+              return;
+            }
+            for (const a of actors) {
+              const p = a.pos, v = a.vel;
+              if (p.x < 8) v.x = Math.abs(v.x); else if (p.x > W - 8) v.x = -Math.abs(v.x);
+              if (p.y < 8) v.y = Math.abs(v.y); else if (p.y > H - 8) v.y = -Math.abs(v.y);
+              // the Arcade solver cancels the velocity along each contact normal; give stalled balls a new push
+              if (built === 0 && v.x * v.x + v.y * v.y < 900) { const t = Math.random() * TAU; v.x = Math.cos(t) * 100; v.y = Math.sin(t) * 100; }
+            }
+          };
+          const img = atlas.image;
+          scene.on("postdraw", (ev) => {
+            if (built !== 2) return;
+            const g = ev.ctx;
+            for (let i = 0; i < count; i++) g.drawImage(img, fr[i] * 16, 0, 16, 16, px[i] - 8, py[i] - 8, 16, 16);
+          });
+          const cs = scene.world.systemManager.systems.find((s) => s instanceof ex.CollisionSystem);
+          if (cs) {
+            const update0 = cs.update.bind(cs);
+            cs.update = (elapsed) => { const t = performance.now(); update0(elapsed); colAcc += performance.now() - t; };
+          }
+          e.on("postframe", () => {
+            const f = e.stats.currFrame;
+            upd += (f.duration.update - upd) * 0.1;
+            drw += (f.duration.draw - drw) * 0.1;
+            col += (colAcc - col) * 0.1;
+            colAcc = 0;
+            dc = f.graphics.drawCalls;
+            contacts = f.physics.contacts.size;
+          });
+          // a resize rebuild drops every ball; put the current step back
+          if (ctl && ctl.value > 0 && !applying) queueMicrotask(() => ctl.set(ctl.value));
+        },
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

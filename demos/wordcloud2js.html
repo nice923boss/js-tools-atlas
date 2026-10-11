@@ -3,128 +3,600 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>wordcloud2.js 示範：JavaScript 生態關鍵字雲</title>
+<title>wordcloud2.js 示範：八個場景看懂文字雲排版</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","note":"詞彙權重為主觀設定的示意資料"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["關鍵字雲","內建形狀","遮罩輪廓","旋轉與網格","顏色與字級","事件與中止","Canvas 對 DOM","極限測試"],"note":"詞彙權重為主觀設定的示意資料"}</script>
 <style>
-  body { background: radial-gradient(70% 70% at 50% 45%, #1a1c26 0%, var(--bg) 75%); }
-  .title { position: fixed; left: 14px; top: 12px; z-index: 40; }
-  .title h1 { margin: 0; font-size: 16px; }
-  .title p { margin: 0; font-size: 12px; color: var(--muted); }
-  .stage { position: fixed; left: 8px; right: 8px; top: 60px; bottom: 84px; display: block; }
-  #cloud { display: block; width: 100%; height: 100%; }
-  .box { position: absolute; pointer-events: none; border: 1.5px solid var(--accent); border-radius: 6px; box-shadow: 0 0 0 4px rgba(247, 223, 30, 0.12); transition: all .08s; }
-  .box[hidden], .tip[hidden] { display: none; }
-  .tip { position: absolute; transform: translate(-50%, -100%); margin-top: -8px; pointer-events: none; white-space: nowrap;
-    padding: 5px 10px; border-radius: 8px; background: rgba(23, 26, 31, 0.96); border: 1px solid var(--line); font-size: 12px; }
-  .tip b { color: var(--accent); }
-  .legend { position: fixed; left: 12px; right: 12px; bottom: 46px; display: flex; flex-wrap: wrap; gap: 6px 12px; justify-content: center; font-size: 12px; color: var(--muted); }
-  .legend button { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; padding: 1px 6px; border-radius: 6px; }
-  .legend button[aria-pressed="true"] { color: var(--fg); background: rgba(255, 255, 255, 0.06); }
-  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
-  .count { position: fixed; right: 14px; top: 52px; font-size: 11px; color: var(--muted); z-index: 40; }
-  @media (max-width: 640px) {
-    .title { top: 52px; } .stage { top: 96px; bottom: 98px; } .count { top: auto; bottom: 18px; right: 12px; }
-    .legend { bottom: 46px; gap: 4px 6px; }
+  .wc-fill { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); }
+  .wc-col { display: flex; flex-direction: column; gap: 8px; }
+  .wc-box { position: relative; flex: 1; min-height: 0; min-width: 0; }
+  .wc-box > canvas, .wc-box > .wc-over { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .wc-over { pointer-events: none; }
+  .wc-num { font-family: var(--mono); }
+
+  /* 1. keyword cloud */
+  .wc-hit { position: absolute; display: none; pointer-events: none; border: 1.5px solid var(--accent); border-radius: 6px; box-shadow: 0 0 0 3px rgba(247, 223, 30, .15); }
+  .wc-tip { position: absolute; display: none; pointer-events: none; white-space: nowrap; padding: 4px 9px; border-radius: 7px;
+    background: var(--panel); border: 1px solid var(--line); font: 12px/1.5 var(--font); color: var(--fg); }
+  .wc-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .wc-legend { display: flex; flex-wrap: wrap; gap: 6px; }
+  .wc-chip { appearance: none; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line);
+    background: var(--bg-2); color: var(--fg); font: 500 12px/1 var(--font); padding: 6px 10px; border-radius: 999px; }
+  .wc-chip i { width: 9px; height: 9px; border-radius: 50%; background: var(--c); }
+  .wc-chip:hover { border-color: var(--c); }
+  .wc-chip[aria-pressed="true"] { border-color: var(--c); background: color-mix(in srgb, var(--c) 26%, var(--bg-2)); }
+  .wc-count { margin-left: auto; font: 12px/1.4 var(--font); color: var(--muted); white-space: nowrap; }
+  .wc-count b { font: 600 12px/1 var(--mono); color: var(--accent); }
+
+  /* 2. shape grid */
+  .wc-grid { display: grid; gap: 8px; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+  .wc-card { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: 6px 8px 6px; }
+  .wc-card h2 { margin: 0 0 4px; font: 600 12px/1.3 var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .wc-card h2 code { font: 500 11px/1 var(--mono); color: var(--accent); margin-right: 6px; }
+  .wc-card h2 small { font-weight: 400; color: var(--muted); margin-left: 6px; }
+  @media (max-width: 560px) { .wc-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(4, minmax(0, 1fr)); } }
+
+  /* 3-6. cloud plus side panel */
+  .wc-split { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) 232px; }
+  .wc-side { min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; font: 12px/1.55 var(--font); }
+  .wc-side h3 { margin: 0; font: 600 12.5px/1.3 var(--font); }
+  .wc-side p { margin: 0; color: var(--muted); }
+  .wc-side canvas { width: 100%; height: 96px; display: block; }
+  .wc-sw { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+  .wc-sw span { display: inline-flex; align-items: center; gap: 5px; }
+  .wc-sw i { width: 10px; height: 10px; border-radius: 3px; background: var(--c); }
+  .wc-ramp { height: 10px; border-radius: 5px; }
+  .wc-param { align-self: flex-start; max-width: 100%; padding: 4px 10px; border-radius: 8px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    background: var(--panel); border: 1px solid var(--line); font: 11.5px/1.5 var(--mono); color: var(--muted); }
+  .wc-param b { color: var(--accent); font-weight: 600; }
+  .wc-log { list-style: none; margin: 0; padding: 0; flex: 1; min-height: 0; overflow: hidden; font: 11.5px/1.5 var(--font); }
+  .wc-log li { display: flex; gap: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-bottom: 1px solid rgba(255, 255, 255, .05); padding: 1px 0; }
+  .wc-log li .t { font-family: var(--mono); color: var(--muted); min-width: 5.4em; text-align: right; }
+  .wc-log li code { font-family: var(--mono); color: var(--c2); }
+  .wc-log li.ok code { color: var(--c4); }
+  .wc-log li.miss { color: var(--muted); }
+  .wc-log li.key code { color: var(--accent); }
+  .wc-log li.warn code { color: var(--c3); }
+  .wc-prog { height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .wc-prog i { display: block; height: 100%; width: 0; background: var(--c4); transition: width .1s; }
+  .wc-dot { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; border: 2px solid var(--c3); pointer-events: none; display: none; }
+  .wc-blk { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  @media (max-width: 560px) {
+    .wc-split { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 132px); }
+    .wc-side { padding: 8px 10px; gap: 5px; }
+    .wc-side canvas { height: 72px; }
+    .wc-side .wc-wide { display: none; }
+    .wc-two { flex-direction: row; gap: 14px; }
+    .wc-two .wc-blk { flex: 1; gap: 5px; }
   }
+
+  /* 7. canvas vs DOM */
+  .wc-pair { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .wc-pane { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: 6px 8px 8px; }
+  .wc-pane h2 { margin: 0 0 4px; font: 600 12.5px/1.3 var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .wc-pane h2 small { font-weight: 400; color: var(--muted); margin-left: 6px; }
+  .wc-pane h2 small b { font: 600 12px/1 var(--mono); color: var(--accent); }
+  .wc-host { position: absolute; inset: 0; overflow: hidden; }
+  .wc-dom { transform-origin: 0 0; }
+  .wc-span { cursor: default; border-radius: 4px; transition: background .12s, box-shadow .12s, opacity .2s; }
+  .wc-span:hover { background: rgba(255, 255, 255, .14); box-shadow: 0 0 0 2px rgba(255, 255, 255, .25); }
+  .wc-dom[data-hl] .wc-span { opacity: .22; }
+  .wc-dom[data-hl="0"] .wc-k0, .wc-dom[data-hl="1"] .wc-k1, .wc-dom[data-hl="2"] .wc-k2,
+  .wc-dom[data-hl="3"] .wc-k3, .wc-dom[data-hl="4"] .wc-k4, .wc-dom[data-hl="5"] .wc-k5 { opacity: 1; box-shadow: 0 0 0 2px currentColor; }
+  @media (max-width: 620px) { .wc-pair { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(2, minmax(0, 1fr)); } }
+
+  /* 8. stress */
+  .wc-stress { position: absolute; inset: 8px 8px 8px 350px; }
+  .wc-stress canvas { width: 100%; height: 100%; display: block; }
+  @media (max-width: 760px) { .wc-stress { inset: 8px; opacity: .9; } }
 </style>
 </head>
 <body>
-<div class="title"><h1>JavaScript 生態關鍵字雲</h1><p>示意資料・字越大代表越常被提起</p></div>
-<div class="controls">
-  <button class="btn" id="shape">形狀：圓形</button>
-  <button class="btn" id="rotate" aria-pressed="true">直排混排</button>
-  <button class="btn primary" id="again">重新排列</button>
-</div>
-<div class="count" id="count"></div>
-<div class="stage" id="stage"><canvas id="cloud"></canvas><div class="box" id="box" hidden></div><div class="tip" id="tip" hidden></div></div>
-<div class="legend" id="legend"></div>
-<div class="hint">滑過詞彙看權重・點分類只顯示該類</div>
-
 <script src="https://cdn.jsdelivr.net/npm/wordcloud@1.2.3/src/wordcloud2.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// wordcloud2.js: spiral placement of weighted words on canvas, with shapes, rotation and hover hit-testing.
-const CATS = {
-  語言核心: { color: "#f7df1e", words: [["非同步", 100], ["閉包", 86], ["事件迴圈", 82], ["原型鏈", 70], ["箭頭函式", 64], ["解構賦值", 52], ["展開運算子", 44], ["生成器", 38], ["迭代器", 36], ["正規表示式", 40], ["型別推斷", 42], ["裝飾器", 32], ["不可變", 38], ["純函式", 42], ["副作用", 38]] },
-  框架架構: { color: "#4cc9f0", words: [["前端框架", 90], ["響應式", 80], ["元件化", 78], ["狀態管理", 70], ["伺服器渲染", 60], ["靜態生成", 48], ["鉤子", 52], ["路由", 50], ["微前端", 40], ["網頁元件", 48], ["單頁應用", 56], ["函式式", 50]] },
-  工具鏈: { color: "#f72585", words: [["打包工具", 68], ["模組化", 76], ["套件管理", 58], ["熱更新", 50], ["轉譯器", 42], ["程式碼檢查", 38], ["格式化", 34], ["型別檢查", 72], ["單元測試", 56], ["端對端測試", 44], ["原始碼對應", 30]] },
-  效能體驗: { color: "#7bd389", words: [["效能優化", 62], ["懶載入", 44], ["程式碼分割", 52], ["樹搖優化", 44], ["快取", 46], ["防抖節流", 44], ["記憶體洩漏", 34], ["垃圾回收", 36], ["即時編譯", 38], ["工作執行緒", 32], ["無障礙", 40], ["國際化", 36]] },
-  視覺互動: { color: "#ff8c42", words: [["資料視覺化", 66], ["動畫", 50], ["三維繪圖", 44], ["著色器", 36], ["物理引擎", 34], ["粒子特效", 38], ["地圖", 40], ["圖表", 54]] },
-  平台社群: { color: "#9d8cff", words: [["開源", 74], ["瀏覽器", 64], ["全端", 48], ["無伺服器", 42], ["邊緣運算", 34], ["社群", 54], ["串流", 36], ["漸進式網頁", 46]] },
-};
-const SHAPES = { 圓形: "circle", 心形: "cardioid", 菱形: "diamond", 星形: "star", 五邊形: "pentagon" };
-const FONT = '"Microsoft JhengHei", "PingFang TC", "Noto Sans CJK TC", "Noto Sans TC", sans-serif';
-const catOf = {}, weightOf = {};
-Object.entries(CATS).forEach(([c, v]) => v.words.forEach(([w, s]) => { catOf[w] = c; weightOf[w] = s; }));
+// wordcloud2.js showcase: eight scenes from the classic keyword cloud to a word-count benchmark.
+const css = getComputedStyle(document.documentElement);
+const C = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6"].map((v) => css.getPropertyValue(v).trim());
+const BG = css.getPropertyValue("--bg").trim();
+const MUTED = css.getPropertyValue("--muted").trim();
+const FONT = css.getPropertyValue("--font").trim();
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+const rgba = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`; };
 
-let shape = "圓形", rotate = true, only = null, run = { placed: 0, total: 0 };
-const stage = document.getElementById("stage"), canvas = document.getElementById("cloud");
-const box = document.getElementById("box"), tip = document.getElementById("tip");
-const dpr = Math.min(2, devicePixelRatio || 1);
+// Six categories of JavaScript ecosystem keywords; weights are subjective sample values.
+const CATS = [
+  { name: "語言核心", words: [["非同步", 100], ["閉包", 86], ["事件迴圈", 82], ["原型鏈", 70], ["箭頭函式", 64], ["解構賦值", 52], ["展開運算子", 44], ["生成器", 38], ["迭代器", 36], ["正規表示式", 40], ["型別推斷", 42], ["裝飾器", 32], ["不可變", 38], ["純函式", 42], ["副作用", 38]] },
+  { name: "框架架構", words: [["前端框架", 90], ["響應式", 80], ["元件化", 78], ["狀態管理", 70], ["伺服器渲染", 60], ["靜態生成", 48], ["鉤子", 52], ["路由", 50], ["微前端", 40], ["網頁元件", 48], ["單頁應用", 56], ["函式式", 50]] },
+  { name: "工具鏈", words: [["打包工具", 68], ["模組化", 76], ["套件管理", 58], ["熱更新", 50], ["轉譯器", 42], ["程式碼檢查", 38], ["格式化", 34], ["型別檢查", 72], ["單元測試", 56], ["端對端測試", 44], ["原始碼對應", 30]] },
+  { name: "效能體驗", words: [["效能優化", 62], ["懶載入", 44], ["程式碼分割", 52], ["樹搖優化", 44], ["快取", 46], ["防抖節流", 44], ["記憶體洩漏", 34], ["垃圾回收", 36], ["即時編譯", 38], ["工作執行緒", 32], ["無障礙", 40], ["國際化", 36]] },
+  { name: "視覺互動", words: [["資料視覺化", 66], ["動畫", 50], ["三維繪圖", 44], ["著色器", 36], ["物理引擎", 34], ["粒子特效", 38], ["地圖", 40], ["圖表", 54]] },
+  { name: "平台社群", words: [["開源", 74], ["瀏覽器", 64], ["全端", 48], ["無伺服器", 42], ["邊緣運算", 34], ["社群", 54], ["串流", 36], ["漸進式網頁", 46]] },
+].map((c, i) => ({ ...c, color: C[i] }));
+const WORDS = CATS.flatMap((c, ci) => c.words.map(([w, s]) => ({ w, s, ci })));
+const CAT_OF = Object.fromEntries(WORDS.map((x) => [x.w, x.ci]));
+const WEIGHT = Object.fromEntries(WORDS.map((x) => [x.w, x.s]));
+const jsList = () => WORDS.map((x) => [x.w, x.s]);
+// Repeat a list at smaller weights so a shape or mask fills up instead of leaving gaps.
+const layered = (list, scales) => scales.flatMap((k) => list.map(([w, s]) => [w, s * k]));
 
-function draw() {
-  const W = stage.clientWidth, H = stage.clientHeight;
-  canvas.width = Math.round(W * dpr);
-  canvas.height = Math.round(H * dpr);
-  box.hidden = tip.hidden = true;
-  const list = Object.entries(CATS).filter(([c]) => !only || c === only).flatMap(([, v]) => v.words.map(([w, s]) => [w, s])); // copies: shrinkToFit rewrites weights in place
-  const maxFont = Math.min(W / 7.5, H / 4.2) * (only ? 1.25 : 1), minFont = W < 640 ? 10 : 12;
-  run = { placed: 0, total: list.length };
-  WordCloud(canvas, {
-    list,
-    fontFamily: FONT, fontWeight: "bold",
-    gridSize: Math.round((W < 640 ? 4 : 6) * dpr),
-    // shrinkToFit retries a word at 3/4 weight until its size is 0, so the minFont floor needs a cut-off or it recurses forever.
-    weightFactor: (s) => { const px = Math.pow(s / 100, 1.35) * maxFont; return px < minFont * 0.6 ? 0 : Math.max(minFont, px) * dpr; },
-    color: (word) => CATS[catOf[word]].color,
-    backgroundColor: "rgba(0,0,0,0)",
-    shape: SHAPES[shape], ellipticity: W > H ? Math.max(0.5, H / W) : 1,
-    rotateRatio: rotate ? 0.3 : 0, rotationSteps: 2, minRotation: 0, maxRotation: Math.PI / 2,
-    shuffle: true, drawOutOfBound: false, shrinkToFit: true, wait: 12,
-    hover: (item, dim) => {
-      if (!item) { box.hidden = tip.hidden = true; return; }
-      Object.assign(box.style, { left: `${dim.x / dpr - 3}px`, top: `${dim.y / dpr - 3}px`, width: `${dim.w / dpr + 6}px`, height: `${dim.h / dpr + 6}px` });
-      tip.innerHTML = `${item[0]}・權重 <b>${weightOf[item[0]]}</b>・${catOf[item[0]]}`;
-      Object.assign(tip.style, { left: `${Math.min(stage.clientWidth - 90, Math.max(90, (dim.x + dim.w / 2) / dpr))}px`, top: `${dim.y / dpr}px` });
-      box.hidden = tip.hidden = false;
-    },
+// Match a canvas bitmap to its CSS box at the capped pixel ratio.
+function fit(canvas) {
+  const W = Math.max(1, canvas.clientWidth), H = Math.max(1, canvas.clientHeight);
+  canvas.width = Math.round(W * DPR);
+  canvas.height = Math.round(H * DPR);
+  return { W, H };
+}
+
+// Redraw whenever a box changes size. Unlike ctx.onResize this also catches the control bar
+// settling after mount, so the canvas bitmap never keeps a stale height.
+function onBox(ctx, el, fn) {
+  let pending = 0, lw = -1, lh = -1;
+  const ro = new ResizeObserver(() => {
+    cancelAnimationFrame(pending);
+    pending = requestAnimationFrame(() => {
+      const w = el.clientWidth, h = el.clientHeight;
+      if (w === lw && h === lh) return;
+      lw = w; lh = h;
+      fn();
+    });
   });
+  ro.observe(el);
+  ctx.onCleanup(() => { ro.disconnect(); cancelAnimationFrame(pending); });
 }
-canvas.addEventListener("mouseleave", () => (box.hidden = tip.hidden = true));
-canvas.addEventListener("wordclouddrawn", (e) => { if (e.detail.drawn) run.placed++; });
-canvas.addEventListener("wordcloudstop", () => {
-  document.getElementById("count").textContent = `已放入 ${run.placed}／${run.total} 個詞`;
-});
 
-// Category legend doubles as a filter.
-const legend = document.getElementById("legend");
-legend.innerHTML = Object.entries(CATS).map(([c, v]) => `<button data-cat="${c}" aria-pressed="false"><i style="background:${v.color}"></i>${c}</button>`).join("");
-legend.addEventListener("click", (e) => {
-  const b = e.target.closest("button");
-  if (!b) return;
-  only = only === b.dataset.cat ? null : b.dataset.cat;
-  legend.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x.dataset.cat === only)));
-  draw();
-});
-
-if (!WordCloud.isSupported) {
-  document.getElementById("count").textContent = "此瀏覽器不支援 Canvas 文字繪製";
-} else {
-  draw();
+// Bind wordcloud2 to one or more elements of a scene. go(opts) supersedes any running layout and
+// resolves on wordcloudstop; stop() dispatches wordcloudstart, which the library treats as "stop the loop".
+function cloud(ctx, els) {
+  const targets = [].concat(els), el = targets[0];
+  let cur = null;
+  const end = (aborted) => {
+    if (!cur) return;
+    const c = cur; cur = null;
+    c.resolve({ placed: c.placed, seen: c.seen, aborted, ms: performance.now() - c.t0 });
+  };
+  ctx.on(el, "wordclouddrawn", (e) => { if (!cur) return; cur.seen++; if (e.detail.drawn) cur.placed++; if (cur.onDrawn) cur.onDrawn(e.detail, cur); });
+  ctx.on(el, "wordcloudabort", () => { if (cur) cur.aborted = true; });
+  ctx.on(el, "wordcloudstop", () => end(cur ? cur.aborted : false));
+  const stop = () => { end(true); el.dispatchEvent(new CustomEvent("wordcloudstart")); };
+  ctx.onCleanup(stop);
+  const go = (opts, onDrawn) => {
+    end(true);
+    return new Promise((resolve) => {
+      cur = { resolve, placed: 0, seen: 0, aborted: false, t0: performance.now(), onDrawn };
+      WordCloud(targets.length > 1 ? targets : el, { fontFamily: FONT, backgroundColor: "rgba(0,0,0,0)", ...opts });
+    });
+  };
+  return { go, stop, get running() { return !!cur; } };
 }
-const shapeBtn = document.getElementById("shape");
-shapeBtn.addEventListener("click", () => {
-  const names = Object.keys(SHAPES);
-  shape = names[(names.indexOf(shape) + 1) % names.length];
-  shapeBtn.textContent = `形狀：${shape}`;
-  draw();
-});
-const rotBtn = document.getElementById("rotate");
-rotBtn.addEventListener("click", () => { rotate = !rotate; rotBtn.setAttribute("aria-pressed", String(rotate)); draw(); });
-document.getElementById("again").addEventListener("click", draw);
-let timer;
-addEventListener("resize", () => { clearTimeout(timer); timer = setTimeout(draw, 200); });
+
+// Polygon outline of Taiwan (lon, lat), coarse but recognisable.
+const TAIWAN = [[121.54, 25.30], [121.74, 25.15], [121.99, 25.01], [121.85, 24.85], [121.86, 24.59], [121.75, 24.30], [121.62, 23.98], [121.50, 23.55],
+  [121.37, 23.10], [121.15, 22.75], [120.90, 22.35], [120.85, 21.90], [120.73, 21.93], [120.59, 22.37], [120.45, 22.46], [120.28, 22.60],
+  [120.13, 23.00], [120.15, 23.38], [120.22, 23.75], [120.40, 24.10], [120.52, 24.28], [120.68, 24.55], [120.92, 24.85], [121.08, 25.03],
+  [121.25, 25.12], [121.40, 25.18]];
+const TW_WORDS = [["珍珠奶茶", 100], ["夜市", 92], ["手搖飲", 74], ["滷肉飯", 78], ["牛肉麵", 80], ["小籠包", 76], ["日月潭", 74], ["阿里山", 72],
+  ["太魯閣", 70], ["台北101", 68], ["九份", 66], ["墾丁", 64], ["鹽酥雞", 62], ["臭豆腐", 60], ["鳳梨酥", 58], ["芒果冰", 58], ["蚵仔煎", 56],
+  ["玉山", 54], ["澎湖", 52], ["便利商店", 52], ["豆花", 50], ["溫泉", 50], ["早餐店", 50], ["淡水", 48], ["肉圓", 48], ["機車", 48], ["擔仔麵", 46],
+  ["胡椒餅", 46], ["合歡山", 46], ["老街", 46], ["高鐵", 46], ["刈包", 44], ["綠島", 44], ["鹿港", 44], ["平溪天燈", 44], ["熱炒", 44], ["野柳", 42],
+  ["駁二", 42], ["清境", 42], ["媽祖遶境", 42], ["安平古堡", 40], ["赤崁樓", 40], ["旗津", 40], ["鐵道便當", 40], ["廟口", 38], ["七股鹽山", 34]];
+const HEART_WORDS = [["謝謝", 100], ["喜歡", 90], ["陪伴", 80], ["擁抱", 72], ["微笑", 70], ["溫暖", 68], ["加油", 66], ["想念", 64], ["幸福", 62],
+  ["晚安", 60], ["珍惜", 58], ["牽手", 56], ["心動", 56], ["信任", 54], ["驚喜", 52], ["祝福", 52], ["約定", 50], ["勇氣", 50], ["甜蜜", 50],
+  ["分享", 48], ["回憶", 48], ["默契", 46], ["照顧", 46], ["守護", 46], ["可愛", 44], ["早安", 44], ["笑容", 44], ["理解", 42], ["浪漫", 42], ["願意", 40]];
+
+// Mask shapes: each traces a path (or text) in CSS pixels for a W x H box.
+const MASKS = [
+  { label: "台灣", words: TW_WORDS, div: 5.4, rot: 0.45, palette: [C[3], C[1], "#5fb7a5", C[0]], trace(g, W, H) {
+    const k = Math.cos(23.7 * Math.PI / 180);
+    const pts = TAIWAN.map(([lon, lat]) => [(lon - 121) * k, 23.7 - lat]);
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+    const x0 = Math.min(...xs), y0 = Math.min(...ys), bw = Math.max(...xs) - x0, bh = Math.max(...ys) - y0;
+    const s = Math.min(W * 0.92 / bw, H * 0.94 / bh), ox = (W - bw * s) / 2, oy = (H - bh * s) / 2;
+    g.beginPath();
+    pts.forEach(([x, y], i) => g[i ? "lineTo" : "moveTo"](ox + (x - x0) * s, oy + (y - y0) * s));
+    g.closePath();
+  } },
+  { label: "JS 字樣", words: jsList(), div: 7, rot: 0.3, palette: [C[0], "#ffe866", "#d9c21a", C[4]], text: "JS" },
+  { label: "愛心", words: HEART_WORDS, div: 4.6, rot: 0.2, palette: [C[2], "#ff6fa8", C[4], "#ffc2d9"], trace(g, W, H) {
+    const s = Math.min(W / 34, H / 24), cx = W / 2, cy = H / 2 - 6 * s;
+    g.beginPath();
+    for (let i = 0; i <= 120; i++) {
+      const t = (i / 120) * Math.PI * 2;
+      const x = 16 * Math.pow(Math.sin(t), 3), y = -(13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t));
+      g[i ? "lineTo" : "moveTo"](cx + x * s, cy + (y + 1) * s);
+    }
+    g.closePath();
+  } },
+];
+// Paint the mask: inside = exact background color (free cells), outside = 1 step off (occupied cells).
+function paintMask(canvas, mask, W, H, outline) {
+  const n = parseInt(BG.slice(1), 16), b = n & 255;
+  const outside = `#${(((n >> 8) << 8) | (b === 255 ? 254 : b + 1)).toString(16).padStart(6, "0")}`;
+  const g = canvas.getContext("2d", { willReadFrequently: true });
+  // save/restore matters: wordcloud2 draws on this same context and does not reset
+  // transform or textAlign, so leftovers would shift every word off its reserved cells.
+  g.save();
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.fillStyle = outside;
+  g.fillRect(0, 0, canvas.width, canvas.height);
+  g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const o = outline.getContext("2d");
+  o.setTransform(DPR, 0, 0, DPR, 0, 0);
+  o.clearRect(0, 0, W, H);
+  o.strokeStyle = rgba(C[1], 0.35);
+  o.lineWidth = 1.5;
+  o.setLineDash([5, 5]);
+  if (mask.text) {
+    const font = (px) => `900 ${px}px ${FONT}`;
+    g.font = font(100);
+    const px = Math.min(H * 0.95, (W * 0.9) / (g.measureText(mask.text).width / 100));
+    for (const c of [g, o]) { c.font = font(px); c.textAlign = "center"; c.textBaseline = "middle"; }
+    g.fillStyle = BG;
+    g.fillText(mask.text, W / 2, H / 2 + px * 0.04);
+    o.strokeText(mask.text, W / 2, H / 2 + px * 0.04);
+  } else {
+    mask.trace(g, W, H);
+    g.fillStyle = BG;
+    g.fill();
+    mask.trace(o, W, H);
+    o.stroke();
+  }
+  g.restore();
+  // Free area in CSS px^2: count the pixels that exactly match the background color.
+  const px = g.getImageData(0, 0, canvas.width, canvas.height).data, r = n >> 16, gr = (n >> 8) & 255;
+  let free = 0;
+  for (let i = 0; i < px.length; i += 4) if (px[i] === r && px[i + 1] === gr && px[i + 2] === b) free++;
+  return free / (DPR * DPR);
+}
+
+// Synthetic two-part terms for the benchmark (repeats are fine: the layout cost is what is measured).
+const SYL = ["資料", "效能", "模組", "事件", "元件", "狀態", "路由", "快取", "型別", "測試", "渲染", "動畫", "圖表", "網格", "佈局", "串流",
+  "封裝", "迭代", "閉包", "代理", "編譯", "打包", "樣式", "互動", "佇列", "索引", "記憶", "排程", "雲端", "邊緣", "向量"];
+const synth = (n) => Array.from({ length: n }, (_, i) => [SYL[i % SYL.length] + SYL[(i * 7 + 3) % SYL.length], 100 / Math.pow(1 + i / 4, 0.6)]);
+
+Showcase.run({ scenes: [
+  {
+    id: "keywords", title: "關鍵字雲",
+    api: "WordCloud(canvas, { list, weightFactor, color, shape, hover })",
+    desc: "六類共 66 個 JavaScript 生態關鍵字，字級依權重、顏色依分類，放不下的詞用 shrinkToFit 自動縮小。點下方分類只看單一類別，滑過字詞會框出範圍並顯示權重。權重為主觀設定的示意資料。",
+    hint: "點下方分類只看該類・滑過字詞看權重・右上切換形狀",
+    mount(ctx) {
+      ctx.html(`<div class="wc-fill wc-col"><div class="wc-box"><canvas></canvas><div class="wc-hit"></div><div class="wc-tip"></div></div>
+        <div class="wc-foot"><div class="wc-legend"></div><div class="wc-count"></div></div></div>`);
+      const canvas = ctx.$("canvas"), box = ctx.$(".wc-box"), hit = ctx.$(".wc-hit"), tip = ctx.$(".wc-tip"), count = ctx.$(".wc-count");
+      const wc = cloud(ctx, canvas);
+      const SHAPES = [["圓形", "circle"], ["心形", "cardioid"], ["菱形", "diamond"], ["星形", "star"], ["五邊形", "pentagon"]];
+      let shape = 0, rotate = false, only = -1;
+      ctx.$(".wc-legend").innerHTML = CATS.map((c, i) => `<button class="wc-chip" type="button" data-i="${i}" aria-pressed="false" style="--c:${c.color}"><i></i>${c.name}</button>`).join("");
+      const chips = ctx.$$(".wc-chip");
+      chips.forEach((b) => ctx.on(b, "click", () => {
+        const i = +b.dataset.i;
+        only = only === i ? -1 : i;
+        chips.forEach((x) => x.setAttribute("aria-pressed", String(+x.dataset.i === only)));
+        draw();
+      }));
+      const hide = () => { hit.style.display = tip.style.display = "none"; };
+      function hover(item, dim) {
+        if (!item) return hide();
+        const x = dim.x / DPR, y = dim.y / DPR, w = dim.w / DPR, h = dim.h / DPR;
+        Object.assign(hit.style, { display: "block", left: `${x - 3}px`, top: `${y - 3}px`, width: `${w + 6}px`, height: `${h + 6}px` });
+        const c = CATS[CAT_OF[item[0]]];
+        tip.innerHTML = `<b style="color:${c.color}">${item[0]}</b>　權重 <span class="wc-num">${WEIGHT[item[0]]}</span>・${c.name}`;
+        tip.style.display = "block";
+        const tw = tip.offsetWidth;
+        tip.style.left = `${Math.max(0, Math.min(box.clientWidth - tw, x + w / 2 - tw / 2))}px`;
+        tip.style.top = `${y > 36 ? y - 34 : y + h + 8}px`;
+      }
+      function draw() {
+        hide();
+        const { W, H } = fit(canvas);
+        const list = WORDS.filter((x) => only < 0 || x.ci === only).map((x) => [x.w, x.s]);
+        const maxFont = Math.min(W / 7.5, H / 4.2) * (only >= 0 ? 1.25 : 1), minFont = W < 640 ? 10 : 12;
+        count.textContent = "排版中…";
+        wc.go({
+          list, fontWeight: "bold", gridSize: Math.round((W < 640 ? 4 : 6) * DPR),
+          // shrinkToFit retries a word at 3/4 weight until its size reaches 0, so the minFont floor needs a cut-off or it recurses forever.
+          weightFactor: (s) => { const px = Math.pow(s / 100, 1.35) * maxFont; return px < minFont * 0.6 ? 0 : Math.max(minFont, px) * DPR; },
+          color: (word) => CATS[CAT_OF[word]].color,
+          shape: SHAPES[shape][1], ellipticity: W > H ? Math.max(0.5, H / W) : 1,
+          rotateRatio: rotate ? 0.3 : 0, rotationSteps: 2, minRotation: 0, maxRotation: Math.PI / 2,
+          drawOutOfBound: false, shrinkToFit: true, wait: 12, hover,
+        }, (d, st) => { count.innerHTML = `排版中 <b>${st.seen}</b>／${list.length}`; })
+          .then((r) => { if (!r.aborted) count.innerHTML = `已放入 <b>${r.placed}</b>／${list.length} 個詞`; });
+      }
+      ctx.group(SHAPES.map((s) => s[0]), 0, (i) => { shape = i; draw(); });
+      ctx.toggle("直排混排", rotate, (v) => { rotate = v; draw(); });
+      ctx.button("重新排列", draw);
+      ctx.on(canvas, "mouseleave", hide);
+      onBox(ctx, box, draw);
+    },
+  },
+  {
+    id: "shapes", title: "內建形狀",
+    api: "shape: 'circle' | 'cardioid' | 'star' … | (theta) => r",
+    desc: "shape 決定詞從中心向外找空位時走的極座標輪廓：七個內建關鍵字，加上一個自訂函式（傳入角度 θ、回傳 0 到 1 的半徑）。詞夠多時外圍輪廓就會浮現。",
+    hint: "按「重新排列」看隨機打散後的不同結果",
+    mount(ctx) {
+      const flower = (t) => 0.5 + 0.5 * Math.abs(Math.cos(3 * t));
+      const SHAPES = [["circle", "圓形"], ["cardioid", "心形線"], ["diamond", "菱形"], ["triangle", "正三角"],
+        ["triangle-forward", "右向三角"], ["pentagon", "五邊形"], ["star", "星形"], [flower, "自訂花瓣", "θ => .5+.5|cos 3θ|"]];
+      ctx.html(`<div class="wc-fill wc-grid">${SHAPES.map(([k, name, code]) =>
+        `<div class="panel wc-card"><h2><code>${typeof k === "string" ? `'${k}'` : "函式"}</code>${name}${code ? `<small class="wc-num">${code}</small>` : ""}</h2><div class="wc-box"><canvas></canvas></div></div>`).join("")}</div>`);
+      const runs = ctx.$$("canvas").map((cv) => cloud(ctx, cv));
+      const sorted = jsList().sort((a, b) => b[1] - a[1]);
+      const rel = (s) => 0.3 + 0.7 * (s / 100);
+      function draw() {
+        ctx.$$("canvas").forEach((cv, i) => {
+          const { W, H } = fit(cv);
+          // Size the words so their total ink covers about half the card: the outline only shows
+          // when the layout runs out of words before it runs out of room.
+          const list = sorted.slice(0, Math.max(18, Math.min(sorted.length, Math.round((W * H) / 1000))));
+          const ink = list.reduce((sum, [w, s]) => sum + w.length * rel(s) ** 2 * 1.2, 0);
+          const k = Math.sqrt((0.5 * W * H) / ink);
+          runs[i].go({
+            list: list.map((x) => x.slice()), fontWeight: "bold", gridSize: Math.max(4, Math.round(2 * DPR)),
+            weightFactor: (s) => rel(s) * k * DPR,
+            color: (w) => CATS[CAT_OF[w]].color,
+            shape: SHAPES[i][0], ellipticity: Math.min(1, H / W), rotateRatio: 0, wait: 0,
+          });
+        });
+      }
+      ctx.button("重新排列", draw, { primary: true });
+      onBox(ctx, ctx.$(".wc-box"), draw);
+    },
+  },
+  {
+    id: "mask", title: "遮罩輪廓",
+    api: "clearCanvas: false + backgroundColor（預先畫好遮罩）",
+    desc: "官方的遮罩做法：關掉 clearCanvas，先在畫布上畫好圖形，形狀內塗上與 backgroundColor 完全相同的顏色，形狀外塗差 1 的顏色。wordcloud2 會讀回像素，只把顏色等於背景的格子當成空位，於是詞只排進輪廓裡。",
+    hint: "切換台灣、JS 字樣與愛心三種遮罩",
+    mount(ctx) {
+      ctx.html(`<div class="wc-fill wc-col"><div class="wc-box"><canvas></canvas><canvas class="wc-over"></canvas></div></div>`);
+      const [canvas, outline] = ctx.$$("canvas");
+      const wc = cloud(ctx, canvas);
+      let mi = 0, showLine = true;
+      function draw() {
+        const { W, H } = fit(canvas);
+        fit(outline);
+        const mask = MASKS[mi];
+        const area = paintMask(canvas, mask, W, H, outline);
+        // Scale the largest word to the free area inside the mask, not to the whole canvas.
+        const base = Math.sqrt(area) / mask.div;
+        const pal = mask.palette;
+        wc.go({
+          list: layered(mask.words.map(([w, s]) => [w, s]), [1, 0.6, 0.4, 0.28, 0.2]),
+          clearCanvas: false, backgroundColor: BG, fontWeight: "bold",
+          gridSize: Math.round(5 * DPR),
+          weightFactor: (s) => { const px = (s / 100) * base; return px < 6 ? 0 : px * DPR; },
+          color: (w, s) => (s > 70 ? pal[0] : s > 45 ? pal[1] : s > 25 ? pal[2] : rgba(pal[3], 0.75)),
+          rotateRatio: mask.rot, rotationSteps: 2, minRotation: -Math.PI / 2, maxRotation: 0, wait: 0,
+        });
+      }
+      ctx.group(MASKS.map((m) => m.label), 0, (i) => { mi = i; draw(); });
+      ctx.toggle("輪廓線", showLine, (v) => { showLine = v; outline.style.opacity = v ? 1 : 0; });
+      ctx.button("重新排列", draw);
+      onBox(ctx, canvas, draw);
+    },
+  },
+  {
+    id: "grid", title: "旋轉與網格",
+    api: "rotateRatio / rotationSteps / gridSize / drawMask",
+    desc: "rotateRatio 是每個詞被旋轉的機率，rotationSteps 把角度限制在幾個固定值（0 代表任意角度）。gridSize 是判斷空位的格子大小，越大字距越寬；打開 drawMask 會把已被占用的格子畫出來，直接看到排版演算法眼中的畫布。",
+    hint: "拖動滑桿調整參數・打開遮罩格看占用狀態",
+    mount(ctx) {
+      ctx.html(`<div class="wc-fill wc-col"><div class="wc-box"><canvas></canvas></div><div class="wc-param"></div></div>`);
+      const canvas = ctx.$("canvas"), param = ctx.$(".wc-param");
+      const wc = cloud(ctx, canvas);
+      const STEPS = [{ value: "0", label: "任意角度" }, { value: "3", label: "3 段（每 90°）" }, { value: "5", label: "5 段（每 45°）" }, { value: "7", label: "7 段（每 30°）" }];
+      const p = { ratio: 0.5, steps: 5, grid: 8, mask: false };
+      let timer = 0;
+      const later = () => { clearTimeout(timer); timer = ctx.timeout(draw, 160); };
+      function draw() {
+        const { W, H } = fit(canvas);
+        const maxFont = Math.min(W / 8, H / 4.5);
+        param.innerHTML = `rotateRatio <b>${p.ratio.toFixed(2)}</b>・rotationSteps <b>${p.steps}</b>・gridSize <b>${p.grid}</b>${p.mask ? "・drawMask <b>on</b>" : ""}`;
+        wc.go({
+          list: layered(jsList(), [1, 0.6]), fontWeight: "bold", gridSize: Math.round(p.grid * DPR),
+          weightFactor: (s) => { const px = Math.pow(s / 100, 1.2) * maxFont; return px < 9 ? 0 : px * DPR; },
+          color: (w) => CATS[CAT_OF[w]].color,
+          rotateRatio: p.ratio, rotationSteps: p.steps, minRotation: -Math.PI / 2, maxRotation: Math.PI / 2,
+          ellipticity: W > H ? Math.max(0.5, H / W) : 1,
+          drawMask: p.mask, maskColor: rgba(C[1], 0.22), maskGapWidth: 0.25, wait: 0,
+        });
+      }
+      ctx.slider("旋轉比例", { min: 0, max: 1, step: 0.05, value: p.ratio }, (v) => { p.ratio = v; later(); });
+      ctx.select("角度", STEPS, String(p.steps), (v) => { p.steps = +v; draw(); });
+      ctx.slider("格子", { min: 4, max: 24, step: 2, value: p.grid, format: (v) => `${v} px` }, (v) => { p.grid = v; later(); });
+      ctx.toggle("遮罩格", p.mask, (v) => { p.mask = v; draw(); });
+      onBox(ctx, canvas, draw);
+    },
+  },
+  {
+    id: "style", title: "顏色與字級",
+    api: "color(word, weight, fontSize, distance, theta) / weightFactor(size)",
+    desc: "color 可以是函式，參數包含詞距離中心多遠（distance）與所在角度（theta），能做出放射漸層或色相環；weightFactor 把權重換成像素字級，換一條曲線就改變大小詞的反差。fontWeight 也可依權重給不同粗細。",
+    hint: "切換配色規則與字級曲線，右側同步畫出對應關係",
+    mount(ctx) {
+      ctx.html(`<div class="wc-fill wc-split"><div class="wc-box"><canvas></canvas></div>
+        <div class="panel wc-side wc-two"><div class="wc-blk"><h3>字級曲線 <small class="muted wc-num">weightFactor</small></h3><canvas class="wc-curve"></canvas></div>
+        <div class="wc-blk"><h3>配色規則</h3><div class="wc-rule"></div><p class="wc-wide">粗細：權重 70 以上 900、45 以上 700、其餘 400。</p></div></div></div>`);
+      const canvas = ctx.$("canvas"), curve = ctx.$(".wc-curve"), rule = ctx.$(".wc-rule");
+      const wc = cloud(ctx, canvas);
+      const CURVES = [["線性", (t) => t], ["平方根", (t) => Math.sqrt(t)], ["平方", (t) => t * t]];
+      const MODES = ["依距離", "依角度", "依權重", "random-light"];
+      let mode = 0, cv = 1;
+      const hue = (t) => `hsl(${Math.round(t)}, 88%, 64%)`;
+      function plot(fn) {
+        const { W, H } = fit(curve);
+        const g = curve.getContext("2d");
+        g.setTransform(DPR, 0, 0, DPR, 0, 0);
+        g.clearRect(0, 0, W, H);
+        const L = 24, B = H - 14;
+        g.strokeStyle = "rgba(255,255,255,.15)";
+        g.beginPath(); g.moveTo(L, 4); g.lineTo(L, B); g.lineTo(W - 4, B); g.stroke();
+        g.fillStyle = MUTED; g.font = `10px ${FONT}`;
+        g.fillText("字級", 0, 12); g.fillText("權重 0 → 100", L + 4, H - 2);
+        CURVES.forEach(([, f], i) => {
+          g.strokeStyle = i === cv ? C[0] : "rgba(255,255,255,.18)";
+          g.lineWidth = i === cv ? 2.5 : 1;
+          g.beginPath();
+          for (let x = 0; x <= 40; x++) { const t = x / 40; g[x ? "lineTo" : "moveTo"](L + t * (W - L - 6), B - f(t) * (B - 6)); }
+          g.stroke();
+        });
+      }
+      function draw() {
+        const { W, H } = fit(canvas);
+        const g = Math.max(4, Math.round(4 * DPR)), maxR = Math.hypot(W * DPR, H * DPR) / 2 / g;
+        const k = Math.min(W / 9.5, H / 5), f = CURVES[cv][1];
+        const color = [
+          (w, s, px, d) => hue(55 - Math.min(1, d / (maxR * 0.75)) * 255),
+          (w, s, px, d, th) => hue((th * 180) / Math.PI + 360),
+          (w, s) => (s >= 80 ? C[2] : s >= 55 ? C[0] : s >= 40 ? C[1] : MUTED),
+          "random-light",
+        ][mode];
+        rule.innerHTML = [
+          `<div class="wc-ramp" style="background:linear-gradient(90deg,${[0, 0.25, 0.5, 0.75, 1].map((t) => hue(55 - t * 255)).join(",")})"></div><p>中心黃、往外漸變到紫紅。</p>`,
+          `<div class="wc-ramp" style="background:linear-gradient(90deg,${[0, 60, 120, 180, 240, 300, 360].map((d) => hue(d)).join(",")})"></div><p>依所在角度取色相，形成色相環。</p>`,
+          `<div class="wc-sw">${[[C[2], "80 以上"], [C[0], "55 以上"], [C[1], "40 以上"], [MUTED, "其餘"]].map(([c, t]) => `<span style="--c:${c}"><i></i>${t}</span>`).join("")}</div>`,
+          `<p>內建關鍵字，每個詞隨機取亮色。另有 random-dark。</p>`,
+        ][mode];
+        plot(f);
+        wc.go({
+          list: jsList(), gridSize: g, color,
+          fontWeight: (w, s) => (s >= 70 ? "900" : s >= 45 ? "700" : "400"),
+          weightFactor: (s) => { const px = f(s / 100) * k; return px < 8 ? 0 : px * DPR; },
+          rotateRatio: 0, ellipticity: W > H ? Math.max(0.5, H / W) : 1, wait: 0,
+        });
+      }
+      ctx.group(MODES, mode, (i) => { mode = i; draw(); });
+      ctx.group(CURVES.map((c) => c[0]), cv, (i) => { cv = i; draw(); });
+      onBox(ctx, canvas, draw);
+    },
+  },
+  {
+    id: "events", title: "事件與中止",
+    api: "wordcloudstart / wordclouddrawn / wordcloudstop + click + origin",
+    desc: "設定 wait 讓排版逐字進行，每放一個詞發出 wordclouddrawn（detail.drawn 表示放得下與否），結束發出 wordcloudstop。官方文件說取消事件可中止，但 1.2.3 建立事件時沒設 cancelable，preventDefault 無效；這裡改用文件另一個做法：對畫布發出 wordcloudstart，迴圈就停。點任一字詞，會以點擊位置為 origin 重新排版。",
+    hint: "按「中止」停止排版・點字詞改變中心點",
+    mount(ctx) {
+      ctx.html(`<div class="wc-fill wc-split"><div class="wc-box"><canvas></canvas><div class="wc-dot"></div></div>
+        <div class="panel wc-side"><h3>事件紀錄 <small class="muted wc-stat"></small></h3><div class="wc-prog"><i></i></div><ol class="wc-log"></ol></div></div>`);
+      const canvas = ctx.$("canvas"), dot = ctx.$(".wc-dot"), log = ctx.$(".wc-log"), stat = ctx.$(".wc-stat"), bar = ctx.$(".wc-prog i");
+      const wc = cloud(ctx, canvas);
+      let wait = 40, t0 = performance.now(), manual = false, total = 0, focus = null;
+      const add = (cls, name, text = "") => {
+        const li = document.createElement("li");
+        li.className = cls;
+        li.innerHTML = `<span class="t">+${Math.round(performance.now() - t0)} ms</span><code>${name}</code><span>${text}</span>`;
+        log.prepend(li);
+        while (log.children.length > 60) log.lastChild.remove();
+      };
+      ctx.on(canvas, "wordcloudstart", () => add("key", "wordcloudstart", manual ? "外部發出，迴圈停止" : `開始，共 ${total} 個詞`));
+      ctx.on(canvas, "wordcloudstop", () => add("key", "wordcloudstop", "排版結束"));
+      ctx.on(canvas, "wordcloudabort", () => add("warn", "wordcloudabort", "超過 abortThreshold"));
+      function draw(origin) {
+        const { W, H } = fit(canvas);
+        const maxFont = Math.min(W / 7, H / 4);
+        const list = jsList().sort((a, b) => (a[0] === focus ? -1 : b[0] === focus ? 1 : 0)).map(([w, s]) => [w, w === focus ? 120 : s]);
+        total = list.length;
+        t0 = performance.now();
+        manual = false;
+        log.textContent = "";
+        dot.style.display = origin ? "block" : "none";
+        if (origin) Object.assign(dot.style, { left: `${origin[0] / DPR}px`, top: `${origin[1] / DPR}px` });
+        stat.textContent = "";
+        bar.style.width = "0";
+        wc.go({
+          list, fontWeight: "bold", gridSize: Math.round(5 * DPR), origin,
+          weightFactor: (s) => { const px = Math.pow(s / 100, 1.3) * maxFont; return px < 9 ? 0 : px * DPR; },
+          color: (w) => (w === focus ? "#fff" : CATS[CAT_OF[w]].color),
+          rotateRatio: 0.2, rotationSteps: 2, minRotation: 0, maxRotation: Math.PI / 2,
+          ellipticity: W > H ? Math.max(0.5, H / W) : 1, wait,
+          click: (item, dim) => {
+            focus = item[0];
+            add("key", "click", `${item[0]}，以此為新中心`);
+            ctx.timeout(() => draw([dim.x + dim.w / 2, dim.y + dim.h / 2]), 250);
+          },
+        }, (d, st) => {
+          add(d.drawn ? "ok" : "miss", "wordclouddrawn", `${d.item[0]}${d.drawn ? "" : "（放不下）"}`);
+          stat.innerHTML = `<span class="wc-num">${st.placed}／${st.seen}／${total}</span>`;
+          bar.style.width = `${(st.seen / total) * 100}%`;
+        });
+      }
+      ctx.slider("wait", { min: 0, max: 120, step: 10, value: wait, format: (v) => `${v} ms` }, (v) => { wait = v; });
+      ctx.button("中止", () => { if (!wc.running) return; manual = true; wc.stop(); manual = false; }, { primary: true });
+      ctx.button("重新開始", () => { focus = null; draw(); });
+      onBox(ctx, canvas, () => draw());
+    },
+  },
+  {
+    id: "dom", title: "Canvas 對 DOM",
+    api: "WordCloud([canvas, div], { classes, list: [{ word, weight, attributes }] })",
+    desc: "同一次呼叫可以同時輸出到 canvas 與一般 div：canvas 是一張圖，div 則是一個個絕對定位的 span。DOM 版可以用 classes 加上類別、用 attributes 加上 title 提示，之後純用 CSS 就能高亮、加 hover，文字也能被選取與搜尋。",
+    hint: "右上選分類只在 DOM 版高亮・滑過右側字詞看提示",
+    mount(ctx) {
+      ctx.html(`<div class="wc-fill wc-pair">
+        <div class="panel wc-pane"><h2>Canvas 輸出<small>1 個 &lt;canvas&gt;，點陣圖</small></h2><div class="wc-box"><canvas></canvas></div></div>
+        <div class="panel wc-pane"><h2>DOM 輸出<small class="wc-spans"></small></h2><div class="wc-box"><div class="wc-host"><div class="wc-dom"></div></div></div></div></div>`);
+      const canvas = ctx.$("canvas"), dom = ctx.$(".wc-dom"), spans = ctx.$(".wc-spans");
+      const wc = cloud(ctx, [canvas, dom]);
+      function draw() {
+        const { W, H } = fit(canvas);
+        Object.assign(dom.style, { width: `${canvas.width}px`, height: `${canvas.height}px`, transform: `scale(${1 / DPR})` });
+        const maxFont = Math.min(W / 6, H / 3.6);
+        spans.textContent = "排版中…";
+        wc.go({
+          list: WORDS.map((x) => ({ word: x.w, weight: x.s, attributes: { title: `${x.w}・權重 ${x.s}・${CATS[x.ci].name}`, "data-cat": CATS[x.ci].name } })),
+          fontWeight: "bold", gridSize: Math.round(4 * DPR),
+          weightFactor: (s) => { const px = Math.pow(s / 100, 1.3) * maxFont; return px < 8 ? 0 : px * DPR; },
+          color: (w) => CATS[CAT_OF[w]].color,
+          classes: (w) => `wc-span wc-k${CAT_OF[w]}`,
+          rotateRatio: 0.2, rotationSteps: 2, minRotation: 0, maxRotation: Math.PI / 2,
+          ellipticity: W > H ? Math.max(0.5, H / W) : 1, wait: 0,
+        }).then((r) => { if (!r.aborted) spans.innerHTML = `<b>${dom.children.length}</b> 個 &lt;span&gt;，可選取文字`; });
+      }
+      ctx.select("DOM 高亮", [{ value: "", label: "全部" }, ...CATS.map((c, i) => ({ value: String(i), label: c.name }))], "", (v) => {
+        if (v === "") dom.removeAttribute("data-hl"); else dom.setAttribute("data-hl", v);
+      });
+      ctx.button("重新排列", draw);
+      onBox(ctx, canvas, draw);
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "wait: 0 + wordcloudstop 計時",
+    desc: "產生 50 到 6,400 個詞（字級依冪次分布、不縮小），每級量從呼叫 WordCloud 到 wordcloudstop 的完整排版時間。詞多到放不下時，每個失敗的詞都要沿螺線找遍所有格子，成本會急遽上升。",
+    hint: "按「開始測試」・切換 gridSize 後再測一次比較",
+    mount(ctx) {
+      ctx.html(`<div class="wc-stress"><canvas></canvas></div>`);
+      const canvas = ctx.$("canvas");
+      const wc = cloud(ctx, canvas);
+      const GRIDS = [4, 8, 16];
+      let gi = 1;
+      ctx.group(GRIDS.map((g) => `格子 ${g}px`), gi, (i) => { gi = i; });
+      ctx.controls.classList.add("bottom");
+      ctx.bench({
+        label: "詞數", unit: "詞", sizes: [50, 100, 200, 400, 800, 1600, 3200, 6400],
+        prepare: (n) => synth(n),
+        async run(n, list) {
+          const { W, H } = fit(canvas);
+          const maxFont = Math.min(W, H) / 7;
+          const r = await wc.go({
+            list, fontWeight: "bold", gridSize: Math.round(GRIDS[gi] * DPR),
+            weightFactor: (s) => Math.max(9, (s / 100) * maxFont) * DPR,
+            color: (w, s) => (s > 50 ? C[0] : s > 20 ? C[1] : s > 10 ? C[3] : rgba(C[5], 0.8)),
+            rotateRatio: 0.2, rotationSteps: 2, minRotation: 0, maxRotation: Math.PI / 2,
+            ellipticity: W > H ? Math.max(0.5, H / W) : 1, wait: 0,
+          });
+          return `放入 ${r.placed}／${n}`;
+        },
+        note: "wait: 0 時每個詞用 postMessage 排一次下一輪，不會長時間卡住畫面。格子越細，判斷空位越精準、可塞進的詞越多，但每個詞要檢查的格子也越多。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

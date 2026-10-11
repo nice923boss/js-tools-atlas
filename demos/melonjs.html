@@ -3,65 +3,50 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>melonJS 示範：螢火蟲夜捕</title>
+<title>melonJS 示範：七個場景看懂 HTML5 遊戲引擎與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["螢火蟲夜捕","SAT 碰撞沙盒","Tiled 關卡與攝影機","Tween 緩動曲線","粒子與拖尾","Stage 狀態切換","極限測試"]}</script>
 <style>
-  #screen { position: fixed; inset: 0; background: #0b1020; touch-action: none; }
-  #screen canvas { display: block; outline: none; touch-action: none; }
-  .overlay { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; pointer-events: none; transition: opacity .35s; }
-  .overlay.hide { opacity: 0; }
-  .overlay .card { text-align: center; padding: 16px 26px; border-radius: 16px; background: rgba(11, 16, 32, .62); backdrop-filter: blur(3px); border: 1px solid var(--line); max-width: 86vw; }
-  .overlay h1 { margin: 0; font-size: clamp(28px, 7vw, 48px); letter-spacing: 4px; color: #f6f1a8; text-shadow: 0 0 18px rgba(246, 241, 120, .7); }
-  .overlay p { margin: 6px 0 0; }
-  .overlay .blink { color: var(--c4); animation: blink 1.2s steps(2) infinite; }
-  @keyframes blink { 50% { opacity: .25; } }
+  .mj-wrap { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); }
+  .mj-wrap iframe, .mj-stress iframe { display: block; width: 100%; height: 100%; border: 1px solid var(--line); border-radius: 10px; background: #0e1013; }
+  .mj-stress { position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 350px; }
+  @media (max-width: 760px) { .mj-stress { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px); } }
 </style>
 </head>
 <body>
-<div id="screen"></div>
-<div class="overlay" id="overlay">
-  <div class="card">
-    <h1 id="ov-title">螢火蟲夜捕</h1>
-    <p id="ov-sub">30 秒內用網子捕捉螢火蟲，金色的算 3 隻</p>
-    <p class="blink" id="ov-go">按任意鍵或點擊開始</p>
-  </div>
-</div>
-<div class="hint">移動滑鼠瞄準、點擊揮網；鍵盤用方向鍵移動、空白鍵揮網</div>
-
-<script type="module">
-// melonJS click-collect game: Application + custom Renderables, Trail, ParticleEmitter, Tween, Text, pointer and key bindings.
-import * as me from "https://cdn.jsdelivr.net/npm/melonjs@20.7.0/+esm";
-
-const FONT = "Noto Sans TC, Microsoft JhengHei, PingFang TC, sans-serif";
-const ROUND = 30;
-const $ = (id) => document.getElementById(id);
+<!-- melonJS keeps engine-wide singletons (game, state, input, timer, level), so each scene boots its own copy inside a srcdoc iframe (see melonFrame). -->
+<script src="_shared/showcase.js"></script>
+<script>
+// melonJS showcase: seven scenes from the firefly game to a rigid-body stress ramp.
+const MELON = "https://cdn.jsdelivr.net/npm/melonjs@20.7.0/+esm";
+const FONT = getComputedStyle(document.documentElement).getPropertyValue("--font").trim();
+const MONO = getComputedStyle(document.documentElement).getPropertyValue("--mono").trim();
+const TAU = Math.PI * 2;
 const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const pick = (arr) => arr[(Math.random() * arr.length) | 0];
 
-const app = new me.Application(800, 500, {
-  parent: "screen",
-  scale: "auto",
-  scaleMethod: "flex",
-  // WebGL 2 when available, otherwise the Canvas renderer (skips the WebGPU probe)
-  renderer: me.device.isWebGLSupported({ failIfMajorPerformanceCaveat: false }) ? me.video.WEBGL : me.video.CANVAS,
-  backgroundColor: "#0b1020",
-  failIfMajorPerformanceCaveat: false,
-  consoleHeader: false,
-});
-await app.init();
-app.pauseOnBlur = false;
-app.stopOnBlur = false;
+// Removes a child once; melonJS throws "Child is not mine" for a child that already left.
+const drop = (c) => { if (c && c.ancestor && c.ancestor.hasChild(c)) c.ancestor.removeChild(c); };
+// me.Text re-measures on every setText, so only push real changes.
+function setTxt(t, s) { if (t.lastText !== s) { t.lastText = s; t.setText(s); } }
+// setFont resets bold, so bold() is re-applied after it; setText then re-measures,
+// otherwise the cached text texture keeps the old size and clips the larger glyphs.
+function setSize(t, font, size, bold) {
+  size = Math.round(size);
+  if (t.lastSize === size) return;
+  t.lastSize = size;
+  t.setFont(font, size);
+  if (bold) t.bold();
+  t.setText(t.lastText ?? t._text);
+}
 
-const vw = () => app.viewport.width;
-const vh = () => app.viewport.height;
-
-// soft round glow textures drawn once on plain canvases
-function makeGlow(rgb, size = 64) {
-  const c = document.createElement("canvas");
+function makeGlow(doc, rgb, size = 64) {
+  const c = doc.createElement("canvas");
   c.width = c.height = size;
-  const g = c.getContext("2d");
-  const h = size / 2;
+  const g = c.getContext("2d"), h = size / 2;
   const grd = g.createRadialGradient(h, h, 0, h, h, h);
   grd.addColorStop(0, `rgba(${rgb},1)`);
   grd.addColorStop(0.3, `rgba(${rgb},.55)`);
@@ -70,290 +55,1621 @@ function makeGlow(rgb, size = 64) {
   g.fillRect(0, 0, size, size);
   return c;
 }
-const glowTex = makeGlow("255,255,255", 32);
-const GLOW = { green: makeGlow("200,245,96"), gold: makeGlow("255,210,63") };
 
-// night meadow: sky gradient, moon, twinkling stars, grass silhouettes
-class Meadow extends me.Renderable {
-  constructor() {
-    super(0, 0, 10, 10);
-    this.anchorPoint.set(0, 0);
-    this.alwaysUpdate = true;
-    this.t = 0;
-    this.stars = Array.from({ length: 70 }, () => ({ x: Math.random(), y: Math.random() * 0.6, r: rand(0.6, 1.8), p: rand(0, 6.3) }));
-    this.blades = Array.from({ length: 90 }, () => ({ x: Math.random(), h: rand(0.06, 0.16), p: rand(0, 6.3) }));
-  }
-  update(dt) {
-    this.t += dt / 1000;
-    this.resize(vw(), vh());
-    return true;
-  }
-  draw(r) {
-    const w = vw(), h = vh();
-    const sky = r.createLinearGradient(0, 0, 0, h);
-    sky.addColorStop(0, "#070a18");
-    sky.addColorStop(0.65, "#141c3a");
-    sky.addColorStop(1, "#1d2a3a");
-    r.setColor(sky);
-    r.fillRect(0, 0, w, h);
-    for (const s of this.stars) {
-      r.setGlobalAlpha(0.35 + 0.35 * Math.sin(this.t * 2 + s.p));
-      r.setColor("#ffffff");
-      r.fillArc(s.x * w, s.y * h, s.r, 0, Math.PI * 2);
-    }
-    const mx = w * 0.82, my = h * 0.16, mr = Math.min(w, h) * 0.06;
-    r.setGlobalAlpha(0.12);
-    r.setColor("#fff6c8");
-    r.fillArc(mx, my, mr * 2.2, 0, Math.PI * 2);
-    r.setGlobalAlpha(1);
-    r.fillArc(mx, my, mr, 0, Math.PI * 2);
-    r.setColor("#0f1630");
-    for (const b of this.blades) {
-      const x = b.x * w, top = h * (1 - b.h), sway = Math.sin(this.t * 1.4 + b.p) * 6;
-      r.beginPath();
-      r.moveTo(x - 5, h);
-      r.lineTo(x + sway, top);
-      r.lineTo(x + 5, h);
-      r.closePath();
-      r.fill();
-    }
-    r.fillRect(0, h - 18, w, 18);
-  }
+// The world quadtree keeps its 800x500 boot size; refit it to the live viewport.
+function fitWorld(app, minY = 0) {
+  app.world.broadphase.clear({ min: { x: 0, y: minY }, max: { x: app.viewport.width, y: app.viewport.height } });
 }
 
-class Firefly extends me.Renderable {
-  constructor(gold) {
-    super(rand(30, vw() - 30), rand(vh() * 0.15, vh() * 0.82), 40, 40);
-    this.alwaysUpdate = true;
-    this.gold = gold;
-    this.heading = rand(0, Math.PI * 2);
-    this.speed = gold ? 95 : rand(40, 70);
-    this.phase = rand(0, 6.3);
-    this.t = 0;
-    this.color = gold ? "#ffd23f" : "#c8f560";
-  }
-  update(dt) {
-    const s = dt / 1000;
-    this.t += s;
-    this.heading += rand(-3, 3) * s;
-    // drift away from the net so catching takes some aim
-    const dx = this.pos.x - net.pos.x, dy = this.pos.y - net.pos.y, d = Math.hypot(dx, dy);
-    let fx = 0, fy = 0;
-    if (d < 110 && d > 0) { fx = (dx / d) * (110 - d) * 1.6; fy = (dy / d) * (110 - d) * 1.6; }
-    let x = this.pos.x + (Math.cos(this.heading) * this.speed + fx) * s;
-    let y = this.pos.y + (Math.sin(this.heading) * this.speed * 0.7 + fy) * s;
-    if (x < 14 || x > vw() - 14) this.heading = Math.PI - this.heading;
-    if (y < vh() * 0.08 || y > vh() - 40) this.heading = -this.heading;
-    x = Math.max(14, Math.min(vw() - 14, x));
-    y = Math.max(vh() * 0.08, Math.min(vh() - 40, y));
-    this.pos.set(x, y, this.pos.z);
-    return true;
-  }
-  draw(r) {
-    const cx = this.pos.x + this.width / 2, cy = this.pos.y + this.height / 2;
-    const glow = 0.45 + 0.55 * Math.max(0, Math.sin(this.t * 3 + this.phase));
-    const base = this.gold ? 6 : 4, R = base * 5 * (0.8 + 0.3 * glow);
-    r.setBlendMode("additive");
-    r.setGlobalAlpha(0.35 + 0.65 * glow);
-    r.drawImage(this.gold ? GLOW.gold : GLOW.green, 0, 0, 64, 64, cx - R, cy - R, R * 2, R * 2);
-    r.setGlobalAlpha(0.6 + 0.4 * glow);
-    r.setColor("#fffbe0");
-    r.fillArc(cx, cy, base * 0.7, 0, Math.PI * 2);
-    r.setBlendMode("normal");
-  }
-}
-
-class Net extends me.Renderable {
-  constructor() {
-    super(400, 250, 90, 90);
-    this.alwaysUpdate = true;
-    this.target = new me.Vector2d(400, 250);
-    this.radius = 34;
-    this.swing = 0;
-  }
-  update(dt) {
-    const k = Math.min(1, dt / 70);
-    this.pos.set(this.pos.x + (this.target.x - this.pos.x) * k, this.pos.y + (this.target.y - this.pos.y) * k, this.pos.z);
-    this.swing = Math.max(0, this.swing - dt / 260);
-    return true;
-  }
-  draw(r) {
-    const cx = this.pos.x + this.width / 2, cy = this.pos.y + this.height / 2;
-    const rad = this.radius * (1 + this.swing * 0.35);
-    r.setGlobalAlpha(0.16 + this.swing * 0.3);
-    r.setColor("#4cc9f0");
-    r.fillArc(cx, cy, rad, 0, Math.PI * 2);
-    r.setGlobalAlpha(0.35);
-    r.lineWidth = 1;
-    r.setColor("#ecebe6");
-    for (let i = -2; i <= 2; i++) {
-      const o = (i * rad) / 3, c = Math.sqrt(rad * rad - o * o);
-      r.strokeLine(cx + o, cy - c, cx + o, cy + c);
-      r.strokeLine(cx - c, cy + o, cx + c, cy + o);
-    }
-    r.setGlobalAlpha(1);
-    r.lineWidth = 4;
-    r.setColor("#ecebe6");
-    r.strokeArc(cx, cy, rad, 0, Math.PI * 2);
-    r.setColor("#c58a4a");
-    r.lineWidth = 6;
-    r.strokeLine(cx + rad * 0.7, cy + rad * 0.7, cx + rad * 1.9, cy + rad * 1.9);
-  }
-}
-
-const hudStyle = (color, align) => ({ font: FONT, size: 22, fillStyle: color, textAlign: align, textBaseline: "top", text: "" });
-const scoreText = new me.Text(16, 14, hudStyle("#f6f1a8", "left"));
-const timeText = new me.Text(784, 14, hudStyle("#4cc9f0", "right"));
-
-const meadow = new Meadow();
-const net = new Net();
-const trail = new me.Trail({
-  target: net, length: 26, lifetime: 380, minDistance: 6, width: 12,
-  widthCurve: [1, 0.6, 0], gradient: ["#4cc9f0", "#9d8cff", "#9d8cff00"], opacity: 0.45, blendMode: "additive",
-});
-const flies = new Set();
-let mode = "title", score = 0, best = 0, timeLeft = ROUND, aiCooldown = 0, overAt = 0;
-
-app.world.addChild(meadow, 0);
-app.world.addChild(trail, 5);
-app.world.addChild(net, 6);
-app.world.addChild(scoreText, 20);
-app.world.addChild(timeText, 20);
-
-function spawnFly(gold = Math.random() < 0.14) {
-  const f = new Firefly(gold);
-  flies.add(f);
-  app.world.addChild(f, 8);
-}
-
-function burst(x, y, color, n) {
-  const em = new me.ParticleEmitter(x, y, {
-    image: glowTex, tint: color, totalParticles: n, angle: 0, angleVariation: Math.PI,
-    minLife: 350, maxLife: 800, speed: 3.2, speedVariation: 2, gravity: 0.05,
-    minStartScale: 0.5, maxStartScale: 0.9, minEndScale: 0, maxEndScale: 0.1,
-    blendMode: "additive", autoDestroyOnComplete: true,
+// Loads melonJS as an ES module inside a srcdoc iframe. Removing the iframe on cleanup stops its run loop.
+function melonFrame(ctx, host) {
+  const f = document.createElement("iframe");
+  f.title = "melonJS 畫布";
+  f.srcdoc = `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#0e1013}#screen{width:100%;height:100%}#screen canvas{display:block;outline:none;touch-action:none}</style></head>
+<body><div id="screen"></div><script type="module">import * as me from "${MELON}"; window.me = me;<\/script></body></html>`;
+  host.append(f);
+  ctx.onCleanup(() => f.remove());
+  return new Promise((resolve, reject) => {
+    f.addEventListener("load", () => {
+      const win = f.contentWindow;
+      if (!win || !win.me) return reject(new Error("melonJS 無法從 CDN 載入"));
+      resolve({ win, doc: win.document, me: win.me });
+    }, { once: true });
   });
-  app.world.addChild(em, 12);
-  em.burstParticles(n);
 }
 
-function popup(x, y, msg, color) {
-  const t = new me.Text(x, y, { font: FONT, size: 24, fillStyle: color, textAlign: "center", textBaseline: "middle", text: msg });
-  app.world.addChild(t, 15);
-  new me.Tween(t.pos).to({ y: y - 50 }, { duration: 750 }).easing(me.Tween.Easing.Cubic.Out).start();
-  new me.Tween(t).to({ alpha: 0 }, { duration: 750, delay: 250 }).onComplete(() => app.world.removeChild(t)).start();
+// Keys pressed while focus is on the outer page are fed to melonJS through triggerKeyEvent.
+function forwardKeys(ctx, me) {
+  const fwd = (e) => {
+    const t = e.target;
+    if (t.closest && t.closest("input,select,textarea,[role=tab]")) return;
+    if (t.closest && t.closest("button") && (e.code === "Space" || e.code === "Enter")) return;
+    if (/^Arrow|^Space$/.test(e.code)) e.preventDefault();
+    if (e.repeat) return;
+    me.input.triggerKeyEvent(e.keyCode, e.type === "keydown");
+  };
+  ctx.on(document, "keydown", fwd);
+  ctx.on(document, "keyup", fwd);
 }
 
-// swing the net at its current spot and catch everything inside the hoop
-function swing() {
-  net.swing = 1;
-  const cx = net.pos.x, cy = net.pos.y;
-  let got = 0;
-  for (const f of [...flies]) {
-    if (Math.hypot(f.pos.x - cx, f.pos.y - cy) > net.radius + 6) continue;
-    flies.delete(f);
-    app.world.removeChild(f);
-    const pts = f.gold ? 3 : 1;
-    got += pts;
-    burst(f.pos.x, f.pos.y, f.color, f.gold ? 40 : 20);
-    if (mode === "play") popup(f.pos.x, f.pos.y - 10, `+${pts}`, f.gold ? "#ffd23f" : "#c8f560");
-    if (f.gold) app.viewport.shake(6, 220);
-    setTimeout(() => spawnFly(), rand(300, 1200));
-  }
-  if (mode === "play") {
-    score += got;
-    if (got >= 4) popup(cx, cy - 46, `連捕 ×${got}`, "#f72585");
-  }
+async function boot(ctx, { bg = "#0b1020", wrap = "mj-wrap" } = {}) {
+  ctx.html(`<div class="${wrap}"></div>`);
+  const fr = await melonFrame(ctx, ctx.$("." + wrap));
+  const me = fr.me;
+  const app = new me.Application(800, 500, {
+    parent: "screen", scale: "auto", scaleMethod: "flex",
+    // WebGL 2 when available, otherwise the Canvas renderer (skips the WebGPU probe)
+    renderer: me.device.isWebGLSupported({ failIfMajorPerformanceCaveat: false }) ? me.video.WEBGL : me.video.CANVAS,
+    backgroundColor: bg, failIfMajorPerformanceCaveat: false, consoleHeader: false,
+  });
+  await app.init();
+  app.pauseOnBlur = false;
+  app.stopOnBlur = false;
+  forwardKeys(ctx, me);
+  return { ...fr, app };
 }
 
-function overlay(title, sub, go) {
-  $("ov-title").textContent = title;
-  $("ov-sub").textContent = sub;
-  $("ov-go").textContent = go;
-  $("overlay").classList.remove("hide");
-}
+Showcase.run({ scenes: [
+  {
+    id: "fireflies", title: "螢火蟲夜捕",
+    api: "Application・Renderable・Trail・ParticleEmitter・Tween・Text・bindKey",
+    desc: "原本的招牌示範移植過來：夜空、螢火蟲與網子都是自訂 draw 的 Renderable，網子後面拖著 Trail；捕到時 ParticleEmitter 爆出光點，Tween 讓得分飄字上升淡出，金色螢火蟲還會觸發 viewport.shake。標題與結算面板也直接畫在畫布裡（浮動的 Renderable 加 Text）。預設由自動駕駛示範。",
+    hint: "滑鼠或手指移動網子、點擊揮網；方向鍵／WASD 移動，空白鍵或 Enter 揮網；按任意鍵開始",
+    async mount(ctx) {
+      const { me, doc, app } = await boot(ctx);
+      const vw = () => app.viewport.width, vh = () => app.viewport.height;
+      const ROUND = 30;
+      const glowTex = makeGlow(doc, "255,255,255", 32);
+      const GLOW = { green: makeGlow(doc, "200,245,96"), gold: makeGlow(doc, "255,210,63") };
+      const flies = new Set();
+      let mode = "title", score = 0, best = 0, timeLeft = ROUND, aiCooldown = 0, overAt = 0, pending = 0;
 
-function start() {
-  mode = "play";
-  score = 0;
-  timeLeft = ROUND;
-  $("overlay").classList.add("hide");
-}
-
-function action() {
-  if (mode === "title") start();
-  else if (mode === "over" && performance.now() - overAt > 500) start();
-  else if (mode === "play") swing();
-}
-
-// game director: timer, HUD, attract-mode autopilot, keyboard movement
-class Director extends me.Renderable {
-  constructor() {
-    super(0, 0, 1, 1);
-    this.alwaysUpdate = true;
-  }
-  update(dt) {
-    const s = dt / 1000;
-    while (flies.size < 22) spawnFly();
-    const kx = (me.input.isKeyPressed("right") ? 1 : 0) - (me.input.isKeyPressed("left") ? 1 : 0);
-    const ky = (me.input.isKeyPressed("down") ? 1 : 0) - (me.input.isKeyPressed("up") ? 1 : 0);
-    if (kx || ky) {
-      net.target.x = Math.max(20, Math.min(vw() - 20, net.target.x + kx * 420 * s));
-      net.target.y = Math.max(20, Math.min(vh() - 20, net.target.y + ky * 420 * s));
-    }
-    if (mode === "title") {
-      // autopilot: chase the nearest firefly and swing when close
-      let near = null, nd = Infinity;
-      for (const f of flies) {
-        const d = Math.hypot(f.pos.x - net.pos.x, f.pos.y - net.pos.y);
-        if (d < nd) { nd = d; near = f; }
+      // night meadow: cached sky gradient, moon, twinkling stars, swaying grass
+      class Meadow extends me.Renderable {
+        constructor() {
+          super(0, 0, 10, 10);
+          this.anchorPoint.set(0, 0);
+          this.alwaysUpdate = true;
+          this.t = 0;
+          this.stars = Array.from({ length: 70 }, () => ({ x: Math.random(), y: Math.random() * 0.6, r: rand(0.6, 1.8), p: rand(0, 6.3) }));
+          this.blades = Array.from({ length: 90 }, () => ({ x: Math.random(), h: rand(0.06, 0.16), p: rand(0, 6.3) }));
+        }
+        update(dt) {
+          this.t += dt / 1000;
+          this.resize(vw(), vh());
+          return true;
+        }
+        draw(r) {
+          const w = vw(), h = vh();
+          if (this.skyH !== h) {
+            this.skyH = h;
+            this.sky = r.createLinearGradient(0, 0, 0, h);
+            this.sky.addColorStop(0, "#070a18");
+            this.sky.addColorStop(0.65, "#141c3a");
+            this.sky.addColorStop(1, "#1d2a3a");
+          }
+          r.setColor(this.sky);
+          r.fillRect(0, 0, w, h);
+          r.setColor("#ffffff");
+          for (const s of this.stars) {
+            r.setGlobalAlpha(0.35 + 0.35 * Math.sin(this.t * 2 + s.p));
+            r.fillArc(s.x * w, s.y * h, s.r, 0, TAU);
+          }
+          const mx = w * 0.82, my = h * 0.16, mr = Math.min(w, h) * 0.06;
+          r.setGlobalAlpha(0.12);
+          r.setColor("#fff6c8");
+          r.fillArc(mx, my, mr * 2.2, 0, TAU);
+          r.setGlobalAlpha(1);
+          r.fillArc(mx, my, mr, 0, TAU);
+          r.setColor("#0f1630");
+          for (const b of this.blades) {
+            const x = b.x * w, top = h * (1 - b.h), sway = Math.sin(this.t * 1.4 + b.p) * 6;
+            r.beginPath();
+            r.moveTo(x - 5, h);
+            r.lineTo(x + sway, top);
+            r.lineTo(x + 5, h);
+            r.closePath();
+            r.fill();
+          }
+          r.fillRect(0, h - 18, w, 18);
+        }
       }
-      if (near) net.target.set(near.pos.x, near.pos.y);
-      aiCooldown -= s;
-      if (near && nd < 26 && aiCooldown <= 0) { swing(); aiCooldown = 0.6; }
-    }
-    if (mode === "play") {
-      timeLeft -= s;
-      if (timeLeft <= 0) {
-        timeLeft = 0;
-        mode = "over";
-        overAt = performance.now();
-        best = Math.max(best, score);
-        overlay("時間到！", `這一輪捕到 ${score} 隻，最高紀錄 ${best} 隻`, "按任意鍵或點擊再玩一次");
+
+      class Firefly extends me.Renderable {
+        constructor(gold) {
+          super(rand(30, vw() - 30), rand(vh() * 0.15, vh() * 0.82), 40, 40);
+          this.alwaysUpdate = true;
+          this.gold = gold;
+          this.heading = rand(0, TAU);
+          this.speed = gold ? 95 : rand(40, 70);
+          this.phase = rand(0, 6.3);
+          this.t = 0;
+          this.color = gold ? "#ffd23f" : "#c8f560";
+        }
+        update(dt) {
+          const s = dt / 1000;
+          this.t += s;
+          this.heading += rand(-3, 3) * s;
+          // drift away from the net so catching takes some aim
+          const dx = this.pos.x - net.pos.x, dy = this.pos.y - net.pos.y, d = Math.hypot(dx, dy);
+          let fx = 0, fy = 0;
+          if (d < 110 && d > 0) { fx = (dx / d) * (110 - d) * 1.6; fy = (dy / d) * (110 - d) * 1.6; }
+          let x = this.pos.x + (Math.cos(this.heading) * this.speed + fx) * s;
+          let y = this.pos.y + (Math.sin(this.heading) * this.speed * 0.7 + fy) * s;
+          if (x < 14 || x > vw() - 14) this.heading = Math.PI - this.heading;
+          if (y < vh() * 0.08 || y > vh() - 40) this.heading = -this.heading;
+          x = clamp(x, 14, vw() - 14);
+          y = clamp(y, vh() * 0.08, vh() - 40);
+          this.pos.set(x, y, this.pos.z);
+          return true;
+        }
+        draw(r) {
+          const cx = this.pos.x + this.width / 2, cy = this.pos.y + this.height / 2;
+          const glow = 0.45 + 0.55 * Math.max(0, Math.sin(this.t * 3 + this.phase));
+          const base = this.gold ? 6 : 4, R = base * 5 * (0.8 + 0.3 * glow);
+          r.setBlendMode("additive");
+          r.setGlobalAlpha(0.35 + 0.65 * glow);
+          r.drawImage(this.gold ? GLOW.gold : GLOW.green, 0, 0, 64, 64, cx - R, cy - R, R * 2, R * 2);
+          r.setGlobalAlpha(0.6 + 0.4 * glow);
+          r.setColor("#fffbe0");
+          r.fillArc(cx, cy, base * 0.7, 0, TAU);
+          r.setBlendMode("normal");
+        }
       }
-    }
-    scoreText.setText(mode === "title" ? "展示模式" : `捕獲 ${score}`);
-    timeText.setText(mode === "title" ? "" : `剩餘 ${Math.ceil(timeLeft)} 秒`);
-    timeText.pos.x = vw() - 16;
-    return true;
-  }
-}
-app.world.addChild(new Director(), 1);
 
-me.input.bindKey(me.input.KEY.LEFT, "left");
-me.input.bindKey(me.input.KEY.A, "left");
-me.input.bindKey(me.input.KEY.RIGHT, "right");
-me.input.bindKey(me.input.KEY.D, "right");
-me.input.bindKey(me.input.KEY.UP, "up");
-me.input.bindKey(me.input.KEY.W, "up");
-me.input.bindKey(me.input.KEY.DOWN, "down");
-me.input.bindKey(me.input.KEY.S, "down");
+      class Net extends me.Renderable {
+        constructor() {
+          super(400, 250, 90, 90);
+          this.alwaysUpdate = true;
+          this.target = new me.Vector2d(400, 250);
+          this.radius = 34;
+          this.swing = 0;
+        }
+        update(dt) {
+          const k = Math.min(1, dt / 70);
+          this.pos.set(this.pos.x + (this.target.x - this.pos.x) * k, this.pos.y + (this.target.y - this.pos.y) * k, this.pos.z);
+          this.swing = Math.max(0, this.swing - dt / 260);
+          return true;
+        }
+        draw(r) {
+          const cx = this.pos.x + this.width / 2, cy = this.pos.y + this.height / 2;
+          const rad = this.radius * (1 + this.swing * 0.35);
+          r.setGlobalAlpha(0.16 + this.swing * 0.3);
+          r.setColor("#4cc9f0");
+          r.fillArc(cx, cy, rad, 0, TAU);
+          r.setGlobalAlpha(0.35);
+          r.lineWidth = 1;
+          r.setColor("#ecebe6");
+          for (let i = -2; i <= 2; i++) {
+            const o = (i * rad) / 3, c = Math.sqrt(rad * rad - o * o);
+            r.strokeLine(cx + o, cy - c, cx + o, cy + c);
+            r.strokeLine(cx - c, cy + o, cx + c, cy + o);
+          }
+          r.setGlobalAlpha(1);
+          r.lineWidth = 4;
+          r.strokeArc(cx, cy, rad, 0, TAU);
+          r.setColor("#c58a4a");
+          r.lineWidth = 6;
+          r.strokeLine(cx + rad * 0.7, cy + rad * 0.7, cx + rad * 1.9, cy + rad * 1.9);
+        }
+      }
 
-me.input.registerPointerEvent("pointermove", app.viewport, (e) => {
-  if (mode !== "title") net.target.set(e.gameWorldX, e.gameWorldY);
-});
-me.input.registerPointerEvent("pointerdown", app.viewport, (e) => {
-  if (mode === "play") {
-    net.target.set(e.gameWorldX, e.gameWorldY);
-    net.pos.set(e.gameWorldX, e.gameWorldY, net.pos.z);
-    trail.clear();
-  }
-  action();
-});
-window.addEventListener("keydown", (e) => {
-  if (e.code === "Space" || e.code === "Enter") { e.preventDefault(); action(); }
-  else if (mode !== "play") action();
-});
+      const label = (x, y, o) => {
+        const t = new me.Text(x, y, { font: FONT, textAlign: "center", textBaseline: "middle", text: "", ...o });
+        t.floating = true;
+        return t;
+      };
+      // in-canvas title / result card: a floating panel Renderable plus three floating Texts
+      const ov = { a: 1 };
+      let ovTw = null, box = { x: 0, y: 0, w: 0, h: 0 };
+      const ovTitle = label(0, 0, { size: 36, fillStyle: "#f6f1a8" });
+      const ovSub = label(0, 0, { size: 15, fillStyle: "#ecebe6" });
+      const ovGo = label(0, 0, { size: 15, fillStyle: "#4cc9f0" });
+      class Panel extends me.Renderable {
+        constructor() {
+          super(0, 0, 10, 10);
+          this.anchorPoint.set(0, 0);
+          this.floating = true;
+          this.alwaysUpdate = true;
+        }
+        update() {
+          const w = vw(), h = vh(), pad = 18;
+          const ts = clamp(w / 9, 26, 42), ss = clamp((w - 64) / 22, 12, 16);
+          setSize(ovTitle, FONT, ts, true);
+          setSize(ovSub, FONT, ss);
+          setSize(ovGo, FONT, ss);
+          const bw = Math.min(w - 32, 480), bh = 2 * pad + ts + 22 + 2 * ss;
+          box = { x: (w - bw) / 2, y: (h - bh) / 2, w: bw, h: bh };
+          const titleY = box.y + pad + ts / 2, subY = titleY + ts / 2 + 12 + ss / 2, goY = subY + ss + 10;
+          ovTitle.pos.set(w / 2, titleY, ovTitle.pos.z);
+          ovSub.pos.set(w / 2, subY, ovSub.pos.z);
+          ovGo.pos.set(w / 2, goY, ovGo.pos.z);
+          ovTitle.alpha = ovSub.alpha = ov.a;
+          ovGo.alpha = ov.a * (performance.now() % 1200 < 600 ? 1 : 0.25);
+          return true;
+        }
+        draw(r) {
+          if (ov.a < 0.01) return;
+          r.setGlobalAlpha(ov.a * 0.78);
+          r.setColor("#0b1020");
+          r.fillRoundRect(box.x, box.y, box.w, box.h, 16);
+          r.setGlobalAlpha(ov.a * 0.5);
+          r.setColor("#4cc9f0");
+          r.lineWidth = 2;
+          r.strokeRoundRect(box.x, box.y, box.w, box.h, 16);
+          r.setGlobalAlpha(1);
+        }
+      }
+      function fadeOv(to) {
+        if (ovTw) ovTw.stop();
+        ovTw = new me.Tween(ov).to({ a: to }, { duration: 350 }).start();
+      }
+      function showOv(title, sub, go) {
+        setTxt(ovTitle, title);
+        setTxt(ovSub, sub);
+        setTxt(ovGo, go);
+        fadeOv(1);
+      }
+
+      const hud = (x, color, align) => {
+        const t = new me.Text(x, 14, { font: FONT, size: 22, fillStyle: color, textAlign: align, textBaseline: "top", text: "" });
+        t.floating = true;
+        return t;
+      };
+      const scoreText = hud(16, "#f6f1a8", "left");
+      const timeText = hud(784, "#4cc9f0", "right");
+      const net = new Net();
+      const trail = new me.Trail({
+        target: net, length: 26, lifetime: 380, minDistance: 6, width: 12,
+        widthCurve: [1, 0.6, 0], gradient: ["#4cc9f0", "#9d8cff", "#9d8cff00"], opacity: 0.45, blendMode: "additive",
+      });
+      app.world.addChild(new Meadow(), 0);
+      app.world.addChild(trail, 5);
+      app.world.addChild(net, 6);
+      app.world.addChild(scoreText, 20);
+      app.world.addChild(timeText, 20);
+      app.world.addChild(new Panel(), 30);
+      for (const t of [ovTitle, ovSub, ovGo]) app.world.addChild(t, 31);
+      showOv("螢火蟲夜捕", "30 秒內用網子捕捉螢火蟲，金色的算 3 隻", "按任意鍵或點擊開始");
+
+      function spawnFly(gold = Math.random() < 0.14) {
+        const f = new Firefly(gold);
+        flies.add(f);
+        app.world.addChild(f, 8);
+      }
+      function burst(x, y, color, n) {
+        const em = new me.ParticleEmitter(x, y, {
+          image: glowTex, tint: color, totalParticles: n, angle: 0, angleVariation: Math.PI,
+          minLife: 350, maxLife: 800, speed: 3.2, speedVariation: 2, gravity: 0.05,
+          minStartScale: 0.5, maxStartScale: 0.9, minEndScale: 0, maxEndScale: 0.1,
+          blendMode: "additive", autoDestroyOnComplete: true,
+        });
+        app.world.addChild(em, 12);
+        em.burstParticles(n);
+      }
+      function popup(x, y, msg, color) {
+        const t = new me.Text(x, y, { font: FONT, size: 24, fillStyle: color, textAlign: "center", textBaseline: "middle", text: msg });
+        app.world.addChild(t, 15);
+        new me.Tween(t.pos).to({ y: y - 50 }, { duration: 750 }).easing(me.Tween.Easing.Cubic.Out).start();
+        new me.Tween(t).to({ alpha: 0 }, { duration: 750, delay: 250 }).onComplete(() => drop(t)).start();
+      }
+      // swing the net at its current spot and catch everything inside the hoop
+      function swing() {
+        net.swing = 1;
+        const cx = net.pos.x, cy = net.pos.y;
+        let got = 0;
+        for (const f of [...flies]) {
+          if (Math.hypot(f.pos.x - cx, f.pos.y - cy) > net.radius + 6) continue;
+          flies.delete(f);
+          drop(f);
+          const pts = f.gold ? 3 : 1;
+          got += pts;
+          burst(f.pos.x, f.pos.y, f.color, f.gold ? 40 : 20);
+          if (mode === "play") popup(f.pos.x, f.pos.y - 10, `+${pts}`, f.gold ? "#ffd23f" : "#c8f560");
+          if (f.gold) app.viewport.shake(6, 220);
+          pending++;
+          me.timer.setTimeout(() => { pending--; spawnFly(); }, rand(300, 1200));
+        }
+        if (mode === "play") {
+          score += got;
+          if (got >= 4) popup(cx, cy - 46, `連捕 ×${got}`, "#f72585");
+        }
+      }
+      function start() {
+        mode = "play";
+        score = 0;
+        timeLeft = ROUND;
+        fadeOv(0);
+      }
+      function act() {
+        if (mode === "title") start();
+        else if (mode === "over") { if (performance.now() - overAt > 500) start(); }
+        else swing();
+      }
+
+      // game director: timer, HUD, attract-mode autopilot, keyboard movement
+      class Director extends me.Renderable {
+        constructor() {
+          super(0, 0, 1, 1);
+          this.alwaysUpdate = true;
+        }
+        update(dt) {
+          const s = dt / 1000;
+          while (flies.size + pending < 22) spawnFly();
+          if (me.input.isKeyPressed("swing")) act();
+          const kx = (me.input.isKeyPressed("right") ? 1 : 0) - (me.input.isKeyPressed("left") ? 1 : 0);
+          const ky = (me.input.isKeyPressed("down") ? 1 : 0) - (me.input.isKeyPressed("up") ? 1 : 0);
+          if (kx || ky) {
+            net.target.x = clamp(net.target.x + kx * 420 * s, 20, vw() - 20);
+            net.target.y = clamp(net.target.y + ky * 420 * s, 20, vh() - 20);
+          }
+          if (mode === "title") {
+            // autopilot: chase the nearest firefly and swing when close
+            let near = null, nd = Infinity;
+            for (const f of flies) {
+              const d = Math.hypot(f.pos.x - net.pos.x, f.pos.y - net.pos.y);
+              if (d < nd) { nd = d; near = f; }
+            }
+            if (near) net.target.set(near.pos.x, near.pos.y);
+            aiCooldown -= s;
+            if (near && nd < 26 && aiCooldown <= 0) { swing(); aiCooldown = 0.6; }
+          }
+          if (mode === "play") {
+            timeLeft -= s;
+            if (timeLeft <= 0) {
+              timeLeft = 0;
+              mode = "over";
+              overAt = performance.now();
+              best = Math.max(best, score);
+              showOv("時間到！", `這一輪捕到 ${score} 隻，最高紀錄 ${best} 隻`, "按任意鍵或點擊再玩一次");
+            }
+          }
+          setTxt(scoreText, mode === "title" ? "展示模式" : `捕獲 ${score}`);
+          setTxt(timeText, mode === "title" ? `渲染器 ${app.renderer.type}` : `剩餘 ${Math.ceil(timeLeft)} 秒`);
+          timeText.pos.set(vw() - 16, 14, timeText.pos.z);
+          return true;
+        }
+      }
+      app.world.addChild(new Director(), 1);
+
+      const K = me.input.KEY;
+      for (const [k, a] of [["LEFT", "left"], ["A", "left"], ["RIGHT", "right"], ["D", "right"], ["UP", "up"], ["W", "up"], ["DOWN", "down"], ["S", "down"]]) me.input.bindKey(K[k], a);
+      me.input.bindKey(K.SPACE, "swing", true);
+      me.input.bindKey(K.ENTER, "swing", true);
+      // any other key starts a round from the title or result card
+      me.event.on(me.event.KEYDOWN, (action) => { if (mode !== "play" && action !== "swing") act(); });
+      me.input.registerPointerEvent("pointermove", app.viewport, (e) => {
+        if (mode !== "title") net.target.set(e.gameWorldX, e.gameWorldY);
+      });
+      me.input.registerPointerEvent("pointerdown", app.viewport, (e) => {
+        if (mode === "play") {
+          net.target.set(e.gameWorldX, e.gameWorldY);
+          net.pos.set(e.gameWorldX, e.gameWorldY, net.pos.z);
+          trail.clear();
+        }
+        act();
+      });
+    },
+  },
+  {
+    id: "sat", title: "SAT 碰撞沙盒",
+    api: "bodyDef・Rect・Ellipse・Polygon・collisionType・onCollisionStart・raycast",
+    desc: "三種形狀的動態剛體（Rect 方塊、Ellipse 圓球、Polygon 六角）落在多邊形斜坡、圓柱與牆上，推離量全由 melonJS 內建的 SAT 解出。中央的風扇是 isSensor 感測區：onCollisionActive 每格把物件往上吹，到頂再甩向兩側，形成循環。粉紅雷射用 world.adapter.raycast 掃描，綠線是命中面的法向量。",
+    hint: "點畫面在該處放一個形狀；「球穿過方塊」改 collisionMask，讓圓球與方塊互相忽略",
+    async mount(ctx) {
+      const { me, app } = await boot(ctx, { bg: "#0e1013" });
+      const T = me.collision.types;
+      const vw = () => app.viewport.width, vh = () => app.viewport.height;
+      const NAMES = ["方塊", "圓球", "六角"], COLORS = ["#4cc9f0", "#f7df1e", "#9d8cff"];
+      const TYPES = [T.ENEMY_OBJECT, T.PROJECTILE_OBJECT, T.COLLECTABLE_OBJECT];
+      const pieces = new Set();
+      let W = 0, H = 0, S = 18, solids = [], fan = null, events = 0, crossBall = false, laserOn = true, laserHit = null;
+      const maskFor = (kind) => !crossBall ? T.ALL_OBJECT : kind === 0 ? T.ALL_OBJECT & ~T.PROJECTILE_OBJECT : kind === 1 ? T.ALL_OBJECT & ~T.ENEMY_OBJECT : T.ALL_OBJECT;
+
+      // static terrain: a body plus a paint function in local coordinates
+      class Solid extends me.Renderable {
+        constructor(x, y, w, h, shapes, paint) {
+          super(x, y, w, h);
+          this.anchorPoint.set(0, 0);
+          this.paint = paint;
+          this.bodyDef = { type: "static", shapes, collisionType: T.WORLD_SHAPE, collisionMask: T.ALL_OBJECT };
+        }
+        draw(r) {
+          r.translate(this.pos.x, this.pos.y);
+          this.paint(r);
+        }
+      }
+      const rectSolid = (x, y, w, h) => new Solid(x, y, w, h, [new me.Rect(0, 0, w, h)], (r) => {
+        r.setColor("#243045"); r.fillRect(0, 0, w, h);
+        r.setColor("#3a4a66"); r.fillRect(0, 0, w, 2);
+      });
+      function polySolid(pts) {
+        const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+        const x0 = Math.min(...xs), y0 = Math.min(...ys);
+        const mk = () => new me.Polygon(0, 0, pts.map(([x, y]) => new me.Vector2d(x - x0, y - y0)));
+        const shape = mk();
+        return new Solid(x0, y0, Math.max(...xs) - x0, Math.max(...ys) - y0, [mk()], (r) => {
+          r.setColor("#243045"); r.fillPolygon(shape);
+          r.setColor("#3a4a66"); r.lineWidth = 2; r.strokePolygon(shape);
+        });
+      }
+      const pegSolid = (cx, cy, rr) => new Solid(cx - rr, cy - rr, rr * 2, rr * 2, [new me.Ellipse(rr, rr, rr * 2, rr * 2)], (r) => {
+        r.setColor("#3a4a66"); r.fillEllipse(rr, rr, rr, rr);
+        r.setColor("#4c5f82"); r.fillEllipse(rr * 0.8, rr * 0.8, rr * 0.45, rr * 0.45);
+      });
+
+      // sensor column: no push-out, it only nudges the velocity of pieces inside it
+      class Fan extends me.Renderable {
+        constructor(x, y, w, h) {
+          super(x, y, w, h);
+          this.anchorPoint.set(0, 0);
+          this.alwaysUpdate = true;
+          this.on = 0;
+          this.t = 0;
+          this.bodyDef = { type: "static", isSensor: true, shapes: [new me.Rect(0, 0, w, h)], collisionType: T.ACTION_OBJECT, collisionMask: T.ALL_OBJECT };
+        }
+        onCollisionStart(view, other) {
+          if (other.isPiece) other.side = other.pos.x + other.width / 2 < this.pos.x + this.width / 2 ? 1 : -1;
+        }
+        onCollisionActive(view, other) {
+          if (!other.isPiece) return;
+          const v = other.body.vel, cx = this.pos.x + this.width / 2, pcx = other.pos.x + other.width / 2;
+          v.y -= 1.25;
+          if (other.pos.y < this.pos.y + this.height * 0.15) v.x += other.side * 1.4;
+          else v.x += (cx - pcx) * 0.01 + rand(-0.15, 0.15);
+          this.on = 1;
+        }
+        update(dt) {
+          this.t += dt;
+          this.on = Math.max(0, this.on - dt / 300);
+          return true;
+        }
+        draw(r) {
+          const { x, y } = this.pos, w = this.width, h = this.height;
+          r.setColor("#4cc9f0");
+          r.setGlobalAlpha(0.05 + this.on * 0.07);
+          r.fillRect(x, y, w, h);
+          r.setGlobalAlpha(0.25 + this.on * 0.45);
+          r.lineWidth = 2;
+          const gap = 28, off = (this.t * 0.08) % gap;
+          for (let yy = y + h - off; yy > y + 10; yy -= gap) {
+            r.strokeLine(x + w * 0.3, yy, x + w / 2, yy - 8);
+            r.strokeLine(x + w / 2, yy - 8, x + w * 0.7, yy);
+          }
+          r.setGlobalAlpha(1);
+          r.setColor("#2a7fa0");
+          r.fillRect(x + 4, y + h - 6, w - 8, 6);
+        }
+      }
+
+      class Piece extends me.Renderable {
+        constructor(kind, x, y, s) {
+          super(x, y, s, s);
+          this.anchorPoint.set(0, 0);
+          this.alwaysUpdate = true;
+          this.isPiece = true;
+          this.kind = kind;
+          this.s = s;
+          this.flash = 0;
+          this.side = 1;
+          let shape;
+          if (kind === 0) shape = new me.Rect(0, 0, s, s);
+          else if (kind === 1) shape = new me.Ellipse(s / 2, s / 2, s, s);
+          else {
+            const pts = () => Array.from({ length: 6 }, (_, i) => {
+              const a = -Math.PI / 2 + (i * Math.PI) / 3;
+              return new me.Vector2d(s / 2 + Math.cos(a) * s / 2, s / 2 + Math.sin(a) * s / 2);
+            });
+            shape = new me.Polygon(0, 0, pts());
+            this.poly = new me.Polygon(0, 0, pts());
+          }
+          this.bodyDef = {
+            type: "dynamic", shapes: [shape], collisionType: TYPES[kind], collisionMask: maskFor(kind),
+            frictionAir: { x: 0.02, y: 0 }, maxVelocity: { x: 10, y: 12 }, restitution: kind === 1 ? 0.6 : 0,
+          };
+        }
+        onCollisionStart(view, other) {
+          if (other === fan) return;
+          this.flash = 1;
+          events++;
+        }
+        update(dt) {
+          this.flash = Math.max(0, this.flash - dt / 220);
+          if (this.pos.y > H + 60 || this.pos.x < -60 || this.pos.x > W + 60) { pieces.delete(this); drop(this); }
+          return true;
+        }
+        shape(r, fill) {
+          const s = this.s;
+          if (this.kind === 0) fill ? r.fillRect(0, 0, s, s) : r.strokeRect(0, 0, s, s);
+          else if (this.kind === 1) fill ? r.fillEllipse(s / 2, s / 2, s / 2, s / 2) : r.strokeEllipse(s / 2, s / 2, s / 2, s / 2);
+          else fill ? r.fillPolygon(this.poly) : r.strokePolygon(this.poly);
+        }
+        draw(r) {
+          r.translate(this.pos.x, this.pos.y);
+          r.setColor(COLORS[this.kind]);
+          this.shape(r, true);
+          if (this.flash > 0) {
+            r.setGlobalAlpha(this.flash * 0.7);
+            r.setColor("#ffffff");
+            this.shape(r, true);
+            r.setGlobalAlpha(1);
+          }
+          if (laserHit === this) {
+            r.setColor("#f72585");
+            r.lineWidth = 3;
+            this.shape(r, false);
+          }
+        }
+      }
+
+      function build() {
+        W = vw(); H = vh();
+        for (const s of solids) drop(s);
+        for (const p of pieces) drop(p);
+        pieces.clear();
+        S = clamp(Math.min(W, H) / 22, 14, 26);
+        const rr = Math.min(W, H) * 0.045;
+        fan = new Fan(W * 0.44, H * 0.25, W * 0.12, H * 0.75 - 24);
+        solids = [
+          rectSolid(0, -400, 12, H + 400),
+          rectSolid(W - 12, -400, 12, H + 400),
+          polySolid([[12, H - 110], [W * 0.44, H - 24], [W * 0.44, H], [12, H]]),
+          polySolid([[W * 0.56, H - 24], [W - 12, H - 110], [W - 12, H], [W * 0.56, H]]),
+          rectSolid(W * 0.44, H - 24, W * 0.12, 24),
+          polySolid([[W * 0.06, H * 0.4], [W * 0.38, H * 0.56], [W * 0.38, H * 0.56 + 14], [W * 0.06, H * 0.4 + 14]]),
+          polySolid([[W * 0.62, H * 0.56], [W * 0.94, H * 0.4], [W * 0.94, H * 0.4 + 14], [W * 0.62, H * 0.56 + 14]]),
+          pegSolid(W * 0.25, H * 0.22, rr),
+          pegSolid(W * 0.75, H * 0.22, rr),
+          fan,
+        ];
+        for (const s of solids) app.world.addChild(s, 2);
+        fitWorld(app, -200);
+      }
+      function spawn(x = rand(W * 0.1, W * 0.9), y = -40) {
+        const p = new Piece((Math.random() * 3) | 0, clamp(x, 20, W - 20) - S / 2, y - S / 2, S);
+        app.world.addChild(p, 5);
+        p.body.vel.set(rand(-1.5, 1.5), 0);
+        pieces.add(p);
+        if (pieces.size > 60) {
+          const old = pieces.values().next().value;
+          pieces.delete(old);
+          drop(old);
+        }
+      }
+
+      const status = new me.Text(20, 12, { font: FONT, size: 13, fillStyle: "#ecebe6", textAlign: "left", textBaseline: "top", lineHeight: 1.35, text: "" });
+      status.floating = true;
+      // sweeping ray: the fan's sensor shape is switched off during the cast so the ray passes through it
+      class Laser extends me.Renderable {
+        constructor() {
+          super(0, 0, 10, 10);
+          this.anchorPoint.set(0, 0);
+          this.floating = true;
+          this.alwaysUpdate = true;
+          this.t = 0;
+          this.from = new me.Vector2d();
+          this.to = new me.Vector2d();
+          this.hit = null;
+        }
+        update(dt) {
+          this.t += dt / 1000;
+          laserHit = null;
+          this.hit = null;
+          let info = "關閉";
+          if (laserOn) {
+            const a = ((90 + 70 * Math.sin(this.t * 0.6)) * Math.PI) / 180, len = Math.hypot(W, H);
+            this.from.set(W / 2, 24);
+            this.to.set(W / 2 + Math.cos(a) * len, 24 + Math.sin(a) * len);
+            const fs = fan && fan.body ? fan.body.getShape(0) : null;
+            if (fs) fs.isActive = false;
+            const res = app.world.adapter.raycast(this.from, this.to);
+            if (fs) fs.isActive = true;
+            if (res) {
+              this.hit = { x: res.point.x, y: res.point.y, nx: res.normal.x, ny: res.normal.y };
+              const who = res.renderable;
+              if (who && who.isPiece) { laserHit = who; info = `命中${NAMES[who.kind]}`; }
+              else info = "命中靜態地形";
+            } else info = "未命中";
+          }
+          setTxt(status, `物件 ${pieces.size}・碰撞事件 ${events}\n雷射：${info}`);
+          return true;
+        }
+        draw(r) {
+          if (!laserOn) return;
+          const f = this.from, e = this.hit || this.to;
+          r.setBlendMode("additive");
+          r.setColor("#f72585");
+          r.setGlobalAlpha(0.3);
+          r.lineWidth = 7;
+          r.strokeLine(f.x, f.y, e.x, e.y);
+          r.setGlobalAlpha(1);
+          r.lineWidth = 2;
+          r.strokeLine(f.x, f.y, e.x, e.y);
+          r.setBlendMode("normal");
+          r.fillArc(f.x, f.y, 5, 0, TAU);
+          if (this.hit) {
+            const h = this.hit;
+            r.fillArc(h.x, h.y, 5, 0, TAU);
+            r.setColor("#7bd389");
+            r.lineWidth = 2;
+            r.strokeLine(h.x, h.y, h.x + h.nx * 18, h.y + h.ny * 18);
+          }
+        }
+      }
+
+      build();
+      app.world.addChild(new Laser(), 20);
+      app.world.addChild(status, 21);
+      me.event.on(me.event.GAME_BEFORE_UPDATE, () => { if (vw() !== W || vh() !== H) build(); });
+      me.timer.setInterval(() => { if (pieces.size < 30) spawn(); }, 700, true);
+      me.input.registerPointerEvent("pointerdown", app.viewport, (e) => spawn(e.gameWorldX, e.gameWorldY));
+
+      ctx.button("灑下一批", () => { for (let i = 0; i < 12; i++) me.timer.setTimeout(() => spawn(), i * 60); }, { primary: true });
+      ctx.toggle("球穿過方塊", false, (v) => {
+        crossBall = v;
+        for (const p of pieces) if (p.body) p.body.setCollisionMask(maskFor(p.kind));
+      });
+      ctx.toggle("雷射", true, (v) => { laserOn = v; });
+      ctx.button("清空", () => {
+        for (const p of pieces) drop(p);
+        pieces.clear();
+        events = 0;
+      });
+    },
+  },
+  {
+    id: "tiled", title: "Tiled 關卡與攝影機",
+    api: "loader.preload・level.load・TMX・registerTiledObjectClass・Camera2d.follow・shake・fade",
+    desc: "每張地圖都在瀏覽器裡產生：程式畫出 8 格圖塊，組成 Tiled 的 JSON 地圖（兩個圖塊層加兩個物件層），交給 loader.preload 與 level.load。名稱含 collision 的物件層自動變成靜態碰撞形狀，Hero、Coin、Goal 由 registerTiledObjectClass 建立。攝影機以 follow 追蹤並可調阻尼，換圖與重生用 fadeIn／fadeOut，背景山丘做視差。",
+    hint: "←→／AD 移動，↑／W／空白鍵跳（按鍵後 4 秒內為手動）；點畫面也能跳；碰到旗子換下一張地圖",
+    async mount(ctx) {
+      const { me, win, doc, app } = await boot(ctx, { bg: "#0b1530" });
+      const T = me.collision.types;
+      const vw = () => app.viewport.width, vh = () => app.viewport.height;
+      const realm = (x) => win.JSON.parse(JSON.stringify(x));
+      const preload = (list) => me.loader.preload(realm(list), undefined, false);
+      let gen = 0, level = null, hero = null, coins = 0, busy = true, dying = false, manualT = 0, damping = 0.15;
+
+      function makeTiles() {
+        const c = doc.createElement("canvas");
+        c.width = 128; c.height = 64;
+        const g = c.getContext("2d");
+        const at = (i) => [(i % 4) * 32, ((i / 4) | 0) * 32];
+        const speck = (x, y, col, n, seed) => {
+          g.fillStyle = col;
+          let s = seed;
+          for (let k = 0; k < n; k++) {
+            s = (s * 9301 + 49297) % 233280; const a = s / 233280;
+            s = (s * 9301 + 49297) % 233280; const b = s / 233280;
+            g.fillRect(x + ((a * 30) | 0), y + ((b * 30) | 0), 2, 2);
+          }
+        };
+        let [x, y] = at(0); // 1 grass
+        g.fillStyle = "#5b3a29"; g.fillRect(x, y, 32, 32); speck(x, y + 10, "#4a2f21", 10, 7);
+        g.fillStyle = "#3f9b4a"; g.fillRect(x, y, 32, 9);
+        for (let i = 0; i < 8; i++) g.fillRect(x + i * 4 + 1, y + 8, 2, 2 + (i % 3));
+        g.fillStyle = "#57c05f"; g.fillRect(x, y, 32, 4);
+        [x, y] = at(1); // 2 dirt
+        g.fillStyle = "#5b3a29"; g.fillRect(x, y, 32, 32); speck(x, y, "#4a2f21", 14, 3); speck(x, y, "#6f4a36", 6, 11);
+        [x, y] = at(2); // 3 brick
+        g.fillStyle = "#2b1f22"; g.fillRect(x, y, 32, 32);
+        g.save(); g.beginPath(); g.rect(x, y, 32, 32); g.clip();
+        g.fillStyle = "#7a3b2e";
+        for (let r = 0; r < 4; r++) for (let k = -1; k < 3; k++) g.fillRect(x + k * 16 + (r % 2) * 8 + 1, y + r * 8 + 1, 14, 6);
+        g.restore();
+        [x, y] = at(3); // 4 plank (top half only)
+        g.fillStyle = "#a0703c"; g.fillRect(x, y, 32, 14);
+        g.fillStyle = "#c58a4a"; g.fillRect(x, y, 32, 3);
+        g.fillStyle = "#6b4423"; g.fillRect(x, y + 13, 32, 3); g.fillRect(x + 10, y + 3, 2, 10); g.fillRect(x + 24, y + 3, 2, 10);
+        [x, y] = at(4); // 5 flower
+        g.fillStyle = "#3f9b4a"; g.fillRect(x + 15, y + 18, 2, 14);
+        g.fillStyle = "#f72585";
+        for (let i = 0; i < 5; i++) { g.beginPath(); g.arc(x + 16 + Math.cos(i * 1.26) * 4, y + 15 + Math.sin(i * 1.26) * 4, 3.2, 0, TAU); g.fill(); }
+        g.fillStyle = "#ffd23f"; g.beginPath(); g.arc(x + 16, y + 15, 2.4, 0, TAU); g.fill();
+        [x, y] = at(5); // 6 grass tuft
+        g.fillStyle = "#57c05f";
+        for (const [bx, bh] of [[8, 12], [13, 18], [18, 14], [23, 10]]) { g.beginPath(); g.moveTo(x + bx - 3, y + 32); g.lineTo(x + bx, y + 32 - bh); g.lineTo(x + bx + 3, y + 32); g.fill(); }
+        [x, y] = at(6); // 7 mushroom
+        g.fillStyle = "#ecebe6"; g.fillRect(x + 13, y + 21, 6, 11);
+        g.fillStyle = "#e63946"; g.beginPath(); g.arc(x + 16, y + 22, 10, Math.PI, 0); g.fill();
+        g.fillStyle = "#ffffff"; g.fillRect(x + 10, y + 16, 3, 3); g.fillRect(x + 18, y + 14, 3, 3);
+        [x, y] = at(7); // 8 deep dirt
+        g.fillStyle = "#3e271c"; g.fillRect(x, y, 32, 32); speck(x, y, "#332017", 14, 5);
+        return c.toDataURL();
+      }
+
+      function mulberry32(a) {
+        return () => {
+          a = (a + 0x6d2b79f5) | 0;
+          let t = Math.imul(a ^ (a >>> 15), 1 | a);
+          t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        };
+      }
+      // Builds a Tiled 1.10 JSON map: ground heights with pits and steps, planks with coins, a goal flag.
+      function genLevel(seed, viewH) {
+        const rnd = mulberry32(seed * 7919 + 13);
+        const COLS = 90, ROWS = Math.max(16, Math.ceil(viewH / 32) + 1);
+        const ground = new Array(COLS).fill(ROWS - 4), planks = [];
+        let g = ROWS - 4, c = 8;
+        while (c < COLS - 10) {
+          let steps = [-2, -1, 1, 2];
+          if (c > 10 && c + 2 < COLS - 10 && rnd() < 0.3) { ground[c] = ground[c + 1] = -1; c += 2; steps = [-1, 1]; }
+          g = clamp(g + steps[(rnd() * steps.length) | 0], ROWS - 8, ROWS - 3);
+          const len = 4 + ((rnd() * 5) | 0);
+          if (len >= 5 && c + 4 < COLS - 10 && rnd() < 0.5) planks.push({ c: c + 1, r: g - 3 });
+          for (let i = 0; i < len && c < COLS - 10; i++) ground[c++] = g;
+        }
+        for (; c < COLS; c++) ground[c] = g;
+        const gnd = new Array(COLS * ROWS).fill(0), deco = new Array(COLS * ROWS).fill(0);
+        const put = (arr, cc, r, v) => { if (r >= 0 && r < ROWS) arr[r * COLS + cc] = v; };
+        for (let cc = 1; cc < COLS - 1; cc++) {
+          const gg = ground[cc];
+          if (gg < 0) continue;
+          put(gnd, cc, gg, 1);
+          for (let r = gg + 1; r < ROWS; r++) put(gnd, cc, r, r <= gg + 2 ? 2 : 8);
+          if (cc > 3 && cc < COLS - 5 && rnd() < 0.25) put(deco, cc, gg - 1, 5 + ((rnd() * 3) | 0));
+        }
+        for (let r = 0; r < ROWS; r++) { put(gnd, 0, r, 3); put(gnd, COLS - 1, r, 3); }
+        for (const p of planks) for (let i = 0; i < 3; i++) put(gnd, p.c + i, p.r, 4);
+        let id = 1;
+        const obj = (o) => ({ id: id++, name: "", type: "", class: "", rotation: 0, visible: true, ...o });
+        const ent = (cls, x, y, w, h) => obj({ name: cls, type: cls, class: cls, x, y, width: w, height: h });
+        const col = [obj({ x: 0, y: 0, width: 32, height: ROWS * 32 }), obj({ x: (COLS - 1) * 32, y: 0, width: 32, height: ROWS * 32 })];
+        for (let cc = 1; cc < COLS - 1;) {
+          const gg = ground[cc];
+          let e = cc + 1;
+          while (e < COLS - 1 && ground[e] === gg) e++;
+          if (gg >= 0) col.push(obj({ x: cc * 32, y: gg * 32, width: (e - cc) * 32, height: (ROWS - gg) * 32 }));
+          cc = e;
+        }
+        for (const p of planks) col.push(obj({ x: p.c * 32, y: p.r * 32, width: 96, height: 16 }));
+        const ents = [ent("Hero", 2 * 32 + 5, (ROWS - 4) * 32 - 30, 22, 30)];
+        for (let cc = 4; cc < COLS - 6; cc++) if (ground[cc] >= 0 && rnd() < 0.2) ents.push(ent("Coin", cc * 32 + 8, (ground[cc] - 1) * 32 + 8, 16, 16));
+        for (const p of planks) for (let i = 0; i < 3; i++) ents.push(ent("Coin", (p.c + i) * 32 + 8, (p.r - 1) * 32 + 8, 16, 16));
+        ents.push(ent("Goal", (COLS - 4) * 32, g * 32 - 64, 32, 64));
+        const layer = (lid, name, data) => ({ id: lid, name, type: "tilelayer", width: COLS, height: ROWS, x: 0, y: 0, opacity: 1, visible: true, data });
+        const group = (lid, name, objects) => ({ id: lid, name, type: "objectgroup", draworder: "topdown", x: 0, y: 0, opacity: 1, visible: true, objects });
+        const map = {
+          type: "map", version: "1.10", tiledversion: "1.10.2", orientation: "orthogonal", renderorder: "right-down", infinite: false,
+          width: COLS, height: ROWS, tilewidth: 32, tileheight: 32, nextlayerid: 5, nextobjectid: id,
+          layers: [layer(1, "deco", deco), layer(2, "ground", gnd), group(3, "collision", col), group(4, "entities", ents)],
+          tilesets: [{ firstgid: 1, name: "tiles", image: "tiles.png", imagewidth: 128, imageheight: 64, tilewidth: 32, tileheight: 32, columns: 4, tilecount: 8, margin: 0, spacing: 0 }],
+        };
+        return { map, ground, planks: new Set(planks.map((p) => p.c)), COLS, ROWS };
+      }
+
+      class Hero extends me.Renderable {
+        constructor(x, y, settings) {
+          super(x, y, settings.width, settings.height);
+          this.anchorPoint.set(0, 0);
+          this.alwaysUpdate = true;
+          this.bodyDef = {
+            type: "dynamic", shapes: [new me.Rect(0, 0, settings.width, settings.height)],
+            collisionType: T.PLAYER_OBJECT, collisionMask: T.WORLD_SHAPE | T.COLLECTABLE_OBJECT | T.ACTION_OBJECT,
+            maxVelocity: { x: 4, y: 15 }, frictionAir: { x: 0.5, y: 0 },
+          };
+          this.spawn = { x, y };
+          this.face = 1;
+          this.coyote = 0;
+          this.jbuf = 0;
+          this.stuck = 0;
+          this.lastX = x;
+          hero = this;
+        }
+        // physics and callbacks run before update, so coyote is fresh here
+        onCollisionActive(view, other) {
+          if (other.body && other.body.collisionType === T.WORLD_SHAPE && view.normal.y < -0.7) this.coyote = 6;
+        }
+        update(dt) {
+          const b = this.body;
+          const kL = me.input.isKeyPressed("left"), kR = me.input.isKeyPressed("right");
+          if (me.input.isKeyPressed("jump")) { this.jbuf = 8; manualT = 4000; }
+          if (kL || kR) manualT = 4000;
+          let dir;
+          if (manualT > 0) {
+            manualT = Math.max(0, manualT - dt);
+            dir = (kR ? 1 : 0) - (kL ? 1 : 0);
+          } else {
+            // autopilot: run right, jump before pits, steps up and plank starts
+            dir = 1;
+            const ca = Math.floor((this.pos.x + 46) / 32), cm = Math.floor((this.pos.x + 11) / 32);
+            const gA = level.ground[ca] ?? 0, gM = level.ground[cm] ?? 0;
+            if (this.coyote > 0 && (gA < 0 || (gM >= 0 && gA >= 0 && gA < gM) || level.planks.has(ca))) this.jbuf = 8;
+            if (Math.abs(this.pos.x - this.lastX) < 0.2) { if (++this.stuck > 20) { this.jbuf = 8; this.stuck = 0; } } else this.stuck = 0;
+          }
+          this.lastX = this.pos.x;
+          b.force.x = dir * 1.2;
+          if (dir) this.face = dir;
+          if (this.jbuf > 0) {
+            this.jbuf--;
+            if (this.coyote > 0) { b.vel.y = -15; this.jbuf = 0; this.coyote = 0; }
+          }
+          if (this.coyote > 0) this.coyote--;
+          if (this.pos.y > level.ROWS * 32 + 40) die();
+          return true;
+        }
+        draw(r) {
+          const { x, y } = this.pos, f = this.face;
+          r.setColor("#4cc9f0"); r.fillRoundRect(x, y + 3, 22, 23, 6);
+          r.setColor("#f72585"); r.fillRect(x + 2, y + 3, 18, 4);
+          r.setColor("#1b6f8f"); r.fillRect(x + 3, y + 26, 6, 4); r.fillRect(x + 13, y + 26, 6, 4);
+          r.setColor("#ffffff"); r.fillRect(x + (f > 0 ? 12 : 4), y + 10, 6, 6);
+          r.setColor("#0e1013"); r.fillRect(x + (f > 0 ? 15 : 5), y + 12, 3, 3);
+        }
+      }
+      class Coin extends me.Renderable {
+        constructor(x, y, settings) {
+          super(x, y, settings.width, settings.height);
+          this.anchorPoint.set(0, 0);
+          this.t = Math.random() * 6;
+          this.bodyDef = { type: "static", isSensor: true, shapes: [new me.Rect(0, 0, 16, 16)], collisionType: T.COLLECTABLE_OBJECT, collisionMask: T.PLAYER_OBJECT };
+        }
+        update(dt) {
+          this.t += dt / 1000;
+          return true;
+        }
+        onCollisionStart(view, other) {
+          if (this.taken || other !== hero) return;
+          this.taken = true;
+          coins++;
+          this.body.setCollisionMask(T.NO_OBJECT);
+          new me.Tween(this.pos).to({ y: this.pos.y - 30 }, { duration: 400 }).easing(me.Tween.Easing.Quadratic.Out).start();
+          new me.Tween(this).to({ alpha: 0 }, { duration: 400 }).onComplete(() => drop(this)).start();
+        }
+        draw(r) {
+          const w = 7 * Math.abs(Math.cos(this.t * 3)) + 1, cx = this.pos.x + 8, cy = this.pos.y + 8;
+          r.setColor("#ffd23f"); r.fillEllipse(cx, cy, w, 8);
+          r.setColor("#fff3b0"); r.fillEllipse(cx - w * 0.25, cy - 2, w * 0.3, 3);
+        }
+      }
+      class Goal extends me.Renderable {
+        constructor(x, y, settings) {
+          super(x, y, settings.width, settings.height);
+          this.anchorPoint.set(0, 0);
+          this.t = 0;
+          this.bodyDef = { type: "static", isSensor: true, shapes: [new me.Rect(0, 0, settings.width, settings.height)], collisionType: T.ACTION_OBJECT, collisionMask: T.PLAYER_OBJECT };
+        }
+        update(dt) {
+          this.t += dt / 1000;
+          return true;
+        }
+        onCollisionStart(view, other) { if (other === hero) nextLevel(); }
+        draw(r) {
+          const { x, y } = this.pos, wave = Math.sin(this.t * 6) * 4;
+          r.setColor("#ecebe6"); r.fillRect(x + 4, y, 4, 64);
+          r.setColor("#7bd389");
+          r.beginPath(); r.moveTo(x + 8, y + 2); r.lineTo(x + 34, y + 12 + wave); r.lineTo(x + 8, y + 24); r.closePath(); r.fill();
+        }
+      }
+      me.registerTiledObjectClass("Hero", Hero);
+      me.registerTiledObjectClass("Coin", Coin);
+      me.registerTiledObjectClass("Goal", Goal);
+
+      // persistent layers survive every level.load reset
+      class Backdrop extends me.Renderable {
+        constructor() {
+          super(0, 0, 10, 10);
+          this.anchorPoint.set(0, 0);
+          this.floating = true;
+          this.alwaysUpdate = true;
+          this.isPersistent = true;
+        }
+        update() { return true; }
+        draw(r) {
+          const w = vw(), h = vh(), cx = app.viewport.pos.x;
+          if (this.gh !== h) {
+            this.gh = h;
+            this.g = r.createLinearGradient(0, 0, 0, h);
+            this.g.addColorStop(0, "#0b1530");
+            this.g.addColorStop(1, "#24304f");
+          }
+          r.setColor(this.g);
+          r.fillRect(0, 0, w, h);
+          // hills as vertical strips, so no concave path fill is needed
+          for (const [p, color, base, amp, ph] of [[0.15, "#1d2a4d", h * 0.42, 46, 0], [0.35, "#16213d", h * 0.28, 34, 2]]) {
+            r.setColor(color);
+            const off = cx * p;
+            for (let x = -(off % 16); x < w; x += 16) {
+              const wx = x + off, hh = base + amp * (Math.sin(wx * 0.006 + ph) * 0.6 + Math.sin(wx * 0.017 + ph) * 0.4);
+              r.fillRect(x, h - hh, 16.5, hh);
+            }
+          }
+        }
+      }
+      const hudText = (x, align, font, size, color) => {
+        const t = new me.Text(x, 10, { font, size, fillStyle: color, textAlign: align, textBaseline: "top", text: "" });
+        t.floating = true;
+        t.isPersistent = true;
+        return t;
+      };
+      const hudL = hudText(12, "left", FONT, 15, "#f6f1a8");
+      const hudR = hudText(788, "right", FONT, 15, "#4cc9f0");
+      const hudCam = hudText(12, "left", MONO, 12, "#9aa3b5");
+      class Director extends me.Renderable {
+        constructor() {
+          super(0, 0, 1, 1);
+          this.alwaysUpdate = true;
+          this.isPersistent = true;
+        }
+        update() {
+          setTxt(hudL, `金幣 ${coins}・第 ${gen} 張地圖`);
+          setTxt(hudR, manualT > 0 ? "手動操作" : "自動駕駛");
+          hudR.pos.set(vw() - 12, 10, hudR.pos.z);
+          hudCam.pos.set(12, 32, hudCam.pos.z);
+          const p = app.viewport.pos;
+          setTxt(hudCam, `camera ${Math.round(p.x)}, ${Math.round(p.y)}  damping ${damping}`);
+          if (!busy && level && vh() > level.ROWS * 32) nextLevel();
+          return true;
+        }
+      }
+      app.world.addChild(new Backdrop(), -10);
+      for (const t of [hudL, hudR, hudCam]) app.world.addChild(t, 100);
+      app.world.addChild(new Director(), 100);
+
+      function die() {
+        if (dying) return;
+        dying = true;
+        app.viewport.fadeIn("#000000", 250, () => {
+          hero.pos.set(hero.spawn.x, hero.spawn.y, hero.pos.z);
+          hero.body.vel.set(0, 0);
+          dying = false;
+          app.viewport.fadeOut("#000000", 300);
+        });
+      }
+      // the next map is generated and preloaded first; level.load itself defers to a safe point in the loop
+      async function nextLevel() {
+        if (busy) return;
+        busy = true;
+        const next = genLevel(gen + 1, vh()), name = `lvl${gen + 1}`;
+        await preload([{ name, type: "tmx", data: next.map }]);
+        app.viewport.fadeIn("#000000", 300, () => loadLevel(next, name));
+      }
+      function loadLevel(next, name) {
+        gen++;
+        level = next;
+        dying = false;
+        me.level.load(name, {
+          setViewportBounds: true,
+          onLoaded: () => {
+            app.viewport.follow(hero, app.viewport.AXIS.BOTH, damping);
+            app.viewport.fadeOut("#000000", 300);
+            busy = false;
+          },
+        });
+      }
+
+      const K = me.input.KEY;
+      for (const [k, a] of [["LEFT", "left"], ["A", "left"], ["RIGHT", "right"], ["D", "right"]]) me.input.bindKey(K[k], a);
+      for (const k of ["UP", "W", "SPACE"]) me.input.bindKey(K[k], "jump", true);
+      me.input.registerPointerEvent("pointerdown", app.viewport, () => { if (hero) hero.jbuf = 8; });
+
+      await preload([{ name: "tiles", type: "image", src: makeTiles() }]);
+      const first = genLevel(1, vh());
+      await preload([{ name: "lvl1", type: "tmx", data: first.map }]);
+      loadLevel(first, "lvl1");
+
+      ctx.group(["緊跟", "平滑", "慢跟"], 1, (i) => {
+        damping = [1, 0.15, 0.05][i];
+        if (hero) app.viewport.follow(hero, app.viewport.AXIS.BOTH, damping);
+      });
+      ctx.button("震動鏡頭", () => app.viewport.shake(10, 400));
+      ctx.button("淡出重生", () => { if (hero && !busy) die(); });
+      ctx.button("換一張地圖", () => nextLevel(), { primary: true });
+    },
+  },
+  {
+    id: "tween", title: "Tween 緩動曲線",
+    api: "Tween.to・easing・yoyo・repeat・delay・Tween.Easing",
+    desc: "12 條 me.Tween.Easing 曲線同時播放。每格有兩個 Tween：一個線性推進時間軸，一個套用緩動推進數值，黃點就是兩者組成的座標，右側粉紅小球只看數值。開啟 yoyo 時回程沿著紫色的鏡像曲線走；Back 與 Elastic 會超出 0 到 1 的範圍。",
+    hint: "切換時長與 yoyo；「錯開重播」讓每格延遲 80ms 起跑",
+    async mount(ctx) {
+      const { me, app } = await boot(ctx, { bg: "#0e1013" });
+      const vw = () => app.viewport.width, vh = () => app.viewport.height;
+      const EASE = ["Linear.None", "Quadratic.InOut", "Cubic.Out", "Quartic.In", "Quintic.InOut", "Sinusoidal.InOut",
+        "Exponential.Out", "Circular.InOut", "Back.In", "Back.Out", "Elastic.Out", "Bounce.Out"].map((n) => {
+        const [a, b] = n.split(".");
+        return { n, fn: me.Tween.Easing[a][b] };
+      });
+      const st = EASE.map(() => ({ t: 0, v: 0 }));
+      let dur = 1200, yoyo = true, tweens = [];
+      const labels = EASE.map((e) => {
+        const t = new me.Text(0, 0, { font: MONO, size: 12, fillStyle: "#9aa3b5", textAlign: "left", textBaseline: "top", text: e.n });
+        t.floating = true;
+        return t;
+      });
+
+      class Board extends me.Renderable {
+        constructor() {
+          super(0, 0, 10, 10);
+          this.anchorPoint.set(0, 0);
+          this.floating = true;
+          this.alwaysUpdate = true;
+          this.cells = [];
+        }
+        update() {
+          const w = vw(), h = vh(), cols = w < 560 ? 3 : 4, rows = Math.ceil(12 / cols), pad = 10;
+          const cw = (w - pad * (cols + 1)) / cols, ch = (h - pad * (rows + 1)) / rows, fs = clamp(cw / 11, 9, 12);
+          this.cells = EASE.map((e, i) => {
+            const x = pad + (i % cols) * (cw + pad), y = pad + ((i / cols) | 0) * (ch + pad);
+            setSize(labels[i], MONO, fs);
+            labels[i].pos.set(x + 10, y + 7, labels[i].pos.z);
+            return { x, y, w: cw, h: ch, px: x + 10, py: y + fs + 14, pw: cw - 44, ph: ch - fs - 24 };
+          });
+          return true;
+        }
+        draw(r) {
+          this.cells.forEach((c, i) => {
+            const e = EASE[i], s = st[i];
+            const X = (t) => c.px + t * c.pw, Y = (v) => c.py + (c.ph * (1.3 - v)) / 1.6;
+            const curve = (f, color) => {
+              r.setColor(color);
+              r.lineWidth = 2;
+              let px = X(0), py = Y(f(0));
+              for (let k = 1; k <= 40; k++) {
+                const nx = X(k / 40), ny = Y(f(k / 40));
+                r.strokeLine(px, py, nx, ny);
+                px = nx; py = ny;
+              }
+            };
+            r.setColor("#161a21");
+            r.fillRoundRect(c.x, c.y, c.w, c.h, 8);
+            r.setColor("#2a303b");
+            r.lineWidth = 1;
+            r.strokeLine(c.px, Y(0), c.px + c.pw, Y(0));
+            r.strokeLine(c.px, Y(1), c.px + c.pw, Y(1));
+            if (yoyo) curve((x) => 1 - e.fn(1 - x), "#4a3a6a");
+            curve(e.fn, "#4cc9f0");
+            r.setColor("#f7df1e");
+            r.fillArc(X(s.t), Y(s.v), 4.5, 0, TAU);
+            const sx = c.px + c.pw + 18;
+            r.setColor("#2a303b");
+            r.lineWidth = 4;
+            r.strokeLine(sx, Y(-0.15), sx, Y(1.15));
+            r.setColor("#f72585");
+            r.fillArc(sx, Y(clamp(s.v, -0.15, 1.15)), 6, 0, TAU);
+          });
+        }
+      }
+      app.world.addChild(new Board(), 1);
+      for (const t of labels) app.world.addChild(t, 2);
+
+      function restart(stagger) {
+        for (const tw of tweens) tw.stop();
+        tweens = [];
+        st.forEach((s, i) => {
+          s.t = 0;
+          s.v = 0;
+          const opt = () => ({ duration: dur, yoyo, repeat: Infinity, repeatDelay: 400, delay: stagger ? i * 80 : 0 });
+          tweens.push(new me.Tween(s).to({ t: 1 }, opt()).start());
+          tweens.push(new me.Tween(s).to({ v: 1 }, opt()).easing(EASE[i].fn).start());
+        });
+      }
+      restart(true);
+      ctx.group(["0.6 秒", "1.2 秒", "2.4 秒"], 1, (i) => { dur = [600, 1200, 2400][i]; restart(false); });
+      ctx.toggle("來回 yoyo", true, (v) => { yoyo = v; restart(false); });
+      ctx.button("錯開重播", () => restart(true), { primary: true });
+    },
+  },
+  {
+    id: "particles", title: "粒子與拖尾",
+    api: "ParticleEmitter・streamParticles・burstParticles・referenceSpace・Trail",
+    desc: "同一個 ParticleEmitter 換五組設定：火焰、煙霧、火花（followTrajectory 讓粒子順著速度方向）、飄雪與煙火（burstParticles）。粒子貼圖都是程式畫的 canvas，用 tint 上色、additive 疊加；光球後面拖著 Trail。切換「世界座標」比較 referenceSpace：local 時粒子跟著發射器走，world 時留在原地形成尾跡。",
+    hint: "移動滑鼠帶著發射器走（兩秒不動就回到自動路徑）；煙火模式點畫面立即炸開",
+    async mount(ctx) {
+      const { me, doc, app } = await boot(ctx, { bg: "#0b0d14" });
+      const vw = () => app.viewport.width, vh = () => app.viewport.height;
+      const tex = (w, h, paint) => { const c = doc.createElement("canvas"); c.width = w; c.height = h; paint(c.getContext("2d"), w, h); return c; };
+      const glow = makeGlow(doc, "255,255,255", 64);
+      const streak = tex(32, 6, (g, w, h) => {
+        const grd = g.createLinearGradient(0, 0, w, 0);
+        grd.addColorStop(0, "rgba(255,255,255,0)");
+        grd.addColorStop(1, "rgba(255,255,255,1)");
+        g.fillStyle = grd;
+        g.fillRect(0, 1, w, h - 2);
+      });
+      const smoke = tex(64, 64, (g) => {
+        const grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+        grd.addColorStop(0, "rgba(255,255,255,.45)");
+        grd.addColorStop(0.6, "rgba(255,255,255,.16)");
+        grd.addColorStop(1, "rgba(255,255,255,0)");
+        g.fillStyle = grd;
+        g.fillRect(0, 0, 64, 64);
+      });
+      const flake = tex(16, 16, (g) => {
+        const grd = g.createRadialGradient(8, 8, 0, 8, 8, 8);
+        grd.addColorStop(0, "rgba(255,255,255,1)");
+        grd.addColorStop(0.4, "rgba(255,255,255,.7)");
+        grd.addColorStop(1, "rgba(255,255,255,0)");
+        g.fillStyle = grd;
+        g.fillRect(0, 0, 16, 16);
+      });
+      const FW = ["#f72585", "#4cc9f0", "#f7df1e", "#7bd389", "#9d8cff", "#ff7a1a"];
+      const P = [
+        { name: "火焰", core: "#ff7a1a", stream: true, s: { image: glow, tint: "#ff7a1a", width: 16, height: 8, angle: Math.PI / 2, angleVariation: 0.35, speed: 2.2, speedVariation: 0.8, gravity: -0.03, minLife: 500, maxLife: 1100, frequency: 16, maxParticles: 6, minStartScale: 0.45, maxStartScale: 0.8, minEndScale: 0, maxEndScale: 0.1, blendMode: "additive" } },
+        { name: "煙霧", core: "#9aa3b5", stream: true, s: { image: smoke, tint: "#9aa3b5", width: 20, height: 10, angle: Math.PI / 2, angleVariation: 0.3, speed: 1, speedVariation: 0.4, gravity: -0.01, wind: 0.02, minLife: 1400, maxLife: 2600, frequency: 40, maxParticles: 3, minStartScale: 0.3, maxStartScale: 0.5, minEndScale: 1.6, maxEndScale: 2.4, blendMode: "normal" } },
+        { name: "火花", core: "#ffd166", stream: true, s: { image: streak, tint: "#ffd166", width: 8, height: 8, angle: Math.PI / 2, angleVariation: Math.PI, speed: 6, speedVariation: 2, gravity: 0.25, minLife: 400, maxLife: 900, frequency: 16, maxParticles: 8, followTrajectory: true, minStartScale: 0.6, maxStartScale: 1, minEndScale: 0.2, maxEndScale: 0.4, blendMode: "additive" } },
+        { name: "飄雪", snow: true, stream: true, s: { image: flake, tint: "#ffffff", height: 4, angle: -Math.PI / 2, angleVariation: 0.3, speed: 0.6, speedVariation: 0.4, gravity: 0.01, wind: 0.002, minLife: 4000, maxLife: 7000, frequency: 60, maxParticles: 3, minStartScale: 0.3, maxStartScale: 0.9, minEndScale: 0.3, maxEndScale: 0.9, blendMode: "normal" } },
+        { name: "煙火", core: "#f72585", stream: false, s: { image: glow, tint: "#f72585", width: 4, height: 4, angle: 0, angleVariation: Math.PI, speed: 4, speedVariation: 2, gravity: 0.06, minLife: 700, maxLife: 1400, minStartScale: 0.25, maxStartScale: 0.45, minEndScale: 0, maxEndScale: 0.05, blendMode: "additive" } },
+      ];
+      let pi = 0, cap = 300, worldSpace = false, trailOn = true, em = null, lastW = 0, lastMove = -1e9, lastBurst = 0;
+      const ptr = { x: 0, y: 0 }, t0 = performance.now();
+
+      // the glowing ball the emitter rides on; it is also the Trail target
+      class Core extends me.Renderable {
+        constructor() {
+          super(0, 0, 1, 1);
+          this.anchorPoint.set(0, 0);
+          this.alwaysUpdate = true;
+        }
+        update() { return true; }
+        draw(r) {
+          const { x, y } = this.pos, p = P[pi];
+          r.setBlendMode("additive");
+          r.setGlobalAlpha(0.55);
+          r.drawImage(glow, 0, 0, 64, 64, x - 26, y - 26, 52, 52);
+          r.setBlendMode("normal");
+          r.setGlobalAlpha(1);
+          r.setColor(p.core || "#ffffff");
+          r.fillArc(x, y, 6, 0, TAU);
+          r.setColor("#ffffff");
+          r.fillArc(x, y, 3, 0, TAU);
+        }
+      }
+      const core = new Core();
+      const trail = new me.Trail({
+        target: core, length: 40, lifetime: 600, minDistance: 4, width: 10,
+        widthCurve: [1, 0.5, 0], gradient: ["#ffffff", "#4cc9f0", "#4cc9f000"], opacity: 0.6, blendMode: "additive",
+      });
+      const status = new me.Text(12, 10, { font: FONT, size: 13, fillStyle: "#ecebe6", textAlign: "left", textBaseline: "top", lineHeight: 1.35, text: "" });
+      status.floating = true;
+      app.world.addChild(trail, 3);
+      app.world.addChild(core, 6);
+      app.world.addChild(status, 20);
+
+      function makeEmitter() {
+        drop(em);
+        const p = P[pi];
+        const s = { ...p.s, totalParticles: cap, referenceSpace: worldSpace ? "world" : "local" };
+        if (p.snow) s.width = vw();
+        em = new me.ParticleEmitter(core.pos.x, core.pos.y, s);
+        em.alwaysUpdate = true;
+        app.world.addChild(em, 4);
+        if (p.snow) em.centerOn(vw() / 2, 6);
+        if (p.stream) em.streamParticles();
+        core.alpha = p.snow ? 0 : 1;
+        trail.alpha = p.snow || !trailOn ? 0 : 1;
+        trail.clear();
+        lastW = vw();
+      }
+      function burst() {
+        lastBurst = performance.now();
+        em.settings.tint = pick(FW);
+        const room = cap - em.getChildren().length;
+        if (room > 0) em.burstParticles(Math.min(60, room));
+      }
+      me.event.on(me.event.GAME_BEFORE_UPDATE, () => {
+        const now = performance.now(), t = (now - t0) / 1000, w = vw(), h = vh(), p = P[pi];
+        if (p.snow) {
+          if (w !== lastW) makeEmitter();
+        } else {
+          let x = w / 2 + w * 0.32 * Math.sin(t * 0.9), y = h * 0.55 + h * 0.22 * Math.sin(t * 1.3);
+          if (now - lastMove < 2000) { x = ptr.x; y = ptr.y; }
+          core.pos.set(x, y, core.pos.z);
+          em.centerOn(x, y);
+          if (!p.stream && now - lastBurst > 700) burst();
+        }
+        setTxt(status, `${p.name}：粒子 ${em.getChildren().length}／上限 ${cap}\n座標空間 ${worldSpace ? "world" : "local"}`);
+      });
+      me.input.registerPointerEvent("pointermove", app.viewport, (e) => { ptr.x = e.gameWorldX; ptr.y = e.gameWorldY; lastMove = performance.now(); });
+      me.input.registerPointerEvent("pointerdown", app.viewport, (e) => {
+        ptr.x = e.gameWorldX; ptr.y = e.gameWorldY; lastMove = performance.now();
+        if (!P[pi].stream) { core.pos.set(ptr.x, ptr.y, core.pos.z); em.centerOn(ptr.x, ptr.y); burst(); }
+      });
+      core.pos.set(vw() / 2, vh() / 2, core.pos.z);
+      makeEmitter();
+
+      ctx.group(P.map((p) => p.name), 0, (i) => { pi = i; makeEmitter(); });
+      ctx.toggle("世界座標", false, (v) => { worldSpace = v; em.referenceSpace = v ? "world" : "local"; });
+      ctx.slider("粒子上限", { min: 50, max: 800, step: 50, value: 300, format: (v) => String(v) }, (v) => { cap = v; em.settings.totalParticles = v; });
+      ctx.toggle("拖尾", true, (v) => { trailOn = v; trail.alpha = v && !P[pi].snow ? 1 : 0; trail.clear(); });
+    },
+  },
+  {
+    id: "state", title: "Stage 狀態切換",
+    api: "state.set・state.change・transition・Stage・pause・freeze・timer.setInterval・UIBaseElement",
+    desc: "TITLE、PLAY、RESULT 是三個 me.Stage，用 state.change 切換並帶參數，transition 決定淡入淡出、圓形遮罩或直接切換。PLAY 裡兩個 timer 對照：可暫停的倒數與不可暫停的真實時間；按「暫停」後世界與可暫停的 timer 一起停住。點破圓球時 state.freeze 120ms，做出打擊停頓。按鈕是 UIBaseElement，左下角是生命週期事件紀錄。",
+    hint: "PLAY 時點圓球得分；換轉場、暫停、凍結，觀察左下角的事件順序",
+    async mount(ctx) {
+      const { me, app } = await boot(ctx, { bg: "#0b1020" });
+      const S = me.state;
+      const vw = () => app.viewport.width, vh = () => app.viewport.height;
+      const TITLE = S.USER + 1, PLAY = S.USER + 2, RESULT = S.USER + 3;
+      const NAMES = { [TITLE]: "TITLE", [PLAY]: "PLAY", [RESULT]: "RESULT" };
+      const ORB = ["#4cc9f0", "#7bd389", "#f7df1e", "#9d8cff", "#f72585"];
+      const t0 = performance.now(), logs = [];
+      let curStage = null, curName = "", switching = false, switchAt = 0, ready = false, userPaused = false, auto = true, autoT = 0;
+      let round = 0, score = 0, cdLeft = 8, real = 0;
+
+      const text = (o) => {
+        const t = new me.Text(0, 0, { font: FONT, fillStyle: "#ecebe6", textAlign: "center", textBaseline: "middle", text: "", ...o });
+        t.floating = true;
+        return t;
+      };
+      const banner = text({ size: 15, textBaseline: "top", fillStyle: "#f6f1a8" });
+      banner.bold();
+      const logText = text({ font: MONO, size: 11, fillStyle: "#9aa3b5", textAlign: "left", textBaseline: "top", lineHeight: 1.3 });
+      const pauseText = text({ size: 18, lineHeight: 1.4 });
+      setTxt(pauseText, "已暫停\n世界與可暫停的 timer 都停住");
+      function log(msg) {
+        logs.push(`${((performance.now() - t0) / 1000).toFixed(1).padStart(5)}s  ${msg}`);
+        if (logs.length > 6) logs.shift();
+        setTxt(logText, logs.join("\n"));
+      }
+
+      class Btn extends me.UIBaseElement {
+        constructor(label, w, h, cb) {
+          super(0, 0, w, h);
+          this.cb = cb;
+          const t = new me.Text(w / 2, h / 2, { font: FONT, size: 16, fillStyle: "#0e1013", textAlign: "center", textBaseline: "middle", text: label });
+          t.bold();
+          this.addChild(t);
+        }
+        onClick() {
+          if (!userPaused) this.cb();
+          return false;
+        }
+        draw(r) {
+          r.setColor(this.hover ? "#8fe3fa" : "#4cc9f0");
+          r.fillRoundRect(this.pos.x, this.pos.y, this.width, this.height, 10);
+          super.draw(r);
+        }
+      }
+      // background with expanding rings; it stops with the world when the state is paused
+      class Bg extends me.Renderable {
+        constructor(bg, ring) {
+          super(0, 0, 10, 10);
+          this.anchorPoint.set(0, 0);
+          this.alwaysUpdate = true;
+          this.bg = bg;
+          this.ring = ring;
+          this.t = 0;
+        }
+        update(dt) {
+          this.t += dt / 1000;
+          return true;
+        }
+        draw(r) {
+          const w = vw(), h = vh(), m = Math.hypot(w, h) / 2;
+          r.setColor(this.bg);
+          r.fillRect(0, 0, w, h);
+          r.setColor(this.ring);
+          r.lineWidth = 2;
+          for (let i = 0; i < 5; i++) {
+            const k = (this.t * 0.25 + i / 5) % 1;
+            r.setGlobalAlpha((1 - k) * 0.35);
+            r.strokeArc(w / 2, h / 2, k * m, 0, TAU);
+          }
+          r.setGlobalAlpha(1);
+        }
+      }
+      class Orb extends me.Renderable {
+        constructor() {
+          const rr = rand(14, 24);
+          super(rand(0, vw() - rr * 2), rand(70, Math.max(80, vh() - rr * 2 - 10)), rr * 2, rr * 2);
+          this.anchorPoint.set(0, 0);
+          this.r = rr;
+          this.vx = rand(-2, 2);
+          this.vy = rand(-2, 2);
+          this.color = pick(ORB);
+        }
+        update(dt) {
+          const k = dt / 16.7, w = vw(), h = vh(), d = this.r * 2;
+          let x = this.pos.x + this.vx * k, y = this.pos.y + this.vy * k;
+          if (x < 0 || x > w - d) { this.vx = -this.vx; x = clamp(x, 0, w - d); }
+          if (y < 60 || y > h - d) { this.vy = -this.vy; y = clamp(y, 60, h - d); }
+          this.pos.set(x, y, this.pos.z);
+          return true;
+        }
+        draw(r) {
+          const cx = this.pos.x + this.r, cy = this.pos.y + this.r;
+          r.setColor(this.color);
+          r.fillArc(cx, cy, this.r, 0, TAU);
+          r.setColor("#ffffff");
+          r.setGlobalAlpha(0.35);
+          r.fillArc(cx - this.r * 0.3, cy - this.r * 0.3, this.r * 0.35, 0, TAU);
+          r.setGlobalAlpha(1);
+        }
+      }
+      class Ring extends me.Renderable {
+        constructor(x, y, color) {
+          super(x, y, 2, 2);
+          this.anchorPoint.set(0, 0);
+          this.k = 0;
+          this.color = color;
+        }
+        draw(r) {
+          r.setColor(this.color);
+          r.setGlobalAlpha(1 - this.k);
+          r.lineWidth = 3;
+          r.strokeArc(this.pos.x, this.pos.y, 10 + this.k * 40, 0, TAU);
+          r.setGlobalAlpha(1);
+        }
+      }
+
+      // each stage tracks what it adds; the world reset on STAGE_RESET also clears non-persistent children
+      class Base extends me.Stage {
+        add(c, z) {
+          this.kids.push(c);
+          app.world.addChild(c, z);
+          return c;
+        }
+        onResetEvent(a, args) {
+          this.kids = [];
+          this.build(args);
+          curStage = this;
+          curName = this.label;
+          switching = false;
+          ready = true;
+          autoT = 0;
+          log(`onResetEvent  ${this.label}`);
+        }
+        onDestroyEvent() {
+          if (this.cleanup) this.cleanup();
+          for (const c of this.kids) drop(c);
+          this.kids = [];
+          ready = false;
+          log(`onDestroyEvent ${this.label}`);
+        }
+      }
+      class TitleStage extends Base {
+        build() {
+          this.label = "TITLE";
+          this.add(new Bg("#10162e", "#4cc9f0"), 0);
+          this.title = this.add(text({ size: 34, fillStyle: "#f6f1a8", text: "狀態機示範" }), 5);
+          this.title.bold();
+          this.sub = this.add(text({ size: 15, text: "TITLE：按「開始遊戲」進入 PLAY" }), 5);
+          this.btn = this.add(new Btn("開始遊戲", 160, 44, () => go(PLAY)), 6);
+        }
+        layout(w, h) {
+          this.title.pos.set(w / 2, h * 0.36, this.title.pos.z);
+          this.sub.pos.set(w / 2, h * 0.36 + 42, this.sub.pos.z);
+          this.btn.pos.set(w / 2 - 80, h * 0.36 + 72, this.btn.pos.z);
+        }
+      }
+      class PlayStage extends Base {
+        build() {
+          this.label = "PLAY";
+          round++;
+          score = 0;
+          cdLeft = 8;
+          real = 0;
+          this.add(new Bg("#0c1a16", "#7bd389"), 0);
+          for (let i = 0; i < 12; i++) this.add(new Orb(), 3);
+          this.hud = this.add(text({ size: 14, textAlign: "left", textBaseline: "top", lineHeight: 1.35 }), 20);
+          this.cd = me.timer.setInterval(() => { if (--cdLeft <= 0) go(RESULT, { score, round }); }, 1000, true);
+          this.rc = me.timer.setInterval(() => { real += 0.1; }, 100, false);
+        }
+        cleanup() {
+          me.timer.clearInterval(this.cd);
+          me.timer.clearInterval(this.rc);
+        }
+        layout() {
+          this.hud.pos.set(14, 42, this.hud.pos.z);
+          setTxt(this.hud, `得分 ${score}\n倒數 ${Math.max(0, cdLeft)} 秒（可暫停的 timer）\n真實 ${real.toFixed(1)} 秒（不可暫停的 timer）`);
+        }
+      }
+      class ResultStage extends Base {
+        build(args) {
+          this.label = "RESULT";
+          const res = args || { score: 0, round };
+          this.add(new Bg("#1a1024", "#f72585"), 0);
+          this.title = this.add(text({ size: 30, fillStyle: "#f72585", text: "結算" }), 5);
+          this.title.bold();
+          this.sub = this.add(text({ size: 16, text: `第 ${res.round} 輪得分 ${res.score}` }), 5);
+          this.again = this.add(new Btn("下一輪", 120, 44, () => go(PLAY)), 6);
+          this.home = this.add(new Btn("回標題", 120, 44, () => go(TITLE)), 6);
+        }
+        layout(w, h) {
+          this.title.pos.set(w / 2, h * 0.34, this.title.pos.z);
+          this.sub.pos.set(w / 2, h * 0.34 + 40, this.sub.pos.z);
+          this.again.pos.set(w / 2 - 128, h * 0.34 + 70, this.again.pos.z);
+          this.home.pos.set(w / 2 + 8, h * 0.34 + 70, this.home.pos.z);
+        }
+      }
+      S.set(TITLE, new TitleStage());
+      S.set(PLAY, new PlayStage());
+      S.set(RESULT, new ResultStage());
+
+      function go(id, args) {
+        if (switching && performance.now() - switchAt < 2000) return;
+        if (S.isCurrent(id)) return;
+        switching = true;
+        switchAt = performance.now();
+        log(`state.change(${NAMES[id]})`);
+        S.change(id, false, args);
+      }
+      function pop(o) {
+        if (!curStage || !curStage.kids.includes(o)) return;
+        drop(o);
+        score++;
+        const ring = curStage.add(new Ring(o.pos.x + o.r, o.pos.y + o.r, o.color), 4);
+        const tw = new me.Tween(ring).to({ k: 1 }, { duration: 450 }).onComplete(() => drop(ring));
+        tw.updateWhenPaused = true;
+        tw.start();
+        S.freeze(120);
+        me.timer.setTimeout(() => { if (S.isCurrent(PLAY)) curStage.add(new Orb(), 3); }, 300, true);
+      }
+      class Shade extends me.Renderable {
+        constructor() {
+          super(0, 0, 10, 10);
+          this.anchorPoint.set(0, 0);
+          this.floating = true;
+        }
+        draw(r) {
+          if (!userPaused) return;
+          r.setColor("#000000");
+          r.setGlobalAlpha(0.55);
+          r.fillRect(0, 0, vw(), vh());
+          r.setGlobalAlpha(1);
+        }
+      }
+      // runs while paused: layout, HUD, pause self-heal (freeze resumes on its own) and the autopilot
+      class Director extends me.Renderable {
+        constructor() {
+          super(0, 0, 1, 1);
+          this.alwaysUpdate = true;
+          this.updateWhenPaused = true;
+        }
+        update(dt) {
+          const w = vw(), h = vh();
+          if (curStage && curStage.layout) curStage.layout(w, h);
+          if (userPaused && !S.isPaused()) S.pause();
+          banner.pos.set(w / 2, 12, banner.pos.z);
+          setTxt(banner, `目前狀態 ${curName || "載入中"}${userPaused ? "（已暫停）" : ""}`);
+          logText.pos.set(12, h - 12 - 6 * 11 * 1.3, logText.pos.z);
+          pauseText.pos.set(w / 2, h / 2, pauseText.pos.z);
+          pauseText.alpha = userPaused ? 1 : 0;
+          if (auto && !userPaused && !switching && ready) {
+            autoT += dt;
+            if (curName === "TITLE" && autoT > 2500) go(PLAY);
+            else if (curName === "RESULT" && autoT > 3000) go(TITLE);
+            else if (curName === "PLAY" && autoT > 600) {
+              autoT = 0;
+              const orbs = curStage.kids.filter((k) => k instanceof Orb && k.ancestor);
+              if (orbs.length) pop(pick(orbs));
+            }
+          }
+          return true;
+        }
+      }
+      // state.change emits STAGE_RESET, which resets the world: only isPersistent children survive it
+      for (const [c, z] of [[new Director(), 1], [banner, 80], [logText, 80], [new Shade(), 90], [pauseText, 91]]) {
+        c.isPersistent = true;
+        app.world.addChild(c, z);
+      }
+
+      me.input.registerPointerEvent("pointerdown", app.viewport, (e) => {
+        if (userPaused || curName !== "PLAY" || !curStage) return;
+        for (const o of curStage.kids) {
+          if (o instanceof Orb && o.ancestor && Math.hypot(e.gameWorldX - o.pos.x - o.r, e.gameWorldY - o.pos.y - o.r) < o.r + 6) { pop(o); break; }
+        }
+      });
+
+      const TRANS = [() => S.transition("fade", "#0b1020", 400), () => S.transition("mask", "#0b1020", 500, new me.Ellipse(0, 0, 1, 1)), () => S.transition("fade", "#0b1020", 0)];
+      TRANS[0]();
+      go(TITLE);
+
+      ctx.group(["淡入淡出", "圓形遮罩", "直接切換"], 0, (i) => TRANS[i]());
+      const pauseBtn = ctx.toggle("暫停", false, (v) => setPaused(v));
+      function setPaused(v) {
+        userPaused = v;
+        pauseBtn.setAttribute("aria-pressed", String(v));
+        if (v) { S.pause(); log("state.pause()"); } else { S.resume(); log("state.resume()"); }
+      }
+      ctx.button("凍結 300ms", () => { if (!userPaused) { S.freeze(300); log("state.freeze(300)"); } });
+      ctx.button("下一個狀態", () => {
+        if (userPaused) setPaused(false);
+        if (curName === "TITLE") go(PLAY);
+        else if (curName === "PLAY") go(RESULT, { score, round });
+        else go(TITLE);
+      }, { primary: true });
+      ctx.toggle("自動輪播", true, (v) => { auto = v; autoT = 0; });
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "Body・SAT・QuadTree・Renderer",
+    desc: "逐級加入 6×6 的動態剛體（一半 Rect、一半 Ellipse），每格 World.update 重建 QuadTree，替每個 Body 取回候選做 SAT，並呼叫 onCollisionActive，撞到的變粉紅。關閉碰撞偵測後 collisionMask 設為 NO_OBJECT，只剩移動、建樹與繪製。",
+    hint: "按「自動加壓」逐級加量；切換碰撞偵測比較兩種負載",
+    async mount(ctx) {
+      const { me, app } = await boot(ctx, { bg: "#0e1013", wrap: "mj-stress" });
+      const T = me.collision.types;
+      const COLORS = ["#4cc9f0", "#7bd389", "#f7df1e", "#9d8cff"];
+      const dots = [];
+      let W = 0, H = 0, collide = true, hits = 0, hitsShown = 0, updMs = 0, drawMs = 0, tU = 0, tD = 0;
+      const fit = () => {
+        if (app.viewport.width === W && app.viewport.height === H) return;
+        W = app.viewport.width;
+        H = app.viewport.height;
+        fitWorld(app);
+      };
+      fit();
+      class Dot extends me.Renderable {
+        constructor(i) {
+          super(rand(0, W - 6), rand(0, H - 6), 6, 6);
+          this.anchorPoint.set(0, 0);
+          this.alwaysUpdate = true;
+          this.round = i % 2 === 1;
+          this.base = COLORS[i % 4];
+          this.hitT = 0;
+          this.bodyDef = {
+            type: "dynamic", shapes: [this.round ? new me.Ellipse(3, 3, 6, 6) : new me.Rect(0, 0, 6, 6)],
+            collisionType: T.ENEMY_OBJECT, collisionMask: collide ? T.ALL_OBJECT : T.NO_OBJECT,
+            gravityScale: 0, restitution: 1, frictionAir: 0, maxVelocity: { x: 3, y: 3 },
+          };
+        }
+        onCollisionActive() {
+          this.hitT = 6;
+          hits++;
+        }
+        update() {
+          const p = this.pos, v = this.body.vel;
+          if ((p.x < 0 && v.x < 0) || (p.x > W - 6 && v.x > 0)) v.x = -v.x;
+          if ((p.y < 0 && v.y < 0) || (p.y > H - 6 && v.y > 0)) v.y = -v.y;
+          if (this.hitT > 0) this.hitT--;
+          return true;
+        }
+        draw(r) {
+          r.setColor(this.hitT > 0 ? "#f72585" : this.base);
+          if (this.round) r.fillEllipse(this.pos.x + 3, this.pos.y + 3, 3, 3);
+          else r.fillRect(this.pos.x, this.pos.y, 6, 6);
+        }
+      }
+      me.event.on(me.event.GAME_BEFORE_UPDATE, () => { fit(); hits = 0; tU = performance.now(); });
+      me.event.on(me.event.GAME_AFTER_UPDATE, () => {
+        const d = performance.now() - tU;
+        updMs = updMs ? updMs * 0.9 + d * 0.1 : d;
+        hitsShown = hits;
+      });
+      me.event.on(me.event.GAME_BEFORE_DRAW, () => { tD = performance.now(); });
+      me.event.on(me.event.GAME_AFTER_DRAW, () => {
+        const d = performance.now() - tD;
+        drawMs = drawMs ? drawMs * 0.9 + d * 0.1 : d;
+      });
+
+      ctx.controls.classList.add("bottom");
+      ctx.toggle("碰撞偵測", true, (v) => {
+        collide = v;
+        for (const d of dots) if (d.body) d.body.setCollisionMask(v ? T.ALL_OBJECT : T.NO_OBJECT);
+      });
+      ctx.ramp({
+        label: "剛體", steps: [100, 200, 400, 800, 1600, 3200, 6400],
+        minFps: 30,
+        apply(n) {
+          while (dots.length < n) {
+            const d = new Dot(dots.length);
+            app.world.addChild(d, 2);
+            const a = Math.random() * TAU;
+            d.body.vel.set(Math.cos(a) * 2, Math.sin(a) * 2);
+            dots.push(d);
+          }
+          while (dots.length > n) drop(dots.pop());
+        },
+        metrics: () => ({
+          "物件": dots.length,
+          "碰撞回呼": collide ? hitsShown : "關閉",
+          "更新": Showcase.fmtMs(updMs),
+          "繪製": Showcase.fmtMs(drawMs),
+          "渲染器": app.renderer.type,
+        }),
+        note: "瓶頸：World.update 每格清空並重建 QuadTree，再替每個 Body 取回候選、做 SAT 與推離；繪製時每個物件各送一次填色指令。WebGL 的繪製時間只算 CPU 送出批次，不含 GPU。關閉碰撞後仍會建樹與查候選，但跳過 SAT 與回呼。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

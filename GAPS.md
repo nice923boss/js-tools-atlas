@@ -13,8 +13,14 @@
 |------|------|------|----------|--------|
 | 只在無頭 Chromium 驗證，沒有測 Safari、Firefox、實體手機與實體 GPU | 製作環境是 Playwright 無頭 Chromium，WebGL 用 SwiftShader 軟體繪圖，鏡頭與麥克風是假裝置 | 其他瀏覽器或手機可能出現版面差異、效能差異或功能不支援 | 上架後用實機抽檢，至少 iPhone Safari、Android Chrome、桌面 Firefox 各一次 | 維護者 |
 | 音效類示範沒有人耳試聽 | 驗證環境無法播放與聆聽聲音，只檢查了樣本資料、波形與錯誤訊息 | 音色、音量、雜音是否合適未確認 | 上架前用耳機試聽 zzfx、jsfxr、tonejs、howlerjs、pizzicatojs、wavesurferjs、p5sound、strudel、gibber、magentajs 等音訊示範 | 維護者 |
-| 所有示範從公開 CDN 載入函式庫 | 站內沒有打包函式庫，示範頁用 jsDelivr、unpkg 等 CDN | 離線、公司防火牆擋 CDN、CDN 故障時示範無法執行 | 不處理（若要離線使用，需要把函式庫下載到 `demos/_vendor/` 並改寫網址） | 維護者 |
+| 所有示範從公開 CDN 載入函式庫 | 站內沒有打包函式庫，示範頁用 jsDelivr、esm.sh 等 CDN | 離線、公司防火牆擋 CDN、CDN 故障時示範無法執行 | 不處理（若要離線使用，需要把函式庫下載到 `demos/_vendor/` 並改寫網址） | 維護者 |
+| 部分示範執行時向第三方伺服器取資料 | 模型、圖磚、串流與範例檔沒有放進站內：Google Cloud Storage（MediaPipe、Magenta、Teachable Machine、ml5.js、Human）、Hugging Face（Transformers.js、MediaPipe、MindAR、Human）、vladmandic.github.io（Human 模型）、mozilla.github.io（PDF.js 範例 PDF）、OpenFreeMap 圖磚（Leaflet、OpenLayers、MapLibre、AntV L7、deck.gl）、OpenStreetMap 圖磚（Leaflet、Turf.js）、CARTO 底圖（Plotly 地圖場景，函式庫內建）、AWS 地形圖磚（MapLibre）、Mux 與 JW Player 測試串流（hls.js、Video.js）、Plyr 圖示 CDN（Plyr、GLightbox）、Iconify API、Babylon.js 素材庫、Scaleflex CDN（Filerobot） | 對方改網址、限流或下線時該示範失效；第一次開啟要下載數 MB 到數百 MB | 不處理；失效時改用站內素材或換來源 | 維護者 |
+| Esri 與 OpenStreetMap 圖磚的使用條款沒有確認 | deck.gl 與 globe.gl 用 `server.arcgisonline.com` 的免金鑰衛星圖磚（頁面已標「© Esri」）；Leaflet、Turf.js 用 `tile.openstreetmap.org` | Esri 的免金鑰服務是否允許公開網站使用未查證；OSM 官方圖磚禁止大量使用，流量大時可能被擋 | 上架前讀過 Esri 與 OSM Tile Usage Policy；有疑慮就改用 OpenFreeMap 或其他允許的來源 | 維護者 |
 | 縮圖是無頭環境截圖 | 縮圖由 `scripts/verify_demos.py --thumbs` 產生 | 用到鏡頭的示範縮圖停在「按此開始」畫面，因為假鏡頭只有綠色測試畫面 | 不處理 | 維護者 |
+| 極限測試的數字只在無頭環境量過 | 驗證環境用 SwiftShader 軟體繪圖、沒有實體 GPU，FPS 與耗時普遍比實機低很多 | 各頁「上限約 N 個」的結論只代表該次執行的裝置；驗證截圖裡的數字不能當成函式庫的效能數據引用 | 不處理（頁面本來就是讓使用者在自己的裝置上量） | 維護者 |
+| 觸控手勢沒有用實體觸控螢幕測 | 無頭瀏覽器只能送滑鼠事件與模擬的 Pointer 事件 | Hammer.js、interact.js、Sortable、PhotoSwipe、Splide、Embla 等的多點觸控、慣性與捏合縮放在實機上的手感未確認 | 上架後用手機抽檢 | 維護者 |
+| 產生的檔案沒有用桌面軟體開過 | 驗證只在瀏覽器內讀回檔案（例如重新解析 docx、xlsx、PDF、ZIP），沒有用 Word、Excel、PowerPoint、Acrobat 開啟 | docx、PptxGenJS、ExcelJS、SheetJS、jsPDF、pdf-lib、JSZip 產出的檔案在 Office 或其他閱讀器裡的版面未確認；下載按鈕的實際存檔流程也沒有測 | 上架前每種格式各下載一份，用對應軟體開一次 | 維護者 |
+| 共用測試面板在小示範台會自動收合 | 示範台小於 640×440 時展開的面板會蓋住場景 | 按「開始測試」後面板收成一列，只顯示進度與結論；要看逐級數字需再按「＋」展開。只用無頭 Chromium 在 600×420、360×560 驗過 | 不處理 | 維護者 |
 
 ## 2. 需要特殊硬體或環境，功能沒有實測
 
@@ -39,6 +45,8 @@
 | Gibber 需要兩個 shim | 套件缺陷（`Array.prototype.addPattern`、AudioWorklet 初始化競態） | 記憶體用量大（主執行緒與 worklet 各約 423 MB），低記憶體裝置可能卡頓 | 不處理 | 上游 |
 | Quill 的 `getSemanticHTML()` 把空白轉成 `&nbsp;` | 函式庫行為 | 使用者自己打的空白，在 HTML 頁籤顯示成 `&nbsp;` | 不處理 | 上游 |
 | MathJax 字型與無障礙模組需要網路 | 這些模組在需要時才從 jsDelivr 載入 | 第一次開啟要連得上網路 | 不處理 | 上游 |
+| billboard.js 4.1.1 在 `flow()` 動畫中途 `destroy()` 會丟錯 | 轉場被中斷時，函式庫的 flow 回呼仍去讀已清空的內部物件；`redrawing` 等旗標會被 resize 提早清掉，不能拿來判斷 | 示範頁改成記錄 flow 結束時間，切場景時等動畫跑完才銷毀（最多約 2 秒）；照搬程式碼的使用者可能遇到「Cannot read properties of null」 | 不處理 | 上游 |
+| 高負載時少數示範偶發主控台錯誤 | 全站驗證 6 個瀏覽器同時跑時 CPU 滿載：Grid.js 兩次 pipeline 同時執行報「reading 'length'」、GLightbox 內部 `play()` 被下一次切換中斷、DuckDB 極限測試按鈕延遲出現、Sortable 窄示範台控制列被裁 27 px | 單獨重跑都乾淨，畫面最終正確；低階裝置上可能看到同樣的主控台訊息 | 不處理 | 上游／維護者 |
 | MindAR 1.2.5 需要舊版 three.js | MindAR 用到 three.js r162 移除的 `sRGBEncoding`，所以 three 鎖在 0.160.1 | 無法跟著 three.js 更新；主控台有 `outputEncoding` 棄用警告 | MindAR 更新後再升級 | 上游 |
 | Human 的 MoveNet 對任何畫面都會回報一個身體 | 單人姿勢模型的設計，沒有人時也會輸出低分結果 | 示範頁只計入分數大於 0.4 的身體；分數在門檻附近時可能多算或漏算 | 不處理 | 上游 |
 | 主控台警告 | heatmap.js 的 `willReadFrequently` 提示、bpmn-js 的 `ContextPad#getPad is deprecated`、Magenta 的 ScriptProcessorNode 棄用提示、GPU.js 與 Teachable Machine 的 ReadPixels 提示、AR.js 的 ARToolKit 資訊訊息與 `willReadFrequently` 提示 | 只是警告，不影響功能 | 不處理 | 上游 |
@@ -63,3 +71,9 @@
 | 頁首 GitHub 連結是假設值 | `index.html` 第 42 行預設為 `https://github.com/nice923boss/js-tools-atlas` | 帳號或 repository 名稱不同時連結會錯 | 上架前修改 | 維護者 |
 | 音效示範點擊前不出聲 | 瀏覽器自動播放政策 | zzfx、jsfxr 的自動模式只輪播畫面，按任一按鈕後才有聲音 | 不處理 | 維護者 |
 | math.js 錯誤訊息只翻譯常見類型 | 函式庫錯誤訊息種類很多 | 少見錯誤顯示成「無法計算（英文原文）」 | 不處理 | 維護者 |
+
+## 6. 程式碼維護
+
+| 項目 | 原因 | 影響 | 補完時點 | 責任人 |
+|------|------|------|----------|--------|
+| 98 個示範頁超過 800 行，其中 47 個超過 1000 行 | 每頁 5～8 個場景加極限測試都寫在同一個 HTML；最大的是 melonjs、joltphysicsjs、jsfxr、rapier、arjs（約 1550～1680 行） | 單檔不好閱讀與修改；功能不受影響 | 需要時參考 docx、prism 的做法，把場景拆到 `demos/assets/<slug>/scenes.js` | 維護者 |

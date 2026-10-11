@@ -3,129 +3,894 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>q5.js 示範：上萬顆星的旋臂星系</title>
+<title>q5.js 示範：8 個場景看懂 WebGPU 創意程式與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["旋臂星系","WebGPU 渲染器","WGSL 著色器","陰影與膠囊","雜訊像素地圖","中文字轉點","OKLCH 色彩","極限測試"],"note":"WebGPU 場景在不支援的瀏覽器會自動退回 Canvas 2D 或顯示說明"}</script>
 <style>
-  .stats {
-    position: fixed; left: 12px; top: 12px; z-index: 50;
-    padding: 8px 12px; font-size: 12px; line-height: 1.5;
+  .q5-host { position: absolute; inset: 0; }
+  .q5-host canvas { display: block; touch-action: none; }
+  .q5-tag {
+    position: absolute; right: 10px; bottom: 10px; text-align: right; z-index: 2; max-width: calc(100% - 20px);
+    padding: 5px 9px; border-radius: 6px; border: 1px solid var(--line);
+    background: rgba(14, 16, 19, .82); color: var(--fg); font: 600 12px/1.4 var(--mono);
+    pointer-events: none;
   }
-  .stats b { color: var(--accent); font-family: var(--mono); font-size: 15px; }
+  .q5-tag b { color: var(--accent); font-weight: 600; }
+  .stress-host {
+    position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 8px;
+    border-radius: 10px; overflow: hidden; background: #0b0d10;
+  }
+  @media (min-width: 761px) { .stress-host { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 350px; } }
+  .q5-nogpu {
+    position: absolute; top: calc(var(--sc-ctl-h, 0px) + 14px); left: 12px; right: 12px; bottom: 12px;
+    display: flex; flex-direction: column; gap: 10px; z-index: 1;
+  }
+  .q5-note {
+    padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+    background: rgba(247, 223, 30, .06); color: var(--muted); font-size: 13px; line-height: 1.55;
+  }
+  .q5-note b { color: var(--accent); }
+  .q5-code {
+    flex: 1; margin: 0; overflow: auto; padding: 12px 14px; border-radius: 10px;
+    border: 1px solid var(--line); background: #0b0d10; color: #d9d7cf;
+    font: 12px/1.55 var(--mono); tab-size: 2;
+  }
+  .q5-code .kw { color: #f7df1e; }
+  .q5-code .at { color: #9d8cff; }
+  .q5-code .u { color: #4cc9f0; }
+  .q5-code .cm { color: #7d8590; }
+  @media (max-width: 600px) { .q5-code { font-size: 11px; padding: 10px; } }
 </style>
 </head>
 <body>
-<div class="panel stats">
-  <div><b id="count">0</b> 顆星</div>
-  <div class="muted"><span class="mono" id="fps">0</span> fps・Canvas 2D</div>
-</div>
-<div class="controls">
-  <button class="btn" data-n="4000">4 千</button>
-  <button class="btn" data-n="10000" aria-pressed="true">1 萬</button>
-  <button class="btn" data-n="20000">2 萬</button>
-</div>
-<div class="hint">移動滑鼠改變視角・點擊讓星系重新誕生</div>
-
 <script src="https://cdn.jsdelivr.net/npm/q5@4.8.3/q5.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/q5js/q5.js@4.7.0/src/q5-noisier.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Spiral galaxy: thousands of stars orbit with Keplerian-ish speed, drawn with additive blending.
-// Stars are bucketed by colour so each frame only switches fill a few times (q5 keeps this fast).
-const COLORS = ["#fff7d6", "#f7df1e", "#ff8c42", "#f72585", "#9d8cff", "#4cc9f0"];
-let stars = [];
-let total = 10000;
-let tilt = 0.5, spin = 0, tiltTarget = 0.5, spinTarget = 0;
-let born = 0;
+// q5.js showcase: every scene is an instance-mode sketch (new Q5(fn, host, renderer)) so scenes never leak globals.
+const PAL = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#9d8cff"];
+// Same palette as 0..1 floats for colorMode(RGB, 1) and the WebGPU renderer.
+const PAL_F = PAL.map((h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255));
+const rootCss = getComputedStyle(document.documentElement);
+const FONT = rootCss.getPropertyValue("--font").trim() || "system-ui, sans-serif";
+const PHOTO = (n) => `_shared/img/photo-${n}.jpg`;
+const DPR = () => Math.min(2, window.devicePixelRatio || 1);
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+// Y just below the top-right control cluster.
+const belowControls = (ctx) => (ctx.controls.childElementCount ? ctx.controls.offsetHeight + 20 : 12);
 
-function setup() {
-  createCanvas(windowWidth, windowHeight);
-  noStroke();
-  makeGalaxy();
-}
+const hostBox = (ctx) => {
+  const box = Showcase.h("div", { class: "q5-host" });
+  ctx.el.prepend(box);
+  return box;
+};
 
-function makeGalaxy() {
-  stars = [];
-  const arms = 3;
-  for (let i = 0; i < total; i++) {
-    // Radius distribution: dense core, long tail
-    const t = pow(random(), 1.6);
-    const r = t * 1.0 + 0.02;
-    const arm = i % arms;
-    const twist = r * 7.5;
-    const spread = randomGaussian(0, 1) * (0.12 + 0.35 * (1 - t));
-    const a = (arm / arms) * TAU + twist + spread;
-    // Colour by radius: warm core, cool outer arms, a few pink nebula stars
-    let c = floor(map(r, 0, 1, 0, 5.99) + random(-0.8, 0.8));
-    c = constrain(c, 0, 5);
-    if (random() < 0.04) c = 3;
-    stars.push({ r, a, z: randomGaussian(0, 1) * 0.04 * (1 - t), c, s: random() < 0.02 ? 2.6 : random(0.8, 1.8) });
+// Mount an instance-mode sketch. q5 adds window listeners (input, resize, error reporting) and pushes the
+// instance into Q5.instances without ever undoing that in remove(), so both are recorded here and released on cleanup.
+function q5Sketch(ctx, def, box, renderer = "c2d") {
+  const added = [];
+  const own = Object.prototype.hasOwnProperty.call(window, "addEventListener");
+  const orig = window.addEventListener;
+  window.addEventListener = function (type, fn, opts) {
+    added.push([type, fn, opts]);
+    return orig.call(window, type, fn, opts);
+  };
+  let q;
+  try {
+    q = new Q5(def, box, renderer);
+  } finally {
+    if (own) window.addEventListener = orig;
+    else delete window.addEventListener;
   }
-  born = millis();
-  document.getElementById("count").textContent = total.toLocaleString("zh-TW");
+  let gone = false;
+  const destroy = () => {
+    if (gone) return;
+    gone = true;
+    q._fitRO?.disconnect();
+    try {
+      Promise.resolve(q.remove()).catch((e) => console.warn("q5 remove()", e));
+    } catch (e) {
+      console.warn("q5 remove()", e);
+    }
+    q._ro?.disconnect();
+    for (const [t, f, o] of added) window.removeEventListener(t, f, o);
+    const i = Q5.instances.indexOf(q);
+    if (i >= 0) Q5.instances.splice(i, 1);
+  };
+  ctx.onCleanup(destroy);
+  return { q, destroy };
 }
 
-function draw() {
-  // Fade previous frame for soft motion trails
-  blendMode(BLEND);
-  fill(7, 8, 14, 70);
-  rect(0, 0, width, height);
-
-  tilt += (tiltTarget - tilt) * 0.05;
-  spin += (spinTarget - spin) * 0.05;
-  const R = min(width, height) * 0.46;
-  const cx = width / 2, cy = height / 2;
-  const grow = min(1, (millis() - born) / 1400);
-  const ease = 1 - pow(1 - grow, 3);
-  const time = millis() * 0.00012;
-
-  blendMode(ADD);
-  const buckets = COLORS.map(() => []);
-  for (const st of stars) {
-    // Inner stars orbit faster
-    const ang = st.a + time / (st.r + 0.15) + spin;
-    const rr = st.r * R * ease;
-    const x = cos(ang) * rr;
-    const y = sin(ang) * rr;
-    buckets[st.c].push(cx + x, cy + y * tilt + st.z * R, st.s);
-  }
-  for (let k = 0; k < COLORS.length; k++) {
-    const col = color(COLORS[k]);
-    col.setAlpha(k === 0 ? 200 : 150);
-    fill(col);
-    const b = buckets[k];
-    for (let i = 0; i < b.length; i += 3) rect(b[i], b[i + 1], b[i + 2], b[i + 2]);
-  }
-
-  // Core glow
-  for (let i = 6; i > 0; i--) {
-    fill(255, 210, 120, 10);
-    ellipse(cx, cy, R * 0.09 * i, R * 0.09 * i * (0.4 + tilt * 0.6));
-  }
-
-  if (frameCount % 15 === 0) document.getElementById("fps").textContent = round(frameRate());
-}
-
-function mouseMoved() {
-  tiltTarget = map(mouseY, 0, height, 0.18, 0.95, true);
-  spinTarget = map(mouseX, 0, width, -0.8, 0.8, true);
-}
-
-function mousePressed(e) {
-  if (e && e.target && e.target.tagName !== "CANVAS") return;
-  makeGalaxy();
-}
-
-function windowResized() {
-  resizeCanvas(windowWidth, windowHeight);
-}
-
-document.querySelectorAll("[data-n]").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll("[data-n]").forEach((b) => b.setAttribute("aria-pressed", b === btn));
-    total = Number(btn.dataset.n);
-    makeGalaxy();
+// createCanvas sized to `box` (or a custom size function) and kept in sync with the box's own size.
+function fit(s, box, { size, pd = DPR(), onResize } = {}) {
+  const dims = size || (() => [Math.max(1, box.clientWidth), Math.max(1, box.clientHeight)]);
+  s.createCanvas(...dims());
+  if (pd) s.pixelDensity(pd);
+  let pending = 0;
+  const ro = new ResizeObserver(() => {
+    cancelAnimationFrame(pending);
+    pending = requestAnimationFrame(() => {
+      if (s._removed) return;
+      const [w, h] = dims();
+      if (w === s.width && h === s.height) return;
+      s.resizeCanvas(w, h);
+      onResize?.(w, h);
+    });
   });
-});
+  ro.observe(box);
+  s._fitRO = { disconnect() { ro.disconnect(); cancelAnimationFrame(pending); } };
+}
+
+// Bottom-right HTML caption, refreshed at most four times a second.
+function htmlTag(ctx) {
+  const el = Showcase.h("div", { class: "q5-tag" });
+  ctx.el.append(el);
+  let last = "", at = 0;
+  return (html, force) => {
+    const now = performance.now();
+    if (html === last || (!force && now - at < 250)) return;
+    last = html;
+    at = now;
+    el.innerHTML = html;
+  };
+}
+
+// True while the pointer has moved over the canvas in the last 2.5 s; otherwise scenes animate on their own.
+function pointerLive(s) {
+  let last = -1e9;
+  s.mouseMoved = s.mouseDragged = () => {
+    const x = s._webgpu ? s.mouseX + s.halfWidth : s.mouseX;
+    const y = s._webgpu ? s.mouseY + s.halfHeight : s.mouseY;
+    if (x >= 0 && y >= 0 && x <= s.width && y <= s.height) last = performance.now();
+  };
+  return () => performance.now() - last < 2500;
+}
+
+const smooth = (prev, v) => prev + (v - prev) * 0.1;
+const fmtMs = (v) => v.toFixed(1);
+
+// WGSL sources for the shader scene. q5 splices them into its default pipelines:
+// a block with only @vertex replaces vertexMain, a block with only @fragment replaces fragMain.
+const WGSL = [
+  `@vertex
+fn vertexMain(v: VertexParams) -> FragParams {
+  // pointer in canvas pixels (origin at the centre, y down)
+  let m = vec2f(q.mouseX, q.mouseY);
+  let d = distance(v.pos, m);
+  let t = q.time * 0.001;
+  // ring wave travelling outward, fading with distance
+  let w = sin(d * 0.045 - t * 4.0) * exp(-d * 0.0035);
+  let dir = (v.pos - m) / max(d, 1.0);
+
+  var f: FragParams;
+  f.position = transformVertex(v.pos + dir * w * 16.0, v.matrixIndex);
+  let c = colors[i32(v.colorIndex)];
+  f.color = vec4f(c.rgb * (0.7 + 0.3 * w) + vec3f(0.3 * max(w, 0.0)), c.a);
+  return f;
+}`,
+  `@fragment
+fn fragMain(f: FragParams) -> @location(0) vec4f {
+  let t = q.time * 0.001;
+  // pointer in framebuffer pixels, the same space as f.position
+  let m = (vec2f(q.mouseX, q.mouseY) + vec2f(q.halfWidth, q.halfHeight)) * q.pixelDensity;
+  let d = distance(f.position.xy, m) / q.pixelDensity;
+  let lens = 1.0 - smoothstep(0.0, 200.0, d);
+  let dir = (f.position.xy - m) / max(d * q.pixelDensity, 1.0);
+  let wave = vec2f(sin(f.texCoord.y * 22.0 + t * 1.8), cos(f.texCoord.x * 18.0 + t * 1.4));
+  let uv = f.texCoord + wave * 0.004 - dir * lens * lens * 0.05;
+
+  // chromatic aberration grows inside the lens
+  let s = vec2f(0.002 + 0.012 * lens, 0.0);
+  let r = textureSample(tex, samp, uv + s).r;
+  let g = textureSample(tex, samp, uv).g;
+  let b = textureSample(tex, samp, uv - s).b;
+  return vec4f(r, g, b, f.imageAlpha);
+}`,
+  `@fragment
+fn fragMain(f: FragParams) -> @location(0) vec4f {
+  let t = q.time * 0.001;
+  // barrel distortion around the screen centre
+  var uv = f.texCoord - 0.5;
+  uv *= 1.0 + dot(uv, uv) * 0.22;
+  uv += 0.5;
+
+  let s = vec2f(0.0015 + 0.001 * sin(t * 1.7), 0.0);
+  let col = vec3f(
+    textureSample(tex, samp, uv + s).r,
+    textureSample(tex, samp, uv).g,
+    textureSample(tex, samp, uv - s).b
+  );
+  // scanlines every 3 CSS pixels plus a soft RGB aperture mask
+  let scan = 0.75 + 0.25 * sin(f.position.y / q.pixelDensity * 2.094);
+  let mask = 0.92 + 0.08 * sin(f.position.x * 2.094);
+  let e = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
+  let edge = smoothstep(0.0, 0.015, e);
+  let vig = 1.0 - dot(f.texCoord - 0.5, f.texCoord - 0.5) * 1.2;
+  let flicker = 0.97 + 0.03 * sin(t * 47.0);
+  return vec4f(col * scan * mask * vig * edge * flicker * 1.2, 1.0);
+}`,
+];
+
+// Minimal WGSL highlighter for the read-only source panel.
+function wgslHtml(src) {
+  const esc = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return src.split("\n").map((line) => {
+    const k = line.indexOf("//");
+    const code = k >= 0 ? line.slice(0, k) : line;
+    const note = k >= 0 ? line.slice(k) : "";
+    const body = esc(code)
+      .replace(/\b(fn|let|var|return|struct)\b/g, '<span class="kw">$1</span>')
+      .replace(/(@\w+)/g, '<span class="at">$1</span>')
+      .replace(/\bq\.(\w+)/g, '<span class="u">q.$1</span>');
+    return body + (note ? `<span class="cm">${esc(note)}</span>` : "");
+  }).join("\n");
+}
+
+Showcase.run({ scenes: [
+  {
+    id: "galaxy", title: "旋臂星系",
+    api: "new Q5(sketch, host) + blendMode(ADD) + 依顏色分批 fill() / rect()",
+    desc: "原版示範改成實例模式：三條旋臂、一萬顆星，每顆星依半徑做差速旋轉（越內圈轉越快），ADD 混色讓密集處自然發亮，殘影靠每幀疊一層半透明底色。星星先依顏色分組，每幀只切換 6 次 fill()。",
+    hint: "滑鼠上下調傾角、左右調轉速・點擊重新生成・閒置時自動擺動",
+    mount(ctx) {
+      const COLORS = ["#fff7d6", "#f7df1e", "#ff8c42", "#f72585", "#9d8cff", "#4cc9f0"];
+      const FILLS = COLORS.map((h, k) => {
+        const [r, g, b] = [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+        return `rgba(${r},${g},${b},${k ? 0.59 : 0.78})`;
+      });
+      const COUNTS = [5000, 10000, 30000];
+      let N = COUNTS[1], R, A, Z, S, buckets = [], born = 0, tilt = 0.55, spin = 0, rot = 0, ms = 0, sk = null;
+      const box = hostBox(ctx), say = htmlTag(ctx);
+
+      function make(s) {
+        R = new Float32Array(N); A = new Float32Array(N); Z = new Float32Array(N); S = new Float32Array(N);
+        const lists = COLORS.map(() => []);
+        for (let i = 0; i < N; i++) {
+          const t = Math.pow(s.random(), 1.6), r = t + 0.02, arm = i % 3;
+          R[i] = r;
+          A[i] = (arm / 3) * s.TAU + r * 7.5 + s.randomGaussian(0, 1) * (0.12 + 0.35 * (1 - t));
+          Z[i] = s.randomGaussian(0, 1) * 0.04 * (1 - t);
+          S[i] = s.random() < 0.02 ? 2.6 : s.random(0.8, 1.8);
+          let c = clamp(Math.floor(r * 5.99 + s.random(-0.8, 0.8)), 0, 5);
+          if (s.random() < 0.04) c = 3;
+          lists[c].push(i);
+        }
+        buckets = lists.map((l) => Uint32Array.from(l));
+        born = s.millis();
+      }
+
+      ctx.group(["5 千", "1 萬", "3 萬"], 1, (i) => { N = COUNTS[i]; if (sk) make(sk); });
+      ctx.button("重新生成", () => { if (sk) make(sk); });
+
+      q5Sketch(ctx, (s) => {
+        const live = pointerLive(s);
+        s.setup = () => {
+          fit(s, box);
+          s.noStroke();
+          sk = s;
+          make(s);
+        };
+        s.mousePressed = (e) => { if (e?.target === s.canvas) make(s); };
+        s.draw = () => {
+          const t0 = performance.now();
+          const W = s.width, H = s.height, cx = W / 2, cy = H / 2, RR = Math.min(W, H) * 0.46;
+          let tiltT, spinT;
+          if (live()) {
+            tiltT = 0.18 + 0.77 * clamp(s.mouseY / H, 0, 1);
+            spinT = -0.8 + 1.6 * clamp(s.mouseX / W, 0, 1);
+          } else {
+            const k = performance.now() / 4000;
+            tiltT = 0.55 + 0.3 * Math.sin(k * 1.3);
+            spinT = 0.5 * Math.sin(k);
+          }
+          tilt += (tiltT - tilt) * 0.05;
+          spin += (spinT - spin) * 0.05;
+          rot += spin * Math.min(s.deltaTime, 50) * 0.001;
+
+          s.blendMode(s.BLEND);
+          s.fill("rgba(7,8,14,0.27)");
+          s.rect(0, 0, W, H);
+          const g = Math.min(1, (s.millis() - born) / 1400), grow = 1 - (1 - g) ** 3;
+          const time = s.millis() * 0.00012;
+          s.blendMode(s.ADD);
+          for (let c = 0; c < 6; c++) {
+            s.fill(FILLS[c]);
+            const b = buckets[c];
+            for (let j = 0; j < b.length; j++) {
+              const i = b[j], r = R[i], rr = r * RR * grow, a = A[i] + time / (r + 0.15) + rot;
+              s.rect(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr * tilt + Z[i] * RR, S[i], S[i]);
+            }
+          }
+          s.fill("rgba(255,210,120,0.04)");
+          for (let i = 1; i <= 6; i++) s.ellipse(cx, cy, RR * 0.09 * i, RR * 0.09 * i * (0.4 + tilt * 0.6));
+          s.blendMode(s.BLEND);
+          ms = smooth(ms, performance.now() - t0);
+          say(`<b>${N.toLocaleString()}</b> 顆星・傾角 ${tilt.toFixed(2)}・draw() ${fmtMs(ms)} ms`);
+        };
+      }, box);
+    },
+  },
+  {
+    id: "webgpu", title: "WebGPU 渲染器",
+    api: "Q5.initWebGPU() + new Q5(sketch, host, \"webgpu\") + pushMatrix() / rotate() / rect(x, y, w, h, r)",
+    desc: "同一份 sketch 交給 WebGPU 渲染器：每個 rect() 的位置、圓角、顏色與變換矩陣都寫進 GPU 緩衝區，整幀一次送出。WebGPU 模式原點在畫布中心、顏色預設 0 到 1；瀏覽器不支援時用 webgpu-fallback 退回 Canvas 2D，座標系與色彩格式保持一致，程式不必改。",
+    hint: "移動滑鼠改變波源・切換方塊數量看 draw() 耗時",
+    mount(ctx) {
+      const box = hostBox(ctx), say = htmlTag(ctx);
+      const COUNTS = [2500, 10000, 40000];
+      Q5.initWebGPU().then((ok) => {
+        if (!ctx.active) return;
+        let n = COUNTS[ok ? 1 : 0], ms = 0, cols = 1, rows = 1, cell = 1, ox = 0, oy = 0;
+        const layout = (W, H) => {
+          cell = Math.sqrt((W * H) / n);
+          cols = Math.ceil(W / cell);
+          rows = Math.ceil(H / cell);
+          ox = (-cols * cell) / 2 + cell / 2;
+          oy = (-rows * cell) / 2 + cell / 2;
+        };
+        let sk = null;
+        ctx.group(["2,500", "1 萬", "4 萬"], ok ? 1 : 0, (i) => { n = COUNTS[i]; if (sk) layout(sk.width, sk.height); });
+        q5Sketch(ctx, (s) => {
+          const live = pointerLive(s);
+          s.setup = () => {
+            fit(s, box, { onResize: layout });
+            s.colorMode(s.RGB, 1);
+            s.rectMode(s.CENTER);
+            s.noStroke();
+            layout(s.width, s.height);
+            sk = s;
+          };
+          s.draw = () => {
+            const t0 = performance.now(), t = s.millis() / 1000, W = s.width, H = s.height;
+            let fx = s.mouseX, fy = s.mouseY;
+            if (!live()) { fx = Math.sin(t * 0.45) * W * 0.3; fy = Math.sin(t * 0.7) * H * 0.28; }
+            s.background(0.04, 0.05, 0.07);
+            for (let j = 0; j < rows; j++) {
+              const y = oy + j * cell;
+              for (let i = 0; i < cols; i++) {
+                const x = ox + i * cell, d = Math.hypot(x - fx, y - fy);
+                const k = 0.5 + 0.5 * Math.sin(d * 0.025 - t * 3);
+                let hp = (d * 0.004 - t * 0.25) % 6;
+                if (hp < 0) hp += 6;
+                const h0 = hp | 0, f = hp - h0, a = PAL_F[h0], b = PAL_F[(h0 + 1) % 6], br = 0.45 + 0.55 * k;
+                s.fill((a[0] + (b[0] - a[0]) * f) * br, (a[1] + (b[1] - a[1]) * f) * br, (a[2] + (b[2] - a[2]) * f) * br);
+                const sz = cell * (0.3 + 0.55 * k);
+                s.pushMatrix();
+                s.translate(x, y);
+                s.rotate((k * Math.PI) / 2);
+                s.rect(0, 0, sz, sz, sz * 0.22);
+                s.popMatrix();
+              }
+            }
+            ms = smooth(ms, performance.now() - t0);
+            const who = s._webgpuFallback ? "<b>Canvas 2D</b>（無 WebGPU，已退回）" : "<b>WebGPU</b>";
+            say(`${who}・${(rows * cols).toLocaleString()} 個圓角方塊・draw() ${fmtMs(ms)} ms`);
+          };
+        }, box, ok ? "webgpu" : "webgpu-fallback");
+      });
+    },
+  },
+  {
+    id: "wgsl", title: "WGSL 著色器",
+    api: "createShader() 頂點 + createImageShader() 片段 + createFrameShader() 後製 + shader() / resetShaders()",
+    desc: "q5 的 WebGPU 渲染器只要寫一段 WGSL 的 vertexMain 或 fragMain，就能替換預設管線：createShader 改圖形頂點、createImageShader 改圖片取樣、createFrameShader 對整個畫面做後製。滑鼠座標、時間、畫布尺寸等 uniform 由 q5 每幀自動送進著色器（q.mouseX、q.time）。",
+    hint: "移動滑鼠控制波紋、透鏡與消失點・切換三種著色器",
+    mount(ctx) {
+      const box = hostBox(ctx), say = htmlTag(ctx);
+      const MODES = ["頂點波紋", "影像折射", "CRT 後製"];
+      const TAGS = [
+        "<b>createShader()</b> 改寫頂點：每個頂點依離滑鼠的距離位移",
+        "<b>createImageShader()</b> 改寫片段：透鏡折射＋色差",
+        "<b>createFrameShader()</b> 整個畫面後製：曲面、掃描線、色差",
+      ];
+      let mode = 0;
+      Q5.initWebGPU().then((ok) => {
+        if (!ctx.active) return;
+        if (!ok) {
+          const pre = Showcase.h("pre", { class: "q5-code" });
+          const show = () => { pre.innerHTML = wgslHtml(WGSL[mode]); };
+          ctx.group(MODES, 0, (i) => { mode = i; show(); });
+          const note = Showcase.h("div", { class: "q5-note" });
+          note.innerHTML = "這個瀏覽器沒有可用的 <b>WebGPU</b>，WGSL 著色器只能在 q5 的 WebGPU 渲染器執行（Chrome／Edge 113 以上、Safari 26 以上）。下方是目前選取模式的著色器原始碼，換到支援的瀏覽器會即時執行。";
+          ctx.el.append(Showcase.h("div", { class: "q5-nogpu" }, note, pre));
+          show();
+          return;
+        }
+        ctx.group(MODES, 0, (i) => { mode = i; say(TAGS[mode], true); });
+        q5Sketch(ctx, (s) => {
+          const live = pointerLive(s);
+          let shapeSh, imgSh, frameSh, img = null, stars = [];
+          s.setup = () => {
+            fit(s, box);
+            s.colorMode(s.RGB, 1);
+            shapeSh = s.createShader(WGSL[0]);
+            imgSh = s.createImageShader(WGSL[1]);
+            frameSh = s.createFrameShader(WGSL[2]);
+            s.loadImage(PHOTO(6), (im) => { img = im; });
+            stars = Array.from({ length: 90 }, () => ({ u: s.random(), v: s.random(), z: s.random(1, 2.4), p: s.random(s.TAU) }));
+            say(TAGS[mode], true);
+          };
+          s.draw = () => {
+            const t = s.millis() / 1000, W = s.width, H = s.height, hw = W / 2, hh = H / 2;
+            // Idle: steer the pointer uniform along a slow path so the shaders keep reacting.
+            if (!live()) { s.mouseX = Math.sin(t * 0.5) * W * 0.3; s.mouseY = Math.cos(t * 0.37) * H * 0.25; }
+            s.resetShaders();
+            s.noStroke();
+            s.background(0.04, 0.05, 0.07);
+            if (mode === 0) {
+              s.shader(shapeSh);
+              const cols = clamp(Math.round(W / 28), 14, 48), cell = W / cols, rows = Math.ceil(H / cell) + 1;
+              const y0 = (-rows * cell) / 2 + cell / 2;
+              for (let j = 0; j < rows; j++) {
+                for (let i = 0; i < cols; i++) {
+                  const c = PAL_F[Math.floor((i + j) / 5) % 6], b = (i + j) & 1 ? 1 : 0.78;
+                  s.fill(c[0] * b, c[1] * b, c[2] * b);
+                  s.plane(-hw + (i + 0.5) * cell, y0 + j * cell, cell, cell);
+                }
+              }
+            } else if (mode === 1) {
+              if (img) {
+                s.shader(imgSh);
+                s.imageMode(s.CENTER);
+                const k = Math.max(W / img.width, H / img.height) * 1.04;
+                s.image(img, 0, 0, img.width * k, img.height * k);
+              }
+            } else {
+              synthwave(s, t, stars, W, H, hw, hh);
+              s.shader(frameSh);
+            }
+          };
+        }, box, "webgpu");
+      });
+
+      // Retro sunset drawn with the default pipelines; the frame shader post-processes it.
+      function synthwave(s, t, stars, W, H, hw, hh) {
+        const hz = H * 0.06, vx = s.mouseX * 0.25;
+        s.rectMode(s.CORNER);
+        const bands = 28, skyH = hz + hh;
+        for (let i = 0; i < bands; i++) {
+          const k = i / (bands - 1);
+          s.fill(0.07 + 0.85 * k * k, 0.03 + 0.22 * k * k, 0.2 + 0.25 * k);
+          s.rect(-hw, -hh + (skyH * i) / bands, W, skyH / bands + 1);
+        }
+        for (const st of stars) {
+          s.fill(1, 1, 1, 0.3 + 0.35 * (1 + Math.sin(t * 2 + st.p)));
+          s.rect(-hw + st.u * W, -hh + st.v * skyH * 0.7, st.z, st.z);
+        }
+        const R = Math.min(W, H) * 0.24, cy = hz - R * 0.45;
+        for (let y = -R; y < R; y += 2) {
+          if (cy + y > hz) break;
+          if (y > 0) {
+            const u = y / R, ph = (u * 6 + t * 0.5) % 1;
+            if (ph < u * 0.6) continue;
+          }
+          const half = Math.sqrt(R * R - y * y), k = (y + R) / (2 * R);
+          s.fill(1, 0.85 - 0.6 * k, 0.25 + 0.3 * k);
+          s.rect(vx - half, cy + y, half * 2, 2.2);
+        }
+        s.fill(0.03, 0, 0.07);
+        s.rect(-hw, hz, W, hh - hz);
+        s.stroke(1, 0.2, 0.7);
+        s.strokeWeight(2);
+        for (let i = -16; i <= 16; i++) s.line(vx + i * W * 0.02, hz, vx + i * W * 0.2, hh);
+        const sc = (t * 0.8) % 1;
+        for (let k = 0; k < 26; k++) {
+          const z = 1 + k - sc;
+          if (z <= 0.9) continue;
+          const y = hz + ((hh - hz) * 0.9) / z;
+          s.line(-hw, y, hw, y);
+        }
+        s.noStroke();
+      }
+    },
+  },
+  {
+    id: "shadow", title: "陰影與膠囊",
+    api: "shadow() + shadowBox() + capsule() + rect(x, y, w, h, radius) + opacity()",
+    desc: "q5 把 Canvas 2D 的陰影包成 shadow() 與 shadowBox()，並內建 capsule() 膠囊與圓角 rect()。每個物件有高度 z：越高的物件陰影越遠、越模糊，方向由光源（滑鼠）決定；opacity() 直接控制整體透明度。",
+    hint: "移動滑鼠當光源・點擊重新排列・調整模糊與不透明度",
+    mount(ctx) {
+      const box = hostBox(ctx), say = htmlTag(ctx);
+      let on = true, blurK = 1, alpha = 1, items = [], ms = 0, sk = null;
+      ctx.toggle("陰影", true, (v) => { on = v; });
+      ctx.slider("模糊", { min: 0, max: 2, step: 0.05, value: 1, format: (v) => `×${v.toFixed(2)}` }, (v) => { blurK = v; });
+      ctx.slider("不透明度", { min: 0.3, max: 1, step: 0.01, value: 1, format: (v) => `${Math.round(v * 100)}%` }, (v) => { alpha = v; });
+
+      function layout(s) {
+        const W = s.width, H = s.height, u = Math.min(W, H), top = Math.min(belowControls(ctx), H * 0.4);
+        const n = clamp(Math.round((W * H) / 14000), 10, 40);
+        items = Array.from({ length: n }, (_, i) => {
+          const z = s.random(0.25, 1), k = 0.6 + 0.6 * z;
+          return {
+            kind: i % 3, z, col: PAL[i % 6],
+            x: s.random(0.08, 0.92) * W, y: s.random(top + 0.05 * H, H * 0.86),
+            a: s.random(s.TAU), spin: s.random(-0.4, 0.4), ph: s.random(s.TAU),
+            len: u * s.random(0.07, 0.12) * k, r: u * s.random(0.022, 0.038) * k,
+            w: u * s.random(0.08, 0.14) * k, h: u * s.random(0.06, 0.11) * k, d: u * s.random(0.06, 0.1) * k,
+          };
+        }).sort((p1, p2) => p1.z - p2.z);
+      }
+      function shape(s, it) {
+        if (it.kind === 0) s.capsule(-it.len, 0, it.len, 0, it.r);
+        else if (it.kind === 1) s.rect(0, 0, it.w, it.h, Math.min(it.w, it.h) * 0.22);
+        else s.circle(0, 0, it.d);
+      }
+
+      q5Sketch(ctx, (s) => {
+        const live = pointerLive(s);
+        s.setup = () => {
+          fit(s, box, { onResize: () => layout(s) });
+          s.rectMode(s.CENTER);
+          s.noStroke();
+          sk = s;
+          layout(s);
+        };
+        s.mousePressed = (e) => { if (e?.target === s.canvas && sk) layout(s); };
+        s.draw = () => {
+          const t0 = performance.now(), t = s.millis() / 1000, W = s.width, H = s.height;
+          const pd = s.canvas.width / W;
+          let Lx = s.mouseX, Ly = s.mouseY;
+          if (!live()) { Lx = W / 2 + Math.cos(t * 0.4) * W * 0.35; Ly = H / 2 + Math.sin(t * 0.53) * H * 0.3; }
+          s.background("#262b36");
+          s.noShadow();
+          s.opacity(1);
+          for (let i = 6; i >= 1; i--) { s.fill("rgba(255,236,190,0.035)"); s.circle(Lx, Ly, 46 * i); }
+          s.fill("#fff6d8");
+          s.circle(Lx, Ly, 12);
+          for (const it of items) {
+            const px = it.x, py = it.y + Math.sin(t * 0.9 + it.ph) * 6 * it.z, ang = it.a + t * it.spin;
+            const dx = px - Lx, dy = py - Ly, dl = Math.hypot(dx, dy) || 1;
+            s.push();
+            s.translate(px, py);
+            s.rotate(ang);
+            s.opacity(alpha);
+            if (on) {
+              s.shadow("rgba(0,0,0,0.55)");
+              s.shadowBox(dx * 0.06 * it.z * pd, dy * 0.06 * it.z * pd || 0.01, (4 + 28 * it.z) * blurK * pd);
+            }
+            s.fill(it.col);
+            shape(s, it);
+            s.noShadow();
+            // Highlight on the side facing the light, in the shape's rotated frame.
+            const ca = Math.cos(-ang), sa = Math.sin(-ang), hx = -dx / dl, hy = -dy / dl;
+            const off = Math.min(it.r || it.d * 0.5 || it.h * 0.5, it.h * 0.5 || 1e9, it.d * 0.5 || 1e9) * 0.35;
+            s.translate((hx * ca - hy * sa) * off, (hx * sa + hy * ca) * off);
+            s.scale(0.6);
+            s.fill("rgba(255,255,255,0.16)");
+            shape(s, it);
+            s.pop();
+          }
+          s.opacity(1);
+          ms = smooth(ms, performance.now() - t0);
+          say(`<b>${items.length}</b> 個物件・陰影 ${on ? "開" : "關"}・draw() ${fmtMs(ms)} ms`);
+        };
+      }, box);
+    },
+  },
+  {
+    id: "noise", title: "雜訊像素地圖",
+    api: "noiseMode(PERLIN | SIMPLEX | BLOCKY) + noiseDetail() + loadPixels() / pixels[] / updatePixels() + displayMode(MAXED, PIXELATED)",
+    desc: "q5 內建 Perlin 雜訊，載入官方附加模組 q5-noisier 後可用 noiseMode() 切換 Simplex 與方塊狀的 Blocky。每幀逐像素算出高度，依高度上色成海洋、沙灘、草原、山峰，再用 pixels[] 一次寫回；displayMode(MAXED, PIXELATED) 把小畫布放大成清晰的像素風。",
+    hint: "點擊換種子・切換三種雜訊・拖動縮放與細節",
+    mount(ctx) {
+      const box = hostBox(ctx), say = htmlTag(ctx);
+      const NAMES = ["Perlin", "Simplex", "Blocky"];
+      const BANDS = [
+        [0.30, "深海"], [0.42, "海洋"], [0.48, "淺灘"], [0.52, "沙灘"],
+        [0.66, "草原", [123, 211, 137]], [0.78, "森林", [61, 139, 90]], [0.90, "岩地", [138, 131, 120]], [9, "雪峰", [244, 244, 240]],
+      ];
+      BANDS[3][2] = [233, 216, 166];
+      const DEEP = [16, 38, 84], SHALLOW = [76, 170, 210];
+      let mode = 0, scale = 0.035, oct = 4, seed = 1, dirty = true, lo = 1, hi = 0, drift = 100, ms = 0, elev = null;
+      const reset = () => { dirty = true; };
+      ctx.group(NAMES, 0, (i) => { mode = i; reset(); });
+      ctx.slider("縮放", { min: 0.01, max: 0.08, step: 0.001, value: scale, format: (v) => v.toFixed(3) }, (v) => { scale = v; });
+      ctx.slider("細節", { min: 1, max: 8, step: 1, value: oct, format: (v) => `${v} 層` }, (v) => { oct = v; reset(); });
+      const band = (e) => BANDS.find((b) => e < b[0]);
+      // Keep roughly 18k pixels at the box's aspect ratio; CSS scales it up.
+      const size = () => {
+        const W = Math.max(1, box.clientWidth), H = Math.max(1, box.clientHeight);
+        const cw = Math.max(40, Math.round(Math.sqrt((18000 * W) / H)));
+        return [cw, Math.max(24, Math.round((cw * H) / W))];
+      };
+
+      q5Sketch(ctx, (s) => {
+        const live = pointerLive(s);
+        s.setup = () => {
+          fit(s, box, { size, pd: 0 });
+          s.displayMode(s.MAXED, s.PIXELATED);
+          s.frameRate(30);
+        };
+        s.mousePressed = (e) => { if (e?.target === s.canvas) { seed++; reset(); } };
+        s.draw = () => {
+          const t0 = performance.now();
+          if (dirty) {
+            s.noiseMode([s.PERLIN, s.SIMPLEX, s.BLOCKY][mode]);
+            s.noiseSeed(seed);
+            s.noiseDetail(oct, 0.5);
+            lo = 1; hi = 0; dirty = false;
+          }
+          const w = s.width, h = s.height;
+          if (!elev || elev.length !== w * h) elev = new Float32Array(w * h);
+          for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+              const v = s.noise((x + drift) * scale, y * scale);
+              elev[y * w + x] = v;
+              if (v < lo) lo = v;
+              if (v > hi) hi = v;
+            }
+          }
+          drift += 0.15;
+          const span = Math.max(1e-6, hi - lo);
+          s.loadPixels();
+          const px = s.pixels;
+          for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+              const i = y * w + x, e = (elev[i] - lo) / span, o = i * 4;
+              let r, g, b;
+              if (e < 0.48) {
+                const k = Math.pow(e / 0.48, 1.5);
+                r = DEEP[0] + (SHALLOW[0] - DEEP[0]) * k; g = DEEP[1] + (SHALLOW[1] - DEEP[1]) * k; b = DEEP[2] + (SHALLOW[2] - DEEP[2]) * k;
+              } else {
+                const c = band(e)[2];
+                const nw = x && y ? (elev[i - w - 1] - lo) / span : e;
+                const shade = clamp(1 + (e - nw) * 7, 0.72, 1.28);
+                r = c[0] * shade; g = c[1] * shade; b = c[2] * shade;
+              }
+              px[o] = r; px[o + 1] = g; px[o + 2] = b; px[o + 3] = 255;
+            }
+          }
+          s.updatePixels();
+          ms = smooth(ms, performance.now() - t0);
+          let under = "";
+          if (live()) {
+            const mx = Math.floor(s.mouseX), my = Math.floor(s.mouseY);
+            if (mx >= 0 && my >= 0 && mx < w && my < h) {
+              const e = (elev[my * w + mx] - lo) / span;
+              under = `・滑鼠處 ${band(e)[1]} ${e.toFixed(2)}`;
+            }
+          }
+          say(`<b>${NAMES[mode]}</b>・${oct} 層・${w}×${h} 像素・計算 ${fmtMs(ms)} ms${under}`);
+        };
+      }, box);
+    },
+  },
+  {
+    id: "text", title: "中文字轉點",
+    api: "textFont() + textStyle(BOLD) + textToPoints(str, x, y, sampleRate) + circle()",
+    desc: "textToPoints() 先把文字畫進離屏畫布，再依取樣率挑出實心像素，並用 Z 階曲線排序讓點均勻分布，所以中文字也能直接轉成點。每個粒子用彈簧回到自己的目標點，切換文字時沿用舊粒子飛過去。",
+    hint: "滑鼠靠近會推開粒子・調整取樣率看點數變化",
+    mount(ctx) {
+      const box = hostBox(ctx), say = htmlTag(ctx);
+      const WORDS = ["q5.js", "繁體中文", "像素取樣"];
+      let wi = 0, rate = 0.06, auto = true, lastSwitch = performance.now(), dirty = false, ms = 0;
+      let N = 0, P = new Float32Array(0), T = new Float32Array(0), buckets = [];
+      const grp = ctx.group(WORDS, 0, (i) => { wi = i; dirty = true; lastSwitch = performance.now(); });
+      ctx.toggle("自動輪播", true, (v) => { auto = v; lastSwitch = performance.now(); });
+      ctx.slider("取樣率", { min: 0.02, max: 0.15, step: 0.005, value: rate, format: (v) => v.toFixed(3) }, (v) => { rate = v; dirty = true; });
+
+      function rebuild(s) {
+        const W = s.width, H = s.height, top = belowControls(ctx), bottom = H - 40;
+        const cy = top + (bottom - top) / 2, word = WORDS[wi];
+        s.textFont(FONT);
+        s.textStyle(s.BOLD);
+        s.textAlign(s.CENTER, s.CENTER);
+        s.fill(255);
+        s.textSize(100);
+        const w100 = Math.max(1, s.textWidth(word));
+        s.textSize(Math.max(12, Math.min((W * 0.86) / (w100 / 100), (bottom - top) * 0.8, H * 0.42)));
+        const pts = s.textToPoints(word, W / 2, cy, rate, 1);
+        const M = pts.length, P2 = new Float32Array(M * 4), T2 = new Float32Array(M * 2);
+        let minX = Infinity, maxX = -Infinity;
+        for (let i = 0; i < M; i++) {
+          T2[i * 2] = pts[i].x; T2[i * 2 + 1] = pts[i].y;
+          minX = Math.min(minX, pts[i].x); maxX = Math.max(maxX, pts[i].x);
+          if (N) { const j = (i % N) * 4; P2[i * 4] = P[j]; P2[i * 4 + 1] = P[j + 1]; P2[i * 4 + 2] = P[j + 2]; P2[i * 4 + 3] = P[j + 3]; }
+          else { P2[i * 4] = s.random(W); P2[i * 4 + 1] = s.random(H); }
+        }
+        const lists = PAL.map(() => []);
+        for (let i = 0; i < M; i++) lists[clamp(Math.floor(((T2[i * 2] - minX) / (maxX - minX + 1)) * 6), 0, 5)].push(i);
+        buckets = lists.map((l) => Uint32Array.from(l));
+        N = M; P = P2; T = T2;
+      }
+
+      q5Sketch(ctx, (s) => {
+        const live = pointerLive(s);
+        s.setup = async () => {
+          fit(s, box, { onResize: () => { dirty = true; } });
+          try {
+            await document.fonts.load(`bold 100px ${FONT}`, "繁體中文像素取樣");
+          } catch (e) {
+            console.warn("字型載入失敗，改用預設字型", e);
+          }
+          dirty = true;
+        };
+        s.draw = () => {
+          const t0 = performance.now(), t = s.millis() / 1000, W = s.width, H = s.height;
+          if (auto && performance.now() - lastSwitch > 4500) grp.children[(wi + 1) % WORDS.length].click();
+          if (dirty) { dirty = false; rebuild(s); }
+          let mx = s.mouseX, my = s.mouseY;
+          if (!live()) { mx = W / 2 + Math.sin(t * 0.6) * W * 0.42; my = H / 2 + Math.sin(t * 1.1) * H * 0.18; }
+          const R2 = 90 * 90;
+          for (let i = 0; i < N; i++) {
+            const o = i * 4;
+            let x = P[o], y = P[o + 1], vx = P[o + 2], vy = P[o + 3];
+            vx += (T[i * 2] - x) * 0.08;
+            vy += (T[i * 2 + 1] - y) * 0.08;
+            const dx = x - mx, dy = y - my, d2 = dx * dx + dy * dy;
+            if (d2 < R2 && d2 > 0.01) {
+              const d = Math.sqrt(d2), f = (1 - d / 90) * 6;
+              vx += (dx / d) * f; vy += (dy / d) * f;
+            }
+            vx *= 0.82; vy *= 0.82;
+            P[o] = x + vx; P[o + 1] = y + vy; P[o + 2] = vx; P[o + 3] = vy;
+          }
+          s.background(14, 16, 19);
+          s.noStroke();
+          const dot = clamp(0.9 / Math.sqrt(rate), 2, 6);
+          for (let c = 0; c < 6; c++) {
+            s.fill(PAL[c]);
+            const b = buckets[c];
+            for (let j = 0; j < b.length; j++) s.circle(P[b[j] * 4], P[b[j] * 4 + 1], dot);
+          }
+          ms = smooth(ms, performance.now() - t0);
+          say(`「${WORDS[wi]}」<b>${N.toLocaleString()}</b> 個取樣點・取樣率 ${rate.toFixed(3)}・draw() ${fmtMs(ms)} ms`);
+        };
+      }, box);
+    },
+  },
+  {
+    id: "oklch", title: "OKLCH 色彩",
+    api: "colorMode(HSL) / colorMode(OKLCH) + fill(l, c, h) + drawingContext.getImageData() + filter(GRAY)",
+    desc: "兩條色帶用同樣的「亮度、彩度」繞完 360 度色相：上排是 HSL，下排是 q5 支援的 OKLCH。下方曲線是從畫布實際讀回像素算出的相對亮度 Y：HSL 的黃與青明顯比藍亮，OKLCH 幾乎是一條平線，適合做亮度一致的配色。超出 sRGB 色域的 OKLCH 顏色會被瀏覽器裁切，曲線會出現小幅起伏。",
+    hint: "移動滑鼠查看各色相的亮度・開灰階檢視比較兩條色帶",
+    mount(ctx) {
+      const box = hostBox(ctx), say = htmlTag(ctx);
+      let L = 0.7, SAT = 0.6, gray = false, dirty = true, Ys = [null, null], N = 0;
+      ctx.toggle("灰階檢視", false, (v) => { gray = v; });
+      ctx.slider("亮度", { min: 0.3, max: 0.9, step: 0.01, value: L, format: (v) => v.toFixed(2) }, (v) => { L = v; dirty = true; });
+      ctx.slider("彩度", { min: 0, max: 1, step: 0.01, value: SAT, format: (v) => `${Math.round(v * 100)}%` }, (v) => { SAT = v; dirty = true; });
+      const lin = (c) => { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+
+      q5Sketch(ctx, (s) => {
+        const live = pointerLive(s);
+        s.setup = () => { fit(s, box, { onResize: () => { dirty = true; } }); };
+        s.draw = () => {
+          const W = s.width, H = s.height, t = s.millis() / 1000;
+          const top = Math.min(belowControls(ctx), H * 0.45), bottom = H - 46;
+          const x0 = 16, cw = Math.max(40, W - 32), n = Math.max(60, Math.min(240, Math.floor(cw / 2)));
+          if (n !== N) { N = n; dirty = true; }
+          const gap = 10, blockH = (bottom - top - gap) / 2, labelH = 22;
+          const stripH = Math.max(18, blockH * 0.42), plotH = Math.max(16, blockH - labelH - stripH - 8);
+          const blocks = [
+            { name: "HSL", code: `fill(h, ${Math.round(SAT * 100)}, ${Math.round(L * 100)})`, set: (h) => { s.colorMode(s.HSL); s.fill(h, SAT * 100, L * 100); } },
+            { name: "OKLCH", code: `fill(${L.toFixed(2)}, ${(SAT * 0.25).toFixed(3)}, h)`, set: (h) => { s.colorMode(s.OKLCH); s.fill(L, SAT * 0.25, h); } },
+          ];
+          s.background("#0e1013");
+          s.noStroke();
+          blocks.forEach((b, k) => {
+            const y = top + k * (blockH + gap), sy = y + labelH;
+            for (let i = 0; i < N; i++) {
+              b.set((i / N) * 360);
+              s.rect(x0 + (i * cw) / N, sy, cw / N + 0.6, stripH);
+            }
+          });
+          if (dirty) {
+            // Read back the pixels the browser actually produced and convert them to relative luminance.
+            const pd = s.canvas.width / W;
+            blocks.forEach((b, k) => {
+              const sy = top + k * (blockH + gap) + labelH + stripH / 2;
+              const row = s.drawingContext.getImageData(Math.round(x0 * pd), Math.round(sy * pd), Math.max(1, Math.round(cw * pd)), 1, { colorSpace: "srgb" }).data;
+              const Y = new Float32Array(N);
+              for (let i = 0; i < N; i++) {
+                const o = Math.min(row.length / 4 - 1, Math.round(((i + 0.5) * cw * pd) / N)) * 4;
+                Y[i] = 0.2126 * lin(row[o]) + 0.7152 * lin(row[o + 1]) + 0.0722 * lin(row[o + 2]);
+              }
+              Ys[k] = Y;
+            });
+            dirty = false;
+          }
+          let mi = live() ? Math.floor(((s.mouseX - x0) / cw) * N) : Math.floor((0.5 + 0.5 * Math.sin(t * 0.5)) * N);
+          mi = clamp(mi, 0, N - 1);
+          s.textFont(FONT);
+          s.textSize(13);
+          blocks.forEach((b, k) => {
+            const y = top + k * (blockH + gap), py = y + labelH + stripH + 6, Y = Ys[k];
+            const lo = Math.min(...Y), hi = Math.max(...Y);
+            s.noStroke();
+            s.fill("#ecebe6");
+            s.textAlign(s.LEFT, s.CENTER);
+            s.text(`${b.name}　${b.code}`, x0, y + labelH / 2 - 2);
+            s.fill("#9aa0a6");
+            s.textAlign(s.RIGHT, s.CENTER);
+            if (W > 420) s.text(`相對亮度 Y ${lo.toFixed(2)} ~ ${hi.toFixed(2)}`, x0 + cw, y + labelH / 2 - 2);
+            s.fill("#0b0d10");
+            s.stroke("#2a2f37");
+            s.strokeWeight(1);
+            s.rect(x0, py, cw, plotH, 4);
+            s.noFill();
+            s.stroke(k ? "#4cc9f0" : "#f7df1e");
+            s.strokeWeight(1.6);
+            s.beginShape();
+            for (let i = 0; i < N; i++) s.vertex(x0 + ((i + 0.5) * cw) / N, py + plotH - 3 - Y[i] * (plotH - 6));
+            s.endShape();
+          });
+          const mx = x0 + ((mi + 0.5) * cw) / N;
+          s.stroke("rgba(255,255,255,0.85)");
+          s.strokeWeight(1.5);
+          s.line(mx, top + labelH - 3, mx, bottom - 2);
+          s.noStroke();
+          if (gray) s.filter(s.GRAY);
+          const hue = Math.round((mi / N) * 360);
+          say(`色相 <b>${hue}°</b>・HSL Y ${Ys[0][mi].toFixed(2)}・OKLCH Y ${Ys[1][mi].toFixed(2)}・${s.canvas.colorSpace || "srgb"}`);
+        };
+      }, box);
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "circle() 逐一繪製：Canvas 2D vs. WebGPU 渲染器（同一份程式碼）",
+    desc: "同一個向日葵螺旋星盤、同一份 draw() 程式碼，只換渲染器。Canvas 2D 每顆圓都是一次路徑填色；WebGPU 渲染器把所有圓的中心與半徑寫進緩衝區，整幀一次送給 GPU 畫。",
+    hint: "按「自動加壓」開始・切換渲染器後再測一次比較",
+    mount(ctx) {
+      ctx.controls.classList.add("bottom");
+      let mode = 0, n = 2000, ms = 0, cur = null, token = 0;
+      const host = Showcase.h("div", { class: "stress-host" });
+      ctx.el.append(host);
+
+      function build(s) {
+        s.setup = () => {
+          fit(s, host);
+          s.colorMode(s.RGB, 1);
+          s.noStroke();
+        };
+        s.draw = () => {
+          const t0 = performance.now(), W = s.width, H = s.height, R = Math.min(W, H) * 0.46, t = s.millis() / 1000;
+          const d = clamp((R * 1.9) / Math.sqrt(n), 1.2, 10);
+          // WebGPU (and its 2D fallback) put the origin at the centre.
+          const ox = s._webgpu ? 0 : W / 2, oy = s._webgpu ? 0 : H / 2;
+          s.background(0.043, 0.051, 0.063);
+          for (let c = 0; c < 6; c++) {
+            s.fill(PAL_F[c][0], PAL_F[c][1], PAL_F[c][2]);
+            for (let i = c; i < n; i += 6) {
+              const k = i / n, r = Math.sqrt(k) * R, a = i * 2.39996 + t * (1 - k);
+              s.circle(ox + r * Math.cos(a), oy + r * Math.sin(a), d);
+            }
+          }
+          ms = smooth(ms, performance.now() - t0);
+        };
+      }
+      async function start() {
+        const my = ++token;
+        cur?.destroy();
+        cur = null;
+        host.textContent = "";
+        ms = 0;
+        let renderer = "c2d";
+        if (mode === 1) renderer = (await Q5.initWebGPU()) ? "webgpu" : "webgpu-fallback";
+        if (my !== token || !ctx.active) return;
+        cur = q5Sketch(ctx, build, host, renderer);
+      }
+      const label = () => {
+        if (!cur) return "載入中";
+        if (cur.q._webgpuFallback) return "Canvas 2D（WebGPU 不可用，已退回）";
+        return cur.q._webgpu ? "WebGPU" : "Canvas 2D";
+      };
+      ctx.group(["Canvas 2D", "WebGPU"], 0, (i) => { mode = i; start(); });
+      start();
+      ctx.ramp({
+        label: "圓", unit: "個", minFps: 30,
+        steps: [1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000],
+        initial: 1,
+        apply(v) { n = v; },
+        metrics: () => ({ 渲染器: label(), "draw() 耗時": `${ms.toFixed(1)} ms` }),
+        note: "Canvas 2D 的瓶頸在 JavaScript 迴圈加上每顆 circle() 各自一次路徑填色，draw() 耗時隨圓數線性上升；WebGPU 把圓批次寫進一個緩衝區，draw() 只量到 CPU 端組資料的時間，GPU 端成本反映在幀率上。無頭瀏覽器與部分裝置沒有 WebGPU，會自動退回 Canvas 2D。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

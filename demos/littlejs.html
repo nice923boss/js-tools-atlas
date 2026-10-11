@@ -3,286 +3,1025 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LittleJS 示範：星域守衛</title>
+<title>LittleJS 示範：八個場景看懂輕量遊戲引擎與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"]}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"],"scenes":["星域守衛","磚塊平台","粒子特效庫","動態光影","A* 尋路","後製濾鏡","音效與成就","極限測試"]}</script>
 <style>
-  body { background: #07080d; }
-  canvas { touch-action: none; }
-  .overlay { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; pointer-events: none; transition: opacity .3s; }
-  .overlay.hide { opacity: 0; }
-  .overlay .card { text-align: center; padding: 16px 26px; margin: 0 16px; border-radius: 16px; background: rgba(7, 8, 13, .66); backdrop-filter: blur(3px); border: 1px solid var(--line); }
-  .overlay h1 { margin: 0; font-size: clamp(28px, 7vw, 48px); letter-spacing: 4px;
-    background: linear-gradient(90deg, var(--c2), var(--c6), var(--c3)); -webkit-background-clip: text; background-clip: text; color: transparent; }
-  .overlay p { margin: 6px 0 0; }
-  .overlay .blink { color: var(--c1); animation: blink 1.2s steps(2) infinite; }
-  @keyframes blink { 50% { opacity: .25; } }
+  .lj-wrap { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); }
+  .lj-wrap iframe, .lj-stress iframe { display: block; width: 100%; height: 100%; border: 1px solid var(--line); border-radius: 10px; background: #0e1013; }
+  .lj-stress { position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 350px; }
+  @media (max-width: 760px) { .lj-stress { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px); } }
+  .lj-code { position: absolute; left: 22px; bottom: calc(var(--sc-ctl-b, 0px) + 48px); max-width: calc(100% - 44px); margin: 0; padding: 8px 12px; border-radius: 8px; background: rgba(8, 10, 14, .8); color: #d6e4ff; font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; pointer-events: none; }
 </style>
 </head>
 <body>
-<div class="overlay" id="overlay">
-  <div class="card">
-    <h1 id="ov-title">星域守衛</h1>
-    <p id="ov-sub">擊落敵機、閃避彈幕，自動開火</p>
-    <p class="blink" id="ov-go">按任意鍵或點擊開始（有音效）</p>
-  </div>
-</div>
-<div class="hint">滑鼠或手指拖曳移動戰機，方向鍵／WASD 也可以</div>
+<!-- LittleJS keeps the whole engine in module globals and allows one engineInit per window, so each scene runs it inside its own iframe (see ljsFrame). -->
+<script src="_shared/showcase.js"></script>
+<script>
+// LittleJS showcase: eight scenes from the original space shooter to an EngineObject stress ramp.
+const LJS = "https://cdn.jsdelivr.net/npm/littlejsengine@1.23.1/dist/littlejs.esm.min.js";
+const FONT = getComputedStyle(document.documentElement).getPropertyValue("--font").trim();
+const MONO = getComputedStyle(document.documentElement).getPropertyValue("--mono").trim();
 
-<script type="module">
-// LittleJS space shooter: EngineObject subclasses, WebGL batched shapes, built-in particle effects,
-// ZzFX sounds, bloom post process and camera shake.
-import {
-  engineInit, vec2, rgb, hsl, EngineObject, drawRect, drawPoly, drawCircle, drawTextScreen,
-  keyIsDown, mouseIsDown, mouseWasPressed, mousePos, mousePosScreen, mainCanvasSize,
-  setCameraScale, setCameraPos, setCanvasClearColor, particleEffect, Sound, postProcessBloom, rand, clamp, time,
-} from "https://cdn.jsdelivr.net/npm/littlejsengine@1.23.1/dist/littlejs.esm.min.js";
-
-const FONT = "Noto Sans TC, Microsoft JhengHei, PingFang TC, sans-serif";
-const $ = (id) => document.getElementById(id);
-const C = {
-  cyan: rgb(.3, .79, .94), yellow: rgb(.97, .87, .12), pink: rgb(.97, .15, .52),
-  green: rgb(.48, .83, .54), orange: rgb(1, .55, .26), violet: rgb(.62, .55, 1), white: rgb(1, 1, 1),
-};
-
-// ZzFX sound arrays, played by the engine's Sound class
-const sfx = {
-  shoot: new Sound([.25, .05, 980, .01, .02, .05, 2, 1.6, -18, , , , , , , , , .6]),
-  boom: new Sound([1.1, .1, 70, .02, .18, .5, 4, 2.6, , , , , , 1.4, , .5, .1, .5, .15]),
-  hurt: new Sound([1, .1, 260, .01, .08, .3, 3, 1.8, -6, , , , , 1.2, , .3]),
-  hit: new Sound([.5, .1, 520, , .01, .05, 4, 1.4, , , , , , .6]),
-};
-
-let mode = "title"; // title | play | over
-let overAt = 0, anyKey = false, usingMouse = false, lastMouse = vec2();
-let score = 0, lives = 3, wave = 1, invuln = 0, shake = 0;
-let fireTimer = 0, spawnTimer = 0, hw = 10;
-const VIEW_H = 24;
-let player, thruster;
-const enemies = [], shots = [], bombs = [];
-const stars = Array.from({ length: 130 }, () => ({ x: rand(-1, 1), y: rand(-12, 12), z: rand(.2, 1) }));
-
-class Ship extends EngineObject {
-  constructor() { super(vec2(0, -8), vec2(1.4)); this.target = this.pos.copy(); }
-  update() {
-    this.pos = this.pos.lerp(this.target, .2);
-    this.pos.x = clamp(this.pos.x, -hw + .8, hw - .8);
-    this.pos.y = clamp(this.pos.y, -11, 2);
-  }
-  render() {
-    if (mode === "over" || (invuln > 0 && (time * 12 | 0) % 2)) return;
-    const p = this.pos, tilt = clamp((this.target.x - p.x) * .25, -.35, .35);
-    drawPoly([vec2(0, -.55), vec2(.18, -.95 - Math.sin(time * 40) * .2), vec2(-.18, -.95)], C.orange, 0, C.orange, p);
-    drawPoly([vec2(0, .95), vec2(.35, -.05), vec2(.8, -.55), vec2(.2, -.45), vec2(0, -.62), vec2(-.2, -.45), vec2(-.8, -.55), vec2(-.35, -.05)],
-      C.cyan, 0, C.cyan, p, tilt);
-    drawPoly([vec2(0, .5), vec2(.14, .08), vec2(0, -.12), vec2(-.14, .08)], C.white, 0, C.white, p, tilt);
-  }
+// Loads LittleJS as an ES module inside a srcdoc iframe. Removing the iframe on cleanup also stops its engine loop and audio.
+function ljsFrame(ctx, host) {
+  const f = document.createElement("iframe");
+  f.title = "LittleJS 畫布";
+  f.srcdoc = `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#0e1013}</style></head>
+<body><script type="module">import * as L from "${LJS}"; window.L = L;<\/script></body></html>`;
+  host.append(f);
+  ctx.onCleanup(() => f.remove());
+  return new Promise((resolve, reject) => {
+    f.addEventListener("load", () => {
+      const win = f.contentWindow;
+      if (!win || !win.L) return reject(new Error("LittleJS 無法從 CDN 載入"));
+      resolve({ win, L: win.L });
+    }, { once: true });
+  });
 }
 
-class Shot extends EngineObject {
-  constructor(pos, vel, color, hostile) {
-    super(pos, vec2(hostile ? .45 : .16, hostile ? .45 : .9));
-    this.velocity = vel; this.color = color; this.hostile = hostile;
-  }
-  update() {
-    super.update();
-    if (Math.abs(this.pos.y) > 14 || Math.abs(this.pos.x) > hw + 2) this.destroy();
-  }
-  render() {
-    if (this.hostile) {
-      drawCircle(this.pos, .55, this.color.scale(1, .35));
-      drawCircle(this.pos, .3, this.color);
-    } else drawRect(this.pos, this.size, this.color);
-  }
+// Keys pressed while focus is on the outer page are re-dispatched on the iframe document, where LittleJS listens.
+function forwardKeys(ctx, win) {
+  const fwd = (e) => {
+    const t = e.target;
+    if (t.closest && t.closest("input,select,textarea,[role=tab]")) return;
+    if (t.closest && t.closest("button") && (e.code === "Space" || e.code === "Enter")) return;
+    if (/^Arrow|^Space$/.test(e.code)) e.preventDefault();
+    win.document.dispatchEvent(new win.KeyboardEvent(e.type, { code: e.code, key: e.key, bubbles: true }));
+  };
+  ctx.on(document, "keydown", fwd);
+  ctx.on(document, "keyup", fwd);
 }
 
-// three enemy kinds with different shapes, movement and toughness
-const KINDS = {
-  drone: { hp: 1, pts: 100, color: C.pink, size: 1.1 },
-  dart: { hp: 1, pts: 150, color: C.green, size: 1 },
-  saucer: { hp: 4, pts: 400, color: C.orange, size: 1.8 },
-};
-class Enemy extends EngineObject {
-  constructor(kind, x) {
-    const k = KINDS[kind];
-    super(vec2(x, 13), vec2(k.size));
-    this.kind = kind; this.hp = k.hp; this.color = k.color.copy(); this.base = x; this.t = rand(9); this.flash = 0;
-    this.velocity = vec2(0, kind === "saucer" ? -.03 : kind === "dart" ? -.09 : -.05);
-    this.fire = rand(1, 2.5);
+async function boot(ctx, cls = "lj-wrap") {
+  ctx.html(`<div class="${cls}"></div>`);
+  const fr = await ljsFrame(ctx, ctx.$("." + cls));
+  fr.L.setFontDefault(FONT);
+  forwardKeys(ctx, fr.win);
+  return fr;
+}
+
+// Pixel-art sheet drawn at runtime (8 tiles of 16 px) so the platform scene needs no image files.
+function makeSheet() {
+  const c = document.createElement("canvas");
+  c.width = 128; c.height = 16;
+  const g = c.getContext("2d");
+  const px = (i, x, y, w, h, col) => { g.fillStyle = col; g.fillRect(i * 16 + x, y, w, h); };
+  // 0 brick
+  px(0, 0, 0, 16, 16, "#7a4636");
+  for (let r = 0; r < 4; r++) {
+    px(0, 0, r * 4 + 3, 16, 1, "#3d2019");
+    for (let k = 0; k < 2; k++) px(0, ((r % 2 ? 0 : 4) + k * 8) % 16, r * 4, 1, 3, "#3d2019");
+    px(0, 0, r * 4, 16, 1, "#94584a");
   }
-  update() {
-    this.t += 1 / 60;
-    if (this.kind === "drone") this.pos.x = this.base + Math.sin(this.t * 2) * 2.4;
-    if (this.kind === "dart") this.velocity.x = clamp((player.pos.x - this.pos.x) * .01, -.06, .06);
-    if (this.kind === "saucer") { this.pos.x = this.base + Math.sin(this.t * .9) * 3; if (this.pos.y < 7) this.velocity.y *= .97; }
-    super.update();
-    this.flash = Math.max(0, this.flash - 1 / 15);
-    if (this.kind !== "dart" && (this.fire -= 1 / 60) < 0 && this.pos.y < 11) {
-      this.fire = this.kind === "saucer" ? 1.1 : rand(2.5, 4.5);
-      const dir = player.pos.subtract(this.pos).normalize(.12);
-      if (this.kind === "saucer") for (const a of [-.25, 0, .25]) bombs.push(new Shot(this.pos.copy(), dir.rotate(a), C.violet, true));
-      else bombs.push(new Shot(this.pos.copy(), dir, C.pink, true));
-    }
-    if (this.pos.y < -14) this.destroy();
+  // 1 grass on dirt
+  px(1, 0, 0, 16, 16, "#5c3b2b");
+  [[3, 8], [10, 11], [6, 13], [13, 7]].forEach(([x, y]) => px(1, x, y, 2, 1, "#7a5240"));
+  px(1, 0, 0, 16, 4, "#62c55c"); px(1, 0, 4, 16, 1, "#3d8a3a");
+  [1, 5, 9, 13].forEach((x) => px(1, x, 4, 2, 2, "#62c55c"));
+  px(1, 0, 0, 16, 1, "#a2e69c");
+  // 2 crate
+  px(2, 0, 0, 16, 16, "#b07a3c");
+  px(2, 0, 0, 16, 2, "#6e4520"); px(2, 0, 14, 16, 2, "#6e4520"); px(2, 0, 0, 2, 16, "#6e4520"); px(2, 14, 0, 2, 16, "#6e4520");
+  for (let i = 2; i < 14; i++) { px(2, i, i, 2, 1, "#6e4520"); px(2, 14 - i, i, 2, 1, "#6e4520"); }
+  // 3 steel
+  px(3, 0, 0, 16, 16, "#6d7a8a"); px(3, 0, 0, 16, 1, "#b2bfcc"); px(3, 0, 15, 16, 1, "#3a434e"); px(3, 15, 0, 1, 16, "#3a434e");
+  [[2, 2], [12, 2], [2, 12], [12, 12]].forEach(([x, y]) => { px(3, x, y, 2, 2, "#d3dce5"); px(3, x + 1, y + 1, 1, 1, "#4a5562"); });
+  // 4 and 5 hero walk frames (facing right)
+  for (const f of [4, 5]) {
+    px(f, 3, 2, 10, 9, "#4cc9f0"); px(f, 4, 1, 8, 1, "#4cc9f0"); px(f, 4, 2, 5, 1, "#a6e8fa");
+    px(f, 8, 4, 5, 3, "#14212b"); px(f, 10, 5, 2, 1, "#ffffff");
+    if (f === 4) { px(f, 4, 11, 3, 4, "#f72585"); px(f, 9, 11, 3, 4, "#f72585"); }
+    else { px(f, 2, 11, 3, 3, "#f72585"); px(f, 10, 11, 4, 3, "#f72585"); }
   }
-  render() {
-    const p = this.pos, s = this.size.x, col = this.flash > 0 ? C.white : this.color, t = this.t;
-    if (this.kind === "drone") {
-      drawPoly([vec2(0, .55), vec2(.55, 0), vec2(0, -.55), vec2(-.55, 0)].map((v) => v.scale(s)), col, 0, col, p, t * 2);
-      drawCircle(p, s * .35, rgb(.1, .05, .12));
-    } else if (this.kind === "dart") {
-      drawPoly([vec2(0, -.6), vec2(.5, .5), vec2(0, .2), vec2(-.5, .5)].map((v) => v.scale(s)), col, 0, col, p);
-    } else {
-      drawRect(p.add(vec2(0, -.05)), vec2(s, s * .32), col);
-      drawCircle(p.add(vec2(0, .12)), s * .45, this.flash > 0 ? C.white : C.yellow);
-      for (let i = 0; i < 4; i++) drawCircle(p.add(vec2(-.6 + i * .4, -.1)), .14, (t * 6 | 0) % 4 === i ? C.white : rgb(.2, .1, .05));
-    }
-  }
+  // 6 bouncy ball
+  g.fillStyle = "#f72585"; g.beginPath(); g.arc(104, 8, 7, 0, Math.PI * 2); g.fill();
+  g.fillStyle = "#ffd1e6"; g.fillRect(100, 4, 3, 2);
+  g.fillStyle = "#b8165f"; g.fillRect(97, 8, 14, 1);
+  // 7 coin
+  g.fillStyle = "#c79a00"; g.beginPath(); g.arc(120, 8, 6.5, 0, Math.PI * 2); g.fill();
+  g.fillStyle = "#f7df1e"; g.beginPath(); g.arc(120, 8, 5, 0, Math.PI * 2); g.fill();
+  g.fillStyle = "#fff6b0"; g.fillRect(117, 5, 2, 4);
+  return c.toDataURL();
 }
 
-function clearAll() {
-  for (const list of [enemies, shots, bombs]) { list.forEach((o) => o.destroy()); list.length = 0; }
-}
+Showcase.run({ scenes: [
+  {
+    id: "shooter", title: "星域守衛",
+    api: "engineInit・EngineObject・addChild・particleEffect・Sound・postProcessBloom",
+    desc: "原本的招牌小遊戲。戰機、子彈與三種敵機都是 EngineObject 子類別，只覆寫 update 與 render；尾焰是用 addChild 掛在戰機上的粒子發射器，爆炸是內建的 explosion 與 sparks 特效。整個畫面經過 postProcessBloom 光暈後製，分數用 drawTextScreen 畫在 2D 層，不受光暈影響。",
+    hint: "點擊畫布或按任意鍵接手，拖曳或方向鍵移動；ZzFX 音效要在畫布內點擊才會解鎖，無頭環境聽不到",
+    async mount(ctx) {
+      const { L, win } = await boot(ctx);
+      const { vec2, rgb, rand, clamp } = L;
+      const C = { cyan: rgb(.3, .79, .94), yellow: rgb(.97, .87, .12), pink: rgb(.97, .15, .52), green: rgb(.48, .83, .54), orange: rgb(1, .55, .26), violet: rgb(.62, .55, 1), white: rgb(1, 1, 1) };
+      const SFX = {
+        shoot: new L.Sound([.25, .05, 980, .01, .02, .05, 2, 1.6, -18, , , , , , , , , .6]),
+        boom: new L.Sound([1.1, .1, 70, .02, .18, .5, 4, 2.6, , , , , , 1.4, , .5, .1, .5, .15]),
+        hurt: new L.Sound([1, .1, 260, .01, .08, .3, 3, 1.8, -6, , , , , 1.2, , .3]),
+        hit: new L.Sound([.5, .1, 520, , .01, .05, 4, 1.4, , , , , , .6]),
+      };
+      const KINDS = {
+        drone: { hp: 1, pts: 100, color: C.pink, size: 1.1 },
+        dart: { hp: 1, pts: 150, color: C.green, size: 1 },
+        saucer: { hp: 4, pts: 400, color: C.orange, size: 1.8 },
+      };
+      let mode = "demo", score = 0, best = 0, lives = 3, wave = 1, spawnT = 1, fireT = 0, overT = 0, invuln = 0, shake = 0, hw = 7.5;
+      let ship = null, bloom = null, wantStart = false;
+      const target = vec2(0, -8);
+      const stars = Array.from({ length: 130 }, () => ({ x: rand(-1, 1), y: rand(-13, 13), z: rand(.15, 1) }));
+      const sfx = (s, pos) => { if (mode === "play") s.play(pos); };
 
-function overlay(title, sub, go) {
-  $("ov-title").textContent = title; $("ov-sub").textContent = sub; $("ov-go").textContent = go;
-  $("overlay").classList.remove("hide");
-}
+      class Shot extends L.EngineObject {
+        constructor(pos, vel, hostile) {
+          super(pos, hostile ? vec2(.45) : vec2(.16, .9));
+          this.velocity = vel; this.hostile = hostile; this.renderOrder = hostile ? 3 : 2;
+        }
+        update() { if (Math.abs(this.pos.y) > 14 || Math.abs(this.pos.x) > hw + 2) this.destroy(); }
+        render() {
+          if (this.hostile) { L.drawCircle(this.pos, .45, C.pink); L.drawCircle(this.pos, .22, C.white); }
+          else L.drawRect(this.pos, this.size, C.yellow);
+        }
+      }
+      class Enemy extends L.EngineObject {
+        constructor(kind) {
+          const k = KINDS[kind];
+          super(vec2(rand(-hw + 1.2, hw - 1.2), 13.5), vec2(k.size));
+          Object.assign(this, { kind, k, hp: k.hp, x0: this.pos.x, ph: rand(6.28), fireT: rand(.8, 1.6), flash: 0, renderOrder: 1 });
+        }
+        update() {
+          const t = this.getAliveTime(), p = this.pos;
+          this.flash = Math.max(0, this.flash - L.timeDelta);
+          if (this.kind === "drone") { p.y -= .07 + wave * .004; p.x = this.x0 + Math.sin(t * 2.4 + this.ph) * 2.2; }
+          else if (this.kind === "dart") { p.y -= .1 + wave * .005; p.x += clamp(ship.pos.x - p.x, -.05, .05); }
+          else {
+            p.y -= p.y > 7 ? .05 : .012;
+            p.x = this.x0 + Math.sin(t * .8 + this.ph) * 1.5;
+            if ((this.fireT -= L.timeDelta) < 0 && p.y < 11 && mode !== "over") {
+              this.fireT = 1.6;
+              for (const dx of [-.06, 0, .06]) new Shot(p.add(vec2(0, -.8)), vec2(dx, -.17), true);
+            }
+          }
+          if (p.y < -14) this.destroy();
+        }
+        render() {
+          const p = this.pos, col = this.flash > 0 ? C.white : this.k.color;
+          if (this.kind === "drone") {
+            L.drawRegularPoly(p, vec2(1.1), 6, col, 0, undefined, L.time * 2 + this.ph);
+            L.drawCircle(p, .42, rgb(.1, .05, .12));
+            L.drawCircle(p, .2, C.white);
+          } else if (this.kind === "dart") {
+            L.drawPoly([vec2(0, -.6), vec2(.5, .45), vec2(0, .15), vec2(-.5, .45)], col, 0, undefined, p);
+          } else {
+            L.drawEllipse(p, vec2(.9, .32), col);
+            L.drawCircle(p.add(vec2(0, .22)), .7, C.violet);
+            for (let i = 0; i < this.hp; i++) L.drawRect(p.add(vec2(-.45 + i * .3, -.6)), vec2(.2, .1), C.white);
+          }
+        }
+      }
+      class Ship extends L.EngineObject {
+        constructor() {
+          super(vec2(0, -8), vec2(1.4));
+          this.tilt = 0; this.renderOrder = 4;
+          this.flame = L.particleEffect("trail", this.pos, { angle: Math.PI, speed: .07, emitConeAngle: .2, sizeStart: .45, particleTime: .3, emitRate: 90, hue: .45 });
+          if (this.flame) this.addChild(this.flame, vec2(0, -.8), Math.PI);
+        }
+        update() {
+          const p = this.pos, dx = target.x - p.x;
+          p.x += dx * .2; p.y += (target.y - p.y) * .2;
+          this.tilt = clamp(dx * .15, -.22, .22);
+          if (this.flame) this.flame.emitRate = mode === "over" ? 0 : 90;
+        }
+        render() {
+          if (mode === "over" || (invuln > 0 && (L.time * 12 | 0) % 2)) return;
+          const p = this.pos, a = this.tilt;
+          L.drawPoly([vec2(0, .8), vec2(.62, -.5), vec2(.24, -.32), vec2(0, -.52), vec2(-.24, -.32), vec2(-.62, -.5)], C.cyan, .05, C.white, p, a);
+          L.drawCircle(p.add(vec2(0, .05)), .42, C.violet);
+          L.drawCircle(p.add(vec2(.06, .12)), .14, C.white);
+        }
+      }
 
-function start() {
-  clearAll();
-  mode = "play"; score = 0; lives = 3; wave = 1; invuln = 1.5; spawnTimer = 1;
-  player.pos = vec2(0, -8); player.target = player.pos.copy();
-  $("overlay").classList.add("hide");
-}
-
-function explode(pos, color, big) {
-  const e = particleEffect("explosion", pos, { scale: big ? 2 : 1.1 });
-  particleEffect("sparks", pos, { emitTime: .08, emitRate: big ? 600 : 300, colorStartA: color, colorStartB: C.white });
-  shake = Math.max(shake, big ? .6 : .25);
-  return e;
-}
-
-function hurtPlayer() {
-  if (mode !== "play" || invuln > 0) return;
-  lives--; invuln = 2; shake = 1;
-  explode(player.pos, C.cyan, true);
-  sfx.hurt.play();
-  if (lives <= 0) {
-    mode = "over"; overAt = time;
-    overlay("任務失敗", `分數 ${score}，撐到第 ${wave} 波`, "按任意鍵或點擊再玩一次");
-  }
-}
-
-function spawnWave() {
-  const r = Math.random(), x = rand(-hw + 2, hw - 2);
-  if (wave > 1 && r < .18) enemies.push(new Enemy("saucer", clamp(x, -hw + 3, hw - 3)));
-  else if (r < .5) enemies.push(new Enemy("dart", x));
-  else for (let i = 0; i < 3; i++) setTimeout(() => mode !== "over" && enemies.push(new Enemy("drone", x)), i * 260);
-}
-
-function gameInit() {
-  setCanvasClearColor(rgb(.027, .031, .05));
-  postProcessBloom(.45, 1.1, 6);
-  player = new Ship();
-  thruster = particleEffect("trail", player.pos, { angle: Math.PI, speed: .07, emitConeAngle: .2, sizeStart: .45, particleTime: .3, emitRate: 90, hue: .45 });
-  addEventListener("keydown", () => { anyKey = true; });
-}
-
-function gameUpdate() {
-  // resize: keep 24 world units tall, narrower screens zoom out to stay playable
-  const scale = Math.min(mainCanvasSize.y / VIEW_H, mainCanvasSize.x / 15);
-  setCameraScale(scale);
-  hw = mainCanvasSize.x / scale / 2;
-
-  const pressed = mouseWasPressed(0) || anyKey;
-  anyKey = false;
-  if (mode !== "play" && pressed && (mode === "title" || time - overAt > .6)) start();
-
-  // input: keyboard moves, pointer movement or drag takes over
-  const kx = (keyIsDown("ArrowRight") || keyIsDown("KeyD") ? 1 : 0) - (keyIsDown("ArrowLeft") || keyIsDown("KeyA") ? 1 : 0);
-  const ky = (keyIsDown("ArrowUp") || keyIsDown("KeyW") ? 1 : 0) - (keyIsDown("ArrowDown") || keyIsDown("KeyS") ? 1 : 0);
-  if (kx || ky) usingMouse = false;
-  if (mousePosScreen.distance(lastMouse) > 1 || mouseIsDown(0)) usingMouse = true;
-  lastMouse = mousePosScreen.copy();
-
-  if (mode === "play") {
-    if (usingMouse) player.target = mousePos.add(vec2(0, 1.2));
-    else player.target = player.pos.add(vec2(kx, ky).scale(.42));
-  } else if (mode === "title") {
-    // attract mode: autopilot chases the lowest enemy and weaves away from shots
-    const prey = enemies.reduce((a, e) => (!a || e.pos.y < a.pos.y ? e : a), null);
-    const danger = bombs.find((b) => b.pos.distance(player.pos) < 2.4);
-    let tx = prey ? prey.pos.x : Math.sin(time) * hw * .5;
-    if (danger) tx = player.pos.x + (player.pos.x > danger.pos.x ? 3 : -3);
-    player.target = vec2(tx, -8 + Math.sin(time * 1.3) * 1.2);
-  }
-
-  // auto fire
-  if (mode !== "over" && (fireTimer -= 1 / 60) < 0) {
-    fireTimer = .13;
-    for (const dx of [-.32, .32]) shots.push(new Shot(player.pos.add(vec2(dx, .7)), vec2(0, .55), C.yellow, false));
-    if (mode === "play") sfx.shoot.play();
-  }
-
-  // spawning ramps up with time
-  if ((spawnTimer -= 1 / 60) < 0) {
-    spawnWave();
-    spawnTimer = Math.max(.55, 1.9 - wave * .12) * rand(.7, 1.2);
-  }
-  if (mode === "play") wave = 1 + Math.floor(score / 2500);
-
-  // collisions
-  for (const s of shots) {
-    if (s.destroyed) continue;
-    for (const e of enemies) {
-      if (e.destroyed || s.pos.distance(e.pos) > e.size.x * .55) continue;
-      s.destroy(); e.hp--; e.flash = 1;
-      particleEffect("hit", s.pos, { scale: .6 });
-      if (e.hp <= 0) {
-        explode(e.pos, e.color, e.kind === "saucer");
+      const live = (T) => L.engineObjects.filter((o) => o instanceof T && !o.destroyed);
+      function explode(pos, color, scale) {
+        L.particleEffect("explosion", pos, { scale });
+        L.particleEffect("sparks", pos, { emitTime: .08, emitRate: 400, colorStartA: color, colorStartB: C.white, scale });
+        shake = Math.max(shake, .3 * scale);
+      }
+      function kill(e, scoring = true) {
+        if (scoring) score += e.k.pts;
+        explode(e.pos, e.k.color, e.kind === "saucer" ? 1.4 : .8);
+        sfx(SFX.boom, e.pos);
         e.destroy();
-        if (mode === "play") { score += KINDS[e.kind].pts; sfx.boom.play(); }
-      } else if (mode === "play") sfx.hit.play();
-      break;
-    }
-  }
-  for (const b of bombs) if (!b.destroyed && b.pos.distance(player.pos) < .6) { b.destroy(); hurtPlayer(); }
-  for (const e of enemies) if (!e.destroyed && e.pos.distance(player.pos) < e.size.x * .5 + .4) {
-    if (mode === "play" && invuln <= 0) { explode(e.pos, e.color, false); e.destroy(); }
-    hurtPlayer();
-  }
-  for (const list of [enemies, shots, bombs]) for (let i = list.length - 1; i >= 0; i--) if (list[i].destroyed) list.splice(i, 1);
+      }
+      function hurt() {
+        explode(ship.pos, C.cyan, 1.1);
+        sfx(SFX.hurt, ship.pos);
+        invuln = 2;
+        if (mode === "play" && --lives <= 0) { mode = "over"; overT = 3.2; best = Math.max(best, score); }
+      }
+      function reset(next) {
+        for (const o of [...live(Shot), ...live(Enemy)]) o.destroy();
+        Object.assign(target, { x: 0, y: -8 });
+        ship.pos = vec2(0, -8);
+        score = 0; lives = 3; wave = 1; spawnT = 1; invuln = 1.5; mode = next;
+      }
+      win.document.addEventListener("keydown", () => { if (mode !== "play") wantStart = true; });
 
-  invuln = Math.max(0, invuln - 1 / 60);
-  shake *= .88;
-  setCameraPos(vec2(rand(-shake, shake), rand(-shake, shake)));
-  thruster.pos = player.pos.add(vec2(0, -.7));
-  thruster.emitRate = mode === "over" ? 0 : 90;
-}
+      function update() {
+        const W = L.mainCanvasSize.x, H = L.mainCanvasSize.y, scale = Math.min(H / 24, W / 15);
+        L.setCameraScale(scale); hw = W / scale / 2;
+        if (shake > .02) { L.setCameraPos(vec2(rand(-shake, shake), rand(-shake, shake))); shake *= .88; } else L.setCameraPos(vec2());
+        if (mode !== "play" && (wantStart || L.mouseWasPressed(0))) reset("play");
+        wantStart = false;
+        if (mode === "over" && (overT -= L.timeDelta) <= 0) reset("demo");
+        invuln = Math.max(0, invuln - L.timeDelta);
+        for (const s of stars) { s.y -= s.z * (mode === "play" ? .13 : .09); if (s.y < -13) { s.y = 13; s.x = rand(-1, 1); } }
 
-function gameRender() {
-  // parallax starfield
-  for (const s of stars) {
-    s.y -= s.z * .12;
-    if (s.y < -12.5) { s.y = 12.5; s.x = rand(-1, 1); }
-    drawRect(vec2(s.x * hw, s.y), vec2(.05 + s.z * .05, .08 + s.z * .2), rgb(.6, .7, 1, .25 + s.z * .6));
-  }
-}
+        const enemies = live(Enemy), shots = live(Shot);
+        if (mode === "play") {
+          const k = L.keyDirection();
+          target.x += k.x * .32; target.y += k.y * .32;
+          if (L.mouseIsDown(0)) { target.x = L.mousePos.x; target.y = L.mousePos.y + 1.2; }
+        } else if (mode === "demo") {
+          let foe = null;
+          for (const e of enemies) if (e.pos.y > -6 && (!foe || e.pos.y < foe.pos.y)) foe = e;
+          target.x = foe ? foe.pos.x : Math.sin(L.time * .7) * hw * .5; target.y = -8;
+          for (const s of shots) if (s.hostile && s.pos.distance(ship.pos) < 2.4) target.x += ship.pos.x > s.pos.x ? 1.4 : -1.4;
+        }
+        target.x = clamp(target.x, -hw + .8, hw - .8); target.y = clamp(target.y, -11, 2);
 
-function gameRenderPost() {
-  const w = mainCanvasSize.x, sz = w < 500 ? 16 : 20;
-  if (mode === "title") {
-    drawTextScreen("展示模式", vec2(16, 26), sz, C.violet, 0, C.white, "left", FONT, "bold");
-    return;
-  }
-  drawTextScreen(`分數 ${score}`, vec2(16, 26), sz, C.yellow, 0, C.white, "left", FONT, "bold");
-  drawTextScreen(`第 ${wave} 波`, vec2(16, 26 + sz * 1.3), sz * .8, rgb(.8, .8, .85), 0, C.white, "left", FONT, "bold");
-  drawTextScreen("♥".repeat(Math.max(0, lives)), vec2(w - 16, 26), sz, C.pink, 0, C.white, "right", FONT, "bold");
-}
+        if (mode !== "over") {
+          if ((spawnT -= L.timeDelta) < 0) {
+            spawnT = Math.max(.55, 1.9 - wave * .12) * rand(.7, 1.2) * (mode === "demo" ? .6 : 1);
+            const r = rand();
+            new Enemy(r < Math.min(.3, .08 + wave * .03) ? "saucer" : r < .6 ? "drone" : "dart");
+          }
+          if ((fireT -= L.timeDelta) < 0) {
+            fireT = .13;
+            for (const dx of [-.32, .32]) new Shot(ship.pos.add(vec2(dx, .6)), vec2(0, .5), false);
+            sfx(SFX.shoot, ship.pos);
+          }
+        }
+        for (const s of shots) {
+          if (s.destroyed) continue;
+          if (s.hostile) { if (mode !== "over" && !invuln && s.pos.distance(ship.pos) < .7) { s.destroy(); hurt(); } continue; }
+          for (const e of enemies) {
+            if (e.destroyed || s.pos.distance(e.pos) > e.k.size * .55) continue;
+            s.destroy(); e.hp--; e.flash = .08;
+            if (e.hp <= 0) kill(e); else sfx(SFX.hit, e.pos);
+            break;
+          }
+        }
+        if (mode !== "over" && !invuln) {
+          for (const e of enemies) if (!e.destroyed && e.pos.distance(ship.pos) < e.k.size * .5 + .5) { kill(e, false); hurt(); break; }
+        }
+        wave = 1 + Math.floor(score / 2500);
+      }
+      function render() {
+        for (const s of stars) L.drawRect(vec2(s.x * hw, s.y), vec2(.05 + s.z * .07), rgb(.75, .85, 1, .2 + s.z * .55));
+      }
+      function hud() {
+        const W = L.mainCanvasSize.x, H = L.mainCanvasSize.y, dim = rgb(1, 1, 1, .6);
+        L.drawTextScreen("分數", vec2(18, 20), 13, dim, 0, undefined, "left", FONT);
+        L.drawTextScreen(String(score), vec2(18, 44), 24, C.white, 0, undefined, "left", MONO);
+        L.drawTextScreen("波次", vec2(W - 18, 20), 13, dim, 0, undefined, "right", FONT);
+        L.drawTextScreen(String(wave), vec2(W - 18, 44), 24, C.yellow, 0, undefined, "right", MONO);
+        for (let i = 0; i < (mode === "play" ? lives : 0); i++) {
+          L.drawPoly([vec2(0, -9), vec2(7, 6), vec2(0, 3), vec2(-7, 6)], C.cyan, 0, undefined, vec2(26 + i * 20, 72), 0, false, true);
+        }
+        if (mode === "play") return;
+        const cy = H * .42, big = Math.min(54, W / 7);
+        L.drawRect(vec2(W / 2, cy + 6), vec2(W, big + 132), rgb(0, 0, 0, .55), 0, false, true);
+        if (mode === "demo") {
+          L.drawTextScreen("星域守衛", vec2(W / 2, cy - 30), big, C.cyan, 0, undefined, "center", FONT, "bold");
+          L.drawTextScreen("擊落敵機、閃避彈幕，自動開火", vec2(W / 2, cy + 18), 16, rgb(1, 1, 1, .85), 0, undefined, "center", FONT);
+          if ((L.time * 2 | 0) % 2 === 0) L.drawTextScreen("點擊畫布或按任意鍵開始（有音效）", vec2(W / 2, cy + 50), 15, C.yellow, 0, undefined, "center", FONT);
+          if (best) L.drawTextScreen("最高分 " + best, vec2(W / 2, cy + 78), 13, dim, 0, undefined, "center", FONT);
+        } else {
+          L.drawTextScreen("任務結束", vec2(W / 2, cy - 22), big, C.pink, 0, undefined, "center", FONT, "bold");
+          L.drawTextScreen(String(score), vec2(W / 2, cy + 30), 30, C.white, 0, undefined, "center", MONO);
+          L.drawTextScreen("即將回到示範模式", vec2(W / 2, cy + 64), 13, dim, 0, undefined, "center", FONT);
+        }
+      }
 
-engineInit(gameInit, gameUpdate, () => {}, gameRender, gameRenderPost);
+      await L.engineInit(() => {
+        L.setCanvasClearColor(rgb(.02, .03, .06));
+        ship = new Ship();
+        bloom = L.postProcessBloom(.45, 1.1, 6);
+      }, update, () => {}, render, hud);
+      ctx.button("重新開始", () => reset("play"), { primary: true });
+      ctx.toggle("光暈", true, (v) => bloom && bloom.setShaderCode(v ? L.postProcessBloomShader(.45, 1.1, 6) : undefined));
+    },
+  },
+  {
+    id: "platform", title: "磚塊平台",
+    api: "TileCollisionLayer・TileLayerData・setCollision・setGravity・ParallaxLayer",
+    desc: "關卡是一張 TileCollisionLayer：同一張圖層同時存碰撞資料與 TileLayerData 外觀，物件呼叫 setCollision 後就會跟磚塊碰撞。主角、木箱、彈力球都交給引擎的 updatePhysics 處理重力、摩擦與反彈，木箱可以被推動。背景三層 ParallaxLayer 山脈依視差跟著攝影機捲動，圖塊是執行時用 canvas 畫出來的 16 像素圖集。",
+    hint: "方向鍵／WASD 移動、上或空白鍵跳；點擊畫布格子放置或移除磚塊",
+    async mount(ctx) {
+      const { L, win } = await boot(ctx);
+      const { vec2, rgb, hsl, clamp } = L;
+      const LW = 72, LH = 26;
+      let seed = 1, layer = null, hero = null, coins = 0, userActive = false, touched = false, autoT = 1.5, tossKind = 0, cam = vec2(8, 8);
+      const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+      const props = [];
+      const FR = [];
+      const solidAt = (x, y) => layer.getCollisionData(vec2(Math.floor(x), Math.floor(y))) > 0;
+      win.document.addEventListener("keydown", () => { userActive = touched = true; });
+
+      class Hero extends L.EngineObject {
+        constructor() {
+          super(vec2(3.5, 9), vec2(.8, .9), FR[0]);
+          this.setCollision(); this.dir = 1; this.groundT = 0; this.jumpT = 0; this.renderOrder = 3;
+        }
+        update() {
+          const dt = L.timeDelta, ground = !!this.groundObject;
+          const jumpKey = (f) => f("ArrowUp") || f("KeyW") || f("Space");
+          let mx, held;
+          if (userActive) {
+            mx = L.keyDirection().x; held = jumpKey(L.keyIsDown);
+            if (jumpKey(L.keyWasPressed)) this.jumpT = .12;
+          } else {
+            mx = this.dir; held = true;
+            if (this.pos.x > LW - 4) this.dir = -1;
+            if (this.pos.x < 3) this.dir = 1;
+            const wall = solidAt(this.pos.x + this.dir * .9, this.pos.y), pit = !solidAt(this.pos.x + this.dir * 1.3, this.pos.y - 1);
+            if (wall || pit || (ground && Math.abs(this.velocity.x) < .01) || rnd() < .004) this.jumpT = .12;
+          }
+          this.velocity.x += (mx * .15 - this.velocity.x) * (ground ? .3 : .12);
+          this.groundT = ground ? .1 : this.groundT - dt;
+          this.jumpT -= dt;
+          if (this.jumpT > 0 && this.groundT > 0) { this.velocity.y = .36; this.jumpT = this.groundT = 0; }
+          if (!held && this.velocity.y > 0) this.velocity.y *= .85;
+          if (mx) this.mirror = mx < 0;
+          this.tileInfo = FR[ground && Math.abs(this.velocity.x) > .03 ? (L.time * 10 | 0) % 2 : 0];
+          if (this.pos.y < -4) { this.pos = vec2(3.5, 10); this.velocity = vec2(); }
+        }
+      }
+      class Crate extends L.EngineObject {
+        constructor(p, v) { super(p, vec2(.95), L.tile(2, 16)); this.setCollision(); this.velocity = v; this.friction = .9; this.restitution = .1; }
+        update() { if (this.pos.y < -4) this.destroy(); }
+      }
+      class Ball extends L.EngineObject {
+        constructor(p, v) { super(p, vec2(.7), L.tile(6, 16)); this.setCollision(); this.velocity = v; this.restitution = .85; this.friction = .97; this.mass = .5; }
+        update() { this.angle += this.velocity.x * 1.6; if (this.pos.y < -4) this.destroy(); }
+      }
+      class Coin extends L.EngineObject {
+        constructor(p) { super(p, vec2(.6), L.tile(7, 16)); this.mass = 0; this.y0 = p.y; this.renderOrder = 2; }
+        update() {
+          this.pos.y = this.y0 + Math.sin(L.time * 3 + this.pos.x) * .12;
+          if (hero && this.pos.distance(hero.pos) < .75) {
+            coins++;
+            L.particleEffect("sparkle", this.pos, { emitTime: .15, scale: .7 });
+            this.destroy();
+          }
+        }
+      }
+
+      function paint(x, y) {
+        const p = vec2(x, y), v = layer.getCollisionData(p);
+        if (!v) layer.clearData(p);
+        else layer.setData(p, new L.TileLayerData(v === 2 ? 3 : layer.getCollisionData(vec2(x, y + 1)) ? 0 : 1));
+      }
+      function placeCoins() {
+        for (const o of L.engineObjects) if (o instanceof Coin) o.destroy();
+        for (let x = 4; x < LW - 3; x += 3) {
+          let y = LH - 2;
+          while (y > 0 && !solidAt(x, y - 1)) y--;
+          if (y > 0) new Coin(vec2(x + .5, y + 1.3));
+        }
+      }
+      function buildLevel() {
+        seed = 11;
+        for (let x = 0; x < LW; x++) for (let y = 0; y < LH; y++) layer.setCollisionData(vec2(x, y), 0);
+        let h = 4;
+        for (let x = 0; x < LW; x++) {
+          if (x > 5 && x < LW - 6 && rnd() < .28) h = clamp(h + (rnd() < .5 ? -1 : 1), 2, 7);
+          const pit = x > 10 && x < LW - 8 && x % 17 >= 9 && x % 17 <= 10;
+          const top = x === 0 || x === LW - 1 ? LH : pit ? 0 : h;
+          for (let y = 0; y < top; y++) layer.setCollisionData(vec2(x, y), 1);
+        }
+        for (let i = 0; i < 9; i++) {
+          const px = 7 + i * 7 + Math.floor(rnd() * 3), py = 8 + Math.floor(rnd() * 4), len = 3 + Math.floor(rnd() * 3);
+          for (let k = 0; k < len && px + k < LW - 1; k++) layer.setCollisionData(vec2(px + k, py), 2);
+        }
+        for (let x = 0; x < LW; x++) for (let y = 0; y < LH; y++) paint(x, y);
+        layer.redraw();
+        for (const o of props.splice(0)) o.destroy();
+        if (hero) { hero.pos = vec2(3.5, 10); hero.velocity = vec2(); }
+        placeCoins();
+      }
+      function toss(kind) {
+        const d = hero.mirror ? -1 : 1, p = hero.pos.add(vec2(d, 1.3)), v = vec2(d * .22, .2);
+        props.push(kind ? new Ball(p, v) : new Crate(p, v));
+        while (props.length > 40) props.shift().destroy();
+      }
+
+      function update() {
+        const s = L.mainCanvasSize, scale = Math.min(s.y / 14, s.x / 14);
+        L.setCameraScale(scale);
+        const half = s.scale(.5 / scale);
+        cam.x += (hero.pos.x - cam.x) * .1; cam.y += (hero.pos.y + 1.5 - cam.y) * .08;
+        L.setCameraPos(vec2(clamp(cam.x, half.x, Math.max(half.x, LW - half.x)), clamp(cam.y, half.y, Math.max(half.y, LH - half.y))));
+        if (L.mouseWasPressed(0)) {
+          touched = true;
+          const c = L.mousePos.floor();
+          if (c.x > 0 && c.x < LW - 1 && c.y >= 0 && c.y < LH && !hero.isOverlapping(c.add(vec2(.5)), vec2(1))) {
+            layer.setCollisionData(c, layer.getCollisionData(c) ? 0 : 1);
+            paint(c.x, c.y); paint(c.x, c.y - 1);
+            layer.redraw();
+          }
+        }
+        if (!touched && (autoT -= L.timeDelta) < 0) { autoT = 2.6; toss(tossKind++ % 2); }
+        if (!L.engineObjects.some((o) => o instanceof Coin && !o.destroyed)) placeCoins();
+      }
+      function render() {
+        L.drawCircle(L.cameraPos.add(vec2(5, 3.5)), 3.2, hsl(.12, .9, .78));
+        L.drawCircle(L.cameraPos.add(vec2(5, 3.5)), 4.2, hsl(.12, .9, .78, .18));
+      }
+      function hud() {
+        L.drawTextScreen("金幣", vec2(16, 20), 13, rgb(1, 1, 1, .8), 0, undefined, "left", FONT);
+        L.drawTextScreen(String(coins), vec2(16, 44), 24, rgb(.97, .87, .12), 3, rgb(0, 0, 0, .5), "left", MONO);
+        L.drawTextScreen(userActive ? "手動操控" : "自動示範（按方向鍵接手）", vec2(L.mainCanvasSize.x - 16, 20), 13, rgb(1, 1, 1, .8), 3, rgb(0, 0, 0, .35), "right", FONT);
+      }
+
+      L.setTilesPixelated(true);
+      await L.engineInit(() => {
+        FR.push(L.tile(4, 16), L.tile(5, 16));
+        L.setCanvasClearColor(hsl(.57, .45, .72));
+        L.setGravity(vec2(0, -.02));
+        for (let i = 3; i--;) new L.ParallaxLayer(vec2(LW / 2, 9 + i * 2), vec2(48, 20), .3 + i * .25, -1e3 - i, L.parallaxMountains(hsl(.6, .3, .42 + i * .13), hsl(.6, .45, .22), 5 + i));
+        layer = new L.TileCollisionLayer(vec2(), vec2(LW, LH), L.tile(0, 16));
+        buildLevel();
+        hero = new Hero();
+      }, update, () => {}, render, hud, [makeSheet()]);
+      ctx.button("丟箱子", () => { touched = true; toss(0); });
+      ctx.button("丟彈力球", () => { touched = true; toss(1); });
+      ctx.slider("重力", { min: .005, max: .04, step: .001, value: .02, format: (v) => v.toFixed(3) }, (v) => L.setGravity(vec2(0, -v)));
+      ctx.button("重置關卡", () => { coins = 0; buildLevel(); });
+    },
+  },
+  {
+    id: "particles", title: "粒子特效庫",
+    api: "particleEffect・ParticleEmitter・setParticleEmitRateScale",
+    desc: "LittleJS 內建一組具名粒子特效，一行 particleEffect(名稱, 位置) 就能放出火焰、雨雪或螢火蟲。這裡把 15 種持續型特效排成格子，最後一格是自己用 ParticleEmitter 的建構參數組出來的加色螺旋；下方挑一種一次性特效，點擊畫布任意位置引爆。",
+    hint: "選一種一次性特效再點擊畫布引爆；拉「發射率」調整全域倍率",
+    async mount(ctx) {
+      const { L } = await boot(ctx);
+      const { vec2, rgb, hsl, clamp } = L;
+      const LOOP = [["fire", "火焰"], ["torch", "火把"], ["smoke", "煙霧"], ["steam", "蒸氣"], ["sparks", "火花"], ["sparkle", "閃光"], ["magic", "魔法"], ["heal", "治癒"], ["poison", "毒氣"], ["portal", "傳送門"], ["rain", "雨"], ["snow", "雪"], ["leaves", "落葉"], ["bubbles", "氣泡"], ["fireflies", "螢火蟲"]];
+      const ONCE = [["explosion", "爆炸"], ["hit", "打擊"], ["dust", "塵土"], ["debris", "碎片"], ["muzzle", "槍口"], ["blood", "血花"], ["confetti", "彩紙"], ["splash", "水花"]];
+      const FALL = { rain: 1.4, snow: 1.4, leaves: 1.4 };
+      const CELL = 4, N = LOOP.length + 1;
+      let cols = 0, rows = 0, shot = 0, auto = true, autoT = .4, emitters = [], spiral = null;
+      const center = (i) => vec2((i % cols + .5) * CELL, -(Math.floor(i / cols) + .5) * CELL);
+
+      function layout() {
+        const s = L.mainCanvasSize, fitScale = (k) => Math.min(s.x / (k * CELL), s.y / (Math.ceil(N / k) * CELL));
+        let c = 2;
+        for (let k = 3; k <= 8; k++) if (fitScale(k) > fitScale(c)) c = k;
+        if (c !== cols) {
+          cols = c; rows = Math.ceil(N / cols);
+          emitters.forEach((e, i) => { e.pos = center(i).add(vec2(0, FALL[LOOP[i][0]] || -.6)); });
+          if (spiral) spiral.pos = center(N - 1).add(vec2(0, .2));
+        }
+        L.setCameraScale(Math.min(s.x / (cols * CELL), s.y / (rows * CELL)));
+        L.setCameraPos(vec2(cols * CELL / 2, -rows * CELL / 2));
+      }
+      function fire(pos) { L.particleEffect(ONCE[shot][0], pos); }
+
+      function update() {
+        layout();
+        spiral.angle += .11;
+        spiral.colorStartA = hsl(L.time * .15 % 1, 1, .6);
+        spiral.colorStartB = hsl((L.time * .15 + .2) % 1, 1, .6);
+        if (L.mouseWasPressed(0)) { auto = false; fire(L.mousePos); }
+        if (auto && (autoT -= L.timeDelta) < 0) {
+          autoT = .9; shot = (shot + 1) % ONCE.length;
+          fire(center(Math.floor(L.rand(N))).add(vec2(L.rand(-1, 1), L.rand(-.5, 1))));
+        }
+      }
+      function render() {
+        for (let i = 0; i < N; i++) L.drawRect(center(i), vec2(CELL - .16), rgb(1, 1, 1, .035));
+      }
+      function hud() {
+        for (let i = 0; i < N; i++) {
+          const c = center(i), [key, name] = LOOP[i] || ["ParticleEmitter", "自訂螺旋"];
+          L.drawText(name, c.add(vec2(0, -1.36)), .36, rgb(1, 1, 1, .9), 0, undefined, "center", FONT);
+          L.drawText(key, c.add(vec2(0, -1.74)), .26, rgb(.6, .8, 1, .7), 0, undefined, "center", MONO);
+        }
+        let n = 0;
+        for (const o of L.engineObjects) if (o.particles) n += o.particles.length;
+        const W = L.mainCanvasSize.x;
+        L.drawTextScreen("粒子", vec2(W - 12, 18), 13, rgb(1, 1, 1, .7), 3, rgb(0, 0, 0, .6), "right", FONT);
+        L.drawTextScreen(String(n), vec2(W - 12, 40), 20, rgb(1, 1, 1, .95), 3, rgb(0, 0, 0, .6), "right", MONO);
+      }
+
+      await L.engineInit(() => {
+        L.setCanvasClearColor(rgb(.055, .063, .075));
+        cols = 0; layout();
+        emitters = LOOP.map(([key], i) => L.particleEffect(key, center(i).add(vec2(0, FALL[key] || -.6)), { scale: .75 }));
+        cols = 0;
+        // Positional args: pos, angle, emitSize, emitTime, emitRate, emitConeAngle, tileInfo, 4 colors, particleTime,
+        // sizeStart, sizeEnd, speed, angleSpeed, damping, angleDamping, gravityScale, particleConeAngle, fadeRate,
+        // randomness, collideLevel, additive.
+        spiral = new L.ParticleEmitter(center(N - 1), 0, .1, 0, 160, 0, undefined,
+          hsl(0, 1, .6), hsl(.2, 1, .6), hsl(.6, 1, .5, 0), hsl(.8, 1, .5, 0),
+          1.1, .2, .04, .045, .05, .985, 1, 0, 0, .1, .15, false, true);
+        layout();
+      }, update, () => {}, render, hud);
+      ctx.group(ONCE.map((o) => o[1]), 0, (i) => { shot = i; auto = false; fire(L.cameraPos); });
+      ctx.slider("發射率", { min: 0, max: 3, step: .1, value: 1, format: (v) => v.toFixed(1) + "×" }, (v) => L.setParticleEmitRateScale(v));
+    },
+  },
+  {
+    id: "lights", title: "動態光影",
+    api: "LightSystemPlugin・Light・castShadow・emissive・glow",
+    desc: "LightSystemPlugin 在 WebGL 畫面上疊一張光照圖：世界照常以全亮度畫出，沒被照到的地方降到環境光色。每盞 Light 都是 EngineObject，可以跟著滑鼠或沿軌道移動；打開陰影後，石柱與旋轉橫桿都會擋光投影，地板是在 gameRender 直接畫的，所以不擋光。底部岩漿設 emissive = 1，不論有沒有光照都保持原色，上方再放一盞橘光照亮周圍。",
+    hint: "在畫布上移動滑鼠拿著火把；調整環境光，切換陰影與光暈",
+    async mount(ctx) {
+      const { L } = await boot(ctx);
+      const { vec2, rgb } = L;
+      const VW = 26, VH = 15;
+      const PILLARS = [[-8, 3, 1.4, 1.4], [-3.5, -3, 1.2, 2.4], [4.5, 3.5, 2.4, 1.2], [8.5, -2.5, 1.4, 1.4], [-10.5, -4, 1, 1], [1, 5.6, 1, 1], [10.8, 4.4, 1, 1.8]];
+      let ls, torch, bar, lava, lavaLight, lights = [], lastMouse = "", manualT = -99, scale = 30;
+      class Block extends L.EngineObject {
+        constructor(x, y, w, h, color) { super(vec2(x, y), vec2(w, h), undefined, 0, color); this.mass = 0; }
+      }
+
+      function update() {
+        const s = L.mainCanvasSize, t = L.time;
+        scale = Math.min(s.x / VW, s.y / VH);
+        L.setCameraScale(scale);
+        // The torch follows the mouse for 3 s after it moves inside the canvas, otherwise it flies a figure eight.
+        const key = L.mousePosScreen.x + "," + L.mousePosScreen.y;
+        if (key !== lastMouse) { if (lastMouse && L.mouseInWindow) manualT = t; lastMouse = key; }
+        torch.pos = t - manualT < 3 ? L.mousePos.copy() : vec2(Math.sin(t * .6) * 9.5, Math.sin(t * 1.2) * 4.2);
+        lights.forEach((l, i) => { if (l.orbit) { const a = t * .4 + i * 2.094; l.pos = vec2(Math.cos(a) * 8, Math.sin(a) * 4.6); } });
+        bar.angle = t * .5;
+        lavaLight.radius = 6 + Math.sin(t * 7) * .3 + Math.sin(t * 3.1) * .3;
+        lava.color = rgb(1, .42 + Math.sin(t * 2) * .06, .1);
+      }
+      function render() {
+        // Floor tiles are plain draw calls, not objects, so they never enter the shadow map.
+        const hw = Math.ceil(L.mainCanvasSize.x / scale / 2) + 1, hh = Math.ceil(L.mainCanvasSize.y / scale / 2) + 1;
+        for (let x = -hw; x < hw; x++) for (let y = -hh; y < hh; y++) {
+          L.drawRect(vec2(x + .5, y + .5), vec2(1), (x + y) & 1 ? rgb(.5, .5, .56) : rgb(.58, .58, .64));
+        }
+      }
+      function hud() {
+        const dim = rgb(1, 1, 1, .65), ol = rgb(0, 0, 0, .7), white = rgb(1, 1, 1);
+        L.drawTextScreen("光源", vec2(16, 20), 13, dim, 3, ol, "left", FONT);
+        L.drawTextScreen(String(lights.length), vec2(16, 42), 20, white, 3, ol, "left", MONO);
+        L.drawTextScreen("陰影", vec2(64, 20), 13, dim, 3, ol, "left", FONT);
+        L.drawTextScreen(ls.shadows ? "開" : "關", vec2(64, 42), 18, white, 3, ol, "left", FONT);
+      }
+
+      await L.engineInit(() => {
+        L.setCanvasClearColor(rgb(0, 0, 0));
+        ls = new L.LightSystemPlugin(undefined, rgb(.08, .08, .088));
+        ls.shadows = true;
+        PILLARS.forEach(([x, y, w, h], i) => new Block(x, y, w, h, i % 2 ? rgb(.88, .8, .68) : rgb(.74, .78, .88)));
+        bar = new Block(0, 0, 7, .45, rgb(.92, .72, .45));
+        lava = new Block(0, -6.4, 12, .9, rgb(1, .42, .1));
+        lava.castShadow = false;
+        lava.emissive = 1;
+        torch = new L.Light(vec2(), 10, rgb(1, .8, .55), 7);
+        torch.baseGlow = torch.glow = 1.6;
+        const orbs = [rgb(1, .25, .3), rgb(.3, 1, .45), rgb(.35, .5, 1)].map((c) => {
+          const l = new L.Light(vec2(), 7, c, 5);
+          l.baseGlow = l.glow = 1;
+          l.orbit = true;
+          return l;
+        });
+        lavaLight = new L.Light(vec2(0, -6.2), 6, rgb(1, .45, .12), 4);
+        lavaLight.baseGlow = 0;
+        lights = [torch, ...orbs, lavaLight];
+      }, update, () => {}, render, hud);
+      ctx.slider("環境光", { min: 0, max: .5, step: .01, value: .08, format: (v) => Math.round(v * 100) + "%" }, (v) => { ls.ambientColor = rgb(v, v, v * 1.1); });
+      ctx.toggle("陰影", true, (v) => { ls.shadows = v; });
+      ctx.toggle("光暈", true, (v) => { for (const l of lights) l.glow = v ? l.baseGlow : 0; });
+    },
+  },
+  {
+    id: "path", title: "A* 尋路",
+    api: "PathFinder・findPath・getCost・smoothPath・Tween・Ease",
+    desc: "PathFinder 直接讀 TileCollisionLayer 的碰撞資料當作可走區域，findPath 用 A* 回傳一串世界座標。棕色泥地是覆寫 getCost 加上的地形代價（走一格算五格），所以路線會盡量繞開；打開路徑平滑會把鋸齒狀的格點路線拉成直線段。五個代理人沿路線移動用的是 Tween 搭配 Ease.IN_OUT(SINE)，目標標記的脈動則是 pingPong 來回的 Tween。",
+    hint: "點擊畫布設定目標；切到「畫牆」或「畫泥地」後拖曳修改地圖，放開滑鼠就重新尋路",
+    async mount(ctx) {
+      const { L } = await boot(ctx);
+      const { vec2, rgb, hsl } = L;
+      const GW = 32, GH = 18, TOP = 36;
+      const HUES = [.53, .95, .14, .36, .75];
+      const STARTS = [vec2(2, 2), vec2(GW - 3, 2), vec2(2, GH - 3), vec2(GW - 3, GH - 3), vec2(16, 9)];
+      const EASE = L.Ease.IN_OUT(L.Ease.SINE);
+      const OFFSETS = [vec2(0, 0), vec2(1, 0), vec2(-1, 0), vec2(0, 1), vec2(0, -1)];
+      const mud = new Uint8Array(GW * GH), agents = [];
+      let seed = 11, layer, pf, target, pulse = 0, mode = 0, auto = true, autoT = 3.5, paintVal = 1, dirty = false;
+      let searchMs = 0, totalLen = 0, smooth = true;
+      const rnd = (n) => (seed = seed * 16807 % 2147483647) / 2147483647 * n;
+      const inside = (x, y) => x > 0 && y > 0 && x < GW - 1 && y < GH - 1;
+      const wall = (x, y) => layer.getCollisionData(vec2(x, y)) > 0;
+
+      function buildMap() {
+        layer = new L.TileCollisionLayer(vec2(), vec2(GW, GH));
+        for (let x = 0; x < GW; x++) for (let y = 0; y < GH; y++) layer.setCollisionData(vec2(x, y), inside(x, y) ? 0 : 1);
+        for (let i = 0; i < 12; i++) {
+          const h = rnd(1) < .5, len = 3 + (rnd(h ? 7 : 5) | 0), x0 = 2 + (rnd(GW - 4) | 0), y0 = 2 + (rnd(GH - 4) | 0);
+          for (let k = 0; k < len; k++) {
+            const x = h ? x0 + k : x0, y = h ? y0 : y0 + k;
+            if (inside(x, y)) layer.setCollisionData(vec2(x, y), 1);
+          }
+        }
+        for (let i = 0; i < 3; i++) {
+          const cx = 4 + rnd(GW - 8), cy = 3 + rnd(GH - 6), r = 1.6 + rnd(1.4);
+          for (let x = 1; x < GW - 1; x++) for (let y = 1; y < GH - 1; y++) {
+            if ((x + .5 - cx) ** 2 + (y + .5 - cy) ** 2 < r * r && !wall(x, y)) mud[y * GW + x] = 1;
+          }
+        }
+        for (const s of STARTS) layer.setCollisionData(s, 0);
+        pf = new L.PathFinder(layer);
+        pf.getCost = (x, y) => mud[y * GW + x] ? 4 : 0;
+      }
+
+      // Each agent walks its polyline with one Tween over the path length; the callback maps distance to a point.
+      function go(a, i) {
+        if (a.tween) a.tween.stop();
+        a.tween = null; a.path = []; a.len = 0;
+        const goal = slot(i);
+        let path = pf.findPath(a.pos, goal);
+        if (!path.length) {
+          const n = pf.getNearestClearNode(a.pos, 4);
+          if (n) { a.pos = n.posWorld.copy(); path = pf.findPath(a.pos, goal); }
+        }
+        if (path.length < 2) return;
+        path[0] = a.pos.copy();
+        const cum = [0];
+        for (let i = 1; i < path.length; i++) cum.push(cum[i - 1] + path[i].distance(path[i - 1]));
+        a.path = path; a.seg = 1; a.len = cum[cum.length - 1];
+        a.tween = new L.Tween((d) => {
+          let i = 1;
+          while (i < cum.length - 1 && cum[i] < d) i++;
+          a.seg = i;
+          a.pos = path[i - 1].lerp(path[i], (d - cum[i - 1]) / (cum[i] - cum[i - 1] || 1));
+        }, 0, a.len, .5 + a.len / (7 - i * .9), { ease: EASE }).then(() => { a.path = []; });
+      }
+      // Agents spread over the target and its four neighbours, and walk at different speeds, so they do not stack.
+      function slot(i) {
+        const p = target.add(OFFSETS[i]);
+        if (!wall(Math.floor(p.x), Math.floor(p.y))) return p;
+        const n = pf.getNearestClearNode(p, 3);
+        return n ? n.posWorld : target;
+      }
+      function repathAll() {
+        const t0 = performance.now();
+        agents.forEach(go);
+        searchMs = performance.now() - t0;
+        totalLen = agents.reduce((s, a) => s + a.len, 0);
+      }
+      function setTarget(p) {
+        const tx = Math.floor(p.x), ty = Math.floor(p.y);
+        if (tx >= 0 && ty >= 0 && tx < GW && ty < GH && !wall(tx, ty)) target = pf.tileToWorld(tx, ty);
+        else {
+          const n = pf.getNearestClearNode(p, 8);
+          if (!n) return;
+          target = n.posWorld.copy();
+        }
+        repathAll();
+      }
+
+      function update() {
+        const s = L.mainCanvasSize, sc = Math.min(s.x / (GW + .6), (s.y - TOP) / (GH + .6));
+        L.setCameraScale(sc);
+        L.setCameraPos(vec2(GW / 2, GH / 2 + TOP / 2 / sc));
+        const m = L.mousePos, cx = Math.floor(m.x), cy = Math.floor(m.y), ok = inside(cx, cy);
+        if (L.mouseWasPressed(0)) {
+          auto = false;
+          if (mode === 0) setTarget(m);
+          else if (ok) paintVal = mode === 1 ? (wall(cx, cy) ? 0 : 1) : (mud[cy * GW + cx] ? 0 : 1);
+        }
+        if (mode && ok && L.mouseIsDown(0)) {
+          if (mode === 1 && wall(cx, cy) !== !!paintVal) { layer.setCollisionData(vec2(cx, cy), paintVal); dirty = true; }
+          if (mode === 2 && mud[cy * GW + cx] !== paintVal) { mud[cy * GW + cx] = paintVal; dirty = true; }
+        }
+        if (dirty && !L.mouseIsDown(0)) { dirty = false; setTarget(target); }
+        if (auto && (autoT -= L.timeDelta) < 0) {
+          autoT = 4;
+          let x, y;
+          do { x = 1 + Math.floor(Math.random() * (GW - 2)); y = 1 + Math.floor(Math.random() * (GH - 2)); } while (wall(x, y));
+          setTarget(vec2(x + .5, y + .5));
+        }
+      }
+      function render() {
+        L.drawRect(vec2(GW / 2, GH / 2), vec2(GW, GH), rgb(.1, .12, .15));
+        for (let x = 1; x < GW; x++) L.drawRect(vec2(x, GH / 2), vec2(.03, GH), rgb(1, 1, 1, .05));
+        for (let y = 1; y < GH; y++) L.drawRect(vec2(GW / 2, y), vec2(GW, .03), rgb(1, 1, 1, .05));
+        for (let x = 0; x < GW; x++) for (let y = 0; y < GH; y++) {
+          const c = vec2(x + .5, y + .5);
+          if (wall(x, y)) {
+            L.drawRect(c, vec2(1), rgb(.34, .4, .5));
+            if (y === GH - 1 || !wall(x, y + 1)) L.drawRect(c.add(vec2(0, .4)), vec2(1, .2), rgb(.52, .59, .7));
+          } else if (mud[y * GW + x]) L.drawRect(c, vec2(.98), rgb(.37, .26, .15));
+        }
+        const m = L.mousePos;
+        if (mode && inside(Math.floor(m.x), Math.floor(m.y))) L.drawRect(vec2(Math.floor(m.x) + .5, Math.floor(m.y) + .5), vec2(1), rgb(1, 1, 1, .14));
+        for (const a of agents) if (a.path.length) L.drawLineList([a.pos, ...a.path.slice(a.seg)], .14, a.dim);
+        if (target) {
+          L.drawCircle(target, 1.1 + pulse * .8, rgb(1, 1, 1, 0), .08, rgb(1, 1, 1, .9 - pulse * .6));
+          L.drawCircle(target, .34, rgb(1, 1, 1, .95));
+        }
+        for (const a of agents) L.drawCircle(a.pos, .72, a.color, .07, rgb(0, 0, 0, .55));
+      }
+      function hud() {
+        const W = L.mainCanvasSize.x, dim = rgb(1, 1, 1, .6), white = rgb(1, 1, 1, .95);
+        const item = (x, label, val, font) => {
+          L.drawTextScreen(label, vec2(x, 18), 13, dim, 0, undefined, "left", FONT);
+          L.drawTextScreen(val, vec2(x + label.length * 13 + 6, 18), 15, white, 0, undefined, "left", font);
+        };
+        item(12, "路徑總長", totalLen.toFixed(1), MONO);
+        item(Math.max(132, W * .36), "搜尋耗時", searchMs.toFixed(2) + " ms", MONO);
+        item(Math.max(262, W * .7), "平滑", smooth ? "開" : "關", FONT);
+      }
+
+      await L.engineInit(() => {
+        L.setCanvasClearColor(rgb(.055, .063, .075));
+        buildMap();
+        pf.smoothPath = smooth;
+        STARTS.forEach((s, i) => agents.push({
+          pos: pf.tileToWorld(s.x, s.y), color: hsl(HUES[i], .85, .6), dim: hsl(HUES[i], .85, .6, .45),
+          path: [], seg: 1, len: 0, tween: null,
+        }));
+        new L.Tween((v) => { pulse = v; }, 0, 1, .7, { ease: L.Ease.SINE }).pingPong();
+        setTarget(vec2(GW / 2 + 6.5, GH / 2 - 3.5));
+      }, update, () => {}, render, hud);
+      ctx.group(["設目標", "畫牆", "畫泥地"], 0, (i) => { mode = i; auto = false; });
+      ctx.toggle("路徑平滑", true, (v) => { smooth = pf.smoothPath = v; setTarget(target); });
+    },
+  },
+  {
+    id: "post", title: "後製濾鏡",
+    api: "PostProcessPlugin・postProcessEffects・postProcessTV・setShaderCode",
+    desc: "PostProcessPlugin 把整個畫面交給一段 Shadertoy 風格的 GLSL mainImage，第二個參數 includeMainCanvas 讓 2D 文字層也一起處理。內建的掃描線、雜訊、暈影、彎曲、色差、光暈都是程式碼片段，用 postProcessEffects 依序串起來，切換時只要呼叫 setShaderCode。最後一個選項是自己寫的兩行 GLSL：亮度量化成四階再套上雙色調。",
+    hint: "切換下方濾鏡，左下角是對應的程式碼",
+    async mount(ctx) {
+      const { L } = await boot(ctx);
+      const { vec2, rgb } = L;
+      const P = L.postProcessEffects;
+      const CUSTOM = "float l = dot(c.rgb, vec3(.3, .59, .11));\nc.rgb = mix(vec3(.1, .02, .25), vec3(1., .8, .4), floor(l * 4.99) / 4.);";
+      const FX = [
+        ["原始", "pp.setShaderCode(undefined)", undefined],
+        ["映像管 TV", "pp.setShaderCode(postProcessEffects(postProcessTV({\n  curve: .25, glow: .5, noise: .12,\n  scanlines: .45, scanlineSpacing: 4 })))",
+          P(L.postProcessTV({ curve: .25, glow: .5, noise: .12, scanlines: .45, scanlineSpacing: 4 }))],
+        ["掃描線＋暈影", "pp.setShaderCode(postProcessEffects(\n  postProcessScanlines(.55, 4),\n  postProcessVignette(1.2, 3)))", P(L.postProcessScanlines(.55, 4), L.postProcessVignette(1.2, 3))],
+        ["色差＋彎曲", "pp.setShaderCode(postProcessEffects(\n  postProcessCurve(.25),\n  postProcessChromatic(.012)))", P(L.postProcessCurve(.25), L.postProcessChromatic(.012))],
+        ["光暈", "pp.setShaderCode(postProcessBloomShader(.35, 1.4, 8))", L.postProcessBloomShader(.35, 1.4, 8)],
+        ["雜訊", "pp.setShaderCode(postProcessEffects(\n  postProcessNoise(.3, 2)))", P(L.postProcessNoise(.3, 2))],
+        ["自訂 GLSL", "pp.setShaderCode(postProcessEffects(`\n" + CUSTOM + "`))", P(CUSTOM)],
+      ];
+      const stars = Array.from({ length: 70 }, () => [Math.random() * 2 - 1, Math.random() * 6.5, Math.random()]);
+      const PEAKS = [[-12, 2.4, 2.6], [-9.5, 1.6, 2.2], [-7, 2.6, 2.6], [-4.8, 1.4, 1.8], [4.6, 1.8, 2], [6.8, 2.9, 2.8], [9.6, 1.7, 2.3], [12, 2.2, 2.4]];
+      const SKY_TOP = rgb(.04, .02, .12), SKY_LOW = rgb(.78, .22, .46), SUN_TOP = rgb(1, .9, .3), SUN_LOW = rgb(1, .2, .55);
+      let pp;
+
+      // A synthwave scene built only from draw primitives, so every filter has gradients, thin lines and text to work on.
+      function render() {
+        const s = L.mainCanvasSize, sc = s.y / 12, t = L.time, H0 = -1;
+        L.setCameraScale(sc);
+        const hw = s.x / sc / 2 + .5;
+        for (let i = 0; i < 30; i++) L.drawRect(vec2(0, 6.6 - i * 7.6 / 29), vec2(hw * 2, .28), SKY_TOP.lerp(SKY_LOW, i / 29));
+        for (const [x, y, z] of stars) L.drawRect(vec2(x * hw, y), vec2(.04 + z * .05), rgb(1, 1, 1, .25 + .5 * Math.abs(Math.sin(t * (1 + z * 2) + x * 40))));
+        const R = 2.6, SY = 1.1, ROWS = 40;
+        for (let i = 0; i < ROWS; i++) {
+          const y = SY + R - (i + .5) * (2 * R / ROWS), dy = y - SY;
+          if (dy < 0 && ((y * 3 - t * .6) % 1 + 1) % 1 < .18 - dy * .12) continue;
+          L.drawRect(vec2(0, y), vec2(2 * Math.sqrt(Math.max(0, R * R - dy * dy)), 2 * R / ROWS + .01), SUN_TOP.lerp(SUN_LOW, i / (ROWS - 1)));
+        }
+        for (const [x, h, w] of PEAKS) L.drawPoly([vec2(x - w, H0), vec2(x, H0 + h), vec2(x + w, H0)], rgb(.12, .03, .2), .05, rgb(.95, .35, .9));
+        L.drawRect(vec2(0, H0 - 4), vec2(hw * 2, 8), rgb(.03, .01, .07));
+        const ph = t * 1.2 % 1;
+        for (let i = 0; i < 16; i++) {
+          const d = i + 1 - ph;
+          if (d < .8) continue;
+          const y = H0 - 4.8 / d;
+          L.drawLine(vec2(-hw, y), vec2(hw, y), .03 + .05 / d, rgb(1, .3, .85, Math.min(1, 1.6 / d + .15)));
+        }
+        for (let k = -18; k <= 18; k++) L.drawLine(vec2(k * .16, H0), vec2(k * 2, H0 - 6), .035, rgb(.3, .85, 1, .75));
+        L.drawRect(vec2(0, H0), vec2(hw * 2, .07), rgb(1, .55, .9));
+        L.drawRegularPoly(vec2(-hw * .62, 3.1), vec2(1.5), 6, rgb(0, 0, 0, 0), .07, rgb(.3, .95, 1), t * .7);
+        L.drawRegularPoly(vec2(hw * .62, 3.1), vec2(1.4), 3, rgb(0, 0, 0, 0), .07, rgb(1, .9, .3), -t * .9);
+        L.drawText("霓虹公路", vec2(0, 5.05), 1.1, rgb(1, .9, .97), .09, rgb(.9, .2, .7), "center", FONT, "bold");
+        L.drawText("POST PROCESS", vec2(0, 4.1), .42, rgb(.5, .95, 1), 0, undefined, "center", MONO);
+      }
+
+      await L.engineInit(() => {
+        L.setCanvasClearColor(rgb(.03, .01, .07));
+        pp = new L.PostProcessPlugin(FX[1][2], true);
+      }, () => {}, () => {}, render, () => {});
+      const chip = document.createElement("pre");
+      chip.className = "lj-code";
+      ctx.$(".lj-wrap").append(chip);
+      const pick = (i) => { pp.setShaderCode(FX[i][2]); chip.textContent = FX[i][1]; };
+      pick(1);
+      ctx.group(FX.map((f) => f[0]), 1, pick);
+    },
+  },
+  {
+    id: "audio", title: "音效與成就",
+    api: "Sound・zzfxG・setAudioMasterEffect・AudioReverb・Medal・medalsInit",
+    desc: "六張卡片各是一組 ZzFX 參數：new Sound(參數) 載入時就合成好聲音，卡片上的長條是 zzfxG 算出的樣本包絡。示波器從 audioMasterGain 接出 AnalyserNode 即時畫出輸出波形；下方音效處理用 setAudioMasterEffect 把殘響、回音、低通或失真插在主音量與喇叭之間。成就用引擎內建的 Medal，解鎖時右上角滑出通知，進度由 medalsInit 存進 localStorage。無頭環境聽不到聲音，瀏覽器也要在畫布內點擊後才會解鎖音訊。",
+    hint: "在畫布內點擊卡片或按 1 到 6 播放（有聲音）；切換音效處理，試著解鎖四個成就",
+    async mount(ctx) {
+      const { L } = await boot(ctx);
+      const { vec2, rgb, hsl } = L;
+      const DEFS = [
+        ["射擊", [.25, .05, 980, .01, .02, .05, 2, 1.6, -18, , , , , , , , , .6], .55],
+        ["爆炸", [1.1, .1, 70, .02, .18, .5, 4, 2.6, , , , , , 1.4, , .5, .1, .5, .15], .02],
+        ["受傷", [1, .1, 260, .01, .08, .3, 3, 1.8, -6, , , , , 1.2, , .3], .95],
+        ["金幣", [, , 1675, , .06, .24, 1, 1.82, , , 837, .06], .14],
+        ["跳躍", [, .05, 220, .01, .05, .15, , 1, 12], .36],
+        ["升級", [, , 537, .02, .02, .22, 1, 1.59, -6.98, 4.97], .75],
+      ];
+      const MEDALS = [["初次發聲", "播放任一音效", "♪"], ["收藏家", "六種音效都聽過", "★"], ["連打高手", "兩秒內播放五次", "⚡"], ["混音師", "開著音效處理播放", "◎"]];
+      const FXN = ["乾聲", "殘響", "回音", "低通", "失真"];
+      const MAKE = [null, () => new L.AudioReverb(2.2, 2.5, .5), () => new L.AudioDelay(.22, .45, .45), () => new L.AudioFilter("lowpass", 600, 4, 1), () => new L.AudioDistortion(.7, .9)];
+      const BARS = 56, GAP = .3, SCOPE_H = 1.6, cardW = 3.6, cardH = 2.3;
+      const cards = DEFS.map(([name, params, hue]) => {
+        const smp = L.zzfxG(...params), env = [];
+        for (let b = 0; b < BARS; b++) {
+          let m = 0;
+          for (let j = Math.floor(b * smp.length / BARS), z = Math.floor((b + 1) * smp.length / BARS); j < z; j++) m = Math.max(m, Math.abs(smp[j]));
+          env.push(m);
+        }
+        const peak = Math.max(...env) || 1;
+        return { name, hue, sound: new L.Sound(params), env: env.map((v) => v / peak), dur: smp.length / L.audioDefaultSampleRate, playT: -99, pos: vec2() };
+      });
+      const analyser = L.audioContext.createAnalyser();
+      analyser.fftSize = 1024;
+      const buf = new Float32Array(analyser.fftSize), made = [], played = new Set(), recent = [];
+      let medals = [], slots = [], gridW = 0, scopeY = 0, fxIdx = 0, scopeSrc = null, pending = null, pendingT = 0;
+
+      function tap(node) {
+        if (scopeSrc) scopeSrc.disconnect(analyser);
+        scopeSrc = node;
+        node.connect(analyser);
+      }
+      function setFx(i) {
+        fxIdx = i;
+        if (!i) { L.setAudioMasterEffect(); tap(L.audioMasterGain); return; }
+        const fx = made[i] || (made[i] = MAKE[i]());
+        L.setAudioMasterEffect(fx);
+        tap(fx.output);
+      }
+      function play(i) {
+        const c = cards[i];
+        // The first click inside the canvas resumes the AudioContext asynchronously, so that sound waits a moment.
+        if (L.audioIsRunning()) c.sound.play();
+        else { pending = c; pendingT = L.time; }
+        c.playT = L.time;
+        played.add(i);
+        recent.push(L.time);
+        while (L.time - recent[0] > 2) recent.shift();
+        medals[0].unlock();
+        if (played.size === cards.length) medals[1].unlock();
+        if (recent.length >= 5) medals[2].unlock();
+        if (fxIdx) medals[3].unlock();
+      }
+
+      function layout() {
+        const s = L.mainCanvasSize, portrait = s.y > s.x * 1.1;
+        const cols = portrait ? 2 : 3, rows = 6 / cols, mcols = portrait ? 2 : 4, mrows = 4 / mcols;
+        gridW = cols * cardW + (cols - 1) * GAP;
+        const gridH = rows * cardH + (rows - 1) * GAP, medalH = mrows * 1.05 + (mrows - 1) * .2;
+        const totalH = gridH + GAP + SCOPE_H + GAP + medalH, top = totalH / 2;
+        L.setCameraScale(Math.min(s.x / (gridW + .8), s.y / (totalH + .8)));
+        cards.forEach((c, i) => { c.pos = vec2(-gridW / 2 + cardW / 2 + (i % cols) * (cardW + GAP), top - cardH / 2 - Math.floor(i / cols) * (cardH + GAP)); });
+        scopeY = top - gridH - GAP - SCOPE_H / 2;
+        const mw = (gridW - (mcols - 1) * .2) / mcols, my = top - gridH - GAP - SCOPE_H - GAP - .525;
+        slots = MEDALS.map((m, i) => ({ pos: vec2(-gridW / 2 + mw / 2 + (i % mcols) * (mw + .2), my - Math.floor(i / mcols) * 1.25), w: mw }));
+      }
+      function update() {
+        layout();
+        if (pending && L.audioIsRunning()) { pending.sound.play(); pending = null; }
+        if (pending && L.time - pendingT > .6) pending = null;
+        if (L.mouseWasPressed(0)) {
+          const m = L.mousePos;
+          const i = cards.findIndex((c) => Math.abs(m.x - c.pos.x) < cardW / 2 && Math.abs(m.y - c.pos.y) < cardH / 2);
+          if (i >= 0) play(i);
+        }
+        for (let i = 0; i < cards.length; i++) if (L.keyWasPressed("Digit" + (i + 1))) play(i);
+      }
+      function render() {
+        const t = L.time, white = rgb(1, 1, 1, .95), dim = rgb(1, 1, 1, .55);
+        cards.forEach((c, i) => {
+          const age = t - c.playT, prog = age / c.dur, lit = Math.max(0, 1 - age / .35), active = prog >= 0 && prog < 1;
+          const left = c.pos.x - cardW / 2 + .2, right = c.pos.x + cardW / 2 - .2, bw = (cardW - .4) / BARS, base = c.pos.y - .2;
+          L.drawRect(c.pos, vec2(cardW, cardH), hsl(c.hue, .3, .15 + lit * .12));
+          L.drawRect(c.pos.add(vec2(0, cardH / 2 - .05)), vec2(cardW, .1), hsl(c.hue, .8, .6));
+          c.env.forEach((v, b) => {
+            const on = active && b / BARS < prog;
+            L.drawRect(vec2(left + (b + .5) * bw, base), vec2(bw * .7, Math.max(.03, v * cardH * .5)), hsl(c.hue, .8, on ? .75 : .55, on ? 1 : .6));
+          });
+          if (active) L.drawRect(vec2(left + prog * (cardW - .4), base), vec2(.04, cardH * .56), white);
+          L.drawText(c.name, vec2(left, c.pos.y + cardH / 2 - .42), .34, white, 0, undefined, "left", FONT);
+          L.drawText(String(i + 1), vec2(right, c.pos.y + cardH / 2 - .42), .28, dim, 0, undefined, "right", MONO);
+          L.drawText(c.dur.toFixed(2) + " s", vec2(right, c.pos.y - cardH / 2 + .25), .22, dim, 0, undefined, "right", MONO);
+        });
+
+        const running = L.audioIsRunning(), pts = [];
+        L.drawRect(vec2(0, scopeY), vec2(gridW, SCOPE_H), rgb(.07, .09, .11));
+        L.drawRect(vec2(0, scopeY), vec2(gridW - .4, .02), rgb(1, 1, 1, .08));
+        if (running) analyser.getFloatTimeDomainData(buf);
+        for (let i = 0; i < 256; i++) {
+          const v = running ? Math.max(-1, Math.min(1, buf[i * 4])) : 0;
+          pts.push(vec2(-gridW / 2 + .2 + i / 255 * (gridW - .4), scopeY + v * SCOPE_H * .42));
+        }
+        L.drawLineList(pts, .045, rgb(.4, .95, .75));
+        L.drawText("示波器", vec2(-gridW / 2 + .2, scopeY + SCOPE_H / 2 - .25), .24, dim, 0, undefined, "left", FONT);
+        L.drawText("音效處理：" + FXN[fxIdx], vec2(gridW / 2 - .2, scopeY + SCOPE_H / 2 - .25), .24, dim, 0, undefined, "right", FONT);
+        if (!running) L.drawText("音訊尚未解鎖：在畫布內點一下卡片", vec2(0, scopeY - .38), .26, rgb(1, .85, .5, .85), 0, undefined, "center", FONT);
+
+        medals.forEach((m, i) => {
+          const { pos, w } = slots[i], on = m.unlocked, left = pos.x - w / 2;
+          L.drawRect(pos, vec2(w, 1.05), on ? rgb(.33, .26, .07) : rgb(.13, .14, .17));
+          L.drawText(MEDALS[i][2], vec2(left + .4, pos.y), .5, on ? rgb(1, .84, .3) : rgb(1, 1, 1, .25), 0, undefined, "center", FONT);
+          L.drawText(MEDALS[i][0], vec2(left + .8, pos.y + .18), .3, on ? white : rgb(1, 1, 1, .5), 0, undefined, "left", FONT);
+          L.drawText(MEDALS[i][1], vec2(left + .8, pos.y - .22), .2, rgb(1, 1, 1, on ? .7 : .38), 0, undefined, "left", FONT);
+        });
+      }
+
+      await L.engineInit(() => {
+        L.setCanvasClearColor(rgb(.055, .063, .075));
+        medals = MEDALS.map(([name, about, icon], i) => new L.Medal(i, name, about, icon));
+        L.medalsInit("ljs-showcase-medals");
+        L.setMedalDisplayTime(3);
+        L.setMedalDisplaySize(vec2(320, 60));
+        tap(L.audioMasterGain);
+      }, update, () => {}, render, () => {});
+      ctx.group(FXN, 0, setFx);
+      ctx.button("重設成就", () => { L.medalsReset(); played.clear(); });
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "EngineObject・setCollision・engineObjectsCollide・WebGL 批次繪製",
+    desc: "逐級加入 EngineObject 方塊，每個都有速度、重力與反彈，由引擎的 updatePhysics 推進，再交給 WebGL 批次一次畫完。開啟碰撞偵測時，每個方塊都要對 engineObjectsCollide 清單逐一測重疊並解算，沒有空間分割，成本隨數量平方成長；關閉時只剩牆面反彈。",
+    hint: "按「自動加壓」逐級加量；切換碰撞偵測比較兩種負載",
+    async mount(ctx) {
+      ctx.html(`<div class="lj-stress"></div>`);
+      const { L } = await ljsFrame(ctx, ctx.$(".lj-stress"));
+      const { vec2, hsl, rand } = L;
+      let collide = true, updMs = 0, drawMs = 0, t0 = 0, bounds = vec2(20, 12);
+      const boxes = [];
+      const ema = (old, v) => old ? old * .9 + v * .1 : v;
+      class Box extends L.EngineObject {
+        constructor() {
+          super(vec2(rand(-bounds.x, bounds.x), rand(-bounds.y, bounds.y)), vec2(.3), undefined, 0, hsl(rand(.45, .95), .8, .62));
+          this.velocity = vec2(rand(-.12, .12), rand(-.05, .15));
+          this.restitution = 1; this.friction = 1;
+          this.setCollision(collide, collide, false, false);
+        }
+        update() {
+          const p = this.pos, v = this.velocity, bx = bounds.x - .15, by = bounds.y - .15;
+          if (p.x < -bx) { p.x = -bx; v.x = Math.abs(v.x); } else if (p.x > bx) { p.x = bx; v.x = -Math.abs(v.x); }
+          if (p.y < -by) { p.y = -by; v.y = Math.abs(v.y); } else if (p.y > by) { p.y = by; v.y = -Math.abs(v.y); }
+        }
+      }
+      L.setEngineVariableStep(true);
+      await L.engineInit(() => {
+        L.setCanvasClearColor(L.rgb(.055, .063, .075));
+        L.setGravity(vec2(0, -.004));
+        L.setCameraScale(20);
+      }, () => {
+        t0 = performance.now();
+        bounds = L.mainCanvasSize.scale(.5 / 20);
+      }, () => { updMs = ema(updMs, performance.now() - t0); },
+      () => { t0 = performance.now(); },
+      () => { drawMs = ema(drawMs, performance.now() - t0); });
+
+      ctx.controls.classList.add("bottom");
+      ctx.toggle("碰撞偵測", true, (v) => { collide = v; for (const b of boxes) b.setCollision(v, v, false, false); });
+      ctx.ramp({
+        label: "物件", steps: [200, 400, 800, 1600, 3200, 6400, 12800, 25600],
+        minFps: 30,
+        apply(n) {
+          while (boxes.length < n) boxes.push(new Box());
+          while (boxes.length > n) boxes.pop().destroy();
+        },
+        metrics: () => ({
+          "碰撞清單": L.engineObjectsCollide.length,
+          "碰撞": collide ? "開啟" : "關閉",
+          "更新": Showcase.fmtMs(updMs),
+          "繪製": Showcase.fmtMs(drawMs),
+        }),
+        note: "瓶頸：碰撞開啟時，每個方塊的 updatePhysics 都會走訪整個 engineObjectsCollide 清單做 AABB 重疊測試，沒有空間分割，成本是 O(n²)；關閉後只剩速度積分、牆面反彈與 WebGL 批次繪製，上限高出許多。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

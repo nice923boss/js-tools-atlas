@@ -3,119 +3,344 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Gibber 示範：邊寫程式邊演奏的即時編碼樂段</title>
+<title>Gibber 示範：7 個場景看懂即時編碼音樂與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"],"size":"約 1.3 MB","note":"按下播放才會發聲，播放中可改程式碼再按 Ctrl + Enter 套用"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"],"size":"約 1.3 MB","scenes":["即時編碼樂段","鼓機步進器","歐幾里得與 Hex 節奏","調式與音高驗證","合成器音色","效果器鏈與 LFO","極限測試"],"note":"gibber.audio.lib 2.1.4（Gibberish AudioWorklet）。Gibber 在第一次按下滑鼠或鍵盤時才建立 AudioContext，按播放才發聲。頁面強制 44100 Hz 的 AudioContext，因為 2.1.4 的振盪器以 44100 Hz 計算頻率，在 48 kHz 裝置上會整體偏高約 1.5 個半音（原版示範同樣受影響）；頁面另在輸出端加一個保護聽力的限幅器（非 Gibber 功能）。未使用 gen()（2.1.4 單檔版會丟出 graph.gen is not a function）、Arp（未匯出）、需要外部 wav 的 Drums 與需要外部調律檔的 Theory.tuning。"}</script>
 <style>
-  .app {
-    position: fixed; inset: 0; display: grid; grid-template-rows: auto minmax(0, 1fr);
-    gap: 10px; padding: 12px 14px 46px;
+  .gb-board { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: auto; }
+  .gb-board > * { flex: none; min-width: 0; }
+  .gb-cv { position: relative; min-height: 0; min-width: 0; border-radius: 10px; background: #0a0c0f; border: 1px solid var(--line); overflow: hidden; }
+  .gb-cv > canvas { position: absolute; inset: 0; display: block; }
+  .gb-api { font: 11.5px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .gb-cap { font-size: 12px; color: var(--muted); line-height: 1.45; }
+  .gb-m { font-family: var(--mono); }
+  .gb-msg { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--c4, #7bd389); }
+  .gb-msg.err { color: #ff6b6b; }
+  .gb-prow { display: grid; grid-template-columns: 6.4em minmax(0, 1fr) 4.4em; gap: 6px; align-items: center; font-size: 12px; }
+  .gb-prow span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .gb-prow span i { font: normal 10px var(--mono); color: var(--muted); display: block; }
+  .gb-prow input { width: 100%; margin: 0; min-width: 0; }
+  .gb-prow output { font: 600 11.5px var(--mono); text-align: right; white-space: nowrap; }
+  .gb-chips { display: flex; gap: 5px; flex-wrap: wrap; }
+  .gb-chip { border: 1px solid var(--line); background: rgba(255, 255, 255, .05); color: var(--fg); border-radius: 8px; padding: 4px 8px; font: 500 12px var(--font); cursor: pointer; }
+  .gb-chip[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+  .gb-panel { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); min-width: 0; }
+  .gb-panel h4 { margin: 0; font: 700 14px var(--font); display: flex; gap: 8px; align-items: baseline; }
+  .gb-panel h4 small { font: 400 11px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* 1. live coding */
+  .gb-live { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 10px; overflow: hidden; }
+  .gb-ed { display: flex; flex-direction: column; gap: 6px; min-height: 0; min-width: 0; }
+  .gb-code { position: relative; flex: 1; min-height: 0; border-radius: 10px; border: 1px solid var(--line); background: #12151a; overflow: hidden; }
+  .gb-code pre, .gb-code textarea { position: absolute; inset: 0; margin: 0; padding: 12px 14px; border: 0; font: 13px/1.6 var(--mono); white-space: pre; tab-size: 2; letter-spacing: 0; }
+  .gb-code pre { overflow: hidden; color: #d8d6cf; pointer-events: none; }
+  .gb-code textarea { resize: none; width: 100%; height: 100%; background: transparent; color: transparent; caret-color: var(--accent); outline: none; overflow: auto; scrollbar-width: none; }
+  .gb-code textarea::selection { background: rgba(247, 223, 30, .25); }
+  .gb-code:focus-within { border-color: rgba(247, 223, 30, .55); }
+  .gb-code.flash { animation: gb-flash .45s ease-out; }
+  @keyframes gb-flash { from { box-shadow: inset 0 0 0 2px rgba(247, 223, 30, .8); } to { box-shadow: inset 0 0 0 2px rgba(247, 223, 30, 0); } }
+  .gb-tc { color: #6f7680; font-style: italic; }
+  .gb-ts { color: #7bd389; }
+  .gb-tn { color: #ff8c42; }
+  .gb-tf { color: #4cc9f0; }
+  .gb-tu { color: #f7df1e; font-weight: 600; }
+  .gb-line { display: flex; gap: 10px; align-items: center; min-height: 18px; }
+  .gb-line .gb-m { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .gb-ring { background: radial-gradient(90% 90% at 50% 45%, #1c2230, #0f1115 70%); }
+
+  /* 2. step sequencer */
+  .gb-grid { display: grid; grid-template-columns: 5.2em repeat(16, minmax(0, 1fr)); gap: 3px; user-select: none; }
+  .gb-grid .lb { font-size: 12px; display: flex; flex-direction: column; justify-content: center; min-width: 0; padding-right: 4px; }
+  .gb-grid .lb b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .gb-grid .lb i { font: normal 10px var(--mono); color: var(--muted); }
+  .gb-cell { height: 30px; border-radius: 5px; background: rgba(255, 255, 255, .06); border: 1px solid transparent; cursor: pointer; position: relative; min-width: 0; padding: 0; }
+  .gb-cell.q { margin-left: 3px; }
+  .gb-cell[data-v="6"] { background: color-mix(in srgb, var(--rc) 40%, #1a1d22); }
+  .gb-cell[data-v="x"] { background: var(--rc); }
+  .gb-cell[data-v="X"] { background: var(--rc); box-shadow: inset 0 0 0 2px #fff; }
+  .gb-cell.ph { border-color: rgba(255, 255, 255, .5); }
+  .gb-cell.hit { filter: brightness(1.6); transform: scale(1.06); }
+  .gb-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11.5px; color: var(--muted); align-items: center; }
+  .gb-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -2px; margin-right: 4px; background: #f7a21e; }
+  .gb-code2 { margin: 0; padding: 8px 10px; border-radius: 10px; background: #12151a; border: 1px solid var(--line); font: 11.5px/1.5 var(--mono); color: #d8d6cf; white-space: pre; overflow: auto; max-height: 150px; }
+  .gb-two { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 8px; }
+
+  /* 3. rhythm */
+  .gb-rings { flex: 1 1 auto !important; min-height: 220px; }
+  .gb-tracks { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .gb-tracks .gb-panel { padding: 8px 10px; gap: 4px; }
+  .gb-tracks h4 i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; background: var(--tc); }
+  .gb-hex { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+  .gb-hex input { flex: 1; min-width: 0; font: 600 13px var(--mono); background: #12151a; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+  .gb-hex input.bad { border-color: #ff6b6b; }
+  .gb-vals { font: 11px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* 4. theory */
+  .gb-kb { height: 120px; }
+  .gb-tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .gb-tbl th, .gb-tbl td { padding: 3px 6px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  .gb-tbl th { color: var(--muted); font-weight: 500; }
+  .gb-tbl td { font-family: var(--mono); }
+  .gb-tbl th:first-child, .gb-tbl td:first-child { text-align: left; }
+  .gb-tbl tr.on td { color: #f7df1e; }
+  .gb-tbl td.ok { color: #7bd389; }
+  .gb-tbl td.bad { color: #ff6b6b; }
+  .gb-tblw { overflow: auto; max-height: 300px; }
+
+  /* 5. synth / 6. fx */
+  .gb-lab { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 8px; flex: 1 0 auto; min-height: 240px; }
+  .gb-lab > .gb-cv { min-height: 200px; }
+  .gb-fxs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .gb-fx { padding: 6px 8px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .gb-fx.on { border-color: var(--fc); box-shadow: inset 3px 0 0 var(--fc); }
+  .gb-fx header { display: flex; justify-content: space-between; align-items: center; gap: 4px; }
+  .gb-fx header b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .gb-fx header small { font: 10px var(--mono); color: var(--muted); }
+  .gb-fx .gb-prow { grid-template-columns: 3.6em minmax(0, 1fr) 3.4em; }
+  .gb-chain { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 22px; }
+  .gb-chain b { color: var(--fg); font-weight: 600; padding: 1px 7px; border-radius: 6px; background: rgba(255, 255, 255, .08); }
+  .gb-chain b.fx { background: var(--fc); color: #111; }
+  .gb-spg { flex: 1 0 auto !important; min-height: 180px; }
+
+  /* 7. stress */
+  .gb-sv { position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px); border-radius: 10px; background: #050608; overflow: hidden; border: 1px solid var(--line); }
+  @media (min-width: 761px) { .gb-sv { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 350px; } }
+
+  @media (max-width: 760px) {
+    .gb-code pre, .gb-code textarea { font-size: 11px; padding: 9px 10px; }
+    .gb-two, .gb-lab { grid-template-columns: minmax(0, 1fr); }
+    .gb-tracks { grid-template-columns: minmax(0, 1fr); }
+    .gb-fxs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
-  .top { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-  .chip {
-    border: 1px solid var(--line); background: var(--bg-2); color: var(--muted); cursor: pointer;
-    font: 600 12.5px var(--font); padding: 6px 11px; border-radius: 999px;
-  }
-  .chip[aria-pressed="true"] { color: var(--accent-ink); background: var(--accent); border-color: transparent; }
-  .spacer { flex: 1; }
-  #play { min-width: 92px; }
-  .main { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 12px; min-height: 0; }
-  .left { display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
-  .code {
-    position: relative; flex: 1; min-height: 0; border-radius: 10px; border: 1px solid var(--line);
-    background: #12151a; overflow: hidden;
-  }
-  .code pre, .code textarea {
-    position: absolute; inset: 0; margin: 0; padding: 12px 14px; border: 0;
-    font: 13px/1.6 var(--mono); white-space: pre; tab-size: 2; letter-spacing: 0;
-  }
-  .code pre { overflow: hidden; color: #d8d6cf; pointer-events: none; }
-  .code textarea {
-    resize: none; width: 100%; height: 100%; background: transparent; color: transparent;
-    caret-color: var(--accent); outline: none; overflow: auto; scrollbar-width: none;
-  }
-  .code textarea::selection { background: rgba(247, 223, 30, 0.25); }
-  .code:focus-within { border-color: rgba(247, 223, 30, 0.55); }
-  .code.flash { animation: flash .45s ease-out; }
-  @keyframes flash { from { box-shadow: inset 0 0 0 2px rgba(247, 223, 30, 0.8); } to { box-shadow: inset 0 0 0 2px rgba(247, 223, 30, 0); } }
-  .t-com { color: #6f7680; font-style: italic; }
-  .t-str { color: #7bd389; }
-  .t-num { color: #ff8c42; }
-  .t-fn { color: #4cc9f0; }
-  .t-ug { color: #f7df1e; font-weight: 600; }
-  .line { display: flex; gap: 10px; align-items: center; font: 12px var(--mono); color: var(--muted); min-height: 18px; }
-  .line .err { color: var(--c3); font-family: var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .line .ok { color: var(--c4); font-family: var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #clock { white-space: nowrap; }
-  kbd { font: 11px var(--mono); padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line); color: var(--fg); }
-  .viz {
-    position: relative; min-width: 0; min-height: 0; border-radius: 10px; border: 1px solid var(--line);
-    background: radial-gradient(90% 90% at 50% 45%, #1c2230, #0f1115 70%); overflow: hidden;
-  }
-  .viz canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-  .viz .cap {
-    position: absolute; left: 10px; top: 8px; right: 10px; font-size: 12px; color: var(--muted);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  @media (max-width: 720px) {
-    .app { padding: 10px 10px 46px; gap: 8px; }
-    .main { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 8px; }
-    .code pre, .code textarea { font-size: 11px; padding: 9px 10px; }
-    .chip { padding: 5px 9px; font-size: 12px; }
-    .line .keys { display: none; }
-  }
-  /* portrait: stack the editor above the visualizer */
-  @media (max-width: 720px) and (max-aspect-ratio: 1/1) {
-    .main { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1.2fr) minmax(0, 1fr); }
-    .top .spacer { flex-basis: 100%; height: 0; }
+  @media (max-width: 560px) {
+    .gb-live { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1.25fr) minmax(0, 1fr); }
+    .gb-board { gap: 6px; }
+    .gb-grid { grid-template-columns: 3.4em repeat(16, minmax(0, 1fr)); gap: 2px; }
+    .gb-grid .lb i { display: none; }
+    .gb-cell { height: 24px; border-radius: 3px; }
+    .gb-cell.q { margin-left: 1px; }
+    .gb-prow { grid-template-columns: 5.4em minmax(0, 1fr) 4em; }
+    .gb-kb { height: 96px; }
   }
 </style>
 </head>
 <body>
-<div class="app">
-  <div class="top">
-    <div id="presets" style="display:flex;flex-wrap:wrap;gap:6px"></div>
-    <div class="spacer"></div>
-    <button class="btn" id="apply" title="Ctrl + Enter">⟳ 套用</button>
-    <button class="btn primary" id="play">▶ 播放</button>
-  </div>
-  <div class="main">
-    <div class="left">
-      <div class="code" id="codebox">
-        <pre id="hl" aria-hidden="true"></pre>
-        <textarea id="src" spellcheck="false" wrap="off" aria-label="Gibber 程式碼"></textarea>
-      </div>
-      <div class="line">
-        <span id="clock">♩ 140</span>
-        <span id="msg" class="ok"></span>
-        <span class="spacer"></span>
-        <span class="keys"><kbd>Ctrl</kbd> + <kbd>Enter</kbd> 套用</span>
-      </div>
-    </div>
-    <div class="viz">
-      <canvas id="cv"></canvas>
-      <div class="cap">外圈是即時頻譜，16 格節拍環跟著 Gibber 音訊執行緒的時鐘走</div>
-    </div>
-  </div>
-</div>
-<div class="hint">按播放開始，邊聽邊改數字再按 Ctrl + Enter，立刻換成新的樂段</div>
-
 <script src="https://cdn.jsdelivr.net/npm/gibber.audio.lib@2.1.4/dist/gibber.audio.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Gibber: live-coding audio environment. Instruments (Kick, Snare, Hat, FM, Synth, PolySynth...)
-// run inside an AudioWorklet; .seq(values, timings) attaches pattern sequencers to any method or
-// property. Euclid(k, n) produces euclidean rhythms. Code below is evaluated as-is on the page.
+// Everything lives inside this function scope: Gibber.export(window) adds ~200 globals
+// (time, step, scale, data, min, max ...), so the page must not declare globals of its own.
+(() => {
+const { h } = Showcase;
 const WORKLET = "https://cdn.jsdelivr.net/npm/gibber.audio.lib@2.1.4/dist/gibberish_worklet.js";
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+const CJK = '"Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif';
+const MONO = '"JetBrains Mono", ui-monospace, Consolas, monospace';
+const REST = -987654321; // value Steps reports for a '.' step
+const NOTE = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const mtof = (m) => 440 * Math.pow(2, (m - 69) / 12);
+const noteName = (m) => NOTE[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1);
 
-// The official playground defines this hook (playground/proxies.js) and the standalone lib calls it
-// whenever an array is passed to .seq(); a non-enumerable no-op keeps arrays usable outside it.
-if (!Array.prototype.addPattern) {
-  Object.defineProperty(Array.prototype, "addPattern", { value() {}, writable: true, configurable: true });
+// ---------- Gibber engine (shared by every scene) ----------
+const G = { ok: false, ctx: null, an: null, hi: null, phase: 0, rewinds: 0, mark: 0, err: "", seq: new Set(), errs: new Set() };
+let READY;
+if (window.Gibber) {
+  // The official playground defines Array.prototype.addPattern; the standalone lib calls it
+  // whenever an array is passed to .seq(). A non-enumerable no-op keeps arrays usable.
+  if (!Array.prototype.addPattern) Object.defineProperty(Array.prototype, "addPattern", { value() {}, writable: true, configurable: true });
+  // 2.1.4 race: the processor may render before any callback exists, which kills the node.
+  // Queue a silent placeholder callback as the first message; the real one replaces it.
+  const NativeWorklet = window.AudioWorkletNode;
+  window.AudioWorkletNode = class extends NativeWorklet {
+    constructor(c, name, o) {
+      super(c, name, o);
+      if (name === "gibberish") this.port.postMessage({ address: "eval", code: "if (this.callback === undefined) this.callback = () => [0, 0];" });
+    }
+  };
+  // Gibberish oscillators assume 44100 Hz; on a 48 kHz context every pitch is 8.8 % sharp.
+  // Gibber creates its context on the first mousedown / keydown, so the override stays until then.
+  const NativeAC = window.AudioContext;
+  window.AudioContext = class extends NativeAC { constructor(o = {}) { super(Object.assign({}, o, { sampleRate: 44100 })); } };
+  READY = Gibber.init({ workletPath: WORKLET }).then(() => {
+    window.AudioContext = NativeAC;
+    Gibber.export(window);
+    const ac = Gibberish.ctx;
+    const node = Gibberish.worklet;
+    // Page-level safety limiter (not part of Gibber): stacked fx and drum kits peak above 0 dBFS.
+    const lim = ac.createDynamicsCompressor();
+    lim.threshold.value = -6; lim.knee.value = 0; lim.ratio.value = 20; lim.attack.value = 0.002; lim.release.value = 0.15;
+    node.disconnect();
+    node.connect(lim); lim.connect(ac.destination);
+    G.an = ac.createAnalyser(); G.an.fftSize = 2048; G.an.smoothingTimeConstant = 0.75;
+    G.hi = ac.createAnalyser(); G.hi.fftSize = 8192; G.hi.smoothingTimeConstant = 0;
+    node.connect(G.an); node.connect(G.hi);
+    Gibberish.onphaseupdate = (p) => { if (p < G.phase) G.rewinds++; G.phase = p; };
+    node.onprocessorerror = () => { G.err = "音訊引擎停止回應（AudioWorklet 發生錯誤），請重新整理頁面"; };
+    // Sequencer messages from the audio thread: 'start' when a Seq starts, 'output' per event
+    // for every Seq whose reportOutput flag is set.
+    const H = Gibberish.utilities.workletHandlers, orig = H.__sequencer;
+    H.__sequencer = (ev) => { const m = ev.data; G.seq.forEach((f) => f(m)); orig(ev); };
+    Gibber.subscribe("error", (m) => G.errs.forEach((f) => f(String(m))));
+    G.ctx = ac; G.ok = true;
+  });
+} else {
+  READY = Promise.reject(new Error("Gibber 函式庫載入失敗，請確認網路連線"));
+}
+READY.catch(() => {});
+
+async function boot() {
+  await READY;
+  if (G.ctx.state !== "running") await G.ctx.resume();
+}
+function hush() {
+  if (!G.ok) return;
+  G.mark = G.rewinds;
+  Gibber.clear();
+  Theory.mode = "aeolian"; Theory.root = 440;
+}
+// Per-scene runtime: start() clears the engine and builds a patch; leaving the scene clears it again.
+function rig(ctx) {
+  const subs = [];
+  const r = {
+    live: false,
+    async start(build) {
+      await boot();
+      if (!ctx.active) return false;
+      hush();
+      r.live = true;
+      build();
+      return true;
+    },
+    stop() { if (r.live) hush(); r.live = false; },
+    on(set, f) { set.add(f); subs.push([set, f]); },
+  };
+  ctx.onCleanup(() => { subs.forEach(([s, f]) => s.delete(f)); r.stop(); });
+  return r;
+}
+// Sample clock at a Seq start; if the Gibber.clear() rewind has not reached the main thread yet,
+// the clock still shows the old position, so fall back to 0 (where the rewind lands).
+const freshPhase = () => (G.rewinds > G.mark ? Gibberish.phase : 0);
+const bootError = (e) => (e && e.message) || "音訊引擎啟動失敗";
+
+// ---------- canvas helpers ----------
+function view(ctx, host, draw) {
+  const cv = h("canvas");
+  host.append(cv);
+  const g = cv.getContext("2d");
+  const v = { cv, g, w: 0, h: 0, draw: () => draw(v) };
+  const fit = () => {
+    const r = host.getBoundingClientRect();
+    v.w = Math.max(1, r.width); v.h = Math.max(1, r.height);
+    cv.width = Math.round(v.w * DPR); cv.height = Math.round(v.h * DPR);
+    cv.style.width = v.w + "px"; cv.style.height = v.h + "px";
+    g.setTransform(DPR, 0, 0, DPR, 0, 0);
+    draw(v);
+  };
+  const ro = new ResizeObserver(fit);
+  ro.observe(host);
+  ctx.onCleanup(() => ro.disconnect());
+  fit();
+  return v;
+}
+function txt(g, s, x, y, color = "#e8e6e3", size = 12, align = "left", mono = false, weight = 500) {
+  g.font = `${weight} ${size}px ${mono ? MONO : CJK}`;
+  g.fillStyle = color; g.textAlign = align; g.textBaseline = "middle";
+  g.fillText(s, x, y);
+}
+const BUFS = new WeakMap();
+function bufs(an) {
+  let b = BUFS.get(an);
+  if (!b) { b = { t: new Float32Array(an.fftSize), f: new Uint8Array(an.frequencyBinCount), d: new Float32Array(an.frequencyBinCount) }; BUFS.set(an, b); }
+  return b;
+}
+function grid(g, w, hh) {
+  g.strokeStyle = "rgba(255,255,255,.06)"; g.lineWidth = 1; g.beginPath();
+  for (let i = 1; i < 8; i++) { const x = Math.round((i * w) / 8) + 0.5; g.moveTo(x, 0); g.lineTo(x, hh); }
+  g.moveTo(0, Math.round(hh / 2) + 0.5); g.lineTo(w, Math.round(hh / 2) + 0.5); g.stroke();
+}
+function scope(g, x0, y0, w, hh, { color = "#f7df1e", live = true, idle = "" } = {}) {
+  g.save(); g.translate(x0, y0);
+  g.fillStyle = "#0a0c0f"; g.fillRect(0, 0, w, hh);
+  grid(g, w, hh);
+  const an = G.an;
+  const t = an ? bufs(an).t : null;
+  if (live && an) an.getFloatTimeDomainData(t);
+  let s0 = 0;
+  if (live && t) for (let i = 1; i < t.length / 2; i++) if (t[i - 1] < 0 && t[i] >= 0) { s0 = i; break; }
+  const span = t ? Math.min(t.length - s0, 1024) : 1;
+  g.lineWidth = 2; g.strokeStyle = color; g.beginPath();
+  for (let x = 0; x <= w; x += 2) {
+    const v = live && t ? t[s0 + Math.floor((x / w) * (span - 1))] : 0;
+    const y = hh / 2 - Math.max(-1, Math.min(1, v)) * hh * 0.45;
+    x ? g.lineTo(x, y) : g.moveTo(x, y);
+  }
+  g.stroke();
+  if (!live && idle) txt(g, idle, w / 2, hh / 2 - 14, "#7d8490", 12, "center");
+  g.restore();
+}
+// Log-frequency spectrum outline (30 Hz to 16 kHz) from the master analyser.
+function spectrum(g, x0, y0, w, hh, color, fill) {
+  if (!G.an) return;
+  const { f } = bufs(G.an);
+  G.an.getByteFrequencyData(f);
+  const ny = G.ctx.sampleRate / 2;
+  g.beginPath(); g.moveTo(x0, y0 + hh);
+  for (let px = 0; px <= w; px += 2) {
+    const fr = 30 * Math.pow(16000 / 30, px / w);
+    const v = f[Math.min(f.length - 1, Math.round((fr / ny) * f.length))] / 255;
+    g.lineTo(x0 + px, y0 + hh - v * hh);
+  }
+  g.lineTo(x0 + w, y0 + hh);
+  if (fill) { g.fillStyle = fill; g.fill(); }
+  if (color) { g.strokeStyle = color; g.lineWidth = 1.6; g.stroke(); }
+}
+function level() {
+  if (!G.an) return 0;
+  const { t } = bufs(G.an);
+  G.an.getFloatTimeDomainData(t);
+  let p = 0;
+  for (let i = 0; i < t.length; i++) p = Math.max(p, Math.abs(t[i]));
+  return p;
+}
+const fv = (v) => {
+  if (typeof v !== "number" || !isFinite(v)) return v == null ? "預設" : String(v);
+  const a = Math.abs(v);
+  return a >= 100 ? v.toFixed(0) : a >= 10 ? v.toFixed(1) : String(+v.toFixed(3));
+};
+// Gibber properties are proxies; .value returns what was last written (or the preset value).
+const readback = (obj, prop) => { try { const p = obj[prop]; return p && typeof p === "object" && "value" in p ? p.value : p; } catch (e) { return undefined; } };
+function prow(label, sub, { min, max, step, value }, onInput) {
+  const out = h("output");
+  const input = h("input", { type: "range", min, max, step, value, "aria-label": label });
+  const row = h("label", { class: "gb-prow" }, h("span", {}, label, sub ? h("i", { text: sub }) : null), input, out);
+  input.addEventListener("input", () => onInput(+input.value, out));
+  return { row, input, out };
 }
 
-const PRESETS = {
-  "四拍律動": `// 大鼓每拍一下，小鼓落在第 2、4 拍
+const PALETTE = ["#4cc9f0", "#9d8cff", "#f72585", "#ff8c42", "#f7df1e"];
+function mix(t) {
+  const n = PALETTE.length - 1, i = Math.min(n - 1, Math.floor(t * n)), f = t * n - i;
+  const a = PALETTE[i], b = PALETTE[i + 1];
+  const c = (k) => Math.round(parseInt(a.slice(k, k + 2), 16) * (1 - f) + parseInt(b.slice(k, k + 2), 16) * f);
+  return `rgb(${c(1)},${c(3)},${c(5)})`;
+}
+
+Showcase.run({
+  scenes: [
+    // 1 --------------------------------------------------------------------------------------
+    {
+      id: "live", title: "即時編碼樂段",
+      api: "Kick().trigger.seq・Synth().note.seq・Euclid・PolySynth.chord・EDrums.tidal",
+      desc: "在網頁裡直接寫 Gibber 程式：每次套用先 Gibber.clear() 再執行整段程式碼，樂器與序列都在 AudioWorklet 的音訊執行緒上跑。外圈是輸出頻譜，16 格節拍環以 Seq 回報的 start 時刻為起點、跟著音訊執行緒的樣本時鐘走。",
+      hint: "按「▶ 播放」開始；邊聽邊改數字，再按 Ctrl + Enter（或「套用」）立刻換成新樂段，語法錯誤會顯示在編輯器下方。",
+      mount(ctx) {
+        ctx.html(`<div class="gb-board gb-live"><div class="gb-ed"><div class="gb-code"><pre aria-hidden="true"></pre><textarea spellcheck="false" wrap="off" aria-label="Gibber 程式碼"></textarea></div>
+          <div class="gb-line"><span class="gb-m">♩ 140</span><span class="gb-msg">按「▶ 播放」開始演奏</span></div></div><div class="gb-cv gb-ring"></div></div>`);
+        const r = rig(ctx);
+        const PRESETS = {
+          "四拍律動": `// 大鼓每拍一下，小鼓落在第 2、4 拍
 Clock.bpm = 124
 kick  = Kick('tight').trigger.seq( 1, 1/4 )
 snare = Snare('snappy').trigger.seq( .6, 1/2, 0, 1/4 )
@@ -124,7 +349,7 @@ hat   = Hat().trigger.seq( [.3,.1,.5,.1], 1/16 )
 // 音階級數：0 是主音，7 是高八度
 bass = Synth('acidBass')
 bass.note.seq( [0,0,7,0,5,0,3,-2], 1/8 )`,
-  "歐幾里得": `// Euclid(3,8)：8 格裡盡量平均地放 3 下
+          "歐幾里得": `// Euclid(3,8)：8 格裡盡量平均地放 3 下
 Clock.bpm = 112
 kick = Kick('deep').trigger.seq( 1, Euclid(3,8) )
 hat  = Hat().trigger.seq( .25, Euclid(7,16) )
@@ -134,7 +359,7 @@ perc = FM('perc')
 perc.note.seq( [0,2,4,7,9], Euclid(5,8) )
 lead = Synth('bleep.echo')
 lead.note.seq( [14,11,9,7], 1/8 )`,
-  "和弦氛圍": `// 多聲部合成器彈和弦，送進殘響
+          "和弦氛圍": `// 多聲部合成器彈和弦，送進殘響匯流排
 Clock.bpm = 84
 Theory.mode = 'dorian'
 verb = Reverb('space').bus()
@@ -145,246 +370,797 @@ pad.chord.seq( [[0,2,4],[3,5,7],[-2,0,2],[1,3,6]], 1 )
 bell = FM('glockenspiel').connect( verb, .4 )
 bell.note.seq( [7,9,11,14,11,9], [1/8,1/8,1/4] )
 kick = Kick('deep').trigger.seq( .8, 1/2 )`,
-};
+          "Tidal 記法": `// Tidal 迷你記法：[ ] 細分一拍、*2 重複、
+// <a b> 每輪輪替、~ 休止
+Clock.bpm = 118
+drums = EDrums()
+drums.tidal( 'kd*2 [~ sd] ch*4 <cp oh>' )
 
-const src = document.getElementById("src");
-const hl = document.getElementById("hl");
-const codebox = document.getElementById("codebox");
-const playBtn = document.getElementById("play");
-const msgEl = document.getElementById("msg");
-const clockEl = document.getElementById("clock");
-const cv = document.getElementById("cv");
-const g = cv.getContext("2d");
-
-let current = "四拍律動";
-let playing = false;
-let analyser = null, freq = null, wave = null;
-let phase = 0, phaseOrigin = null;
-
-// ---------- code view: lightweight syntax colouring ----------
-const UGENS = /^(Kick|Snare|Hat|Clap|Cowbell|FM|Synth|PolySynth|Monosynth|Reverb|Delay|Euclid|Hex|Clock|Theory)$/;
-function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
-function paintCode() {
-  const re = /(\/\/[^\n]*)|('[^'\n]*'|"[^"\n]*")|(\b\d+(?:\.\d+)?\b|\.\d+\b)|([A-Za-z_]\w*)/g;
-  const code = src.value;
-  let html = "", last = 0, m;
-  while ((m = re.exec(code))) {
-    html += esc(code.slice(last, m.index));
-    let cls = m[1] ? "t-com" : m[2] ? "t-str" : m[3] ? "t-num" : "";
-    if (m[4]) cls = UGENS.test(m[4]) ? "t-ug" : code[m.index + m[0].length] === "(" ? "t-fn" : "";
-    html += cls ? `<span class="${cls}">${esc(m[0])}</span>` : esc(m[0]);
-    last = m.index + m[0].length;
-  }
-  hl.innerHTML = html + esc(code.slice(last)) + "\n";
-  hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft;
-}
-src.addEventListener("scroll", () => { hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft; });
-src.addEventListener("input", () => { paintCode(); setMsg("已修改，按 Ctrl + Enter 套用", "ok"); });
-function setMsg(text, cls) { msgEl.textContent = text; msgEl.className = cls; }
-
-// ---------- Gibber engine ----------
-// Gibber.init waits for the first mousedown / keydown on the page to create its AudioContext,
-// so it is called right away and the first press on the play button completes it.
-let ready = null;
-if (window.Gibber) {
-  // gibber.audio.lib 2.1.4 race: the processor marks itself initialized on the first 'add' message
-  // and may render before any callback exists, which throws and kills the node for good.
-  // Queue a silent placeholder callback as the very first message to the processor;
-  // the real callback replaces it on the next graph change.
-  const NativeWorkletNode = window.AudioWorkletNode;
-  window.AudioWorkletNode = class extends NativeWorkletNode {
-    constructor(ctx, name, options) {
-      super(ctx, name, options);
-      if (name === "gibberish") {
-        this.port.postMessage({
-          address: "eval",
-          code: "if (this.callback === undefined) this.callback = () => [0, 0];",
+lead = Synth('bleep.echo')
+lead.note.tidal( '0 [2 4] <7 9> ~' )
+// 試試把 sd 改成 cp，或打錯括號看錯誤訊息`,
+        };
+        const NAMES = Object.keys(PRESETS);
+        let current = NAMES[0], anchor = null, lowAvg = 0;
+        const src = ctx.$("textarea"), hl = ctx.$("pre"), box = ctx.$(".gb-code");
+        const msgEl = ctx.$(".gb-msg"), clockEl = ctx.$(".gb-line .gb-m");
+        const setMsg = (t, err) => { msgEl.textContent = t; msgEl.classList.toggle("err", !!err); };
+        const UG = /^(Kick|Snare|Hat|Clap|Cowbell|FM|Synth|PolySynth|Monosynth|Pluck|Reverb|Delay|Euclid|Hex|Clock|Theory|EDrums|Steps)$/;
+        const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+        function paint() {
+          const re = /(\/\/[^\n]*)|('[^'\n]*'|"[^"\n]*")|(\b\d+(?:\.\d+)?\b|\.\d+\b)|([A-Za-z_]\w*)/g;
+          const code = src.value;
+          let out = "", last = 0, m;
+          while ((m = re.exec(code))) {
+            out += esc(code.slice(last, m.index));
+            let cls = m[1] ? "gb-tc" : m[2] ? "gb-ts" : m[3] ? "gb-tn" : "";
+            if (m[4]) cls = UG.test(m[4]) ? "gb-tu" : code[m.index + m[0].length] === "(" ? "gb-tf" : "";
+            out += cls ? `<span class="${cls}">${esc(m[0])}</span>` : esc(m[0]);
+            last = m.index + m[0].length;
+          }
+          hl.innerHTML = out + esc(code.slice(last)) + "\n";
+          hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft;
+        }
+        ctx.on(src, "scroll", () => { hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft; });
+        ctx.on(src, "input", () => { paint(); setMsg(r.live ? "已修改，按 Ctrl + Enter 套用" : "已修改，按「▶ 播放」執行"); });
+        // Beat anchor: Gibber.clear() rewinds the sample clock to 0; the first Seq 'start' message
+        // refines it unless it arrived before the rewind reached the main thread.
+        let anchored = false;
+        r.on(G.seq, (m) => { if (m.name === "start" && !anchored && G.ok) { anchor = freshPhase(); anchored = true; } });
+        r.on(G.errs, (m) => { if (r.live) setMsg(`Gibber 錯誤：${m}`, true); });
+        function run() {
+          let fn;
+          try { fn = new Function(src.value); } catch (err) { setMsg(`語法錯誤（仍在播放上一段）：${err.message}`, true); return; }
+          hush();
+          anchor = 0; anchored = false;
+          try {
+            fn(); // plain script semantics: kick = ... becomes a global
+          } catch (err) {
+            setMsg(`程式錯誤：${err.message}`, true);
+            return;
+          }
+          box.classList.remove("flash"); void box.offsetWidth; box.classList.add("flash");
+          setMsg(`已套用「${current}」，${src.value.split("\n").length} 行`);
+        }
+        const play = ctx.button("▶ 播放", async () => {
+          if (r.live) { r.stop(); play.textContent = "▶ 播放"; setMsg("已停止"); return; }
+          setMsg("啟動音訊引擎中…");
+          try { await r.start(run); } catch (e) { setMsg(bootError(e), true); return; }
+          if (ctx.active && r.live) play.textContent = "■ 停止";
+        }, { primary: true });
+        const apply = () => { if (r.live) run(); else setMsg("先按「▶ 播放」，才會套用並發聲"); };
+        ctx.button("套用", apply, { title: "Ctrl + Enter" });
+        ctx.group(NAMES, 0, (i) => { current = NAMES[i]; src.value = PRESETS[current]; paint(); if (r.live) run(); else setMsg(`已載入「${current}」，按「▶ 播放」開始`); });
+        ctx.on(src, "keydown", (e) => {
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); apply(); }
+          if (e.key === "Tab") { e.preventDefault(); document.execCommand("insertText", false, "  "); }
         });
-      }
-    }
-  };
-  ready = Gibber.init({ workletPath: WORKLET }).then(() => {
-    Gibber.export(window);                      // Euclid, Hex, Seq... as globals
-    const ctx = Gibberish.ctx;
-    analyser = ctx.createAnalyser();
-    analyser.fftSize = 1024;
-    analyser.smoothingTimeConstant = 0.78;
-    Gibberish.worklet.connect(analyser);        // tap the master output of the worklet
-    freq = new Uint8Array(analyser.frequencyBinCount);
-    wave = new Uint8Array(analyser.fftSize);
-    Gibberish.onphaseupdate = (p) => { phase = p; if (phaseOrigin === null) phaseOrigin = p; };
-    Gibberish.worklet.onprocessorerror = () => setMsg("音訊引擎停止回應，請重新整理頁面再試", "err");
-  });
-} else {
-  setMsg("Gibber 函式庫載入失敗，請確認網路連線", "err");
-}
+        src.value = PRESETS[current];
+        paint();
 
-function run() {
-  Gibber.clear();
-  Theory.mode = "aeolian";                      // clear() keeps scale settings, so reset to the default
-  try {
-    new Function(src.value)();                  // plain script semantics: kick = ... becomes a global
-  } catch (err) {
-    setMsg(`程式錯誤：${err.message}`, "err");
-    return false;
-  }
-  phaseOrigin = null;
-  codebox.classList.remove("flash"); void codebox.offsetWidth; codebox.classList.add("flash");
-  setMsg(`✓ 已套用「${current}」`, "ok");
-  return true;
-}
-
-playBtn.addEventListener("click", async () => {
-  if (!ready) return;
-  if (playing) {
-    Gibber.clear();
-    playing = false;
-    playBtn.textContent = "▶ 播放";
-    setMsg("已停止", "ok");
-    return;
-  }
-  setMsg("啟動音訊引擎中…", "ok");
-  playBtn.disabled = true;
-  try {
-    await ready;
-    await Gibberish.ctx.resume();
-    if (run()) { playing = true; playBtn.textContent = "■ 停止"; }
-  } catch (err) {
-    console.error(err);
-    setMsg(`音訊引擎啟動失敗：${err.message}`, "err");
-  } finally {
-    playBtn.disabled = false;
-  }
+        const ring = view(ctx, ctx.$(".gb-ring"), (v) => {
+          const { g, w: W, h: H } = v;
+          g.clearRect(0, 0, W, H);
+          const cx = W / 2, cy = H / 2 + 6;
+          const R = Math.max(40, Math.min(W, H - 30) / 2 - 10), r0 = R * 0.36;
+          const live = r.live && G.ok;
+          const bpm = live ? Clock.bpm : 0;
+          const { f, t } = G.an ? bufs(G.an) : { f: null, t: null };
+          if (live) { G.an.getByteFrequencyData(f); G.an.getFloatTimeDomainData(t); }
+          const BARS = 72;
+          let low = 0;
+          for (let i = 0; i < BARS; i++) {
+            let val = 0;
+            if (live) {
+              const lo = Math.floor(Math.pow(i / BARS, 2) * 180) + 1, hi = Math.floor(Math.pow((i + 1) / BARS, 2) * 180) + 2;
+              for (let k = lo; k < hi; k++) val = Math.max(val, f[k]);
+              val /= 255;
+              if (i < 6) low += val / 6;
+            }
+            const a = (i / BARS) * Math.PI * 2 - Math.PI / 2, len = 4 + val * (R - r0 - 26);
+            g.strokeStyle = live ? mix(i / BARS) : "rgba(255,255,255,0.10)";
+            g.globalAlpha = live ? 0.35 + val * 0.65 : 1;
+            g.lineWidth = Math.max(2, (Math.PI * 2 * (r0 + 14)) / BARS - 2.5); g.lineCap = "round";
+            g.beginPath();
+            g.moveTo(cx + Math.cos(a) * (r0 + 14), cy + Math.sin(a) * (r0 + 14));
+            g.lineTo(cx + Math.cos(a) * (r0 + 14 + len), cy + Math.sin(a) * (r0 + 14 + len));
+            g.stroke();
+          }
+          g.globalAlpha = 1;
+          lowAvg = lowAvg * 0.7 + low * 0.3;
+          if (live) {
+            g.beginPath();
+            for (let i = 0; i <= 256; i++) {
+              const s = t[Math.floor(((i % 256) / 256) * 1024)];
+              const a = (i / 256) * Math.PI * 2 - Math.PI / 2, rr = r0 + 4 + Math.max(-1, Math.min(1, s)) * r0 * 0.5;
+              i ? g.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr) : g.moveTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr);
+            }
+            g.strokeStyle = "rgba(236,235,230,0.75)"; g.lineWidth = 1.5; g.stroke();
+          }
+          const core = r0 * (0.62 + lowAvg * 0.32);
+          const grad = g.createRadialGradient(cx, cy, 0, cx, cy, core);
+          grad.addColorStop(0, live ? "rgba(247,223,30,0.95)" : "rgba(247,223,30,0.35)");
+          grad.addColorStop(1, live ? "rgba(247,37,133,0.15)" : "rgba(247,223,30,0.04)");
+          g.fillStyle = grad; g.beginPath(); g.arc(cx, cy, core, 0, Math.PI * 2); g.fill();
+          let step = -1, bar = 0, beat = 0;
+          if (live && anchor !== null) {
+            const beats = (G.phase - anchor) / (G.ctx.sampleRate * 60 / bpm);
+            if (beats >= 0) { step = Math.floor(beats * 4) % 16; bar = Math.floor(beats / 4) + 1; beat = Math.floor(beats % 4) + 1; }
+          }
+          for (let i = 0; i < 16; i++) {
+            const a = (i / 16) * Math.PI * 2 - Math.PI / 2, rr = R - 4, on = i === step;
+            g.fillStyle = on ? "#f7df1e" : i % 4 === 0 ? "rgba(255,255,255,0.45)" : "rgba(255,255,255,0.18)";
+            if (on) { g.shadowColor = "#f7df1e"; g.shadowBlur = 16; }
+            g.beginPath(); g.arc(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr, on ? 6 : i % 4 === 0 ? 4 : 3, 0, Math.PI * 2); g.fill();
+            g.shadowBlur = 0;
+          }
+          txt(g, live ? `${bpm}` : "▶", cx, cy - (live ? r0 * 0.1 : 0), live ? "#1a1a14" : "rgba(236,235,230,0.85)", Math.round(r0 * 0.34), "center", live, 700);
+          if (live) txt(g, "BPM", cx, cy + r0 * 0.22, "#1a1a14", Math.max(10, Math.round(r0 * 0.15)), "center", true, 600);
+          txt(g, "外圈：輸出頻譜・內圈：波形・16 格：節拍時鐘", 10, 12, "#7d8490", 11);
+          clockEl.textContent = live ? (step >= 0 ? `♩ ${bpm}  第 ${bar} 小節 ${beat} 拍` : `♩ ${bpm}`) : "♩ 未播放";
+          if (G.err) setMsg(G.err, true);
+        });
+        ctx.raf(() => ring.draw());
+      },
+    },
+    // 2 --------------------------------------------------------------------------------------
+    {
+      id: "steps", title: "鼓機步進器",
+      api: "EDrums()・Steps({ kd: 'x...', sd: '....' }, drums)・steps.kd.set(...)・drums.kick.decay",
+      desc: "Steps 把每一列字串變成一個 Seq：x 是力度 1、X 是重音 1.5、0 到 f 是十六進位力度、點是休止。點格子會用 steps[列].set() 即時改寫音訊執行緒裡的樣式，不重建序列；亮起的格子是音訊執行緒用 reportOutput 回報的實際觸發。",
+      hint: "按「▶ 播放」後點格子切換：空 → x → X 重音 → 6 弱音 → 空。下方滑桿即時改 EDrums 內部大鼓與小鼓的參數。",
+      mount(ctx) {
+        ctx.html(`<div class="gb-board"><div class="gb-grid"></div>
+          <div class="gb-legend"><span><i></i>x 力度 1</span><span><i style="box-shadow:inset 0 0 0 2px #fff"></i>X 重音 1.5</span><span><i style="opacity:.45"></i>6 弱音 0.4</span><span>白框：播放頭</span><span>亮起：音訊執行緒回報的觸發</span></div>
+          <div class="gb-api">按「▶ 播放」後顯示呼叫內容</div>
+          <div class="gb-two"><pre class="gb-code2"></pre><div class="gb-panel"><h4>EDrums 內部樂器 <small>drums.kick / drums.snare</small></h4><div class="gb-kp"></div></div></div></div>`);
+        const r = rig(ctx);
+        const ROWS = [["kd", "大鼓", "#f7a21e"], ["sd", "小鼓", "#f72585"], ["ch", "閉合鈸", "#4cc9f0"], ["oh", "開放鈸", "#5ee0d0"], ["cp", "拍手", "#9d8cff"], ["cb", "牛鈴", "#7bd389"]];
+        const EMPTY = "................";
+        const PATS = {
+          "基本四拍": { kd: "x...x...x...x...", sd: "....x.......x...", ch: "x6x6x6x6x6x6x6x6", oh: "..............x.", cp: EMPTY, cb: EMPTY },
+          "碎拍": { kd: "X.....x...x..x..", sd: "....X..6.6..X...", ch: "x.x6x.x6x.xxx.x6", oh: "......x.........", cp: "............x...", cb: EMPTY },
+          "拉丁": { kd: "x..x..x.x..x..x.", sd: EMPTY, ch: "6.6.6.6.6.6.6.6.", oh: EMPTY, cp: "....x.......x...", cb: "x.x.xx.x.x.xx.x." },
+        };
+        const NAMES = Object.keys(PATS);
+        let pat = { ...PATS[NAMES[0]] }, bpm = 112, drums = null, steps = null;
+        const ids = new Map(); // seq id -> row key
+        const counts = {};
+        const gridEl = ctx.$(".gb-grid"), cells = {};
+        for (const [key, name, color] of ROWS) {
+          gridEl.append(h("div", { class: "lb" }, h("b", { text: name }), h("i", { text: key })));
+          cells[key] = [];
+          for (let i = 0; i < 16; i++) {
+            const c = h("button", { class: `gb-cell${i % 4 === 0 && i ? " q" : ""}`, type: "button", "data-k": key, "data-i": i, "aria-label": `${name}第 ${i + 1} 格` });
+            c.style.setProperty("--rc", color);
+            gridEl.append(c); cells[key].push(c);
+          }
+        }
+        const CYCLE = { ".": "x", x: "X", X: "6", 6: "." };
+        function paintGrid() { for (const [key] of ROWS) cells[key].forEach((c, i) => { c.dataset.v = pat[key][i] === "." ? "" : pat[key][i]; }); }
+        function codeText() {
+          const rows = ROWS.filter(([k]) => pat[k] !== EMPTY).map(([k]) => `  ${k}: '${pat[k]}',`);
+          return `Clock.bpm = ${bpm}\ndrums = EDrums()\nsteps = Steps({\n${rows.join("\n")}\n}, drums)`;
+        }
+        const codeEl = ctx.$(".gb-code2"), apiEl = ctx.$(".gb-api");
+        const showCode = () => { codeEl.textContent = codeText(); };
+        ctx.on(gridEl, "click", (e) => {
+          const c = e.target.closest(".gb-cell");
+          if (!c) return;
+          const key = c.dataset.k, i = +c.dataset.i;
+          const arr = pat[key].split("");
+          arr[i] = CYCLE[arr[i]] || ".";
+          pat = { ...pat, [key]: arr.join("") };
+          paintGrid(); showCode();
+          if (r.live && steps && steps[key]) {
+            steps[key].set(pat[key].split(""));
+            apiEl.textContent = `steps.${key}.set('${pat[key]}'.split(''))  → 讀回 steps.${key}.values = ${steps[key].values.join("")}`;
+          }
+        });
+        function build() {
+          Clock.bpm = bpm;
+          drums = EDrums();
+          steps = Steps({ ...pat }, drums);
+          ids.clear();
+          for (const [key] of ROWS) { const q = steps.seqs[key]; q.reportOutput = true; ids.set(q.id, key); counts[key] = 0; }
+          kParams.forEach((k) => k.apply());
+          apiEl.textContent = `Steps 建立 ${Object.keys(steps.seqs).length} 個 Seq，每格長度 = 1/${pat.kd.length} 小節 = Clock.time(1/16) = ${Clock.time(1 / 16)} 樣本`;
+        }
+        const flashes = [];
+        r.on(G.seq, (m) => {
+          const key = ids.get(m.id);
+          if (!key || m.name !== "output") return;
+          const i = counts[key]++ % 16;
+          if (key === "kd") { gridEl.querySelectorAll(".ph").forEach((c) => c.classList.remove("ph")); for (const [k] of ROWS) cells[k][i].classList.add("ph"); }
+          if (m.value !== REST) { const c = cells[key][i]; c.classList.add("hit"); flashes.push([c, performance.now()]); }
+        });
+        ctx.raf(() => {
+          const now = performance.now();
+          while (flashes.length && now - flashes[0][1] > 110) flashes.shift()[0].classList.remove("hit");
+        });
+        const play = ctx.button("▶ 播放", async () => {
+          if (r.live) { r.stop(); play.textContent = "▶ 播放"; gridEl.querySelectorAll(".ph").forEach((c) => c.classList.remove("ph")); return; }
+          try { await r.start(build); } catch (e) { apiEl.textContent = bootError(e); return; }
+          if (ctx.active && r.live) play.textContent = "■ 停止";
+        }, { primary: true });
+        ctx.group(NAMES, 0, (i) => {
+          pat = { ...PATS[NAMES[i]] }; paintGrid(); showCode();
+          if (r.live) for (const [key] of ROWS) steps[key].set(pat[key].split(""));
+        });
+        ctx.button("清空", () => {
+          pat = Object.fromEntries(ROWS.map(([k]) => [k, EMPTY])); paintGrid(); showCode();
+          if (r.live) for (const [key] of ROWS) steps[key].set(pat[key].split(""));
+        });
+        ctx.slider("BPM", { min: 60, max: 200, step: 1, value: bpm }, (v) => { bpm = v; showCode(); if (r.live) { Clock.bpm = v; apiEl.textContent = `Clock.bpm = ${v}  → Clock.time(1/16) = ${Clock.time(1 / 16)} 樣本`; } });
+        // EDrums sub-instrument parameters
+        const KP = [["kick", "decay", "大鼓衰減", 0.05, 1, 0.01, 0.9], ["kick", "frequency", "大鼓音高", 40, 160, 1, 85], ["kick", "tone", "大鼓敲擊聲", 0, 1, 0.01, 0.25], ["snare", "snappy", "小鼓響線", 0, 1, 0.01, 1]];
+        const kParams = KP.map(([inst, prop, label, min, max, step, def]) => {
+          let val = def;
+          const p = prow(label, `${inst}.${prop}`, { min, max, step, value: def }, (v, out) => {
+            val = v;
+            if (!r.live) { out.textContent = fv(v); return; }
+            drums[inst][prop] = v;
+            out.textContent = fv(readback(drums[inst], prop));
+            apiEl.textContent = `drums.${inst}.${prop} = ${v}  → 讀回 ${fv(readback(drums[inst], prop))}`;
+          });
+          p.out.textContent = fv(def);
+          ctx.$(".gb-kp").append(p.row);
+          return { apply() { if (val !== def) drums[inst][prop] = val; } };
+        });
+        paintGrid(); showCode();
+      },
+    },
+    // 3 --------------------------------------------------------------------------------------
+    {
+      id: "rhythm", title: "歐幾里得與 Hex 節奏",
+      api: "Euclid(k, n, 1/16, rot)・Hex('8a28', 1/16)・pattern.values・seq.reportOutput",
+      desc: "Euclid(k, n) 把 k 下打擊盡量平均地放進 n 格（Bjorklund 演算法），rot 旋轉起點；Hex 把每個十六進位數字展開成 4 格。環上的格子直接讀 pattern.values；兩軌 n 不同時就形成多重節拍。命中閃光來自音訊執行緒回報的觸發，並即時檢查是否落在值為 1 的格子上。",
+      hint: "按「▶ 播放」，再拖動各軌的 k、n、旋轉，或改 Hex 字串（0 到 9、a 到 f）。放開滑桿後三軌一起重建、重新對齊。",
+      mount(ctx) {
+        ctx.html(`<div class="gb-board"><div class="gb-cv gb-rings"></div><div class="gb-tracks"></div><div class="gb-api">按「▶ 播放」後才會由 Euclid() 與 Hex() 算出命中位置</div></div>`);
+        const r = rig(ctx);
+        const TR = [
+          { name: "大鼓", inst: "Kick('tight')", vel: 1, color: "#f7a21e", k: 3, n: 8, rot: 0 },
+          { name: "小鼓", inst: "Snare('snappy')", vel: 0.6, color: "#f72585", k: 2, n: 8, rot: 2 },
+          { name: "腳踏鈸", inst: "Hat()", vel: 0.35, color: "#4cc9f0", hex: "8a28" },
+        ];
+        let bpm = 112, anchor = null, stepS = 4725, timer = 0;
+        const ids = new Map();
+        const verify = { hits: 0, miss: 0 };
+        const apiEl = ctx.$(".gb-api");
+        const exprOf = (t) => (t.hex != null ? `Hex('${t.hex}', 1/16)` : `Euclid(${t.k}, ${t.n}, 1/16, ${t.rot})`);
+        function build() {
+          Clock.bpm = bpm;
+          ids.clear(); anchor = null; verify.hits = 0; verify.miss = 0;
+          stepS = Clock.time(1 / 16);
+          TR.forEach((t, i) => {
+            const pattern = t.hex != null ? Hex(t.hex, 1 / 16) : Euclid(t.k, t.n, 1 / 16, t.rot);
+            t.values = pattern.values.map((x) => +x);
+            const inst = new Function(`return ${t.inst}`)();
+            inst.trigger.seq(t.vel, pattern);
+            const q = inst.trigger[0];
+            q.reportOutput = true;
+            ids.set(q.id, i);
+            t.flash = 0; t.flashIdx = -1;
+          });
+          renderCards();
+          apiEl.textContent = TR.map((t) => `${t.inst}.trigger.seq(${t.vel}, ${exprOf(t)})`).join("・");
+        }
+        const rebuild = () => { clearTimeout(timer); timer = setTimeout(() => { if (r.live && ctx.active) { hush(); build(); } }, 160); };
+        ctx.onCleanup(() => clearTimeout(timer));
+        r.on(G.seq, (m) => {
+          if (m.name === "start" && anchor === null && ids.has(m.id)) anchor = freshPhase();
+          if (m.name !== "output" || !ids.has(m.id) || anchor === null) return;
+          const t = TR[ids.get(m.id)], n = t.values.length;
+          const idx = ((Math.round((Gibberish.phase - anchor) / stepS) % n) + n) % n;
+          t.flash = performance.now(); t.flashIdx = idx;
+          if (t.values[idx] === 1) verify.hits++; else verify.miss++;
+        });
+        const host = ctx.$(".gb-tracks");
+        const cards = TR.map((t, i) => {
+          const card = h("div", { class: "gb-panel" });
+          card.style.setProperty("--tc", t.color);
+          card.append(h("h4", {}, h("i"), t.name, h("small", { text: t.inst })));
+          const vals = h("div", { class: "gb-vals" });
+          if (t.hex != null) {
+            const inp = h("input", { value: t.hex, maxlength: 8, spellcheck: "false", "aria-label": "Hex 字串" });
+            inp.addEventListener("input", () => {
+              const ok = /^[0-9a-f]{1,8}$/i.test(inp.value);
+              inp.classList.toggle("bad", !ok);
+              if (ok) { t.hex = inp.value.toLowerCase(); renderCards(); rebuild(); }
+            });
+            card.append(h("label", { class: "gb-hex" }, "Hex", inp));
+          } else {
+            const mk = (key, label, min, max) => {
+              const p = prow(label, null, { min, max, step: 1, value: t[key] }, (v) => {
+                t[key] = v;
+                if (key === "n") { t.k = Math.min(t.k, v); t.rot = Math.min(t.rot, v - 1); }
+                syncInputs(); renderCards();
+              });
+              p.input.addEventListener("change", rebuild);
+              card.append(p.row);
+              return p;
+            };
+            t.ui = { k: mk("k", "打擊 k", 1, 16), n: mk("n", "格數 n", 2, 16), rot: mk("rot", "旋轉", 0, 15) };
+          }
+          card.append(vals);
+          host.append(card);
+          return { vals };
+        });
+        function syncInputs() {
+          for (const t of TR) {
+            if (!t.ui) continue;
+            t.ui.k.input.max = t.n; t.ui.rot.input.max = t.n - 1;
+            for (const key of ["k", "n", "rot"]) { t.ui[key].input.value = t[key]; t.ui[key].out.textContent = t[key]; }
+          }
+        }
+        function renderCards() {
+          TR.forEach((t, i) => {
+            cards[i].vals.textContent = `${exprOf(t)}.values = ${t.values && r.live ? `[${t.values.join("")}]` : "（播放後讀取）"}`;
+          });
+        }
+        syncInputs(); renderCards();
+        const play = ctx.button("▶ 播放", async () => {
+          if (r.live) { r.stop(); play.textContent = "▶ 播放"; renderCards(); return; }
+          try { await r.start(build); } catch (e) { apiEl.textContent = bootError(e); return; }
+          if (ctx.active && r.live) play.textContent = "■ 停止";
+        }, { primary: true });
+        const PRE = [["Tresillo", [3, 8, 0], [2, 8, 2], "8a28"], ["Cinquillo", [5, 8, 0], [2, 8, 4], "aaaa"], ["多重節拍 4/12", [4, 12, 0], [3, 8, 2], "8888"], ["Bossa", [5, 16, 0], [2, 8, 2], "af"]];
+        ctx.group(PRE.map((p) => p[0]), 0, (i) => {
+          const [, a, b, hx] = PRE[i];
+          [TR[0].k, TR[0].n, TR[0].rot] = a; [TR[1].k, TR[1].n, TR[1].rot] = b; TR[2].hex = hx;
+          ctx.$(".gb-hex input").value = hx; ctx.$(".gb-hex input").classList.remove("bad");
+          syncInputs(); renderCards(); rebuild();
+        });
+        ctx.slider("BPM", { min: 60, max: 180, step: 1, value: bpm }, (v) => { bpm = v; rebuild(); });
+        const rings = view(ctx, ctx.$(".gb-rings"), (v) => {
+          const { g, w, h: hh } = v;
+          g.fillStyle = "#0a0c0f"; g.fillRect(0, 0, w, hh);
+          const cx = w / 2, cy = hh / 2 + 6, R = Math.max(50, Math.min(w, hh - 30) / 2 - 8);
+          const now = performance.now();
+          TR.forEach((t, ti) => {
+            const n = t.values && r.live ? t.values.length : (t.hex != null ? t.hex.length * 4 : t.n);
+            const rr = R * (1 - ti * 0.3);
+            g.strokeStyle = "rgba(255,255,255,.08)"; g.lineWidth = 1; g.beginPath(); g.arc(cx, cy, rr, 0, Math.PI * 2); g.stroke();
+            const ph = r.live && anchor !== null ? Math.floor((G.phase - anchor) / stepS) : -1;
+            const cur = ph >= 0 ? ph % n : -1;
+            const dot = Math.max(3, Math.min(9, (Math.PI * rr) / n - 2));
+            for (let i = 0; i < n; i++) {
+              const a = (i / n) * Math.PI * 2 - Math.PI / 2, x = cx + Math.cos(a) * rr, y = cy + Math.sin(a) * rr;
+              const on = r.live && t.values && t.values[i] === 1;
+              const fl = t.flashIdx === i && now - t.flash < 140;
+              g.fillStyle = fl ? "#fff" : on ? t.color : "rgba(255,255,255,.14)";
+              if (fl) { g.shadowColor = t.color; g.shadowBlur = 18; }
+              g.beginPath(); g.arc(x, y, on || fl ? dot : dot * 0.55, 0, Math.PI * 2); g.fill();
+              g.shadowBlur = 0;
+              if (i === cur) { g.strokeStyle = "#fff"; g.lineWidth = 1.5; g.beginPath(); g.arc(x, y, dot + 3, 0, Math.PI * 2); g.stroke(); }
+            }
+            txt(g, `${t.name} ${n} 格`, cx, cy - rr + dot + 12, t.color, 10.5, "center", false, 600);
+          });
+          const total = verify.hits + verify.miss;
+          txt(g, r.live ? `音訊執行緒回報 ${total} 次觸發，${verify.hits} 次落在值為 1 的格子${verify.miss ? `，${verify.miss} 次不符` : ""}` : "未播放：環上只畫出格數", 10, 12, verify.miss ? "#ff6b6b" : "#7d8490", 11);
+          txt(g, "白框：目前格（樣本時鐘推算）・白點：實際觸發", 10, hh - 10, "#7d8490", 10.5);
+        });
+        ctx.raf(() => rings.draw());
+      },
+    },
+    // 4 --------------------------------------------------------------------------------------
+    {
+      id: "theory", title: "調式與音高驗證",
+      api: "Theory.mode・Theory.root・Theory.modes・note.seq(級數)",
+      desc: "Gibber 的 note 吃的是音階級數，實際頻率由 Theory.root 與 Theory.mode 決定：頻率 = 主音 × 2^((表[級數 mod 長度] + 12 × 八度) / 12)。正弦波依序彈每一級，頁面用 8192 點 FFT 加拋物線內插量出實際頻率，和公式比較差了幾音分。",
+      hint: "按「▶ 依序彈」後切換調式與主音（播放中即時生效），看鍵盤上的音階位置與下方表格的量測誤差。",
+      mount(ctx) {
+        ctx.html(`<div class="gb-board"><div class="gb-cv gb-kb"></div><div class="gb-api">Theory.modes 讀自 Gibber.Audio.Theory（載入時即可讀取）</div>
+          <div class="gb-tblw"><table class="gb-tbl"><thead><tr><th>級數</th><th>音名</th><th>公式頻率</th><th>FFT 量測</th><th>誤差</th></tr></thead><tbody></tbody></table></div>
+          <div class="gb-cap"></div></div>`);
+        const r = rig(ctx);
+        const TH = Gibber.Audio.Theory;
+        const MODES = { ionian: "大調", dorian: "多利亞", phrygian: "弗里吉亞", lydian: "利底亞", mixolydian: "混合利底亞", aeolian: "自然小調", locrian: "洛克里亞", melodicminor: "melodicminor", wholeHalf: "全半音階", halfWhole: "半全音階", chromatic: "半音階" };
+        const ROOTS = [["a3", 57], ["c4", 60], ["d4", 62], ["e4", 64], ["f4", 65], ["g4", 67], ["a4", 69]];
+        let mode = "dorian", root = "c4", playing = -1, measured = {};
+        const table = () => TH.modes[mode];
+        const rootMidi = () => ROOTS.find((x) => x[0] === root)[1];
+        const degrees = () => Array.from({ length: table().length + 1 }, (_, i) => i);
+        const semis = (d) => { const tb = table(), L = tb.length; return tb[((d % L) + L) % L] + 12 * Math.floor(d / L); };
+        const expect = (d) => mtof(rootMidi()) * Math.pow(2, semis(d) / 12);
+        const tbody = ctx.$("tbody"), apiEl = ctx.$(".gb-api"), capEl = ctx.$(".gb-cap");
+        function renderTable() {
+          tbody.replaceChildren(...degrees().map((d) => {
+            const m = measured[d], e = expect(d);
+            const c = m ? 1200 * Math.log2(m / e) : null;
+            return h("tr", { class: d === playing ? "on" : "" },
+              h("td", { text: String(d) }), h("td", { text: noteName(rootMidi() + semis(d)) }), h("td", { text: `${e.toFixed(1)} Hz` }),
+              h("td", { text: m ? `${m.toFixed(1)} Hz` : "未量測" }),
+              h("td", { class: c == null ? "" : Math.abs(c) < 10 ? "ok" : "bad", text: c == null ? "" : `${c >= 0 ? "+" : ""}${c.toFixed(1)} 音分` }));
+          }));
+          capEl.textContent = mode === "melodicminor"
+            ? "注意：Gibber 2.1.4 的 melodicminor 表是 [0,2,3,5,7,8,11]，第 6 音是小六度，其實是和聲小調；旋律小調上行應為 [0,2,3,5,7,9,11]。"
+            : `Theory.modes.${mode} = [${table().join(",")}]・級數 ${table().length} 回到高八度。誤差在 ±10 音分內標綠色。`;
+        }
+        // FFT peak with parabolic interpolation on the dB spectrum of the 8192-point analyser.
+        function peakHz() {
+          const { d } = bufs(G.hi);
+          G.hi.getFloatFrequencyData(d);
+          let b = 1;
+          for (let i = 2; i < d.length - 1; i++) if (d[i] > d[b]) b = i;
+          const a = d[b - 1], c = d[b + 1], p = (a - c) / (2 * (a - 2 * d[b] + c));
+          return ((b + (isFinite(p) ? p : 0)) * G.ctx.sampleRate) / G.hi.fftSize;
+        }
+        let synth = null;
+        r.on(G.seq, (m) => {
+          if (!synth || m.name !== "output" || m.id !== synth.note[0].id) return;
+          const d = m.value;
+          playing = d; renderTable();
+          ctx.timeout(() => { if (r.live && playing === d) { measured = { ...measured, [d]: peakHz() }; renderTable(); } }, 260);
+        });
+        function build() {
+          Clock.bpm = 96;
+          Theory.root = root; Theory.mode = mode;
+          synth = Synth({ waveform: "sine", attack: 1 / 256, decay: 1 / 4, gain: 0.3 });
+          synth.note.seq(degrees(), 1 / 4);
+          synth.note[0].reportOutput = true;
+          apiEl.textContent = `Theory.root = '${root}'・Theory.mode = '${mode}'・Synth({ waveform: 'sine' }).note.seq([${degrees().join(",")}], 1/4)`;
+        }
+        const play = ctx.button("▶ 依序彈", async () => {
+          if (r.live) { r.stop(); synth = null; playing = -1; play.textContent = "▶ 依序彈"; renderTable(); return; }
+          try { await r.start(build); } catch (e) { apiEl.textContent = bootError(e); return; }
+          if (ctx.active && r.live) play.textContent = "■ 停止";
+        }, { primary: true });
+        const restart = () => { measured = {}; playing = -1; renderTable(); if (r.live) { hush(); build(); } };
+        ctx.select("調式", Object.keys(MODES).map((k) => ({ value: k, label: `${k}（${MODES[k]}）` })), mode, (v) => {
+          const sameLen = TH.modes[v].length === table().length;
+          mode = v; measured = {};
+          // Same-length modes are switched live on the running sequence; others need a new degree list.
+          if (r.live && sameLen) { Theory.mode = v; apiEl.textContent = `Theory.mode = '${v}'  → 讀回 ${Theory.mode.value}（播放中直接生效）`; renderTable(); } else restart();
+        });
+        ctx.select("主音", ROOTS.map(([k]) => ({ value: k, label: k.toUpperCase() })), root, (v) => {
+          root = v; measured = {};
+          if (r.live) { Theory.root = v; apiEl.textContent = `Theory.root = '${v}'  → 讀回 ${fv(Theory.root.value)}`; }
+          renderTable();
+        });
+        renderTable();
+        const kb = view(ctx, ctx.$(".gb-kb"), (v) => {
+          const { g, w, h: hh } = v;
+          g.fillStyle = "#0a0c0f"; g.fillRect(0, 0, w, hh);
+          const lo = 57, hi = 57 + 36; // A3 .. A6
+          const isB = (m) => [1, 3, 6, 8, 10].includes(((m % 12) + 12) % 12);
+          const whites = []; for (let m = lo; m <= hi; m++) if (!isB(m)) whites.push(m);
+          const ww = (w - 16) / whites.length, top = 20, kh = hh - top - 6;
+          const inScale = new Set(degrees().concat(degrees().map((d) => d + table().length)).map((d) => rootMidi() + semis(d)));
+          const now = playing >= 0 ? rootMidi() + semis(playing) : null;
+          const xOf = (m) => { const wi = whites.filter((x) => x < m).length; return 8 + (isB(m) ? wi * ww - ww * 0.3 : wi * ww); };
+          for (const pass of [0, 1]) for (let m = lo; m <= hi; m++) {
+            if (isB(m) !== !!pass) continue;
+            const x = xOf(m), bw = isB(m) ? ww * 0.6 : ww - 1, bh = isB(m) ? kh * 0.6 : kh;
+            g.fillStyle = m === now ? "#f7df1e" : isB(m) ? "#1b1e24" : "#e9e6dc";
+            g.fillRect(x, top, bw, bh);
+            if (inScale.has(m)) {
+              g.fillStyle = m === rootMidi() || (m - rootMidi()) % 12 === 0 ? "#f72585" : "#4cc9f0";
+              g.beginPath(); g.arc(x + bw / 2, top + bh - 9, Math.min(5, bw / 3), 0, Math.PI * 2); g.fill();
+            }
+          }
+          txt(g, `${root.toUpperCase()} ${mode}：藍點是音階音，粉點是主音，黃色是正在發聲的級數`, 8, 10, "#7d8490", 11);
+        });
+        ctx.raf(() => kb.draw());
+      },
+    },
+    // 5 --------------------------------------------------------------------------------------
+    {
+      id: "synth", title: "合成器音色",
+      api: "Synth・FM・Monosynth・Pluck（預設音色）・inst.cutoff = v・inst.index.value",
+      desc: "四種合成器架構：減法合成 Synth、頻率調變 FM、三振盪器 Monosynth、Karplus-Strong 撥弦 Pluck。每個都能用預設音色名稱建立，屬性直接賦值就會傳到音訊執行緒；滑桿的初始位置是從預設音色讀回的 .value。",
+      hint: "選合成器種類與預設音色後按「▶ 播放」，拖動右側參數即時改變音色（數值為讀回值）。",
+      mount(ctx) {
+        ctx.html(`<div class="gb-board"><div class="gb-lab"><div class="gb-panel gb-params"></div><div class="gb-cv"></div></div><div class="gb-api">選好音色後按「▶ 播放」</div></div>`);
+        const r = rig(ctx);
+        const KINDS = {
+          Synth: { cn: "減法合成", presets: ["acidBass", "acidBass2", "bass.hollow", "bleep", "bleep.echo", "shimmer", "stringPad", "cry", "brass", "pwm.squeak", "rhodes", "square.perc"],
+            params: [["cutoff", "截止頻率", 0, 4, 0.01], ["Q", "共振", 0, 1, 0.01], ["filterMult", "濾波包絡量", 0, 10, 0.1], ["gain", "音量", 0, 1, 0.01]] },
+          FM: { cn: "頻率調變", presets: ["bass", "deepbass", "perc", "bass.electro", "glockenspiel", "frog", "gong", "fun", "chirp"],
+            params: [["index", "調變指數", 0.01, 20, 0.01], ["cmRatio", "載波調變比", 0.01, 20, 0.01], ["feedback", "回授", 0, 1, 0.01], ["cutoff", "截止頻率", 0, 4, 0.01]] },
+          Monosynth: { cn: "三振盪器", presets: ["short.dry", "arpy", "lead", "lead2", "dirty", "winsome", "bassPad", "warble", "dark", "bass", "edgy", "easy"],
+            params: [["detune2", "振盪器 2 失諧", -0.1, 0.1, 0.001], ["detune3", "振盪器 3 失諧", -0.1, 0.1, 0.001], ["cutoff", "截止頻率", 0, 4, 0.01], ["Q", "共振", 0, 1, 0.01]] },
+          Pluck: { cn: "撥弦", presets: [""],
+            params: [["blend", "混合", 0, 1, 0.01], ["decay", "延音", 0.9, 0.999, 0.001], ["damping", "阻尼", 0, 1, 0.01]] },
+        };
+        const KN = Object.keys(KINDS);
+        const WAVES = ["saw", "sine", "triangle", "square", "pwm"];
+        let kind = "FM", preset = "bass", inst = null;
+        const panel = ctx.$(".gb-params"), apiEl = ctx.$(".gb-api");
+        const vals = {};
+        function renderParams() {
+          const K = KINDS[kind];
+          panel.replaceChildren(h("h4", {}, `${kind}（${K.cn}）`, h("small", { text: preset ? `'${preset}'` : "預設" })));
+          for (const [prop, label, min, max, step] of K.params) {
+            const rb = inst ? readback(inst, prop) : undefined;
+            const start = typeof rb === "number" ? Math.max(min, Math.min(max, rb)) : vals[prop] ?? (min + max) / 2;
+            const p = prow(label, prop, { min, max, step, value: start }, (v, out) => {
+              vals[prop] = v;
+              if (!inst) { out.textContent = fv(v); return; }
+              inst[prop] = v;
+              const back = readback(inst, prop);
+              out.textContent = fv(back);
+              apiEl.textContent = `${kind.toLowerCase()}.${prop} = ${v}  → 讀回 ${kind.toLowerCase()}.${prop}.value = ${fv(back)}`;
+            });
+            p.out.textContent = inst ? fv(rb) : "播放後讀取";
+            panel.append(p.row);
+          }
+          if (kind === "Synth") {
+            const cur = inst ? readback(inst, "waveform") : null;
+            const chips = h("div", { class: "gb-chips" }, WAVES.map((wv) => {
+              const b = h("button", { class: "gb-chip", type: "button", "aria-pressed": String(cur === wv) }, wv);
+              b.addEventListener("click", () => {
+                if (!inst) return;
+                inst.waveform = wv;
+                chips.querySelectorAll(".gb-chip").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+                apiEl.textContent = `synth.waveform = '${wv}'  → 讀回 ${readback(inst, "waveform")}`;
+              });
+              return b;
+            }));
+            panel.append(h("div", { class: "gb-cap", text: `波形 waveform（讀回 ${cur || "播放後讀取"}）` }), chips);
+          }
+          panel.append(h("div", { class: "gb-cap", text: "音符樣式：note.seq([0,2,4,7,9,7,4,2], 1/8)，BPM 120。" }));
+        }
+        function build() {
+          Clock.bpm = 120;
+          inst = preset ? window[kind](preset) : window[kind]();
+          inst.note.seq([0, 2, 4, 7, 9, 7, 4, 2], 1 / 8);
+          apiEl.textContent = `${kind.toLowerCase()} = ${kind}(${preset ? `'${preset}'` : ""}); ${kind.toLowerCase()}.note.seq([0,2,4,7,9,7,4,2], 1/8)`;
+          renderParams();
+        }
+        const play = ctx.button("▶ 播放", async () => {
+          if (r.live) { r.stop(); inst = null; play.textContent = "▶ 播放"; renderParams(); return; }
+          try { await r.start(build); } catch (e) { apiEl.textContent = bootError(e); return; }
+          if (ctx.active && r.live) play.textContent = "■ 停止";
+        }, { primary: true });
+        let sel = null;
+        const resel = () => {
+          const opts = KINDS[kind].presets.map((p) => ({ value: p, label: p || "（無預設，使用預設值）" }));
+          sel.replaceChildren(...opts.map((o) => h("option", { value: o.value }, o.label)));
+          sel.value = preset;
+        };
+        const restart = () => { if (r.live) { hush(); build(); } else renderParams(); };
+        ctx.group(KN, KN.indexOf(kind), (i) => { kind = KN[i]; preset = KINDS[kind].presets[0]; for (const k in vals) delete vals[k]; resel(); restart(); });
+        sel = ctx.select("預設", KINDS[kind].presets, preset, (v) => { preset = v; restart(); });
+        resel();
+        renderParams();
+        const cv = view(ctx, ctx.$(".gb-lab > .gb-cv"), (v) => {
+          const { g, w, h: hh } = v;
+          const sh = hh * 0.45;
+          scope(g, 0, 0, w, sh, { color: "#f7a21e", live: r.live && G.ok, idle: "按「▶ 播放」" });
+          g.fillStyle = "#0a0c0f"; g.fillRect(0, sh, w, hh - sh);
+          if (r.live && G.ok) spectrum(g, 0, sh + 16, w, hh - sh - 30, "#4cc9f0", "rgba(76,201,240,.18)");
+          [100, 1000, 10000].forEach((f) => { const x = (Math.log(f / 30) / Math.log(16000 / 30)) * w; txt(g, f >= 1000 ? `${f / 1000}k` : `${f}`, x, hh - 8, "#7d8490", 10, "center", true); });
+          txt(g, "波形（上）與對數頻譜 30 Hz 到 16 kHz（下）", 8, sh + 9, "#7d8490", 10.5);
+        });
+        ctx.raf(() => cv.draw());
+      },
+    },
+    // 6 --------------------------------------------------------------------------------------
+    {
+      id: "fx", title: "效果器鏈與 LFO",
+      api: "synth.fx.add(Distortion(), Delay(1/8, .5))・fx.remove(i)・synth.cutoff = lfo('sine', 2, .3, .5)",
+      desc: "fx.add 依序把效果器串在樂器後面，fx.remove(索引) 拆掉其中一個；旋鈕直接寫入效果器屬性並讀回。下方 LFO 把 cutoff 換成音訊執行緒裡的低頻振盪器，頻譜瀑布圖可以看到濾波器被週期性掃動。",
+      hint: "按「▶ 播放」後點效果器名稱加入或移除（依點擊順序串接），用 LFO 按鈕切換波形，滑桿調整 LFO 速率與深度。",
+      mount(ctx) {
+        ctx.html(`<div class="gb-board"><div class="gb-chain"></div><div class="gb-fxs"></div><div class="gb-api">按「▶ 播放」開始，音源是 Synth('acidBass')</div><div class="gb-cv gb-spg"></div></div>`);
+        const r = rig(ctx);
+        const FXS = [
+          { key: "Distortion", cn: "失真", color: "#ff8c42", knob: ["pregain", "增益", 0, 10, 0.1, 3] },
+          { key: "BitCrusher", cn: "位元壓縮", color: "#f72585", knob: ["bitDepth", "位元", 0.05, 1, 0.01, 0.3] },
+          { key: "Wavefolder", cn: "摺波", color: "#f7df1e", knob: ["gain", "增益", 0, 10, 0.1, 3] },
+          { key: "Flanger", cn: "法蘭", color: "#7bd389", knob: ["frequency", "速度", 0.05, 8, 0.05, 0.5] },
+          { key: "Delay", cn: "延遲", color: "#4cc9f0", knob: ["feedback", "回授", 0, 0.95, 0.01, 0.5] },
+          { key: "Freeverb", cn: "殘響", color: "#9d8cff", knob: ["roomSize", "空間", 0, 0.99, 0.01, 0.9] },
+        ];
+        const LFOS = [["關閉", null], ["sine", "sine"], ["saw", "saw"], ["square", "square"], ["noise", "noise"]];
+        let synth = null, chain = [], lfoType = "sine", lfoRate = 1, lfoDepth = 0.3, base = 0.5;
+        const apiEl = ctx.$(".gb-api"), chainEl = ctx.$(".gb-chain");
+        const fxHost = ctx.$(".gb-fxs");
+        for (const f of FXS) {
+          const [prop, label, min, max, step, def] = f.knob;
+          f.val = def;
+          f.el = h("div", { class: "gb-fx" });
+          f.el.style.setProperty("--fc", f.color);
+          const head = h("header", { role: "button", tabindex: 0, style: "cursor:pointer" }, h("b", { text: f.cn }), h("small", { text: f.key }));
+          head.addEventListener("click", () => toggle(f));
+          const p = prow(label, null, { min, max, step, value: def }, (v, out) => {
+            f.val = v;
+            if (!f.inst) { out.textContent = fv(v); return; }
+            f.inst[prop] = v;
+            out.textContent = fv(readback(f.inst, prop));
+            apiEl.textContent = `${f.key.toLowerCase()}.${prop} = ${v}  → 讀回 ${fv(readback(f.inst, prop))}`;
+          });
+          p.out.textContent = fv(def);
+          f.el.append(head, p.row);
+          fxHost.append(f.el);
+        }
+        function paintChain() {
+          const parts = ["<b>Synth</b>"];
+          for (const f of chain) parts.push(`→ <b class="fx" style="--fc:${f.color}">${f.cn}</b>`);
+          parts.push("→ <b>輸出</b>");
+          chainEl.innerHTML = `訊號鏈：${parts.join(" ")}${synth ? `　fx.length = ${synth.fx.length}` : ""}`;
+          FXS.forEach((f) => f.el.classList.toggle("on", chain.includes(f)));
+        }
+        function addFx(f) {
+          f.inst = window[f.key]({ [f.knob[0]]: f.val });
+          synth.fx.add(f.inst);
+        }
+        function toggle(f) {
+          const at = chain.indexOf(f);
+          if (at >= 0) chain = chain.filter((x) => x !== f); else chain = [...chain, f];
+          if (synth) {
+            if (at >= 0) { synth.fx.remove(at); f.inst = null; apiEl.textContent = `synth.fx.remove(${at})  → fx.length = ${synth.fx.length}`; }
+            else { addFx(f); apiEl.textContent = `synth.fx.add(${f.key}({ ${f.knob[0]}: ${f.val} }))  → fx.length = ${synth.fx.length}`; }
+          }
+          paintChain();
+        }
+        function applyLfo() {
+          if (!synth) return;
+          if (!lfoType) { synth.cutoff = base; apiEl.textContent = `synth.cutoff = ${base}（移除 LFO）`; return; }
+          synth.cutoff = lfo(lfoType, lfoRate, lfoDepth, base);
+          apiEl.textContent = `synth.cutoff = lfo('${lfoType}', ${lfoRate}, ${lfoDepth}, ${base})`;
+        }
+        function build() {
+          Clock.bpm = 120;
+          synth = Synth("acidBass");
+          const rb = readback(synth, "cutoff");
+          base = typeof rb === "number" ? +rb.toFixed(2) : 0.5;
+          synth.note.seq([0, 0, 7, 0, 5, 0, 3, -2], 1 / 8);
+          FXS.forEach((f) => { f.inst = null; });
+          chain.forEach(addFx);
+          applyLfo();
+          paintChain();
+        }
+        const play = ctx.button("▶ 播放", async () => {
+          if (r.live) { r.stop(); synth = null; FXS.forEach((f) => { f.inst = null; }); play.textContent = "▶ 播放"; paintChain(); return; }
+          try { await r.start(build); } catch (e) { apiEl.textContent = bootError(e); return; }
+          if (ctx.active && r.live) play.textContent = "■ 停止";
+        }, { primary: true });
+        ctx.group(LFOS.map((x) => x[0]), 1, (i) => { lfoType = LFOS[i][1]; applyLfo(); });
+        ctx.slider("LFO 速率", { min: 0.1, max: 8, step: 0.1, value: lfoRate, format: (v) => `${v.toFixed(1)} Hz` }, (v) => { lfoRate = v; applyLfo(); });
+        ctx.slider("LFO 深度", { min: 0, max: 1, step: 0.01, value: lfoDepth }, (v) => { lfoDepth = v; applyLfo(); });
+        toggle(FXS[0]); toggle(FXS[4]);
+        // Scrolling spectrogram: one column per frame from the master analyser (log frequency axis).
+        const off = document.createElement("canvas"), og = off.getContext("2d");
+        const spg = view(ctx, ctx.$(".gb-spg"), (v) => {
+          const { g, w, h: hh } = v;
+          const W = Math.max(1, Math.round(w)), H = Math.max(1, Math.round(hh));
+          if (off.width !== W || off.height !== H) { off.width = W; off.height = H; og.fillStyle = "#0a0c0f"; og.fillRect(0, 0, W, H); }
+          const live = r.live && G.ok;
+          og.drawImage(off, -2, 0);
+          if (live) {
+            const { f } = bufs(G.an);
+            G.an.getByteFrequencyData(f);
+            const ny = G.ctx.sampleRate / 2;
+            for (let y = 0; y < H; y++) {
+              const fr = 30 * Math.pow(16000 / 30, 1 - y / H);
+              const val = f[Math.min(f.length - 1, Math.round((fr / ny) * f.length))] / 255;
+              og.fillStyle = `hsl(${260 - val * 220}, 90%, ${val * 58}%)`;
+              og.fillRect(W - 2, y, 2, 1);
+            }
+          } else { og.fillStyle = "#0a0c0f"; og.fillRect(W - 2, 0, 2, H); }
+          g.drawImage(off, 0, 0, w, hh);
+          [100, 1000, 10000].forEach((fr) => { const y = (1 - Math.log(fr / 30) / Math.log(16000 / 30)) * hh; txt(g, fr >= 1000 ? `${fr / 1000}k Hz` : `${fr} Hz`, 6, y, "rgba(255,255,255,.55)", 10, "left", true); });
+          txt(g, live ? "頻譜瀑布圖（時間往左捲動，越亮能量越強）" : "按「▶ 播放」後開始捲動", w - 8, 12, "#7d8490", 11, "right");
+        });
+        ctx.raf(() => spg.draw());
+        paintChain();
+      },
+    },
+    // 7 --------------------------------------------------------------------------------------
+    {
+      id: "stress", title: "極限測試", kind: "stress",
+      api: "N × Synth('bleep').note.seq(樣式, 1/16)",
+      desc: "同時演奏的樂器數逐級增加：每個聲部是一個 Synth('bleep') 加一條 16 分音符序列，全部在同一個 AudioWorklet 的音訊執行緒裡合成。除了主執行緒 FPS，也量「音訊時鐘」：Gibberish 回報的樣本位置增量除以實際經過時間。",
+      hint: "按「自動加壓」才會建立聲部並出聲（音量依聲部數自動降低）；離開此場景會立即 Gibber.clear() 釋放所有聲部。",
+      mount(ctx) {
+        ctx.html(`<div class="gb-sv"><div class="gb-cv" style="position:absolute;inset:0;border:0"></div></div>`);
+        ctx.controls.classList.add("bottom");
+        const r = rig(ctx);
+        let armed = false, target = 0, voices = [], buildMs = 0, err = "";
+        const clock = { s: [], rate: 1 };
+        const hist = [];
+        // Audio-clock result per voice count: last full window (>= 6 samples, 1.5 s) after the rebuild.
+        const STEPS = [8, 16, 32, 64, 96, 128, 192, 256];
+        const perStep = {};
+        const audioLimit = () => {
+          let best = null, fail = null;
+          for (const n of STEPS) { if (perStep[n] == null) break; if (perStep[n] >= 0.98) best = n; else { fail = n; break; } }
+          return { best, fail };
+        };
+        const gainFor = (n) => Math.min(0.25, 0.3 / Math.sqrt(Math.max(1, n)));
+        function rebuild() {
+          hush();
+          const t0 = performance.now();
+          Clock.bpm = 132;
+          const gn = gainFor(target), list = [];
+          for (let i = 0; i < target; i++) {
+            const s = Synth("bleep");
+            s.gain = gn;
+            const notes = [i % 7, (i * 3 + 2) % 9, (i * 5 + 4) % 11 - 3, ((i * 2) % 7) + 7];
+            s.note.seq(notes, 1 / 16);
+            list.push({ notes, ph: Math.random() * 6.28 });
+          }
+          voices = list;
+          clock.s.length = 0;
+          buildMs = performance.now() - t0;
+          r.live = true;
+        }
+        async function arm(e) {
+          if (armed || !e.target.closest("[data-sc-run], .sc-lab input[type=range]")) return;
+          armed = true;
+          try { await boot(); } catch (x) { err = bootError(x); armed = false; return; }
+          if (ctx.active) { clock.s.length = 0; rebuild(); }
+        }
+        ctx.on(ctx.el, "click", arm, true);
+        ctx.on(ctx.el, "input", arm, true);
+        ctx.button("釋放所有聲部", () => { armed = false; voices = []; r.stop(); });
+        ctx.interval(() => {
+          if (!G.ok) return;
+          const s = clock.s;
+          // Gibber.clear() rewinds the sample clock, so a backwards step starts a new window.
+          if (s.length && G.phase < s[s.length - 1][1]) s.length = 0;
+          s.push([performance.now(), G.phase]);
+          if (s.length > 9) s.shift();
+          if (s.length > 2) { const [w0, p0] = s[0], [w1, p1] = s[s.length - 1]; clock.rate = (p1 - p0) / G.ctx.sampleRate / ((w1 - w0) / 1000); }
+          if (armed) {
+            hist.push(clock.rate); if (hist.length > 120) hist.shift();
+            if (voices.length === target && s.length >= 7) perStep[target] = clock.rate;
+          }
+        }, 250);
+        const v = view(ctx, ctx.$(".gb-sv > .gb-cv"), (vv) => {
+          const { g, w, h: hh } = vv;
+          g.fillStyle = "#050608"; g.fillRect(0, 0, w, hh);
+          const sh = Math.min(90, hh * 0.24);
+          scope(g, 0, 0, w, sh, { color: "#7bd389", live: armed && voices.length > 0 && G.ok, idle: err || "尚未發聲：按「自動加壓」才會建立聲部" });
+          const y0 = sh + 12, y1 = hh - 112, n = voices.length;
+          const cols = Math.max(1, Math.ceil(Math.sqrt((n * (w - 20)) / Math.max(1, y1 - y0))));
+          const rows = Math.max(1, Math.ceil(n / cols));
+          const cw = (w - 20) / cols, chh = Math.min(cw, (y1 - y0) / rows);
+          const t = performance.now() / 1000;
+          voices.forEach((vo, i) => {
+            const x = 10 + (i % cols) * cw + cw / 2, y = y0 + Math.floor(i / cols) * chh + chh / 2;
+            g.fillStyle = `hsla(${(vo.notes[0] * 47 + i * 3) % 360}, 80%, 62%, ${0.35 + 0.35 * Math.sin(t * 6 + vo.ph)})`;
+            g.beginPath(); g.arc(x, y, Math.max(1.5, Math.min(cw, chh) * 0.36), 0, 6.283); g.fill();
+          });
+          txt(g, armed ? `${n} 個 Synth('bleep')，每個 gain ${gainFor(n).toFixed(3)}，建立耗時 ${buildMs.toFixed(1)} ms` : `目標 ${target} 個聲部（尚未發聲）`, 10, y1 + 14, "#e8e6e3", 12, "left", false, 600);
+          const cy = hh - 46, ch = 34;
+          g.fillStyle = "rgba(255,255,255,.04)"; g.fillRect(10, cy, w - 20, ch);
+          const Y = (rt) => cy + ch - Math.max(0, Math.min(1, (rt - 0.5) / 0.6)) * ch;
+          g.strokeStyle = "rgba(255,255,255,.25)"; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(10, Y(1)); g.lineTo(w - 10, Y(1)); g.stroke(); g.setLineDash([]);
+          g.strokeStyle = "#4cc9f0"; g.lineWidth = 1.5; g.beginPath();
+          hist.forEach((rt, i) => { const x = 10 + (i / 119) * (w - 20); i ? g.lineTo(x, Y(rt)) : g.moveTo(x, Y(rt)); });
+          g.stroke();
+          txt(g, `音訊時鐘（虛線 = 100%，刻度 50% 到 110%）目前 ${G.ok ? (clock.rate * 100).toFixed(1) + "%" : "引擎未啟動"}`, 10, hh - 6, "#7d8490", 10.5);
+          const done = STEPS.filter((k) => perStep[k] != null);
+          if (done.length) {
+            const { best, fail } = audioLimit();
+            const verdict = fail ? `音訊時鐘維持 98% 以上的上限：${best ?? "低於 " + STEPS[0]} 聲部，${fail} 聲部降到 ${(perStep[fail] * 100).toFixed(0)}%` : `音訊時鐘目前都維持 98% 以上（已測到 ${done[done.length - 1]} 聲部）`;
+            txt(g, verdict, 10, cy - 30, fail ? "#ff8c42" : "#7bd389", 12, "left", false, 700);
+            txt(g, done.map((k) => `${k}:${(perStep[k] * 100).toFixed(0)}%`).join("  "), 10, cy - 12, "#9aa1ab", 10.5, "left", true);
+          }
+        });
+        ctx.raf(() => v.draw());
+        ctx.ramp({
+          label: "同時演奏", unit: "聲部", steps: STEPS, minFps: 30, warmup: 1000, sample: 1500,
+          title: "極限測試：同時演奏的 Gibber 樂器數",
+          note: "FPS 只代表主執行緒（建立樂器、畫面）。Gibber 的合成在 AudioWorklet 執行緒，所以要看「音訊時鐘」：Gibberish 每 128 個樣本回報一次位置，位置增量除以 44100 再除以實際秒數；持續低於約 98% 代表音訊執行緒算不完，聲音開始斷續。FPS 判定只看主執行緒，音訊能撐幾個聲部以右側畫面每一階的音訊時鐘為準。",
+          apply: async (n) => { target = n; if (armed && G.ok) rebuild(); },
+          metrics: () => ({
+            "發聲中": armed ? voices.length : "未發聲",
+            "音訊時鐘": G.ok ? `${(clock.rate * 100).toFixed(1)}%` : "未啟動",
+            "音訊上限": audioLimit().fail ? `${audioLimit().best ?? 0} 聲部` : "尚未觸及",
+            "建立耗時": `${buildMs.toFixed(1)} ms`,
+            "取樣率": G.ok ? `${G.ctx.sampleRate} Hz` : "未啟動",
+          }),
+        });
+      },
+    },
+  ],
 });
-function applyNow() {
-  if (playing) run();
-  else setMsg("先按播放，才會套用並發聲", "ok");
-}
-document.getElementById("apply").addEventListener("click", applyNow);
-src.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); applyNow(); }
-  if (e.key === "Tab") { e.preventDefault(); document.execCommand("insertText", false, "  "); }
-});
-
-function loadPreset(name) {
-  current = name;
-  src.value = PRESETS[name];
-  document.querySelectorAll("#presets .chip").forEach((b) => b.setAttribute("aria-pressed", b.textContent === name));
-  paintCode();
-  if (playing) run(); else setMsg("按播放開始演奏", "ok");
-}
-const presetsEl = document.getElementById("presets");
-Object.keys(PRESETS).forEach((name) => {
-  const b = document.createElement("button");
-  b.className = "chip"; b.textContent = name;
-  b.addEventListener("click", () => loadPreset(name));
-  presetsEl.append(b);
-});
-
-// ---------- visualizer ----------
-const PALETTE = ["#4cc9f0", "#9d8cff", "#f72585", "#ff8c42", "#f7df1e"];
-function mix(t) {
-  const n = PALETTE.length - 1, i = Math.min(n - 1, Math.floor(t * n)), f = t * n - i;
-  const a = PALETTE[i], b = PALETTE[i + 1];
-  const c = (k) => Math.round(parseInt(a.slice(k, k + 2), 16) * (1 - f) + parseInt(b.slice(k, k + 2), 16) * f);
-  return `rgb(${c(1)},${c(3)},${c(5)})`;
-}
-let lowAvg = 0;
-function draw() {
-  const dpr = devicePixelRatio || 1;
-  const W = cv.clientWidth, H = cv.clientHeight;
-  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) {
-    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
-  }
-  g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  g.clearRect(0, 0, W, H);
-  const cx = W / 2, cy = H / 2 + 8;
-  const R = Math.max(40, Math.min(W, H - 30) / 2 - 10);
-  const r0 = R * 0.36;
-  const live = playing && analyser;
-  const bpm = window.Clock ? Clock.bpm : 140;
-
-  // spectrum ring
-  const BARS = 72;
-  if (live) { analyser.getByteFrequencyData(freq); analyser.getByteTimeDomainData(wave); }
-  let low = 0;
-  for (let i = 0; i < BARS; i++) {
-    let v = 0;
-    if (live) {
-      const lo = Math.floor(Math.pow(i / BARS, 2) * 180) + 1, hi = Math.floor(Math.pow((i + 1) / BARS, 2) * 180) + 2;
-      for (let k = lo; k < hi; k++) v = Math.max(v, freq[k]);
-      v /= 255;
-      if (i < 6) low += v / 6;
-    }
-    const a = (i / BARS) * Math.PI * 2 - Math.PI / 2;
-    const len = 4 + v * (R - r0 - 26);
-    g.strokeStyle = live ? mix(i / BARS) : "rgba(255,255,255,0.10)";
-    g.globalAlpha = live ? 0.35 + v * 0.65 : 1;
-    g.lineWidth = Math.max(2, (Math.PI * 2 * (r0 + 14)) / BARS - 2.5);
-    g.lineCap = "round";
-    g.beginPath();
-    g.moveTo(cx + Math.cos(a) * (r0 + 14), cy + Math.sin(a) * (r0 + 14));
-    g.lineTo(cx + Math.cos(a) * (r0 + 14 + len), cy + Math.sin(a) * (r0 + 14 + len));
-    g.stroke();
-  }
-  g.globalAlpha = 1;
-  lowAvg = lowAvg * 0.7 + low * 0.3;
-
-  // waveform loop around the core
-  if (live) {
-    g.beginPath();
-    for (let i = 0; i <= 256; i++) {
-      const s = (wave[Math.floor((i % 256) / 256 * wave.length)] - 128) / 128;
-      const a = (i / 256) * Math.PI * 2 - Math.PI / 2;
-      const rr = r0 + 4 + s * r0 * 0.5;
-      const x = cx + Math.cos(a) * rr, y = cy + Math.sin(a) * rr;
-      i ? g.lineTo(x, y) : g.moveTo(x, y);
-    }
-    g.strokeStyle = "rgba(236,235,230,0.75)"; g.lineWidth = 1.5; g.stroke();
-  }
-
-  // core pulses with the low end
-  const core = r0 * (0.62 + lowAvg * 0.32);
-  const grad = g.createRadialGradient(cx, cy, 0, cx, cy, core);
-  grad.addColorStop(0, live ? "rgba(247,223,30,0.95)" : "rgba(247,223,30,0.35)");
-  grad.addColorStop(1, live ? "rgba(247,37,133,0.15)" : "rgba(247,223,30,0.04)");
-  g.fillStyle = grad;
-  g.beginPath(); g.arc(cx, cy, core, 0, Math.PI * 2); g.fill();
-
-  // 16-step ring driven by the worklet sample clock
-  let step = -1, bar = 0, beat = 0;
-  if (live && phaseOrigin !== null) {
-    const beats = (phase - phaseOrigin) / (Gibberish.ctx.sampleRate * 60 / bpm);
-    step = Math.floor(beats * 4) % 16;
-    bar = Math.floor(beats / 4) + 1;
-    beat = Math.floor(beats % 4) + 1;
-  }
-  for (let i = 0; i < 16; i++) {
-    const a = (i / 16) * Math.PI * 2 - Math.PI / 2;
-    const rr = R - 4;
-    const on = i === step;
-    g.fillStyle = on ? "#f7df1e" : i % 4 === 0 ? "rgba(255,255,255,0.45)" : "rgba(255,255,255,0.18)";
-    if (on) { g.shadowColor = "#f7df1e"; g.shadowBlur = 16; }
-    g.beginPath(); g.arc(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr, on ? 6 : i % 4 === 0 ? 4 : 3, 0, Math.PI * 2); g.fill();
-    g.shadowBlur = 0;
-  }
-
-  // center text
-  g.textAlign = "center"; g.textBaseline = "middle";
-  g.fillStyle = live ? "#1a1a14" : "rgba(236,235,230,0.85)";
-  g.font = `700 ${Math.round(r0 * 0.34)}px ${getComputedStyle(document.body).fontFamily}`;
-  g.fillText(live ? `${bpm}` : "▶", cx, cy - (live ? r0 * 0.1 : 0));
-  if (live) {
-    g.font = `600 ${Math.max(10, Math.round(r0 * 0.15))}px ${getComputedStyle(document.body).fontFamily}`;
-    g.fillText("BPM", cx, cy + r0 * 0.2);
-  }
-  clockEl.textContent = live && step >= 0 ? `♩ ${bpm}  第 ${bar} 小節 ${beat} 拍` : `♩ ${bpm}`;
-  requestAnimationFrame(draw);
-}
-
-src.value = PRESETS[current];
-loadPreset(current);
-requestAnimationFrame(draw);
+})();
 </script>
 </body>
 </html>

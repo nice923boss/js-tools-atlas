@@ -3,237 +3,957 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>regl 示範：四萬個粒子的形狀變形</title>
+<title>regl 示範：六個場景看懂函數式 WebGL</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["粒子變形","範圍指令與批次","反應擴散","實例化草原","照片濾鏡與讀回","極限測試"]}</script>
 <style>
-  .controls .label { font-size: 12px; align-self: center; padding: 6px 8px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); }
-  .btn { padding: 7px 10px; font-size: 12px; }
-  .stat { position: fixed; left: 12px; top: 12px; z-index: 50; font: 12px/1.5 var(--mono); color: var(--muted); padding: 6px 10px; }
-  .stat b { color: var(--fg); font-weight: 600; }
-  @media (max-width: 520px) { .stat { top: auto; bottom: 48px; } }
+  .sc-scene canvas.gl { position: absolute; left: 0; top: 0; display: block; touch-action: none; }
+  .info { position: absolute; z-index: 5; left: 10px; top: calc(var(--sc-ctl-h, 0px) + 10px); max-width: min(300px, calc(100% - 20px));
+    padding: 8px 11px; font: 12px/1.6 var(--mono); color: var(--muted); pointer-events: none; }
+  .info b { color: var(--fg); font-weight: 600; }
+  .info code { color: var(--accent); }
+  .histo { position: absolute; z-index: 5; right: 10px; top: calc(var(--sc-ctl-h, 0px) + 10px); padding: 8px 10px 6px;
+    font: 11px/1.5 var(--mono); color: var(--muted); pointer-events: none; }
+  .histo canvas { display: block; width: 200px; height: 64px; margin-top: 4px; }
+  .stress-box { position: absolute; inset: 8px 8px 8px 350px; border-radius: 10px; overflow: hidden; }
+  @media (max-width: 760px) { .stress-box { inset: 0; border-radius: 0; } }
 </style>
 </head>
 <body>
-<div class="controls" id="bar"><span class="label">形狀</span></div>
-<div class="stat panel" id="stat"></div>
-<div class="hint">點按鈕切換形狀，游標靠近會把粒子推開</div>
-
+<script src="_shared/showcase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/regl@2.1.1/dist/regl.min.js"></script>
 <script>
-const N = 40000;
-const DURATION = 1.6;   // seconds per morph
-const AUTO_EVERY = 3.4; // seconds between automatic morphs
+// ---------- shared helpers ----------
 
-// regl creates a full-window canvas and keeps it sized to the viewport
-const regl = createREGL({ pixelRatio: Math.min(devicePixelRatio, 2), attributes: { antialias: false, alpha: false } });
+// One regl instance per scene on its own canvas. The canvas tracks its host size; regl.frame()
+// polls the drawing buffer size every frame. On unmount regl.destroy() frees every resource and
+// the context is released so scene switching never runs out of WebGL contexts.
+function reglStage(ctx, { host = ctx.el, extensions = [], optionalExtensions = [], antialias = true } = {}) {
+  const canvas = document.createElement("canvas");
+  canvas.className = "gl";
+  host.append(canvas);
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const view = { canvas, dpr, width: 1, height: 1, aspect: 1 };
+  const fit = () => {
+    view.width = Math.max(1, host.clientWidth);
+    view.height = Math.max(1, host.clientHeight);
+    view.aspect = view.width / view.height;
+    canvas.style.width = `${view.width}px`;
+    canvas.style.height = `${view.height}px`;
+    canvas.width = Math.round(view.width * dpr);
+    canvas.height = Math.round(view.height * dpr);
+  };
+  fit();
+  ctx.onResize(fit);
+  const regl = createREGL({ canvas, pixelRatio: dpr, attributes: { antialias, alpha: false }, extensions, optionalExtensions });
+  const gl = regl._gl;
+  view.regl = regl;
+  ctx.onCleanup(() => { regl.destroy(); gl.getExtension("WEBGL_lose_context")?.loseContext(); canvas.remove(); });
+  return view;
+}
 
-// Per-point random delay gives the morph a staggered, organic look
-const delays = new Float32Array(N).map(() => Math.random());
+function trackPointer(ctx, el) {
+  const p = { x: 0, y: 0, nx: 0, ny: 0, down: false, last: -1e9, idle: (ms = 2000) => performance.now() - p.last > ms };
+  const move = (e) => {
+    const r = el.getBoundingClientRect();
+    p.x = e.clientX - r.left; p.y = e.clientY - r.top;
+    p.nx = (p.x / r.width) * 2 - 1; p.ny = -((p.y / r.height) * 2 - 1);
+    p.last = performance.now();
+  };
+  ctx.on(el, "pointermove", move);
+  ctx.on(el, "pointerdown", (e) => { p.down = true; move(e); });
+  ctx.on(window, "pointerup", () => { p.down = false; });
+  return p;
+}
 
-const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+const cssColor = (name) => {
+  const hex = getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "#ffffff";
+  return [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+};
+const hexColor = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
 const mixc = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
-const C = { y: hex("#f7df1e"), b: hex("#4cc9f0"), p: hex("#f72585"), g: hex("#7bd389"), o: hex("#ff8c42"), v: hex("#9d8cff") };
 
-function makeLayout(fill) {
-  const pos = new Float32Array(N * 2), col = new Float32Array(N * 3);
-  for (let i = 0; i < N; i++) {
-    const [x, y, c] = fill(i);
-    pos[i * 2] = x; pos[i * 2 + 1] = y;
-    col.set(c, i * 3);
-  }
-  return { pos, col };
+// Minimal column-major matrix helpers (the same layout gl-mat4 uses).
+function perspective(fovy, aspect, near, far) {
+  const f = 1 / Math.tan(fovy / 2), nf = 1 / (near - far);
+  return [f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (far + near) * nf, -1, 0, 0, 2 * far * near * nf, 0];
+}
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const norm = (a) => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+function lookAt(eye, center, up = [0, 1, 0]) {
+  const z = norm(sub(eye, center)), x = norm(cross(up, z)), y = cross(z, x);
+  return [x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0, -dot3(x, eye), -dot3(y, eye), -dot3(z, eye), 1];
 }
 
-const spiral = () => makeLayout((i) => {
-  const r = Math.sqrt(i / N) * 0.92, a = i * 2.399963;
-  return [Math.cos(a) * r, Math.sin(a) * r, mixc(C.y, C.p, r / 0.92)];
-});
-
-function textLayout() {
-  // Sample opaque pixels of text drawn on an offscreen 2D canvas
-  const cv = document.createElement("canvas");
-  cv.width = 520; cv.height = 220;
-  const g = cv.getContext("2d");
-  g.fillStyle = "#fff";
-  g.font = "900 190px Arial Black, Arial, sans-serif";
-  g.textAlign = "center"; g.textBaseline = "middle";
-  g.fillText("regl", 260, 112);
-  const data = g.getImageData(0, 0, cv.width, cv.height).data;
-  const hits = [];
-  for (let y = 0; y < cv.height; y += 1) for (let x = 0; x < cv.width; x += 1) {
-    if (data[(y * cv.width + x) * 4 + 3] > 128) hits.push(x, y);
-  }
-  const count = hits.length / 2;
-  return makeLayout(() => {
-    const k = Math.floor(Math.random() * count);
-    const x = (hits[k * 2] + Math.random() - 260) / 260 * 0.95;
-    const y = -(hits[k * 2 + 1] + Math.random() - 110) / 260 * 0.95;
-    return [x, y, mixc(C.b, C.y, (x + 0.95) / 1.9)];
+// Unit cube with per-face normals: 24 vertices, 12 triangles.
+function cubeMesh() {
+  const faces = [
+    [[1, 0, 0], [0, 0, -1], [0, 1, 0]], [[-1, 0, 0], [0, 0, 1], [0, 1, 0]],
+    [[0, 1, 0], [1, 0, 0], [0, 0, -1]], [[0, -1, 0], [1, 0, 0], [0, 0, 1]],
+    [[0, 0, 1], [1, 0, 0], [0, 1, 0]], [[0, 0, -1], [-1, 0, 0], [0, 1, 0]],
+  ];
+  const position = [], normal = [], elements = [];
+  faces.forEach(([n, u, v], f) => {
+    for (const [a, b] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      position.push([0, 1, 2].map((k) => 0.5 * (n[k] + a * u[k] + b * v[k])));
+      normal.push(n);
+    }
+    elements.push([f * 4, f * 4 + 1, f * 4 + 2], [f * 4, f * 4 + 2, f * 4 + 3]);
   });
+  return { position, normal, elements };
 }
 
-const heart = () => makeLayout(() => {
-  const t = Math.random() * Math.PI * 2, s = Math.sqrt(Math.random());
-  const x = 16 * Math.sin(t) ** 3;
-  const y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
-  return [x * s * 0.052, (y * s + 2) * 0.052, mixc(C.p, C.o, s)];
-});
-
-const waves = () => makeLayout((i) => {
-  const lines = 56, k = i % lines, x = (Math.floor(i / lines) / (N / lines)) * 1.9 - 0.95;
-  const y = -0.7 + (k / (lines - 1)) * 1.4 + Math.sin(x * 6 + k * 0.35) * 0.06;
-  return [x, y, mixc(C.g, C.b, k / (lines - 1))];
-});
-
-const clusters = () => {
-  const centers = [[-0.5, 0.35, C.y], [0.45, 0.4, C.b], [0, -0.1, C.p], [-0.45, -0.45, C.g], [0.5, -0.45, C.v]];
-  return makeLayout((i) => {
-    const [cx, cy, c] = centers[i % centers.length];
-    const r = Math.sqrt(-2 * Math.log(Math.random() + 1e-6)) * 0.09, a = Math.random() * Math.PI * 2;
-    return [cx + Math.cos(a) * r, cy + Math.sin(a) * r, mixc(c, [1, 1, 1], Math.max(0, 0.35 - r * 2))];
-  });
-};
-
-const LAYOUTS = [
-  ["spiral", "葉序螺旋", spiral()],
-  ["text", "文字", textLayout()],
-  ["heart", "愛心", heart()],
-  ["waves", "波浪", waves()],
-  ["clusters", "星團", clusters()],
-];
-
-// Two key-frames live on the GPU; the vertex shader interpolates between them
-const buf = {
-  posA: regl.buffer({ usage: "dynamic", type: "float", data: LAYOUTS[0][2].pos }),
-  posB: regl.buffer({ usage: "dynamic", type: "float", data: LAYOUTS[0][2].pos }),
-  colA: regl.buffer({ usage: "dynamic", type: "float", data: LAYOUTS[0][2].col }),
-  colB: regl.buffer({ usage: "dynamic", type: "float", data: LAYOUTS[0][2].col }),
-  delay: regl.buffer(delays),
-};
-let fromPos = LAYOUTS[0][2].pos, fromCol = LAYOUTS[0][2].col;
-let toPos = fromPos, toCol = fromCol;
-let morphStart = -10;
-
-const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
-
-const draw = regl({
-  vert: `
+const FULLSCREEN_VERT = `
   precision highp float;
-  attribute vec2 posA, posB;
-  attribute vec3 colA, colB;
-  attribute float delay;
-  uniform float progress, time, aspect, pointSize;
-  uniform vec2 mouse;
-  varying vec3 vCol;
-  float ease(float t) { return t < 0.5 ? 4.0 * t * t * t : 1.0 - pow(-2.0 * t + 2.0, 3.0) / 2.0; }
-  void main() {
-    float t = ease(clamp((progress - delay * 0.45) / 0.55, 0.0, 1.0));
-    vec2 p = mix(posA, posB, t);
-    // Swirl outward mid-flight
-    float s = sin(t * 3.14159);
-    p += s * 0.16 * vec2(sin(delay * 41.0 + time * 1.7), cos(delay * 29.0 + time * 1.3));
-    // Idle shimmer
-    p += 0.004 * vec2(sin(time * 2.0 + delay * 60.0), cos(time * 1.6 + delay * 50.0));
-    // Push particles away from the cursor
-    vec2 d = p - mouse;
-    float dist = length(d);
-    p += d / (dist + 1e-4) * 0.13 * exp(-dist * dist * 30.0);
-    vCol = mix(colA, colB, t) * (1.0 + s * 0.6);
-    float scale = min(1.0, aspect);
-    gl_Position = vec4(p.x * scale / aspect, p.y * scale, 0.0, 1.0);
-    gl_PointSize = pointSize;
-  }`,
-  frag: `
-  precision mediump float;
-  varying vec3 vCol;
-  void main() {
-    float d = length(gl_PointCoord - 0.5);
-    if (d > 0.5) discard;
-    gl_FragColor = vec4(vCol, smoothstep(0.5, 0.05, d) * 0.85);
-  }`,
-  attributes: {
-    posA: buf.posA, posB: buf.posB, colA: buf.colA, colB: buf.colB, delay: buf.delay,
+  attribute vec2 position;
+  varying vec2 uv;
+  void main() { uv = position * 0.5 + 0.5; gl_Position = vec4(position, 0.0, 1.0); }`;
+const FULLSCREEN_TRIANGLE = [[-1, -1], [3, -1], [-1, 3]];
+
+Showcase.run({ scenes: [
+  {
+    id: "morph", title: "粒子變形",
+    api: "regl({ attributes, uniforms: { progress: regl.prop('progress') } })・buffer.subdata()",
+    desc: "四萬個粒子的起點與終點各放一組 GPU 緩衝區，頂點著色器依每顆粒子的延遲做錯開的漩渦補間；切換形狀時只用 subdata() 覆寫緩衝區，每幀一次 draw call。",
+    hint: "點形狀按鈕切換・游標靠近會把粒子推開",
+    mount(ctx) {
+      const N = 40000, DURATION = 1.6, AUTO_EVERY = 3.4;
+      const v = reglStage(ctx, { antialias: false });
+      const { regl } = v;
+      const C = { y: cssColor("--c1"), b: cssColor("--c2"), p: cssColor("--c3"), g: cssColor("--c4"), o: cssColor("--c5"), v: cssColor("--c6") };
+      const delays = new Float32Array(N).map(() => Math.random());
+
+      const makeLayout = (fill) => {
+        const pos = new Float32Array(N * 2), col = new Float32Array(N * 3);
+        for (let i = 0; i < N; i++) {
+          const [x, y, c] = fill(i);
+          pos[i * 2] = x; pos[i * 2 + 1] = y;
+          col.set(c, i * 3);
+        }
+        return { pos, col };
+      };
+      const spiral = () => makeLayout((i) => {
+        const r = Math.sqrt(i / N) * 0.92, a = i * 2.399963;
+        return [Math.cos(a) * r, Math.sin(a) * r, mixc(C.y, C.p, r / 0.92)];
+      });
+      const text = () => {
+        // Sample opaque pixels of text drawn on an offscreen 2D canvas
+        const cv = document.createElement("canvas");
+        cv.width = 520; cv.height = 220;
+        const g = cv.getContext("2d");
+        g.fillStyle = "#fff";
+        g.font = "900 190px Arial Black, Arial, sans-serif";
+        g.textAlign = "center"; g.textBaseline = "middle";
+        g.fillText("regl", 260, 112);
+        const data = g.getImageData(0, 0, cv.width, cv.height).data;
+        const hits = [];
+        for (let y = 0; y < cv.height; y++) for (let x = 0; x < cv.width; x++) if (data[(y * cv.width + x) * 4 + 3] > 128) hits.push(x, y);
+        const count = hits.length / 2;
+        return makeLayout(() => {
+          const k = Math.floor(Math.random() * count);
+          const x = ((hits[k * 2] + Math.random() - 260) / 260) * 0.95;
+          const y = (-(hits[k * 2 + 1] + Math.random() - 110) / 260) * 0.95;
+          return [x, y, mixc(C.b, C.y, (x + 0.95) / 1.9)];
+        });
+      };
+      const heart = () => makeLayout(() => {
+        const t = Math.random() * Math.PI * 2, s = Math.sqrt(Math.random());
+        const x = 16 * Math.sin(t) ** 3;
+        const y = 13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t);
+        return [x * s * 0.052, (y * s + 2) * 0.052, mixc(C.p, C.o, s)];
+      });
+      const waves = () => makeLayout((i) => {
+        const lines = 56, k = i % lines, x = (Math.floor(i / lines) / (N / lines)) * 1.9 - 0.95;
+        const y = -0.7 + (k / (lines - 1)) * 1.4 + Math.sin(x * 6 + k * 0.35) * 0.06;
+        return [x, y, mixc(C.g, C.b, k / (lines - 1))];
+      });
+      const clusters = () => {
+        const centers = [[-0.5, 0.35, C.y], [0.45, 0.4, C.b], [0, -0.1, C.p], [-0.45, -0.45, C.g], [0.5, -0.45, C.v]];
+        return makeLayout((i) => {
+          const [cx, cy, c] = centers[i % centers.length];
+          const r = Math.sqrt(-2 * Math.log(Math.random() + 1e-6)) * 0.09, a = Math.random() * Math.PI * 2;
+          return [cx + Math.cos(a) * r, cy + Math.sin(a) * r, mixc(c, [1, 1, 1], Math.max(0, 0.35 - r * 2))];
+        });
+      };
+      const LAYOUTS = [["葉序螺旋", spiral()], ["文字", text()], ["愛心", heart()], ["波浪", waves()], ["星團", clusters()]];
+
+      // Two key-frames live on the GPU; the vertex shader interpolates between them.
+      const first = LAYOUTS[0][1];
+      const buf = {
+        posA: regl.buffer({ usage: "dynamic", type: "float", data: first.pos }),
+        posB: regl.buffer({ usage: "dynamic", type: "float", data: first.pos }),
+        colA: regl.buffer({ usage: "dynamic", type: "float", data: first.col }),
+        colB: regl.buffer({ usage: "dynamic", type: "float", data: first.col }),
+        delay: regl.buffer(delays),
+      };
+      let fromPos = first.pos, fromCol = first.col, toPos = first.pos, toCol = first.col, morphStart = -10;
+      const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+
+      const draw = regl({
+        vert: `
+          precision highp float;
+          attribute vec2 posA, posB;
+          attribute vec3 colA, colB;
+          attribute float delay;
+          uniform float progress, time, aspect, pointSize;
+          uniform vec2 mouse;
+          varying vec3 vCol;
+          float ease(float t) { return t < 0.5 ? 4.0 * t * t * t : 1.0 - pow(-2.0 * t + 2.0, 3.0) / 2.0; }
+          void main() {
+            float t = ease(clamp((progress - delay * 0.45) / 0.55, 0.0, 1.0));
+            vec2 p = mix(posA, posB, t);
+            float s = sin(t * 3.14159);
+            p += s * 0.16 * vec2(sin(delay * 41.0 + time * 1.7), cos(delay * 29.0 + time * 1.3));
+            p += 0.004 * vec2(sin(time * 2.0 + delay * 60.0), cos(time * 1.6 + delay * 50.0));
+            vec2 d = p - mouse;
+            float dist = length(d);
+            p += d / (dist + 1e-4) * 0.13 * exp(-dist * dist * 30.0);
+            vCol = mix(colA, colB, t) * (1.0 + s * 0.6);
+            float scale = min(1.0, aspect);
+            gl_Position = vec4(p.x * scale / aspect, p.y * scale, 0.0, 1.0);
+            gl_PointSize = pointSize;
+          }`,
+        frag: `
+          precision mediump float;
+          varying vec3 vCol;
+          void main() {
+            float d = length(gl_PointCoord - 0.5);
+            if (d > 0.5) discard;
+            gl_FragColor = vec4(vCol, smoothstep(0.5, 0.05, d) * 0.85);
+          }`,
+        attributes: { posA: buf.posA, posB: buf.posB, colA: buf.colA, colB: buf.colB, delay: buf.delay },
+        uniforms: {
+          progress: regl.prop("progress"),
+          time: regl.prop("time"),
+          mouse: regl.prop("mouse"),
+          // Context-derived uniforms are re-evaluated on every call
+          aspect: ({ viewportWidth, viewportHeight }) => viewportWidth / viewportHeight,
+          pointSize: ({ pixelRatio, viewportWidth }) => (viewportWidth / pixelRatio < 520 ? 1.8 : 2.4) * pixelRatio,
+        },
+        blend: { enable: true, func: { srcRGB: "src alpha", srcAlpha: 1, dstRGB: "one", dstAlpha: 1 } },
+        depth: { enable: false },
+        primitive: "points",
+        count: N,
+      });
+
+      // Snapshot where every point is right now so interrupted morphs stay smooth
+      const currentState = (progress) => {
+        if (progress >= 1.0001) return { pos: toPos, col: toCol };
+        const pos = new Float32Array(N * 2), col = new Float32Array(N * 3);
+        for (let i = 0; i < N; i++) {
+          const t = ease(Math.min(1, Math.max(0, (progress - delays[i] * 0.45) / 0.55)));
+          pos[i * 2] = fromPos[i * 2] + (toPos[i * 2] - fromPos[i * 2]) * t;
+          pos[i * 2 + 1] = fromPos[i * 2 + 1] + (toPos[i * 2 + 1] - fromPos[i * 2 + 1]) * t;
+          for (let k = 0; k < 3; k++) col[i * 3 + k] = fromCol[i * 3 + k] + (toCol[i * 3 + k] - fromCol[i * 3 + k]) * t;
+        }
+        return { pos, col };
+      };
+
+      let now = 0, current = 0, auto = true, lastAuto = -AUTO_EVERY + 0.8;
+      const seg = ctx.group(LAYOUTS.map((l) => l[0]), 0, (i) => { setAuto(false); morphTo(i); });
+      const autoBtn = ctx.toggle("自動輪播", true, (on) => setAuto(on));
+      const setAuto = (on) => { auto = on; lastAuto = now; autoBtn.setAttribute("aria-pressed", String(on)); };
+      const morphTo = (index) => {
+        const state = currentState((now - morphStart) / DURATION);
+        fromPos = state.pos; fromCol = state.col;
+        toPos = LAYOUTS[index][1].pos; toCol = LAYOUTS[index][1].col;
+        buf.posA.subdata(fromPos); buf.colA.subdata(fromCol);
+        buf.posB.subdata(toPos); buf.colB.subdata(toCol);
+        morphStart = now;
+        current = index;
+        seg.querySelectorAll("button").forEach((b, i) => b.setAttribute("aria-pressed", String(i === index)));
+      };
+      ctx.fps({ position: "right bottom", extra: () => ({ 粒子: N, "draw call": 1 }) });
+
+      const pointer = trackPointer(ctx, v.canvas);
+      const mouse = [9, 9];
+      regl.frame(({ time }) => {
+        now = time;
+        if (auto && now - lastAuto > AUTO_EVERY) { lastAuto = now; morphTo((current + 1) % LAYOUTS.length); }
+        // Cursor in layout space (matches the vertex shader's aspect handling)
+        const scale = Math.min(1, v.aspect);
+        if (pointer.idle()) { mouse[0] = Math.cos(time * 0.8) * 0.55; mouse[1] = Math.sin(time * 1.1) * 0.4; }
+        else { mouse[0] = (pointer.nx * v.aspect) / scale; mouse[1] = pointer.ny / scale; }
+        regl.clear({ color: [0.04, 0.045, 0.06, 1] });
+        draw({ progress: Math.min(1.0001, (now - morphStart) / DURATION), time: now, mouse });
+      });
+    },
   },
-  uniforms: {
-    progress: regl.prop("progress"),
-    time: regl.prop("time"),
-    mouse: regl.prop("mouse"),
-    aspect: ({ viewportWidth, viewportHeight }) => viewportWidth / viewportHeight,
-    pointSize: ({ pixelRatio, viewportWidth }) => (viewportWidth / pixelRatio < 520 ? 1.8 : 2.4) * pixelRatio,
+  {
+    id: "scope", title: "範圍指令與批次",
+    api: "camera({ eye }, () => drawCube(propsArray))・regl.context('view')",
+    desc: "外層 camera 指令用 context 算好投影與視角矩陣，內層的地板與方塊指令直接繼承；方塊以批次模式一次傳入整個 props 陣列，regl 只綁一次著色器與緩衝區。可切換成逐次呼叫比較 CPU 提交時間。",
+    hint: "切換批次與逐次呼叫・拖曳滑桿增加方塊數",
+    mount(ctx) {
+      ctx.html(`<div class="info panel"></div>`);
+      const v = reglStage(ctx);
+      const { regl } = v;
+      const cube = cubeMesh();
+      const palette = [cssColor("--c2"), cssColor("--c6"), cssColor("--c3"), cssColor("--c1")];
+      const ramp = (t) => {
+        const x = Math.max(0, Math.min(0.999, t)) * (palette.length - 1), i = Math.floor(x);
+        return mixc(palette[i], palette[i + 1], x - i);
+      };
+
+      const camera = regl({
+        context: {
+          projection: ({ viewportWidth: w, viewportHeight: h }) => perspective(w / h < 1 ? 1.1 : 0.78, w / h, 0.1, 300),
+          view: (c, props) => lookAt(props.eye, [0, 0.6, 0]),
+        },
+        uniforms: {
+          projection: regl.context("projection"),
+          view: regl.context("view"),
+          lightDir: [0.45, 0.85, 0.35],
+          fogFar: regl.prop("fogFar"),
+        },
+      });
+      const drawCube = regl({
+        vert: `
+          precision highp float;
+          attribute vec3 position, normal;
+          uniform mat4 projection, view;
+          uniform vec3 offset, scale;
+          varying vec3 vNormal;
+          varying float vDepth;
+          varying float vY;
+          void main() {
+            vec3 p = position * scale + offset + vec3(0.0, scale.y * 0.5, 0.0);
+            vNormal = normal;
+            vY = position.y + 0.5;
+            vec4 mv = view * vec4(p, 1.0);
+            vDepth = -mv.z;
+            gl_Position = projection * mv;
+          }`,
+        frag: `
+          precision highp float;
+          uniform vec3 color, lightDir;
+          uniform float fogFar;
+          varying vec3 vNormal;
+          varying float vDepth;
+          varying float vY;
+          void main() {
+            float diff = max(dot(normalize(vNormal), normalize(lightDir)), 0.0);
+            vec3 col = color * (0.25 + 0.75 * diff) * (0.55 + 0.45 * vY);
+            col = mix(col, vec3(0.04, 0.045, 0.065), smoothstep(fogFar * 0.45, fogFar, vDepth));
+            gl_FragColor = vec4(col, 1.0);
+          }`,
+        attributes: { position: cube.position, normal: cube.normal },
+        elements: cube.elements,
+        uniforms: { offset: regl.prop("offset"), scale: regl.prop("scale"), color: regl.prop("color") },
+      });
+      const drawFloor = regl({
+        vert: `
+          precision highp float;
+          attribute vec2 position;
+          uniform mat4 projection, view;
+          uniform float size;
+          varying vec2 vXZ;
+          varying float vDepth;
+          void main() {
+            vXZ = position * size;
+            vec4 mv = view * vec4(vXZ.x, 0.0, vXZ.y, 1.0);
+            vDepth = -mv.z;
+            gl_Position = projection * mv;
+          }`,
+        frag: `
+          precision highp float;
+          uniform float fogFar;
+          varying vec2 vXZ;
+          varying float vDepth;
+          void main() {
+            vec2 g = abs(fract(vXZ / 1.2 - 0.5) - 0.5);
+            float line = 1.0 - smoothstep(0.0, 0.035, min(g.x, g.y));
+            vec3 col = mix(vec3(0.05, 0.055, 0.08), vec3(0.2, 0.22, 0.3), line);
+            col = mix(col, vec3(0.04, 0.045, 0.065), smoothstep(fogFar * 0.45, fogFar, vDepth));
+            gl_FragColor = vec4(col, 1.0);
+          }`,
+        attributes: { position: [[-1, -1], [1, -1], [1, 1], [-1, -1], [1, 1], [-1, 1]] },
+        uniforms: { size: regl.prop("size") },
+        count: 6,
+      });
+
+      let side = 16, props = [];
+      const build = (n) => {
+        side = n;
+        props = [];
+        for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+          props.push({ offset: [(i - (n - 1) / 2) * 1.2, 0, (j - (n - 1) / 2) * 1.2], scale: [0.85, 1, 0.85], color: [1, 1, 1] });
+        }
+      };
+      build(side);
+
+      const info = ctx.$(".info");
+      let batch = true, submitMs = 0;
+      ctx.group(["批次", "逐次呼叫"], 0, (i) => { batch = i === 0; });
+      ctx.slider("邊長", { min: 6, max: 40, step: 2, value: side, format: (x) => `${x}×${x}` }, (n) => build(n));
+      ctx.fps({ position: "right bottom", extra: () => ({ 方塊: props.length, "draw call": props.length + 1 }) });
+
+      const pointer = trackPointer(ctx, v.canvas);
+      let shownAt = 0;
+      regl.frame(({ time }) => {
+        const t = time;
+        // Pointer tilts the wave origin; idle drifts it in a loop
+        const ox = pointer.idle() ? Math.sin(t * 0.5) * side * 0.3 : pointer.nx * side * 0.6;
+        const oz = pointer.idle() ? Math.cos(t * 0.37) * side * 0.3 : -pointer.ny * side * 0.6;
+        for (const p of props) {
+          const d = Math.hypot(p.offset[0] - ox, p.offset[2] - oz);
+          const w = 0.5 + 0.5 * Math.sin(d * 0.55 - t * 2.4);
+          p.scale[1] = 0.3 + w * 2.6;
+          const c = ramp(w);
+          p.color[0] = c[0]; p.color[1] = c[1]; p.color[2] = c[2];
+        }
+        const r = side * 0.85 + 7, a = t * 0.12;
+        const eye = [Math.cos(a) * r * (v.aspect < 1 ? 1.35 : 1), side * 0.55 + 5, Math.sin(a) * r * (v.aspect < 1 ? 1.35 : 1)];
+        regl.clear({ color: [0.04, 0.045, 0.065, 1], depth: 1 });
+        const t0 = performance.now();
+        camera({ eye, fogFar: r * 2.6 }, () => {
+          drawFloor({ size: side * 1.2 });
+          if (batch) drawCube(props);
+          else for (const p of props) drawCube(p);
+        });
+        submitMs += (performance.now() - t0 - submitMs) * 0.1;
+        if (time - shownAt > 0.25) {
+          shownAt = time;
+          info.innerHTML = `<b>${batch ? "drawCube(props)" : "props.forEach(drawCube)"}</b><br>CPU 提交 <b>${submitMs.toFixed(2)} ms</b>／幀<br>${batch ? "一次批次呼叫，著色器只綁一次" : `${props.length.toLocaleString()} 次獨立呼叫`}`;
+        }
+      });
+    },
   },
-  blend: { enable: true, func: { srcRGB: "src alpha", srcAlpha: 1, dstRGB: "one", dstAlpha: 1 } },
-  depth: { enable: false },
-  primitive: "points",
-  count: N,
-});
+  {
+    id: "reaction", title: "反應擴散",
+    api: "regl.framebuffer({ color: regl.texture({ type: 'float' }) })・framebuffer: regl.prop('dst')",
+    desc: "Gray-Scott 反應擴散：兩個浮點 framebuffer 互相讀寫（乒乓），每幀在 GPU 上迭代數十步，再用另一個指令把濃度上色並加浮雕光影。執行時先檢查浮點紋理能否當作繪製目標，不行就退回半浮點。",
+    hint: "在畫面上拖曳播種・切換參數預設看不同圖樣",
+    mount(ctx) {
+      ctx.html(`<div class="info panel"></div>`);
+      const v = reglStage(ctx, { antialias: false, optionalExtensions: ["oes_texture_float", "oes_texture_half_float", "webgl_color_buffer_float", "ext_color_buffer_half_float", "oes_texture_float_linear", "oes_texture_half_float_linear"] });
+      const { regl } = v;
+      const gl = regl._gl;
+      const SIM_H = 256;
+      let simW = Math.round(SIM_H * v.aspect);
 
-// Snapshot where every point is right now so interrupted morphs stay smooth
-function currentState(progress) {
-  if (progress >= 1.0001) return { pos: toPos, col: toCol };
-  const pos = new Float32Array(N * 2), col = new Float32Array(N * 3);
-  for (let i = 0; i < N; i++) {
-    const t = ease(Math.min(1, Math.max(0, (progress - delays[i] * 0.45) / 0.55)));
-    pos[i * 2] = fromPos[i * 2] + (toPos[i * 2] - fromPos[i * 2]) * t;
-    pos[i * 2 + 1] = fromPos[i * 2 + 1] + (toPos[i * 2 + 1] - fromPos[i * 2 + 1]) * t;
-    for (let k = 0; k < 3; k++) col[i * 3 + k] = fromCol[i * 3 + k] + (toCol[i * 3 + k] - fromCol[i * 3 + k]) * t;
-  }
-  return { pos, col };
-}
+      // Probe which texture type can actually be rendered to on this device.
+      const candidates = [];
+      if (regl.hasExtension("oes_texture_float")) candidates.push("float");
+      if (regl.hasExtension("oes_texture_half_float")) candidates.push("half float");
+      candidates.push("uint8");
+      const makeFbo = (type, w, h) => regl.framebuffer({
+        color: regl.texture({ width: w, height: h, type, min: "nearest", mag: "nearest", wrap: "clamp" }),
+        depthStencil: false,
+      });
+      let type = "uint8", fbos = null;
+      for (const t of candidates) {
+        try {
+          const a = makeFbo(t, simW, SIM_H);
+          let ok = false;
+          a.use(() => { ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE; });
+          if (!ok) { a.destroy(); continue; }
+          fbos = [a, makeFbo(t, simW, SIM_H)];
+          type = t;
+          break;
+        } catch (e) { console.info(`framebuffer type ${t} not renderable: ${e.message}`); }
+      }
 
-let now = 0, current = 0, auto = true, lastAuto = 0;
-function morphTo(index) {
-  const state = currentState((now - morphStart) / DURATION);
-  fromPos = state.pos; fromCol = state.col;
-  toPos = LAYOUTS[index][2].pos; toCol = LAYOUTS[index][2].col;
-  buf.posA.subdata(fromPos); buf.colA.subdata(fromCol);
-  buf.posB.subdata(toPos); buf.colB.subdata(toCol);
-  morphStart = now;
-  current = index;
-  document.querySelectorAll("#bar .btn[data-i]").forEach((b) => b.setAttribute("aria-pressed", String(+b.dataset.i === index)));
-}
+      const seed = regl({
+        vert: FULLSCREEN_VERT,
+        frag: `
+          precision highp float;
+          uniform float seed, aspect;
+          varying vec2 uv;
+          float hash(float n) { return fract(sin(n) * 43758.5453); }
+          void main() {
+            float b = 0.0;
+            for (int i = 0; i < 14; i++) {
+              float fi = float(i) + seed * 17.0;
+              vec2 c = vec2(0.1 + 0.8 * hash(fi * 3.1), 0.1 + 0.8 * hash(fi * 7.7));
+              float r = 0.015 + 0.035 * hash(fi * 1.3);
+              if (length((uv - c) * vec2(aspect, 1.0)) < r) b = 1.0;
+            }
+            gl_FragColor = vec4(1.0, b, 0.0, 1.0);
+          }`,
+        attributes: { position: FULLSCREEN_TRIANGLE },
+        count: 3,
+        uniforms: { seed: regl.prop("seed"), aspect: () => simW / SIM_H },
+        framebuffer: regl.prop("dst"),
+        depth: { enable: false },
+      });
+      const step = regl({
+        vert: FULLSCREEN_VERT,
+        frag: `
+          precision highp float;
+          uniform sampler2D state;
+          uniform vec2 texel;
+          uniform float F, K, aspect;
+          uniform vec3 brush;
+          varying vec2 uv;
+          vec2 s(vec2 o) { return texture2D(state, uv + o * texel).xy; }
+          void main() {
+            vec2 c = s(vec2(0.0));
+            vec2 lap = -c
+              + 0.2 * (s(vec2(1.0, 0.0)) + s(vec2(-1.0, 0.0)) + s(vec2(0.0, 1.0)) + s(vec2(0.0, -1.0)))
+              + 0.05 * (s(vec2(1.0, 1.0)) + s(vec2(-1.0, 1.0)) + s(vec2(1.0, -1.0)) + s(vec2(-1.0, -1.0)));
+            float a = c.x, b = c.y, abb = a * b * b;
+            float na = a + (1.0 * lap.x - abb + F * (1.0 - a));
+            float nb = b + (0.5 * lap.y + abb - (K + F) * b);
+            if (brush.z > 0.0 && length((uv - brush.xy) * vec2(aspect, 1.0)) < brush.z) nb = 0.9;
+            gl_FragColor = vec4(clamp(na, 0.0, 1.0), clamp(nb, 0.0, 1.0), 0.0, 1.0);
+          }`,
+        attributes: { position: FULLSCREEN_TRIANGLE },
+        count: 3,
+        uniforms: {
+          state: regl.prop("src"),
+          texel: () => [1 / simW, 1 / SIM_H],
+          aspect: () => simW / SIM_H,
+          F: regl.prop("F"), K: regl.prop("K"), brush: regl.prop("brush"),
+        },
+        framebuffer: regl.prop("dst"),
+        depth: { enable: false },
+      });
+      const show = regl({
+        vert: FULLSCREEN_VERT,
+        frag: `
+          precision highp float;
+          uniform sampler2D state;
+          uniform vec2 texel;
+          uniform vec3 c0, c1, c2;
+          varying vec2 uv;
+          void main() {
+            float b = texture2D(state, uv).y;
+            float bx = texture2D(state, uv + vec2(texel.x, 0.0)).y - texture2D(state, uv - vec2(texel.x, 0.0)).y;
+            float by = texture2D(state, uv + vec2(0.0, texel.y)).y - texture2D(state, uv - vec2(0.0, texel.y)).y;
+            vec3 n = normalize(vec3(-bx * 6.0, -by * 6.0, 1.0));
+            float light = 0.65 + 0.5 * dot(n, normalize(vec3(-0.5, 0.6, 0.6)));
+            float t = smoothstep(0.02, 0.42, b);
+            vec3 col = mix(vec3(0.035, 0.04, 0.06), c0, smoothstep(0.0, 0.35, t));
+            col = mix(col, c1, smoothstep(0.3, 0.7, t));
+            col = mix(col, c2, smoothstep(0.7, 1.0, t));
+            gl_FragColor = vec4(col * light, 1.0);
+          }`,
+        attributes: { position: FULLSCREEN_TRIANGLE },
+        count: 3,
+        uniforms: {
+          state: regl.prop("src"), texel: () => [1 / simW, 1 / SIM_H],
+          c0: cssColor("--c6"), c1: cssColor("--c2"), c2: [0.95, 0.98, 1],
+        },
+        depth: { enable: false },
+      });
 
-const bar = document.getElementById("bar");
-LAYOUTS.forEach(([key, label], i) => {
-  const b = document.createElement("button");
-  b.className = "btn"; b.type = "button"; b.dataset.i = i; b.textContent = label;
-  b.setAttribute("aria-pressed", String(i === 0));
-  b.addEventListener("click", () => { setAuto(false); morphTo(i); });
-  bar.append(b);
-});
-const autoBtn = document.createElement("button");
-autoBtn.className = "btn primary"; autoBtn.type = "button";
-function setAuto(on) {
-  auto = on; lastAuto = now;
-  autoBtn.textContent = on ? "自動輪播中" : "自動輪播";
-  autoBtn.className = on ? "btn primary" : "btn";
-}
-autoBtn.addEventListener("click", () => setAuto(!auto));
-bar.append(autoBtn);
-setAuto(true);
-lastAuto = -AUTO_EVERY + 0.8; // first morph shortly after load
+      const PRESETS = [["珊瑚", 0.0545, 0.062], ["細胞分裂", 0.0367, 0.0649], ["迷宮", 0.029, 0.057], ["孔洞", 0.039, 0.058]];
+      let preset = PRESETS[0], iterations = 16, seedCount = 0;
+      const reseed = () => { seed({ seed: (seedCount++ % 97) + Math.random(), dst: fbos[0] }); };
+      reseed();
 
-document.getElementById("stat").innerHTML = `粒子 <b>${N.toLocaleString()}</b>・每幀 <b>1</b> 次 draw call`;
+      ctx.$(".info").innerHTML = `模擬格點 <b>${simW}×${SIM_H}</b><br>紋理型別 <code>${type}</code>${type === "uint8" ? "<br>此裝置不支援浮點繪製目標，精度不足，圖樣可能無法成長" : ""}`;
+      ctx.group(PRESETS.map((p) => p[0]), 0, (i) => { preset = PRESETS[i]; reseed(); });
+      ctx.slider("每幀步數", { min: 2, max: 40, step: 2, value: iterations }, (x) => { iterations = x; });
+      ctx.button("重新播種", reseed);
+      ctx.fps({ position: "right bottom", extra: () => ({ 每幀模擬: `${iterations} 步` }) });
 
-// Cursor in layout space (matches the vertex shader's aspect handling)
-const mouse = [9, 9];
-addEventListener("pointermove", (e) => {
-  const aspect = innerWidth / innerHeight, scale = Math.min(1, aspect);
-  mouse[0] = ((e.clientX / innerWidth) * 2 - 1) * aspect / scale;
-  mouse[1] = (-(e.clientY / innerHeight) * 2 + 1) / scale;
-});
-document.addEventListener("pointerleave", () => { mouse[0] = mouse[1] = 9; });
+      // Resize the simulation grid when the stage aspect changes noticeably.
+      ctx.onResize(() => {
+        const w = Math.round(SIM_H * v.aspect);
+        if (Math.abs(w - simW) / simW < 0.08) return;
+        simW = w;
+        fbos.forEach((f) => f.resize(simW, SIM_H));
+        reseed();
+        ctx.$(".info b").textContent = `${simW}×${SIM_H}`;
+      });
 
-regl.frame(({ time }) => {
-  now = time;
-  if (auto && now - lastAuto > AUTO_EVERY) {
-    lastAuto = now;
-    morphTo((current + 1) % LAYOUTS.length);
-  }
-  regl.clear({ color: [0.04, 0.045, 0.06, 1] });
-  draw({ progress: Math.min(1.0001, (now - morphStart) / DURATION), time: now, mouse });
-});
+      const pointer = trackPointer(ctx, v.canvas);
+      const off = [0, 0, 0];
+      let nextDrop = 2.5;
+      regl.frame(({ time }) => {
+        let brush = off;
+        if (!pointer.idle(120) || pointer.down) brush = [pointer.x / v.width, 1 - pointer.y / v.height, 0.018];
+        else if (pointer.idle() && time > nextDrop) {
+          nextDrop = time + 2.2;
+          brush = [0.15 + Math.random() * 0.7, 0.15 + Math.random() * 0.7, 0.03];
+        }
+        for (let i = 0; i < iterations; i++) {
+          step({ src: fbos[0], dst: fbos[1], F: preset[1], K: preset[2], brush: i === 0 ? brush : off });
+          fbos.reverse();
+        }
+        show({ src: fbos[0] });
+      });
+    },
+  },
+  {
+    id: "grass", title: "實例化草原",
+    api: "regl({ attributes: { offset: { buffer, divisor: 1 } }, instances })",
+    desc: "每片草葉是 9 個頂點的三角形帶，位置、高度、朝向與色差存成 divisor 1 的實例屬性；整片草原只發一次 ANGLE_instanced_arrays 繪製，風與游標陣風都在頂點著色器計算。",
+    hint: "移動游標在草地上吹起陣風・調整草葉數與風力",
+    mount(ctx) {
+      const MAX = 80000;
+      const v = reglStage(ctx, { extensions: ["angle_instanced_arrays"] });
+      const { regl } = v;
+      const offsets = new Float32Array(MAX * 2), params = new Float32Array(MAX * 4);
+      for (let i = 0; i < MAX; i++) {
+        const r = Math.sqrt(Math.random()) * 34, a = Math.random() * Math.PI * 2;
+        offsets[i * 2] = Math.cos(a) * r; offsets[i * 2 + 1] = Math.sin(a) * r;
+        params.set([0.7 + Math.random() * 1.1, 0.08 + Math.random() * 0.06, Math.random(), Math.random()], i * 4);
+      }
+      const offsetBuf = regl.buffer(offsets), paramBuf = regl.buffer(params);
+      const BLADE = [[-0.5, 0], [0.5, 0], [-0.5, 0.25], [0.5, 0.25], [-0.5, 0.5], [0.5, 0.5], [-0.5, 0.75], [0.5, 0.75], [0, 1]];
+      let count = 30000, wind = 1, orbit = true, angle = 0.6;
+
+      const SKY_TOP = [0.09, 0.13, 0.27], SKY_LOW = [0.98, 0.62, 0.38];
+      const scene = regl({
+        uniforms: {
+          projection: ({ viewportWidth: w, viewportHeight: h }) => perspective(w / h < 1 ? 1.15 : 0.85, w / h, 0.1, 200),
+          view: regl.prop("view"),
+          fogColor: SKY_LOW,
+        },
+      });
+      const sky = regl({
+        vert: FULLSCREEN_VERT,
+        frag: `
+          precision highp float;
+          uniform vec3 top, low;
+          uniform vec2 sun;
+          uniform float aspect;
+          varying vec2 uv;
+          void main() {
+            vec3 col = mix(low, top, smoothstep(0.35, 1.0, uv.y));
+            float d = length((uv - sun) * vec2(aspect, 1.0));
+            col += vec3(1.0, 0.8, 0.5) * (exp(-d * 9.0) * 0.9 + exp(-d * 2.5) * 0.25);
+            gl_FragColor = vec4(col, 1.0);
+          }`,
+        attributes: { position: FULLSCREEN_TRIANGLE },
+        count: 3,
+        uniforms: { top: SKY_TOP, low: SKY_LOW, sun: [0.7, 0.62], aspect: ({ viewportWidth: w, viewportHeight: h }) => w / h },
+        depth: { enable: false },
+      });
+      const ground = regl({
+        vert: `
+          precision highp float;
+          attribute vec2 position;
+          uniform mat4 projection, view;
+          varying float vFog;
+          varying vec2 vXZ;
+          void main() {
+            vXZ = position * 60.0;
+            vec4 mv = view * vec4(vXZ.x, 0.0, vXZ.y, 1.0);
+            vFog = smoothstep(18.0, 70.0, -mv.z);
+            gl_Position = projection * mv;
+          }`,
+        frag: `
+          precision highp float;
+          uniform vec3 fogColor;
+          varying float vFog;
+          varying vec2 vXZ;
+          void main() {
+            vec3 col = mix(vec3(0.06, 0.1, 0.04), vec3(0.12, 0.09, 0.05), smoothstep(30.0, 38.0, length(vXZ)));
+            gl_FragColor = vec4(mix(col, fogColor, vFog), 1.0);
+          }`,
+        attributes: { position: [[-1, -1], [1, -1], [1, 1], [-1, -1], [1, 1], [-1, 1]] },
+        count: 6,
+      });
+      const grass = regl({
+        vert: `
+          precision highp float;
+          attribute vec2 blade;
+          attribute vec2 offset;
+          attribute vec4 params;
+          uniform mat4 projection, view;
+          uniform float time, wind;
+          uniform vec2 gust;
+          varying float vY;
+          varying float vVar;
+          varying float vFog;
+          void main() {
+            float h = params.x, y = blade.y;
+            float w = params.y * (1.0 - y * 0.85);
+            float sway = (sin(offset.x * 0.22 + time * 1.7 + params.z * 2.0) * 0.35 + sin(offset.y * 0.17 - time * 1.2) * 0.25) * wind;
+            vec2 toG = offset - gust;
+            float g = exp(-dot(toG, toG) * 0.03);
+            vec2 bend = vec2(sway, sway * 0.45) + normalize(toG + 1e-4) * g * 1.8;
+            float k = y * y;
+            float ang = params.z * 6.2831;
+            vec3 side = vec3(cos(ang), 0.0, sin(ang));
+            vec3 p = vec3(offset.x, 0.0, offset.y) + side * blade.x * w;
+            p += vec3(bend.x * k * h, y * h * (1.0 - 0.3 * k * min(length(bend), 1.5)), bend.y * k * h);
+            vY = y;
+            vVar = params.w;
+            vec4 mv = view * vec4(p, 1.0);
+            vFog = smoothstep(18.0, 70.0, -mv.z);
+            gl_Position = projection * mv;
+          }`,
+        frag: `
+          precision highp float;
+          uniform vec3 fogColor;
+          varying float vY;
+          varying float vVar;
+          varying float vFog;
+          void main() {
+            vec3 base = vec3(0.05, 0.13, 0.04);
+            vec3 tip = mix(vec3(0.45, 0.78, 0.25), vec3(0.88, 0.8, 0.36), vVar * vVar);
+            vec3 col = mix(base, tip, smoothstep(0.0, 1.0, vY));
+            col += vec3(1.0, 0.7, 0.4) * pow(vY, 4.0) * 0.25;
+            gl_FragColor = vec4(mix(col, fogColor, vFog), 1.0);
+          }`,
+        attributes: {
+          blade: BLADE,
+          offset: { buffer: offsetBuf, divisor: 1 },
+          params: { buffer: paramBuf, divisor: 1 },
+        },
+        uniforms: { time: regl.prop("time"), wind: () => wind, gust: regl.prop("gust") },
+        primitive: "triangle strip",
+        count: BLADE.length,
+        instances: () => count,
+      });
+
+      ctx.slider("草葉數", { min: 5000, max: MAX, step: 5000, value: count, format: (x) => `${x / 1000}k` }, (x) => { count = x; });
+      ctx.slider("風力", { min: 0, max: 2.5, step: 0.1, value: wind }, (x) => { wind = x; });
+      ctx.toggle("環繞鏡頭", true, (on) => { orbit = on; });
+      ctx.fps({ position: "right bottom", extra: () => ({ 草葉: count, 頂點: count * BLADE.length, "draw call": 3 }) });
+
+      const pointer = trackPointer(ctx, v.canvas);
+      const gust = [0, 0];
+      let prev = 0;
+      regl.frame(({ time }) => {
+        if (orbit) angle += (time - prev) * 0.06;
+        prev = time;
+        const R = v.aspect < 1 ? 30 : 24;
+        const eye = [Math.cos(angle) * R, 6.5, Math.sin(angle) * R], center = [0, 1.2, 0];
+        const view = lookAt(eye, center);
+        if (pointer.idle()) { gust[0] = Math.cos(time * 0.6) * 11; gust[1] = Math.sin(time * 0.6) * 11; }
+        else {
+          // Cast the pointer ray onto the ground plane using the camera basis vectors.
+          const fov = v.aspect < 1 ? 1.15 : 0.85, tanH = Math.tan(fov / 2);
+          const z = norm(sub(eye, center)), x = norm(cross([0, 1, 0], z)), y = cross(z, x);
+          const dir = norm([0, 1, 2].map((k) => -z[k] + x[k] * pointer.nx * tanH * v.aspect + y[k] * pointer.ny * tanH));
+          if (dir[1] < -0.01) { const t = -eye[1] / dir[1]; gust[0] = eye[0] + dir[0] * t; gust[1] = eye[2] + dir[2] * t; }
+        }
+        regl.clear({ color: [0, 0, 0, 1], depth: 1 });
+        sky();
+        scene({ view }, () => {
+          ground();
+          grass({ time, gust });
+        });
+      });
+    },
+  },
+  {
+    id: "photo", title: "照片濾鏡與讀回",
+    api: "regl.texture({ data: image })・fbo.use(() => draw())・regl.read({ framebuffer })",
+    desc: "照片上傳成紋理後，六個濾鏡各是一個獨立的 regl 指令，共用同一組頂點資料。右上角直方圖每隔幾幀把濾鏡結果畫進小型 framebuffer，再用 regl.read() 讀回 CPU 統計 RGB 分布。",
+    hint: "切換濾鏡與照片・移動游標改變濾鏡中心",
+    mount(ctx) {
+      const PHOTOS = [{ value: "6", label: "水母" }, { value: "5", label: "瀑布" }, { value: "2", label: "峽谷" }, { value: "7", label: "獅子" }, { value: "4", label: "巴哥犬" }];
+      ctx.html(`<div class="histo panel"><span>regl.read() 讀回 <b class="rb">-</b></span><canvas width="400" height="128"></canvas></div>`);
+      const v = reglStage(ctx);
+      const { regl } = v;
+      const photo = regl.texture({ width: 1, height: 1 });
+      let imageAspect = 1.5, ready = false;
+
+      const HEAD = `
+        precision highp float;
+        uniform sampler2D photo;
+        uniform vec2 scale, mouse, res;
+        uniform float time, aspect;
+        varying vec2 uv;
+        vec3 tex(vec2 p) { return texture2D(photo, clamp((p - 0.5) * scale + 0.5, 0.001, 0.999)).rgb; }
+        float lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+      `;
+      const FILTERS = [
+        ["原圖", `void main() { gl_FragColor = vec4(tex(uv), 1.0); }`],
+        ["像素化", `void main() {
+          float n = mix(14.0, 90.0, clamp(length((uv - mouse) * vec2(aspect, 1.0)) * 1.6, 0.0, 1.0));
+          vec2 cells = vec2(n * aspect, n);
+          vec2 q = (floor(uv * cells) + 0.5) / cells;
+          vec2 f = abs(fract(uv * cells) - 0.5);
+          float m = smoothstep(0.5, 0.4, max(f.x, f.y));
+          gl_FragColor = vec4(tex(q) * mix(0.25, 1.0, m), 1.0);
+        }`],
+        ["萬花筒", `void main() {
+          vec2 p = (uv - mouse) * vec2(aspect, 1.0);
+          float r = length(p), a = atan(p.y, p.x) + time * 0.1;
+          float seg = 6.2831853 / 8.0;
+          a = abs(mod(a, seg) - seg * 0.5);
+          p = vec2(cos(a), sin(a)) * r;
+          gl_FragColor = vec4(tex(0.5 + p * vec2(1.0 / aspect, 1.0) * 0.9), 1.0);
+        }`],
+        ["漣漪", `void main() {
+          vec2 d = (uv - mouse) * vec2(aspect, 1.0);
+          float r = length(d), w = sin(r * 42.0 - time * 5.0) * exp(-r * 2.2);
+          vec2 off = normalize(d + 1e-5) * w * 0.014;
+          vec3 c = tex(uv + off / vec2(aspect, 1.0)) + w * 0.06;
+          gl_FragColor = vec4(c, 1.0);
+        }`],
+        ["邊緣", `void main() {
+          vec2 px = 1.0 / res;
+          float tl = lum(tex(uv + px * vec2(-1.0, 1.0))), t = lum(tex(uv + px * vec2(0.0, 1.0))), tr = lum(tex(uv + px * vec2(1.0, 1.0)));
+          float l = lum(tex(uv + px * vec2(-1.0, 0.0))), r = lum(tex(uv + px * vec2(1.0, 0.0)));
+          float bl = lum(tex(uv + px * vec2(-1.0, -1.0))), b = lum(tex(uv + px * vec2(0.0, -1.0))), br = lum(tex(uv + px * vec2(1.0, -1.0)));
+          float gx = -tl - 2.0 * l - bl + tr + 2.0 * r + br;
+          float gy = -bl - 2.0 * b - br + tl + 2.0 * t + tr;
+          float e = smoothstep(0.08, 0.6, length(vec2(gx, gy)));
+          vec3 hue = 0.5 + 0.5 * cos(6.2831 * (uv.x * 0.6 + time * 0.08 + vec3(0.0, 0.33, 0.67)));
+          gl_FragColor = vec4(mix(vec3(0.03, 0.035, 0.05), hue, e), 1.0);
+        }`],
+        ["熱感", `void main() {
+          float x = lum(tex(uv));
+          vec3 c = mix(vec3(0.0, 0.0, 0.25), vec3(0.6, 0.0, 0.6), smoothstep(0.0, 0.3, x));
+          c = mix(c, vec3(1.0, 0.35, 0.0), smoothstep(0.25, 0.6, x));
+          c = mix(c, vec3(1.0, 1.0, 0.6), smoothstep(0.6, 0.95, x));
+          gl_FragColor = vec4(c, 1.0);
+        }`],
+      ];
+      const commands = FILTERS.map(([, body]) => regl({
+        vert: FULLSCREEN_VERT,
+        frag: HEAD + body,
+        attributes: { position: FULLSCREEN_TRIANGLE },
+        count: 3,
+        uniforms: {
+          photo,
+          time: regl.prop("time"),
+          mouse: regl.prop("mouse"),
+          res: ({ viewportWidth: w, viewportHeight: h }) => [w, h],
+          aspect: ({ viewportWidth: w, viewportHeight: h }) => w / h,
+          // Cover-fit the photo into whatever viewport is bound (screen or the small read-back target)
+          scale: ({ viewportWidth: w, viewportHeight: h }) => (w / h > imageAspect ? [1, imageAspect / (w / h)] : [(w / h) / imageAspect, 1]),
+        },
+        depth: { enable: false },
+      }));
+
+      const RB_W = 160, RB_H = 100;
+      const small = regl.framebuffer({ width: RB_W, height: RB_H, depthStencil: false });
+      const pixels = new Uint8Array(RB_W * RB_H * 4);
+      ctx.$(".rb").textContent = `${RB_W}×${RB_H}`;
+      const hc = ctx.$(".histo canvas"), g2 = hc.getContext("2d");
+      const BINS = 64;
+      const drawHistogram = () => {
+        const bins = [new Float32Array(BINS), new Float32Array(BINS), new Float32Array(BINS)];
+        for (let i = 0; i < pixels.length; i += 4) for (let c = 0; c < 3; c++) bins[c][(pixels[i + c] * BINS) >> 8]++;
+        const peak = Math.max(...bins.map((b) => Math.max(...b.subarray(1, BINS - 1)))) || 1;
+        g2.clearRect(0, 0, hc.width, hc.height);
+        g2.globalCompositeOperation = "lighter";
+        ["#ff3b5c", "#3bff7a", "#3b8bff"].forEach((color, c) => {
+          g2.beginPath();
+          g2.moveTo(0, hc.height);
+          for (let i = 0; i < BINS; i++) g2.lineTo((i / (BINS - 1)) * hc.width, hc.height - Math.min(1, bins[c][i] / peak) * (hc.height - 4));
+          g2.lineTo(hc.width, hc.height);
+          g2.closePath();
+          g2.fillStyle = color + "88";
+          g2.fill();
+        });
+        g2.globalCompositeOperation = "source-over";
+      };
+
+      const status = ctx.status("載入照片…");
+      const load = (n) => {
+        const img = new Image();
+        img.onload = () => {
+          if (!ctx.active) return;
+          photo({ data: img, flipY: true, min: "linear", mag: "linear" });
+          imageAspect = img.naturalWidth / img.naturalHeight;
+          ready = true;
+          status.done();
+        };
+        img.onerror = () => status.error("照片載入失敗");
+        img.src = `_shared/img/photo-${n}.jpg`;
+      };
+      load(PHOTOS[0].value);
+
+      let filter = 2;
+      ctx.select("", PHOTOS, PHOTOS[0].value, load);
+      ctx.group(FILTERS.map((f) => f[0]), filter, (i) => { filter = i; });
+      ctx.fps({ position: "right bottom", extra: () => ({ 濾鏡: FILTERS[filter][0] }) });
+
+      const pointer = trackPointer(ctx, v.canvas);
+      const mouse = [0.5, 0.5];
+      let frame = 0;
+      regl.frame(({ time }) => {
+        regl.clear({ color: [0.04, 0.045, 0.06, 1] });
+        if (!ready) return;
+        if (pointer.idle()) { mouse[0] = 0.5 + Math.cos(time * 0.5) * 0.22; mouse[1] = 0.5 + Math.sin(time * 0.7) * 0.2; }
+        else { mouse[0] = pointer.x / v.width; mouse[1] = 1 - pointer.y / v.height; }
+        const props = { time, mouse };
+        commands[filter](props);
+        if (frame++ % 6 === 0) {
+          small.use(() => { commands[filter](props); });
+          regl.read({ framebuffer: small, data: pixels });
+          drawHistogram();
+        }
+      });
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "regl({ primitive: 'points', count: regl.prop('count') })",
+    desc: "每個點只帶三個隨機數，形狀（環面紐結）、旋轉與顏色都在頂點著色器算，一次 drawArrays 畫完。逐級加點直到掉到 30 FPS 以下。",
+    hint: "按「自動加壓」開始；也可拖曳滑桿手動調整點數",
+    mount(ctx) {
+      ctx.html(`<div class="stress-box"></div>`);
+      const v = reglStage(ctx, { host: ctx.$(".stress-box"), antialias: false });
+      const { regl } = v;
+      const buffer = regl.buffer({ usage: "static", type: "float", length: 4 });
+      let capacity = 0, count = 0;
+      const draw = regl({
+        vert: `
+          precision highp float;
+          attribute vec3 seed;
+          uniform float time, aspect, dpr;
+          varying vec3 vColor;
+          void main() {
+            float t = seed.x * 6.2831853 + time * 0.15;
+            // (2,3) torus knot
+            vec3 k = vec3((2.0 + cos(3.0 * t)) * cos(2.0 * t), (2.0 + cos(3.0 * t)) * sin(2.0 * t), sin(3.0 * t)) * 0.3;
+            float a = seed.y * 6.2831853, r = sqrt(seed.z) * 0.16;
+            vec3 p = k + vec3(cos(a) * r, sin(a) * r, cos(a * 1.7 + seed.z * 9.0) * r);
+            float ry = time * 0.25, rx = 0.5;
+            p = vec3(p.x * cos(ry) + p.z * sin(ry), p.y, -p.x * sin(ry) + p.z * cos(ry));
+            p = vec3(p.x, p.y * cos(rx) - p.z * sin(rx), p.y * sin(rx) + p.z * cos(rx));
+            float persp = 1.0 / (2.6 - p.z);
+            float s = min(1.0, aspect) * 2.1;
+            gl_Position = vec4(p.x * persp * s / aspect, p.y * persp * s, 0.0, 1.0);
+            gl_PointSize = dpr;
+            vColor = 0.5 + 0.5 * cos(6.2831 * (seed.x + vec3(0.0, 0.33, 0.67)));
+          }`,
+        frag: `
+          precision mediump float;
+          varying vec3 vColor;
+          void main() { gl_FragColor = vec4(vColor * 0.35, 1.0); }`,
+        attributes: { seed: buffer },
+        uniforms: {
+          time: regl.prop("time"),
+          aspect: ({ viewportWidth: w, viewportHeight: h }) => w / h,
+          dpr: ({ pixelRatio }) => Math.max(1, pixelRatio),
+        },
+        blend: { enable: true, func: { src: "one", dst: "one" } },
+        depth: { enable: false },
+        primitive: "points",
+        count: () => count,
+      });
+      const apply = (n) => {
+        // Grow the attribute buffer lazily; smaller steps draw a prefix of it.
+        if (n > capacity) {
+          const data = new Float32Array(n * 3);
+          for (let i = 0; i < data.length; i++) data[i] = Math.random();
+          buffer({ usage: "static", type: "float", data });
+          capacity = n;
+        }
+        count = n;
+      };
+      regl.frame(({ time }) => {
+        regl.clear({ color: [0.03, 0.035, 0.05, 1] });
+        if (count) draw({ time });
+      });
+      ctx.controls.classList.add("bottom");
+      ctx.ramp({
+        label: "點", steps: [50000, 100000, 250000, 500000, 1000000, 2000000, 4000000],
+        minFps: 30,
+        apply,
+        metrics: () => ({ 緩衝區: `${((capacity * 12) / 1048576).toFixed(1)} MB`, "draw call": 1 }),
+        note: "點數增加時 CPU 端只多一次緩衝區上傳，之後每幀成本幾乎全落在 GPU 的頂點處理與疊加混色；無頭瀏覽器用軟體算繪，數字會遠低於實機。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

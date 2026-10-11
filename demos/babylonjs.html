@@ -3,338 +3,1025 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Babylon.js 示範：Havok 物理推倒積木塔</title>
+<title>Babylon.js 示範：八個場景看懂完整 3D 引擎與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","size":"約 2.5 MB","note":"物理引擎為 Havok（WebAssembly），控制面板是 Babylon GUI 直接畫在 canvas 上"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","size":"約 2.6 MB","scenes":["Havok 積木塔","PBR 材質","粒子系統","GUI 介面","glTF 動畫","後製管線","網格建構","極限測試"]}</script>
 <style>
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; outline: none; touch-action: none; }
+  .sc-scene canvas.bjs { position: absolute; inset: 0; width: 100%; height: 100%; display: block; outline: none; touch-action: none; }
+  .chip { position: absolute; left: 10px; top: calc(var(--sc-ctl-h, 0px) + 10px); z-index: 105; max-width: min(440px, calc(100% - 20px));
+    padding: 6px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(6px);
+    font: 500 12px/1.5 var(--font); color: var(--fg); pointer-events: none; }
+  .chip b { color: var(--accent); font: 600 12px/1.5 var(--mono); }
+  .stress-view { position: absolute; inset: 8px; border-radius: 10px; overflow: hidden; background: #07080b; }
+  @media (min-width: 761px) { .stress-view { inset: 8px 8px 8px 350px; } }
 </style>
 </head>
 <body>
-<canvas id="c"></canvas>
-<div class="hint">點畫面發射球・拖曳旋轉視角・右上面板調整物理參數</div>
-
-<script src="_shared/gate.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/babylonjs@9.29.0/babylon.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/babylonjs-gui@9.29.0/babylon.gui.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/babylonjs-loaders@9.29.0/babylon.glTF2FileLoader.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script type="module">
-const CDN = "https://cdn.jsdelivr.net/npm";
-const status = demoStatus("載入 Babylon.js 與 Havok 物理引擎中…");
-const loadScript = (src) => new Promise((ok, fail) => {
-  const s = document.createElement("script");
-  s.src = src;
-  s.onload = ok;
-  s.onerror = () => fail(new Error("load failed: " + src));
-  document.head.append(s);
-});
-let havok;
-try {
-  await Promise.all([
-    loadScript(`${CDN}/babylonjs@9.29.0/babylon.js`).then(() => { status.progress(0.6); return loadScript(`${CDN}/babylonjs-gui@9.29.0/babylon.gui.min.js`); }),
-    loadScript(`${CDN}/@babylonjs/havok@1.3.14/lib/umd/HavokPhysics_umd.js`),
-  ]);
-  status.progress(0.85);
-  havok = await HavokPhysics({ locateFile: () => `${CDN}/@babylonjs/havok@1.3.14/lib/umd/HavokPhysics.wasm` });
-} catch (err) {
-  status.error("引擎載入失敗，請檢查網路後重新整理");
-  throw err;
-}
-status.done();
-
+// Babylon.js showcase: eight scenes from the original Havok tower to a thin-instance physics stress ramp.
+// Every scene owns its Engine; unmount calls engine.dispose() and releases the WebGL context.
 const B = BABYLON, GUI = BABYLON.GUI;
-const canvas = document.getElementById("c");
-const engine = new B.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
-const scene = new B.Scene(engine);
-scene.clearColor = B.Color4.FromHexString("#0e1013ff");
-scene.fogMode = B.Scene.FOGMODE_EXP2;
-scene.fogDensity = 0.012;
-scene.fogColor = B.Color3.FromHexString("#0e1013");
-
-const camera = new B.ArcRotateCamera("cam", -Math.PI / 2 - 0.4, 1.22, 26, new B.Vector3(0, 3.6, 0), scene);
-camera.attachControl(canvas, true);
-camera.lowerRadiusLimit = 10;
-camera.upperRadiusLimit = 50;
-camera.upperBetaLimit = 1.48;
-camera.wheelDeltaPercentage = 0.01;
-
-const hemi = new B.HemisphericLight("hemi", new B.Vector3(0.2, 1, -0.3), scene);
-hemi.intensity = 0.55;
-hemi.groundColor = B.Color3.FromHexString("#1c2030");
-const sun = new B.DirectionalLight("sun", new B.Vector3(-0.6, -1, 0.5), scene);
-sun.position = new B.Vector3(18, 30, -14);
-sun.intensity = 1.6;
-const shadows = new B.ShadowGenerator(1024, sun);
-shadows.usePercentageCloserFiltering = true;
-shadows.bias = 0.002;
-const glow = new B.GlowLayer("glow", scene, { mainTextureSamples: 1, blurKernelSize: 32 });
-glow.intensity = 0.7;
-
-// Havok physics (v2 API); the step size is set every frame so slow motion is easy
-const plugin = new B.HavokPlugin(false, havok);
-scene.enablePhysics(new B.Vector3(0, -9.81, 0), plugin);
-let timeScale = 1;
-scene.onBeforePhysicsObservable.add(() => {
-  plugin.setTimeStep(Math.min(engine.getDeltaTime() / 1000 || 1 / 60, 1 / 30) * timeScale);
-});
-
-// Ground with a checker texture
-const ground = B.MeshBuilder.CreateBox("ground", { width: 60, height: 1, depth: 60 }, scene);
-ground.position.y = -0.5;
-const gmat = new B.StandardMaterial("gmat", scene);
-const tex = new B.DynamicTexture("checker", 512, scene, true);
-const ctx = tex.getContext();
-for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
-  ctx.fillStyle = (x + y) % 2 ? "#1d2129" : "#252a34";
-  ctx.fillRect(x * 64, y * 64, 64, 64);
-}
-tex.update();
-tex.uScale = tex.vScale = 7;
-gmat.diffuseTexture = tex;
-gmat.specularColor = new B.Color3(0.08, 0.08, 0.08);
-ground.material = gmat;
-ground.receiveShadows = true;
-new B.PhysicsAggregate(ground, B.PhysicsShapeType.BOX, { mass: 0, friction: 0.8 }, scene);
-
-const PALETTE = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#9d8cff"].map((h) => {
-  const m = new B.StandardMaterial("m" + h, scene);
-  m.diffuseColor = B.Color3.FromHexString(h);
-  m.specularColor = new B.Color3(0.25, 0.25, 0.25);
-  m.specularPower = 48;
-  return m;
-});
-
-// ---- Build: Jenga tower in the middle, cube pyramids on both sides ----
-let blocks = [];
-function addBlock(w, h, d, pos, matIndex, rotY = 0) {
-  const mesh = B.MeshBuilder.CreateBox("blk", { width: w, height: h, depth: d }, scene);
-  mesh.position.copyFrom(pos);
-  mesh.rotation.y = rotY;
-  mesh.material = PALETTE[matIndex % PALETTE.length];
-  mesh.receiveShadows = true;
-  shadows.addShadowCaster(mesh);
-  const agg = new B.PhysicsAggregate(mesh, B.PhysicsShapeType.BOX, { mass: 0.6, friction: 0.7, restitution: 0.05 }, scene);
-  blocks.push({ mesh, agg, start: pos.clone() });
-}
-function build() {
-  for (const b of blocks) { b.agg.dispose(); b.mesh.dispose(); }
-  blocks = [];
-  const H = 0.6;
-  for (let layer = 0; layer < 14; layer++) {
-    const y = H / 2 + layer * H;
-    for (let i = -1; i <= 1; i++) {
-      const along = layer % 2 === 0;
-      const pos = along ? new B.Vector3(0, y, i * 1.02) : new B.Vector3(i * 1.02, y, 0);
-      addBlock(3, H, 1, pos, layer, along ? 0 : Math.PI / 2);
-    }
-  }
-  for (const side of [-1, 1]) {
-    for (let row = 0; row < 4; row++) {
-      for (let k = 0; k < 4 - row; k++) {
-        const x = side * 6.5 + (k - (3 - row) / 2) * 1.05;
-        addBlock(1, 1, 1, new B.Vector3(x, 0.5 + row, 0), side > 0 ? 1 : 2);
-      }
-    }
-  }
-  fired = 0;
-}
-
-// ---- Balls ----
-const ballMat = new B.StandardMaterial("ball", scene);
-ballMat.diffuseColor = new B.Color3(1, 1, 1);
-ballMat.emissiveColor = B.Color3.FromHexString("#f7df1e").scale(0.8);
-let balls = [], fired = 0, ballSize = 0.7, ballSpeed = 30;
-function fireBall(dir, origin = camera.position) {
-  const s = B.MeshBuilder.CreateSphere("ball", { diameter: ballSize, segments: 16 }, scene);
-  s.position = origin.add(dir.scale(1.5));
-  s.material = ballMat;
-  shadows.addShadowCaster(s);
-  const agg = new B.PhysicsAggregate(s, B.PhysicsShapeType.SPHERE, { mass: 3 * ballSize ** 3 * 4, restitution: 0.35, friction: 0.4 }, scene);
-  agg.body.setLinearVelocity(dir.scale(ballSpeed));
-  balls.push({ s, agg });
-  if (balls.length > 30) { const old = balls.shift(); old.agg.dispose(); old.s.dispose(); }
-  fired++;
-  tag.linkWithMesh(s); // the GUI tag follows the newest ball in 3D
-  tag.isVisible = true;
-  tagText.text = `第 ${fired} 球`;
-}
-
-// Tap (not drag) on the scene shoots toward that point; GUI controls block the pointer
-scene.onPointerObservable.add((pi) => {
-  if (pi.type !== B.PointerEventTypes.POINTERTAP) return;
-  const ray = scene.createPickingRay(scene.pointerX, scene.pointerY, B.Matrix.Identity(), camera);
-  fireBall(ray.direction);
-});
-
-// ---- Babylon GUI: control panel, live counter, 3D-linked tag ----
-const ui = GUI.AdvancedDynamicTexture.CreateFullscreenUI("ui", true, scene);
+const { h, fmt } = Showcase;
+const HAVOK = "https://cdn.jsdelivr.net/npm/@babylonjs/havok@1.3.14/lib/umd/";
+const ENV = "https://assets.babylonjs.com/core/environments/environmentSpecular.env";
+const ROBOT = "_shared/models/robot.glb";
+const PALETTE = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#9d8cff"];
+const ACCENT = "#f7df1e", FG = "#ecebe6", MUTED = "#9b998f", PANEL = "rgba(18,20,24,0.86)", LINE = "rgba(255,255,255,0.16)";
 const FONT = getComputedStyle(document.body).fontFamily;
-const ACCENT = "#f7df1e";
+const LEFT = GUI.Control.HORIZONTAL_ALIGNMENT_LEFT, TOP = GUI.Control.VERTICAL_ALIGNMENT_TOP, BOTTOM = GUI.Control.VERTICAL_ALIGNMENT_BOTTOM;
+const hex = (s) => B.Color3.FromHexString(s);
+const lin = (s) => B.Color3.FromHexString(s).toLinearSpace();
 
-const panel = new GUI.Rectangle("panel");
-panel.width = "220px";
-panel.adaptHeightToChildren = true;
-panel.cornerRadius = 10;
-panel.thickness = 1;
-panel.color = "rgba(255,255,255,0.14)";
-panel.background = "rgba(18,20,24,0.82)";
-panel.horizontalAlignment = GUI.Control.HORIZONTAL_ALIGNMENT_RIGHT;
-panel.verticalAlignment = GUI.Control.VERTICAL_ALIGNMENT_TOP;
-panel.top = "12px";
-panel.left = "-12px";
-panel.isPointerBlocker = true;
-ui.addControl(panel);
-const stack = new GUI.StackPanel();
-stack.paddingTop = "10px";
-stack.paddingBottom = "12px";
-stack.paddingLeft = "14px";
-stack.paddingRight = "14px";
-panel.addControl(stack);
+// Havok wasm is shared by scene 1 and the stress scene; a failed load clears the cache so a retry works.
+let havokPromise = null;
+function getHavok() {
+  if (!havokPromise) {
+    havokPromise = Showcase.load(HAVOK + "HavokPhysics_umd.js").then(() => HavokPhysics({ locateFile: () => HAVOK + "HavokPhysics.wasm" }));
+    havokPromise.catch(() => { havokPromise = null; });
+  }
+  return havokPromise;
+}
 
-function text(str, size = 13, color = "#ecebe6", h = 22) {
+function loadEnv(scene) {
+  return new Promise((ok, fail) => {
+    let tex = null, ready = false;
+    tex = new B.CubeTexture(ENV, scene, null, false, null, () => { ready = true; if (tex) ok(tex); },
+      (msg) => fail(new Error(msg || "環境貼圖載入失敗")), undefined, true);
+    if (ready) ok(tex);
+  });
+}
+
+// One Engine + Scene + ArcRotateCamera per showcase scene. The projection is shifted vertically
+// (matrix element 9) so the subject stays centred in the area not covered by the control cluster;
+// picking and GUI use the same matrix, so they stay consistent.
+function stage(ctx, o = {}) {
+  const host = o.host || ctx.el;
+  const canvas = h("canvas", { class: "bjs" });
+  host.append(canvas);
+  const engine = new B.Engine(canvas, true, { stencil: true, powerPreference: "high-performance" }, false);
+  engine.setHardwareScalingLevel(1 / Math.min(devicePixelRatio || 1, 2));
+  const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
+  const scene = new B.Scene(engine);
+  scene.clearColor = B.Color4.FromHexString(o.bg || "#0e1013ff");
+  const fov = o.fov ?? 0.8;
+  const cam = new B.ArcRotateCamera("cam", o.alpha ?? -Math.PI / 2, o.beta ?? 1.25, o.radius ?? 10, new B.Vector3(...(o.target || [0, 0, 0])), scene);
+  Object.assign(cam, { fov, minZ: 0.1, maxZ: o.far ?? 1000, wheelDeltaPercentage: 0.01, pinchDeltaPercentage: 0.004, panningSensibility: 0,
+    lowerBetaLimit: 0.15, upperBetaLimit: o.maxBeta ?? 1.5 });
+  cam.attachControl();
+  let shift = 0, shiftX = 0, lastKey = "";
+  cam.onProjectionMatrixChangedObservable.add(() => {
+    const pm = cam.getProjectionMatrix();
+    if (shift) pm.addAtIndex(9, shift);
+    if (shiftX) pm.addAtIndex(8, shiftX);
+  });
+  const sizeFns = [];
+  const S = {
+    engine, scene, cam, canvas, width: 1, height: 1, avail: 1, availW: 1, padBottom: 0, padLeft: 0, ctlTop: 0,
+    onSize(fn) { sizeFns.push(fn); fn(S.width, S.height); },
+    onFrame(fn) { scene.onBeforeRenderObservable.add(() => fn(Math.min(engine.getDeltaTime() / 1000 || 1 / 60, 0.1))); },
+    refit() { lastKey = ""; },
+  };
+  const fit = () => {
+    const w = Math.max(1, canvas.clientWidth), hh = Math.max(1, canvas.clientHeight);
+    let top = parseFloat(ctx.el.style.getPropertyValue("--sc-ctl-h")) || 0;
+    S.ctlTop = top;
+    // A chip that spans most of the width (narrow screens) also covers the top of the view.
+    const chipEl = host === ctx.el ? ctx.el.querySelector(":scope > .chip") : null;
+    if (chipEl && chipEl.offsetWidth > w * 0.55) top += chipEl.offsetHeight + 10;
+    const bot = (parseFloat(ctx.el.style.getPropertyValue("--sc-ctl-b")) || 0) + S.padBottom;
+    const key = `${w}x${hh}:${top}:${bot}:${S.padLeft}`;
+    if (key === lastKey) return;
+    lastKey = key;
+    const d = Math.max(-hh * 0.4, Math.min(hh * 0.4, top - bot));
+    S.width = w; S.height = hh; S.avail = hh - Math.abs(d); S.availW = w - S.padLeft;
+    engine.resize();
+    cam.fov = o.pfov && w < hh ? o.pfov : fov;
+    shift = -d / hh;
+    shiftX = S.padLeft / w;
+    cam.getProjectionMatrix(true);
+    for (const fn of sizeFns) fn(w, hh);
+  };
+  fit();
+  ctx.raf(() => { fit(); engine.beginFrame(); scene.render(); engine.endFrame(); });
+  ctx.onCleanup(() => {
+    engine.dispose();
+    const lose = gl && gl.getExtension("WEBGL_lose_context");
+    if (lose) lose.loseContext();
+    canvas.remove();
+  });
+  return S;
+}
+
+// Camera distance that fits a halfW x halfH box into the uncovered part of the view.
+function fitRadius(S, halfW, halfH, margin = 1.1) {
+  const t = Math.tan(S.cam.fov / 2);
+  return Math.max((halfH * S.height) / (S.avail * t), (halfW * S.height) / (S.availW * t)) * margin;
+}
+function makeUI(S) {
+  const ui = GUI.AdvancedDynamicTexture.CreateFullscreenUI("ui", true, S.scene);
+  S.onSize((w) => { ui.idealWidth = w; });
+  return ui;
+}
+function guiText(str, o = {}) {
   const t = new GUI.TextBlock();
-  t.text = str;
-  t.fontFamily = FONT;
-  t.fontSize = size;
-  t.color = color;
-  t.height = h + "px";
-  t.textHorizontalAlignment = GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+  Object.assign(t, { text: str, fontFamily: FONT, fontSize: o.size || 13, color: o.color || FG });
+  if (o.h) t.height = `${o.h}px`;
+  if (o.bold) t.fontWeight = "600";
+  if (o.left) t.textHorizontalAlignment = LEFT;
   return t;
 }
-function slider(label, min, max, value, fmt, onChange) {
-  const t = text(`${label}　${fmt(value)}`, 12, "#9b998f", 20);
-  const s = new GUI.Slider();
-  s.minimum = min; s.maximum = max; s.value = value;
-  s.height = "20px";
-  s.color = ACCENT;
-  s.background = "#33363d";
-  s.borderColor = "transparent";
-  s.thumbColor = "#ffffff";
-  s.isThumbCircle = true;
-  s.thumbWidth = "16px";
-  s.onValueChangedObservable.add((v) => { t.text = `${label}　${fmt(v)}`; onChange(v); });
-  stack.addControl(t);
-  stack.addControl(s);
-  return s;
+// Pill-shaped GUI label that follows a mesh or TransformNode in 3D.
+function guiTag(ui, node, str, o = {}) {
+  const rect = new GUI.Rectangle();
+  Object.assign(rect, { adaptWidthToChildren: true, height: "24px", cornerRadius: 12, thickness: o.border === false ? 0 : 1, color: LINE,
+    background: o.bg || PANEL, isHitTestVisible: false, linkOffsetY: o.offsetY || 0 });
+  const text = guiText(str, { size: 12, color: o.color || FG, h: 24 });
+  Object.assign(text, { resizeToFit: true, paddingLeft: "10px", paddingRight: "10px" });
+  rect.addControl(text);
+  ui.addControl(rect);
+  if (node) rect.linkWithMesh(node);
+  return { rect, text };
 }
-function button(label, primary, onClick) {
-  const b = GUI.Button.CreateSimpleButton("btn", label);
-  b.height = "32px";
-  b.width = "100%";
-  b.cornerRadius = 8;
-  b.thickness = primary ? 0 : 1;
-  b.color = primary ? "#1a1a14" : "#ecebe6";
-  b.background = primary ? ACCENT : "rgba(255,255,255,0.06)";
-  b.fontFamily = FONT;
-  b.fontSize = 13;
-  b.fontWeight = primary ? "bold" : "normal";
-  b.paddingTop = "6px";
-  b.height = "38px";
-  b.onPointerUpObservable.add(onClick);
-  return b;
+function chip(ctx, html) {
+  const el = h("div", { class: "chip" });
+  el.innerHTML = html;
+  ctx.el.append(el);
+  let last = html;
+  return (next) => { if (next !== last) { last = next; el.innerHTML = next; } };
+}
+function checkerMat(scene, repeat, a = "#1d2129", b = "#252a34") {
+  const tex = new B.DynamicTexture("checker", 512, scene, true);
+  const g = tex.getContext();
+  for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) { g.fillStyle = (x + y) % 2 ? a : b; g.fillRect(x * 64, y * 64, 64, 64); }
+  tex.update();
+  tex.uScale = tex.vScale = repeat;
+  const m = new B.StandardMaterial("ground", scene);
+  m.diffuseTexture = tex;
+  m.specularColor = new B.Color3(0.08, 0.08, 0.08);
+  return m;
+}
+// URL-backed texture (not DynamicTexture): sub-emitter clones call texture.clone(),
+// which for a DynamicTexture yields an empty, never-ready copy.
+function dotTexture(scene) {
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = 64;
+  const g = cv.getContext("2d");
+  const grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grd.addColorStop(0, "rgba(255,255,255,1)");
+  grd.addColorStop(0.3, "rgba(255,255,255,0.65)");
+  grd.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 64, 64);
+  const tex = new B.Texture(cv.toDataURL(), scene, true);
+  tex.hasAlpha = true;
+  return tex;
+}
+function tone(scene, exposure = 1) {
+  const ip = scene.imageProcessingConfiguration;
+  ip.toneMappingEnabled = true;
+  ip.toneMappingType = B.ImageProcessingConfiguration.TONEMAPPING_ACES;
+  ip.exposure = exposure;
+}
+function pbr(scene, name, albedo, metallic, roughness) {
+  const m = new B.PBRMaterial(name, scene);
+  m.albedoColor = lin(albedo);
+  m.metallic = metallic;
+  m.roughness = roughness;
+  return m;
+}
+async function withEnv(ctx, scene) {
+  const st = ctx.status("載入環境貼圖（.env 預先濾波立方體貼圖）…");
+  try { const env = await loadEnv(scene); st.done(); return env; } catch (e) { st.error("環境貼圖載入失敗，請檢查網路後重試"); throw e; }
 }
 
-stack.addControl(text("物理控制台", 15, ACCENT, 26));
-const gravity = slider("重力", -25, 0, -9.81, (v) => `${v.toFixed(1)} m/s²`, (v) => scene.getPhysicsEngine().setGravity(new B.Vector3(0, v, 0)));
-slider("球徑", 0.3, 1.6, ballSize, (v) => `${v.toFixed(1)} m`, (v) => { ballSize = v; });
-slider("球速", 10, 60, ballSpeed, (v) => `${Math.round(v)} m/s`, (v) => { ballSpeed = v; });
+Showcase.run({ scenes: [
+  {
+    id: "havok", title: "Havok 積木塔",
+    api: "new HavokPlugin(false, havok)・new PhysicsAggregate(mesh, PhysicsShapeType.BOX, { mass })",
+    desc: "原版示範強化：Havok（WebAssembly）物理推倒 50 塊積木。陰影、光暈，以及跟著最新一顆球移動的 GUI 標籤（linkWithMesh）都是 Babylon 內建模組。",
+    hint: "點畫面朝該處發射・拖曳旋轉・滾輪縮放",
+    async mount(ctx) {
+      const st = ctx.status("載入 Havok 物理引擎（WebAssembly）…");
+      const havok = await getHavok().catch((e) => { st.error("Havok 載入失敗，請檢查網路後重試"); throw e; });
+      st.done();
+      if (!ctx.active) return;
+      const S = stage(ctx, { alpha: -Math.PI / 2 - 0.4, beta: 1.22, target: [0, 3.4, 0], maxBeta: 1.48, pfov: 1.1 });
+      const { scene, cam, engine } = S;
+      Object.assign(scene, { fogMode: B.Scene.FOGMODE_EXP2, fogDensity: 0.012, fogColor: hex("#0e1013") });
+      const hemi = new B.HemisphericLight("hemi", new B.Vector3(0.2, 1, -0.3), scene);
+      hemi.intensity = 0.55;
+      hemi.groundColor = hex("#1c2030");
+      const sun = new B.DirectionalLight("sun", new B.Vector3(-0.6, -1, 0.5), scene);
+      sun.position = new B.Vector3(18, 30, -14);
+      sun.intensity = 1.6;
+      const shadows = new B.ShadowGenerator(1024, sun);
+      shadows.usePercentageCloserFiltering = true;
+      shadows.bias = 0.002;
+      new B.GlowLayer("glow", scene, { mainTextureSamples: 1, blurKernelSize: 32 }).intensity = 0.7;
+      const plugin = new B.HavokPlugin(false, havok);
+      scene.enablePhysics(new B.Vector3(0, -9.81, 0), plugin);
+      let timeScale = 1, speed = 30, fired = 0, blocks = [], balls = [];
+      scene.onBeforePhysicsObservable.add(() => plugin.setTimeStep(Math.min(engine.getDeltaTime() / 1000 || 1 / 60, 1 / 30) * timeScale));
 
-const slowRow = new GUI.StackPanel();
-slowRow.isVertical = false;
-slowRow.height = "30px";
-slowRow.paddingTop = "6px";
-const slow = new GUI.Checkbox();
-slow.width = slow.height = "18px";
-slow.color = ACCENT;
-slow.background = "#33363d";
-slow.onIsCheckedChangedObservable.add((on) => { timeScale = on ? 0.2 : 1; });
-const slowLabel = text("　慢動作（0.2 倍）", 13, "#ecebe6", 24);
-slowLabel.width = "170px";
-slowRow.addControl(slow);
-slowRow.addControl(slowLabel);
-stack.addControl(slowRow);
+      const ground = B.MeshBuilder.CreateBox("ground", { width: 60, height: 1, depth: 60 }, scene);
+      ground.position.y = -0.5;
+      ground.material = checkerMat(scene, 7);
+      ground.receiveShadows = true;
+      new B.PhysicsAggregate(ground, B.PhysicsShapeType.BOX, { mass: 0, friction: 0.8 }, scene);
+      const mats = PALETTE.map((c, i) => {
+        const m = new B.StandardMaterial("p" + i, scene);
+        m.diffuseColor = hex(c);
+        m.specularColor = new B.Color3(0.25, 0.25, 0.25);
+        m.specularPower = 48;
+        return m;
+      });
+      const addBlock = (w, hgt, d, pos, mi, rotY = 0) => {
+        const mesh = B.MeshBuilder.CreateBox("blk", { width: w, height: hgt, depth: d }, scene);
+        mesh.position.copyFrom(pos);
+        mesh.rotation.y = rotY;
+        mesh.material = mats[mi % mats.length];
+        mesh.receiveShadows = true;
+        shadows.addShadowCaster(mesh);
+        const agg = new B.PhysicsAggregate(mesh, B.PhysicsShapeType.BOX, { mass: 0.6, friction: 0.7, restitution: 0.05 }, scene);
+        blocks.push({ mesh, agg, start: pos.clone() });
+      };
+      const build = () => {
+        for (const b of blocks) { b.agg.dispose(); b.mesh.dispose(); }
+        for (const b of balls) { b.agg.dispose(); b.s.dispose(); }
+        blocks = []; balls = []; fired = 0;
+        tag.rect.isVisible = false;
+        for (let layer = 0; layer < 14; layer++) {
+          const y = 0.3 + layer * 0.6, along = layer % 2 === 0;
+          for (let i = -1; i <= 1; i++) addBlock(3, 0.6, 1, along ? new B.Vector3(0, y, i * 1.02) : new B.Vector3(i * 1.02, y, 0), layer, along ? 0 : Math.PI / 2);
+        }
+        for (const side of [-1, 1]) for (let row = 0; row < 4; row++) for (let k = 0; k < 4 - row; k++) {
+          addBlock(1, 1, 1, new B.Vector3(side * 6.5 + (k - (3 - row) / 2) * 1.05, 0.5 + row, 0), side > 0 ? 1 : 2);
+        }
+      };
+      const ballMat = new B.StandardMaterial("ball", scene);
+      ballMat.emissiveColor = hex(ACCENT).scale(0.8);
+      const ui = makeUI(S);
+      const tag = guiTag(ui, null, "", { bg: ACCENT, color: "#1a1a14", border: false, offsetY: -34 });
+      const fireBall = (dir) => {
+        const s = B.MeshBuilder.CreateSphere("ball", { diameter: 0.7, segments: 16 }, scene);
+        s.position = cam.position.add(dir.scale(1.5));
+        s.material = ballMat;
+        shadows.addShadowCaster(s);
+        const agg = new B.PhysicsAggregate(s, B.PhysicsShapeType.SPHERE, { mass: 4.1, restitution: 0.35, friction: 0.4 }, scene);
+        agg.body.setLinearVelocity(dir.scale(speed));
+        balls.push({ s, agg });
+        if (balls.length > 30) { const old = balls.shift(); old.agg.dispose(); old.s.dispose(); }
+        fired++;
+        tag.rect.linkWithMesh(s);
+        tag.rect.isVisible = true;
+        tag.text.text = `第 ${fired} 球`;
+      };
+      scene.onPointerObservable.add((pi) => {
+        if (pi.type !== B.PointerEventTypes.POINTERTAP) return;
+        fireBall(scene.createPickingRay(scene.pointerX, scene.pointerY, B.Matrix.Identity(), cam).direction);
+      });
+      ctx.button("連發 8 球", () => {
+        const base = cam.target.subtract(cam.position).normalize();
+        for (let i = 0; i < 8; i++) {
+          ctx.timeout(() => fireBall(base.add(new B.Vector3((Math.random() - 0.5) * 0.2, (Math.random() - 0.3) * 0.12, (Math.random() - 0.5) * 0.2)).normalize()), i * 90);
+        }
+      }, { primary: true });
+      ctx.button("重建積木", () => build());
+      ctx.toggle("慢動作", false, (v) => { timeScale = v ? 0.2 : 1; });
+      ctx.slider("重力", { min: -25, max: 0, step: 0.1, value: -9.81, format: (v) => `${v.toFixed(1)} m/s²` }, (v) => scene.getPhysicsEngine().setGravity(new B.Vector3(0, v, 0)));
+      ctx.slider("球速", { min: 10, max: 60, step: 1, value: speed, format: (v) => `${v} m/s` }, (v) => { speed = v; });
+      const setChip = chip(ctx, "");
+      S.onFrame(() => {
+        let moved = 0;
+        for (const b of blocks) if (B.Vector3.DistanceSquared(b.mesh.position, b.start) > 0.25) moved++;
+        setChip(`已移位 <b>${moved}</b> / ${blocks.length} 塊・已發射 <b>${fired}</b> 球`);
+      });
+      S.onSize(() => {
+        cam.radius = Math.max(22, fitRadius(S, 8.5, 5, 1.1));
+        cam.lowerRadiusLimit = 10;
+        cam.upperRadiusLimit = Math.max(50, cam.radius * 1.5);
+      });
+      build();
+      ctx.timeout(() => fireBall(new B.Vector3(0, 3.4, 0).subtract(cam.position).normalize()), 900);
+    },
+  },
+  {
+    id: "pbr", title: "PBR 材質",
+    api: "new PBRMaterial()・clearCoat / sheen / anisotropy / iridescence / subSurface",
+    desc: "PBRMaterial 以金屬度與粗糙度描述表面，反射與環境光全來自一張預先濾波的 .env 立方體貼圖；第二組展示清漆、絨面、異向性、虹彩與折射等進階材質層。",
+    hint: "拖曳旋轉視角・切換材質組・調整環境光強度",
+    async mount(ctx) {
+      const S = stage(ctx, { alpha: -Math.PI / 2, beta: 1.45, fov: 0.7 });
+      const { scene, cam } = S;
+      tone(scene, 1.1);
+      const env = await withEnv(ctx, scene);
+      if (!ctx.active) return;
+      scene.environmentTexture = env;
+      const sky = scene.createDefaultSkybox(env, true, 1000, 0.35, false);
+      const ui = makeUI(S);
+      const allMats = [];
+      const grid = [], colLabels = [], rowLabels = [];
+      for (let r = 0; r < 2; r++) for (let i = 0; i < 5; i++) {
+        const s = B.MeshBuilder.CreateSphere(`s${r}${i}`, { diameter: 1.5, segments: 48 }, scene);
+        s.material = pbr(scene, `g${r}${i}`, r ? "#3a8fd6" : "#f0c75e", r ? 0 : 1, i / 4);
+        allMats.push(s.material);
+        grid.push({ s, r, i });
+      }
+      for (let i = 0; i < 5; i++) { const a = new B.TransformNode("cl" + i, scene); colLabels.push({ a, i, tag: guiTag(ui, a, "") }); }
+      for (let r = 0; r < 2; r++) { const a = new B.TransformNode("rl" + r, scene); rowLabels.push({ a, r, tag: guiTag(ui, a, r ? "非金屬" : "金屬", { color: ACCENT }) }); }
+      const ADV = [
+        ["清漆 clearCoat", () => B.MeshBuilder.CreateCapsule("cc", { radius: 0.6, height: 1.9, tessellation: 48, subdivisions: 6 }, scene),
+          (m) => { m.clearCoat.isEnabled = true; m.clearCoat.intensity = 1; m.clearCoat.roughness = 0.03; }, "#b0121b", 0.1, 0.6],
+        ["絨面 sheen", () => B.MeshBuilder.CreateTorus("sh", { diameter: 1.4, thickness: 0.55, tessellation: 64 }, scene),
+          (m) => { m.sheen.isEnabled = true; m.sheen.color = hex("#ffb3e6"); m.sheen.intensity = 1; m.sheen.roughness = 0.3; }, "#3b1f5c", 0, 0.85],
+        ["異向性 anisotropy", () => B.MeshBuilder.CreateCylinder("an", { diameter: 1.3, height: 1.7, tessellation: 96 }, scene),
+          (m) => { m.anisotropy.isEnabled = true; m.anisotropy.intensity = 1; m.anisotropy.direction = new B.Vector2(0, 1); }, "#d4d7dc", 1, 0.32],
+        ["虹彩 iridescence", () => B.MeshBuilder.CreateSphere("ir", { diameter: 1.6, segments: 48 }, scene),
+          (m) => { m.iridescence.isEnabled = true; m.iridescence.intensity = 1; m.iridescence.indexOfRefraction = 1.3; m.iridescence.maximumThickness = 420; }, "#202020", 1, 0.12],
+        ["折射 subSurface", () => B.MeshBuilder.CreateTorusKnot("rf", { radius: 0.55, tube: 0.2, radialSegments: 160, tubularSegments: 24 }, scene),
+          (m) => { m.subSurface.isRefractionEnabled = true; m.subSurface.refractionIntensity = 1; m.subSurface.indexOfRefraction = 1.5; m.subSurface.tintColor = hex("#8fdcff"); }, "#ffffff", 0, 0.03],
+      ].map(([name, make, setup, albedo, metal, rough], i) => {
+        const mesh = make();
+        mesh.material = pbr(scene, name, albedo, metal, rough);
+        setup(mesh.material);
+        allMats.push(mesh.material);
+        const a = new B.TransformNode("al" + i, scene);
+        return { mesh, a, i, tag: guiTag(ui, a, name) };
+      });
+      let mode = 0;
+      const setChip = chip(ctx, "");
+      const layout = () => {
+        const p = S.width < S.height;
+        for (const { s, r, i } of grid) { s.setEnabled(mode === 0); s.position.set(p ? (r ? 1.2 : -1.2) : (i - 2) * 1.9, p ? (2 - i) * 1.75 : (r ? -1.05 : 1.05), 0); }
+        for (const { a, i, tag } of colLabels) {
+          a.position.set(p ? 0 : (i - 2) * 1.9, p ? (2 - i) * 1.75 : -2.15, 0);
+          tag.text.text = `${p ? "" : "粗糙 "}${(i / 4).toFixed(2)}`;
+          tag.rect.isVisible = mode === 0;
+        }
+        for (const { a, r, tag } of rowLabels) { a.position.set(p ? (r ? 1.2 : -1.2) : -5.25, p ? 4.75 : (r ? -1.05 : 1.05), 0); tag.rect.isVisible = mode === 0; }
+        const advPos = p ? [[-1.2, 2.7], [1.2, 2.7], [-1.2, 0], [1.2, 0], [0, -2.7]] : [[-4.6, 0.2], [-2.3, 0.2], [0, 0.2], [2.3, 0.2], [4.6, 0.2]];
+        for (const { mesh, a, i, tag } of ADV) {
+          mesh.setEnabled(mode === 1);
+          mesh.position.set(advPos[i][0], advPos[i][1], 0);
+          a.position.set(advPos[i][0], advPos[i][1] - 1.35, 0);
+          tag.rect.isVisible = mode === 1;
+        }
+        const [hw, hh] = mode === 0 ? (p ? [2.1, 5.1] : [5.8, 2.5]) : (p ? [2.3, 4.2] : [5.6, 1.9]);
+        cam.radius = fitRadius(S, hw, hh, 1.08);
+        cam.lowerRadiusLimit = cam.radius * 0.5;
+        cam.upperRadiusLimit = cam.radius * 2;
+        setChip(mode === 0
+          ? "上排金屬、下排非金屬；由左到右粗糙度 <b>0 → 1</b>。沒有任何燈光，亮面與反射全來自環境貼圖"
+          : "同一個 <b>PBRMaterial</b> 開啟不同材質層：清漆、絨面、異向性、虹彩薄膜、次表面折射");
+      };
+      S.onSize(layout);
+      S.onFrame((dt) => { if (mode === 1) for (const { mesh } of ADV) mesh.rotation.y += dt * 0.45; });
+      ctx.group(["金屬 × 粗糙", "進階材質層"], 0, (i) => { mode = i; cam.alpha = -Math.PI / 2; cam.beta = 1.45; layout(); });
+      ctx.slider("環境光", { min: 0, max: 2, step: 0.05, value: 1, format: (v) => v.toFixed(2) }, (v) => { for (const m of allMats) m.environmentIntensity = v; });
+      ctx.toggle("天空盒", true, (v) => sky.setEnabled(v));
+    },
+  },
+  {
+    id: "particles", title: "粒子系統",
+    api: "new ParticleSystem(name, capacity, scene)・new SubEmitter()・new GPUParticleSystem()",
+    desc: "CPU 粒子支援重力、顏色與尺寸漸層、雜訊貼圖擾動與子發射器（煙火的拖尾與爆炸）；GPUParticleSystem 把十萬顆粒子的模擬整個交給 GPU。",
+    hint: "切換四種效果・拖曳旋轉・調整發射率",
+    mount(ctx) {
+      const S = stage(ctx, { alpha: -Math.PI / 2 + 0.3, beta: 1.32, target: [0, 2.6, 0], pfov: 1.05 });
+      const { scene, cam } = S;
+      const hemi = new B.HemisphericLight("hemi", new B.Vector3(0, 1, 0), scene);
+      hemi.intensity = 0.35;
+      const ground = B.MeshBuilder.CreateGround("ground", { width: 16, height: 16 }, scene);
+      ground.material = checkerMat(scene, 4);
+      let dot = null, extras = [], rate = 1, capacity = 0, mode = 0;
+      const base = new Map();
+      const add = (ps, rateBase) => { ps.particleTexture = dot; base.set(ps, rateBase); ps.emitRate = rateBase * rate; ps.start(); return ps; };
+      const c4 = (s, a = 1) => { const c = hex(s); return new B.Color4(c.r, c.g, c.b, a); };
+      const stdMat = (name, color) => { const m = new B.StandardMaterial(name, scene); m.diffuseColor = hex(color); m.specularColor = new B.Color3(0.1, 0.1, 0.1); return m; };
+      const builders = [
+        () => {
+          const basin = B.MeshBuilder.CreateTorus("basin", { diameter: 3.4, thickness: 0.3, tessellation: 64 }, scene);
+          basin.position.y = 0.15;
+          basin.material = stdMat("basin", "#3a4150");
+          const col = B.MeshBuilder.CreateCylinder("col", { diameter: 0.35, height: 0.5 }, scene);
+          col.position.y = 0.25;
+          col.material = basin.material;
+          extras.push(basin, col);
+          const ps = new B.ParticleSystem("fountain", 6000, scene);
+          ps.emitter = new B.Vector3(0, 0.5, 0);
+          ps.createPointEmitter(new B.Vector3(-0.32, 1, -0.32), new B.Vector3(0.32, 1, 0.32));
+          Object.assign(ps, { color1: c4("#4cc9f0"), color2: c4("#bfe9ff"), colorDead: new B.Color4(0, 0.1, 0.4, 0), minSize: 0.06, maxSize: 0.15,
+            minLifeTime: 1.5, maxLifeTime: 2.2, minEmitPower: 7, maxEmitPower: 8.5, gravity: new B.Vector3(0, -9.81, 0),
+            blendMode: B.ParticleSystem.BLENDMODE_ADD, preWarmCycles: 120, preWarmStepOffset: 2 });
+          add(ps, 1800);
+          return 6000;
+        },
+        () => {
+          const wood = stdMat("wood", "#5a3a22");
+          for (let k = 0; k < 3; k++) {
+            const log = B.MeshBuilder.CreateCylinder("log", { diameter: 0.24, height: 1.7, tessellation: 12 }, scene);
+            log.rotation.set(0, (k * Math.PI) / 3, Math.PI / 2);
+            log.position.y = 0.14 + k * 0.05;
+            log.material = wood;
+            extras.push(log);
+          }
+          const light = new B.PointLight("flame", new B.Vector3(0, 1, 0), scene);
+          light.diffuse = hex("#ff9a3c");
+          light.range = 10;
+          extras.push(light);
+          const noise = new B.NoiseProceduralTexture("perlin", 256, scene);
+          Object.assign(noise, { animationSpeedFactor: 5, persistence: 2, brightness: 0.5, octaves: 2 });
+          extras.push(noise);
+          const fire = new B.ParticleSystem("fire", 4000, scene);
+          fire.emitter = new B.Vector3(0, 0.25, 0);
+          fire.createDirectedCylinderEmitter(0.38, 0.2, 1, new B.Vector3(-0.15, 1, -0.15), new B.Vector3(0.15, 1, 0.15));
+          fire.addColorGradient(0, new B.Color4(1, 0.95, 0.5, 0));
+          fire.addColorGradient(0.1, new B.Color4(1, 0.62, 0.16, 0.38));
+          fire.addColorGradient(0.5, new B.Color4(0.95, 0.26, 0.04, 0.26));
+          fire.addColorGradient(1, new B.Color4(0.25, 0.05, 0.02, 0));
+          fire.addSizeGradient(0, 0.28);
+          fire.addSizeGradient(0.35, 0.55);
+          fire.addSizeGradient(1, 0.12);
+          Object.assign(fire, { minLifeTime: 0.7, maxLifeTime: 1.4, minEmitPower: 1.4, maxEmitPower: 2.8, gravity: new B.Vector3(0, 2.2, 0),
+            noiseTexture: noise, noiseStrength: new B.Vector3(1.4, 0.4, 1.4), minAngularSpeed: -1, maxAngularSpeed: 1, blendMode: B.ParticleSystem.BLENDMODE_ADD });
+          add(fire, 420);
+          const smoke = new B.ParticleSystem("smoke", 800, scene);
+          smoke.emitter = new B.Vector3(0, 2, 0);
+          smoke.createSphereEmitter(0.35);
+          smoke.addColorGradient(0, new B.Color4(0.3, 0.3, 0.32, 0));
+          smoke.addColorGradient(0.2, new B.Color4(0.3, 0.3, 0.32, 0.22));
+          smoke.addColorGradient(1, new B.Color4(0.2, 0.2, 0.22, 0));
+          smoke.addSizeGradient(0, 0.8);
+          smoke.addSizeGradient(1, 2.6);
+          Object.assign(smoke, { minLifeTime: 2.2, maxLifeTime: 3.2, minEmitPower: 0.3, maxEmitPower: 0.6, gravity: new B.Vector3(0.2, 0.7, 0),
+            blendMode: B.ParticleSystem.BLENDMODE_STANDARD, preWarmCycles: 100, preWarmStepOffset: 3 });
+          add(smoke, 70);
+          S.onFrame(() => { if (mode === 1 && !light.isDisposed()) light.intensity = 1.6 + Math.sin(performance.now() / 70) * 0.25 + Math.random() * 0.35; });
+          return 4800;
+        },
+        () => {
+          const burst = (color) => {
+            const p = new B.ParticleSystem("burst", 400, scene);
+            p.particleTexture = dot;
+            p.createSphereEmitter(0.1, 0);
+            Object.assign(p, { manualEmitCount: 320, minEmitPower: 3, maxEmitPower: 5.5, minLifeTime: 1, maxLifeTime: 1.7, minSize: 0.12, maxSize: 0.22,
+              color1: c4(color), color2: c4("#ffffff"), colorDead: c4(color, 0).scale(0.3), gravity: new B.Vector3(0, -2.5, 0),
+              blendMode: B.ParticleSystem.BLENDMODE_ADD, targetStopDuration: 0.25, disposeOnStop: true });
+            const sub = new B.SubEmitter(p);
+            sub.type = B.SubEmitterType.END;
+            return sub;
+          };
+          const trailPs = new B.ParticleSystem("trail", 200, scene);
+          trailPs.particleTexture = dot;
+          Object.assign(trailPs, { emitRate: 140, minLifeTime: 0.3, maxLifeTime: 0.55, minSize: 0.08, maxSize: 0.14, minEmitPower: 0.1, maxEmitPower: 0.4,
+            color1: c4("#ffd27a"), color2: c4("#ff8c42"), colorDead: new B.Color4(0.3, 0.1, 0, 0), blendMode: B.ParticleSystem.BLENDMODE_ADD });
+          const trail = new B.SubEmitter(trailPs);
+          trail.type = B.SubEmitterType.ATTACHED;
+          const rocket = new B.ParticleSystem("rocket", 40, scene);
+          rocket.emitter = new B.Vector3(0, 0.1, 0);
+          rocket.createPointEmitter(new B.Vector3(-0.28, 1, -0.28), new B.Vector3(0.28, 1, 0.28));
+          Object.assign(rocket, { minEmitPower: 9.5, maxEmitPower: 11, minLifeTime: 0.95, maxLifeTime: 1.15, minSize: 0.22, maxSize: 0.28,
+            color1: c4("#fff3c4"), color2: c4("#ffd27a"), gravity: new B.Vector3(0, -9.81, 0), blendMode: B.ParticleSystem.BLENDMODE_ADD });
+          rocket.subEmitters = PALETTE.slice(0, 4).map((c) => [trail, burst(c)]);
+          add(rocket, 1.8);
+          return 40 + 4 * 400;
+        },
+        () => {
+          const gpu = B.GPUParticleSystem.IsSupported;
+          const cap = gpu ? 100000 : 20000;
+          const ps = gpu ? new B.GPUParticleSystem("gpu", { capacity: cap }, scene) : new B.ParticleSystem("cpu", cap, scene);
+          const noise = new B.NoiseProceduralTexture("perlin", 256, scene);
+          Object.assign(noise, { animationSpeedFactor: 3, persistence: 1.5, octaves: 3 });
+          extras.push(noise);
+          ps.emitter = new B.Vector3(0, 2.6, 0);
+          ps.createSphereEmitter(2.2, 0);
+          Object.assign(ps, { minLifeTime: 2, maxLifeTime: 4, minEmitPower: 0.1, maxEmitPower: 0.5, minSize: 0.025, maxSize: 0.06,
+            color1: c4("#4cc9f0"), color2: c4("#f72585"), colorDead: new B.Color4(0.1, 0, 0.3, 0), noiseTexture: noise,
+            noiseStrength: new B.Vector3(5, 5, 5), blendMode: B.ParticleSystem.BLENDMODE_ADD });
+          add(ps, gpu ? 34000 : 6800);
+          if (!gpu) setChip("此裝置不支援 GPUParticleSystem，改用 CPU 粒子 2 萬顆");
+          return cap;
+        },
+      ];
+      const setChip = chip(ctx, "");
+      const NAMES = ["噴泉", "火焰", "煙火", "GPU 10 萬"];
+      const show = (i) => {
+        for (const p of scene.particleSystems.slice()) p.dispose();
+        dot = dotTexture(scene);
+        for (const x of extras) x.dispose();
+        extras = [];
+        base.clear();
+        mode = i;
+        capacity = builders[i]();
+        cam.target.y = i === 2 ? 3.2 : 2.6;
+      };
+      const count = () => scene.particleSystems.reduce((n, p) => n + p.getActiveCount(), 0);
+      ctx.interval(() => setChip(`${NAMES[mode]}：容量 <b>${fmt(capacity)}</b>・目前 <b>${fmt(count())}</b> 顆粒子`), 300);
+      ctx.group(NAMES, 0, show);
+      ctx.slider("發射率", { min: 0.25, max: 2, step: 0.05, value: 1, format: (v) => `${v.toFixed(2)}×` }, (v) => { rate = v; for (const [ps, r] of base) ps.emitRate = r * v; });
+      S.onSize(() => { cam.radius = fitRadius(S, 4.2, 3.4, 1.1); cam.lowerRadiusLimit = 4; cam.upperRadiusLimit = cam.radius * 2; });
+      show(0);
+    },
+  },
+  {
+    id: "gui", title: "GUI 介面",
+    api: "AdvancedDynamicTexture.CreateFullscreenUI()・CreateForMesh(mesh)・control.linkWithMesh(node)",
+    desc: "Babylon GUI 直接在 WebGL 裡畫介面：控制面板（ColorPicker、Slider、Checkbox、RadioButton）、貼在 3D 平面上可點擊的螢幕，以及用 Line 連到物體的追蹤標籤。",
+    hint: "用面板改顏色、縮放與形狀・點 3D 螢幕上的按鈕",
+    async mount(ctx) {
+      const S = stage(ctx, { alpha: -Math.PI / 2 + 0.22, beta: 1.36, target: [0, 0.2, 0], pfov: 1.0 });
+      const { scene, cam } = S;
+      tone(scene, 1.1);
+      const env = await withEnv(ctx, scene);
+      if (!ctx.active) return;
+      scene.environmentTexture = env;
+      scene.createDefaultSkybox(env, true, 1000, 0.6, false);
+      const mat = pbr(scene, "product", "#e8505b", 0.25, 0.35);
+      mat.clearCoat.isEnabled = true;
+      const holder = new B.TransformNode("holder", scene);
+      const shapes = [
+        B.MeshBuilder.CreateTorusKnot("knot", { radius: 0.62, tube: 0.22, radialSegments: 160, tubularSegments: 24 }, scene),
+        B.MeshBuilder.CreateBox("box", { size: 1.35 }, scene),
+        B.MeshBuilder.CreateSphere("sphere", { diameter: 1.6, segments: 48 }, scene),
+      ];
+      for (const [i, m] of shapes.entries()) { m.parent = holder; m.material = mat; m.setEnabled(i === 0); }
+      const NAMES = ["環結", "方塊", "球體"];
+      let shape = 0, clicks = 0;
 
-const btnRow = new GUI.Grid();
-btnRow.height = "38px";
-btnRow.addColumnDefinition(0.5);
-btnRow.addColumnDefinition(0.5);
-const rain = button("連發 8 球", true, () => {
-  const base = camera.target.subtract(camera.position).normalize();
-  for (let i = 0; i < 8; i++) {
-    setTimeout(() => fireBall(base.add(new B.Vector3((Math.random() - 0.5) * 0.2, (Math.random() - 0.3) * 0.12, (Math.random() - 0.5) * 0.2)).normalize()), i * 90);
-  }
-});
-rain.paddingRight = "4px";
-const reset = button("重建積木", false, () => {
-  for (const b of balls) { b.agg.dispose(); b.s.dispose(); }
-  balls = [];
-  tag.isVisible = false;
-  gravity.value = -9.81;
-  build();
-});
-reset.paddingLeft = "4px";
-btnRow.addControl(rain, 0, 0);
-btnRow.addControl(reset, 0, 1);
-stack.addControl(btnRow);
+      // 3D screen: a GUI texture applied to a plane, fully interactive through scene picking.
+      const screen = B.MeshBuilder.CreatePlane("screen", { width: 2.6, height: 1.625 }, scene);
+      const adt = GUI.AdvancedDynamicTexture.CreateForMesh(screen, 1024, 640);
+      const card = new GUI.Rectangle();
+      Object.assign(card, { background: "rgba(18,20,24,0.92)", cornerRadius: 40, thickness: 6, color: ACCENT });
+      adt.addControl(card);
+      const stack = new GUI.StackPanel();
+      card.addControl(stack);
+      stack.addControl(guiText("貼在網格上的 GUI", { size: 64, h: 120, bold: true, color: ACCENT }));
+      const clickText = guiText("點擊 0 次", { size: 50, h: 96, color: FG });
+      stack.addControl(clickText);
+      const spinBtn = GUI.Button.CreateSimpleButton("spin", "旋轉 90°");
+      Object.assign(spinBtn, { width: "560px", height: "150px", cornerRadius: 70, thickness: 0, background: ACCENT, color: "#1a1a14",
+        fontFamily: FONT, fontSize: 56, fontWeight: "bold", paddingTop: "24px" });
+      const ease = new B.CubicEase();
+      ease.setEasingMode(B.EasingFunction.EASINGMODE_EASEINOUT);
+      spinBtn.onPointerUpObservable.add(() => {
+        clicks++;
+        clickText.text = `點擊 ${clicks} 次`;
+        B.Animation.CreateAndStartAnimation("spin", holder, "rotation.y", 60, 36, holder.rotation.y, holder.rotation.y + Math.PI / 2, B.Animation.ANIMATIONLOOPMODE_CONSTANT, ease);
+        updateCallout();
+      });
+      stack.addControl(spinBtn);
 
-// Live counter (top-left)
-const counter = new GUI.Rectangle("counter");
-counter.adaptWidthToChildren = true;
-counter.height = "34px";
-counter.cornerRadius = 17;
-counter.thickness = 1;
-counter.color = "rgba(255,255,255,0.14)";
-counter.background = "rgba(18,20,24,0.82)";
-counter.horizontalAlignment = GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
-counter.verticalAlignment = GUI.Control.VERTICAL_ALIGNMENT_TOP;
-counter.left = "12px";
-counter.top = "12px";
-const counterText = text("", 13, "#ecebe6", 34);
-counterText.resizeToFit = true;
-counterText.paddingLeft = "14px";
-counterText.paddingRight = "14px";
-counter.addControl(counterText);
-ui.addControl(counter);
+      // Fullscreen UI: control panel bottom-left plus a callout linked to the product by a Line.
+      const ui = makeUI(S);
+      const line = new GUI.Line();
+      Object.assign(line, { lineWidth: 2, color: ACCENT, dash: [4, 4], isHitTestVisible: false });
+      ui.addControl(line);
+      const callout = guiTag(ui, holder, "", { color: ACCENT });
+      callout.rect.color = ACCENT;
+      line.linkWithMesh(holder);
+      line.connectedControl = callout.rect;
+      const updateCallout = () => { callout.text.text = `目前形狀：${NAMES[shape]}・點擊 ${clicks} 次`; };
+      updateCallout();
 
-// Tag linked to the newest ball
-const tag = new GUI.Rectangle("tag");
-tag.width = "68px";
-tag.height = "24px";
-tag.cornerRadius = 12;
-tag.thickness = 0;
-tag.background = ACCENT;
-tag.linkOffsetY = -34;
-tag.isVisible = false;
-tag.isHitTestVisible = false;
-const tagText = text("", 12, "#1a1a14", 24);
-tagText.textHorizontalAlignment = GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
-tag.addControl(tagText);
-ui.addControl(tag);
-
-let lastCount = -1;
-scene.onAfterRenderObservable.add(() => {
-  let down = 0;
-  for (const b of blocks) if (B.Vector3.DistanceSquared(b.mesh.position, b.start) > 0.25) down++;
-  if (down !== lastCount) { counterText.text = `已移位 ${down} / ${blocks.length} 塊`; lastCount = down; }
-});
-
-// Responsive layout: on narrow screens the panel docks to the bottom
-function layout() {
-  const w = engine.getRenderWidth() / engine.getHardwareScalingLevel(), h = engine.getRenderHeight();
-  const narrow = canvas.clientWidth < 560;
-  panel.width = narrow ? `${canvas.clientWidth - 24}px` : "220px";
-  panel.verticalAlignment = narrow ? GUI.Control.VERTICAL_ALIGNMENT_BOTTOM : GUI.Control.VERTICAL_ALIGNMENT_TOP;
-  panel.top = narrow ? "-46px" : "12px";
-  camera.radius = narrow ? 34 : 26;
-  camera.target.y = narrow ? 1.2 : 3.6;
-  void w; void h;
-}
-addEventListener("resize", () => { engine.resize(); layout(); });
-layout();
-
-build();
-// Opening shot so the physics is visible right away
-setTimeout(() => fireBall(new B.Vector3(0, 3.4, 0).subtract(camera.position).normalize()), 900);
-
-engine.runRenderLoop(() => scene.render());
+      const PICK = 140, PANEL_H = 210;
+      const panel = new GUI.Rectangle("panel");
+      Object.assign(panel, { height: `${PANEL_H}px`, cornerRadius: 10, thickness: 1, color: LINE, background: PANEL,
+        horizontalAlignment: LEFT, left: "10px", isPointerBlocker: true });
+      ui.addControl(panel);
+      const head = guiText("這個面板也是 Babylon GUI（畫在 WebGL 裡）", { size: 12, color: ACCENT, h: 34, left: true });
+      Object.assign(head, { verticalAlignment: TOP, paddingLeft: "12px", paddingTop: "8px" });
+      panel.addControl(head);
+      const grid = new GUI.Grid();
+      Object.assign(grid, { paddingLeft: "12px", paddingRight: "12px", paddingTop: "36px", paddingBottom: "10px" });
+      grid.addColumnDefinition(PICK + 14, true);
+      grid.addColumnDefinition(1);
+      panel.addControl(grid);
+      const picker = new GUI.ColorPicker();
+      Object.assign(picker, { value: hex("#e8505b"), width: `${PICK}px`, height: `${PICK}px`, horizontalAlignment: LEFT, verticalAlignment: TOP });
+      picker.onValueChangedObservable.add((c) => { mat.albedoColor = c.toLinearSpace(); });
+      grid.addControl(picker, 0, 0);
+      const col = new GUI.StackPanel();
+      col.verticalAlignment = TOP;
+      grid.addControl(col, 0, 1);
+      const scaleText = guiText("縮放 1.00×", { size: 12, color: MUTED, h: 18, left: true });
+      const slider = new GUI.Slider();
+      Object.assign(slider, { minimum: 0.5, maximum: 1.5, value: 1, height: "20px", color: ACCENT, background: "#33363d", borderColor: "transparent",
+        thumbColor: "#ffffff", isThumbCircle: true, thumbWidth: "16px" });
+      slider.onValueChangedObservable.add((v) => { holder.scaling.setAll(v); scaleText.text = `縮放 ${v.toFixed(2)}×`; });
+      col.addControl(scaleText);
+      col.addControl(slider);
+      const row = (ctrl, label) => {
+        const r = new GUI.StackPanel();
+        Object.assign(r, { isVertical: false, height: "26px", horizontalAlignment: LEFT });
+        Object.assign(ctrl, { width: "18px", height: "18px", color: ACCENT, background: "#33363d" });
+        const t = guiText(label, { size: 13, h: 26, left: true });
+        Object.assign(t, { width: "130px", paddingLeft: "8px" });
+        r.addControl(ctrl);
+        r.addControl(t);
+        col.addControl(r);
+      };
+      const wire = new GUI.Checkbox();
+      wire.onIsCheckedChangedObservable.add((on) => { mat.wireframe = on; });
+      row(wire, "線框模式");
+      col.addControl(guiText("形狀", { size: 12, color: MUTED, h: 18, left: true }));
+      NAMES.forEach((name, i) => {
+        const rb = new GUI.RadioButton();
+        rb.group = "shape";
+        rb.isChecked = i === 0;
+        rb.onIsCheckedChangedObservable.add((on) => {
+          if (!on) return;
+          shape = i;
+          shapes.forEach((m, k) => m.setEnabled(k === i));
+          updateCallout();
+        });
+        row(rb, name);
+      });
+      // Wide views put the panel on the left and shift the 3D content right; narrow views dock it at the bottom.
+      S.onSize((w, hh) => {
+        const side = w >= 700 || w > hh * 1.2, pw = Math.min(340, w - 20);
+        panel.width = `${pw}px`;
+        panel.verticalAlignment = side ? TOP : BOTTOM;
+        panel.top = side ? `${S.ctlTop + 10}px` : "-10px";
+        S.padLeft = side ? pw + 20 : 0;
+        S.padBottom = side ? 0 : PANEL_H + 20;
+        const p = S.availW < S.avail * 0.9;
+        holder.position.set(p ? 0 : -1.55, p ? 1.35 : 0, 0);
+        screen.position.set(p ? 0 : 1.5, p ? -1.05 : 0.05, p ? 0 : 0.25);
+        screen.rotation.y = p ? 0 : -0.22;
+        screen.scaling.setAll(p ? 0.9 : 1);
+        cam.radius = p ? fitRadius(S, 1.55, 2.6, 1.1) : fitRadius(S, 3.1, 1.6, 1.12);
+        cam.lowerRadiusLimit = cam.radius * 0.5;
+        cam.upperRadiusLimit = cam.radius * 2;
+        const ppu = hh / (2 * Math.tan(cam.fov / 2) * cam.radius);
+        callout.rect.linkOffsetY = -Math.round(ppu * 1.15 + 18);
+      });
+      S.onFrame(() => { holder.rotation.x = Math.sin(performance.now() / 1600) * 0.25; });
+    },
+  },
+  {
+    id: "gltf", title: "glTF 動畫",
+    api: "await LoadAssetContainerAsync(url, scene)・animationGroup.weight・morphTargetManager",
+    desc: "載入 glTF 機器人，以 AnimationGroup 的 weight 交叉淡入切換動作；一次性動作播完自動回到原本循環。另外示範臉部 Morph Target 表情與 SkeletonViewer 骨架顯示。",
+    hint: "切換動作・點機器人讓它跳一下・選表情・開骨架",
+    async mount(ctx) {
+      const S = stage(ctx, { alpha: -Math.PI / 2 + 0.55, beta: 1.3, target: [0, 1.95, 0], maxBeta: 1.52, pfov: 1.0 });
+      const { scene, cam } = S;
+      tone(scene, 1.05);
+      const hemi = new B.HemisphericLight("hemi", new B.Vector3(0, 1, 0), scene);
+      hemi.intensity = 0.25;
+      const key = new B.DirectionalLight("key", new B.Vector3(-0.5, -1, -0.6), scene);
+      key.position = new B.Vector3(6, 12, 8);
+      key.intensity = 2.2;
+      const shadows = new B.ShadowGenerator(1024, key);
+      shadows.usePercentageCloserFiltering = true;
+      shadows.bias = 0.004;
+      const pedestal = B.MeshBuilder.CreateCylinder("pedestal", { diameterTop: 6.4, diameterBottom: 6.8, height: 0.5, tessellation: 96 }, scene);
+      pedestal.position.y = -0.25;
+      pedestal.material = pbr(scene, "ped", "#15171c", 0.6, 0.45);
+      pedestal.material.clearCoat.isEnabled = true;
+      pedestal.receiveShadows = true;
+      const ring = B.MeshBuilder.CreateTorus("ring", { diameter: 6.5, thickness: 0.07, tessellation: 128 }, scene);
+      ring.position.y = 0.01;
+      const ringMat = new B.StandardMaterial("ring", scene);
+      ringMat.emissiveColor = hex(ACCENT);
+      ringMat.disableLighting = true;
+      ring.material = ringMat;
+      const st = ctx.status("載入環境貼圖與 glTF 機器人…");
+      let env, box;
+      try { [env, box] = await Promise.all([loadEnv(scene), B.LoadAssetContainerAsync(ROBOT, scene)]); } catch (e) { st.error("模型或環境貼圖載入失敗"); throw e; }
+      st.done();
+      if (!ctx.active) return;
+      scene.environmentTexture = env;
+      scene.environmentIntensity = 0.7;
+      box.addAllToScene();
+      const robotMeshes = new Set(box.meshes.filter((m) => m.getTotalVertices() > 0));
+      for (const m of robotMeshes) { shadows.addShadowCaster(m); m.receiveShadows = true; }
+      const G = {};
+      for (const g of box.animationGroups) { g.stop(); g.weight = 0; G[g.name] = g; }
+      const ONE_SHOT = new Set(["Wave", "Jump"]);
+      let want = "Idle", lastLoop = "Idle", speed = 1;
+      const play = (name, instant = false) => {
+        const g = G[name];
+        if (!g) return;
+        want = name;
+        if (ONE_SHOT.has(name)) { g.stop(); g.weight = 0; g.start(false, speed, g.from, g.to); return; }
+        lastLoop = name;
+        if (!g.isPlaying) { g.weight = instant ? 1 : 0; g.start(true, speed, g.from, g.to); }
+      };
+      const morphs = [];
+      const FACE = ["Angry", "Surprised", "Sad"];
+      for (const m of box.meshes) {
+        const mtm = m.morphTargetManager;
+        if (!mtm) continue;
+        for (let i = 0; i < mtm.numTargets; i++) { const t = mtm.getTarget(i); morphs.push({ t, name: FACE.includes(t.name) ? t.name : FACE[i] }); }
+      }
+      let face = "";
+      const setChip = chip(ctx, "");
+      S.onFrame((dt) => {
+        for (const g of Object.values(G)) {
+          if (!g.isPlaying) continue;
+          const target = g.name === want ? 1 : 0;
+          g.weight = target > g.weight ? Math.min(1, g.weight + dt * 4) : Math.max(0, g.weight - dt * 4);
+          if (g.weight === 0 && target === 0) g.stop();
+        }
+        if (ONE_SHOT.has(want)) {
+          const g = G[want], a = g.animatables[0];
+          if (!g.isPlaying || (a && (g.to - a.masterFrame) / (60 * speed) < 0.3)) play(lastLoop);
+        }
+        for (const { t, name } of morphs) t.influence += ((name === face ? 1 : 0) - t.influence) * Math.min(1, dt * 8);
+        ringMat.emissiveColor = hex(ACCENT).scale(0.85 + Math.sin(performance.now() / 500) * 0.15);
+        const live = Object.values(G).filter((g) => g.isPlaying && g.weight > 0.005).map((g) => `${g.name} <b>${g.weight.toFixed(2)}</b>`);
+        setChip(`動畫群組權重：${live.join("・") || "無"}`);
+      });
+      play("Idle", true);
+      const LOOPS = [["Idle", "待機"], ["Walking", "走路"], ["Running", "跑步"], ["Dance", "跳舞"]];
+      ctx.group(LOOPS.map((l) => l[1]), 0, (i) => play(LOOPS[i][0]));
+      ctx.button("揮手", () => play("Wave"));
+      ctx.select("表情", [{ value: "", label: "無" }, { value: "Angry", label: "生氣" }, { value: "Surprised", label: "驚訝" }, { value: "Sad", label: "難過" }], "", (v) => { face = v; });
+      ctx.slider("速度", { min: 0.25, max: 2, step: 0.05, value: 1, format: (v) => `${v.toFixed(2)}×` }, (v) => { speed = v; for (const g of Object.values(G)) g.speedRatio = v; });
+      let viewer = null;
+      const skinned = box.meshes.find((m) => m.skeleton);
+      ctx.toggle("骨架", false, (on) => {
+        if (viewer) { viewer.dispose(); viewer = null; }
+        for (const m of robotMeshes) m.visibility = on ? 0.3 : 1;
+        if (!on || !skinned) return;
+        viewer = new B.Debug.SkeletonViewer(skinned.skeleton, skinned, scene, true, 3, { displayMode: B.Debug.SkeletonViewer.DISPLAY_SPHERE_AND_SPURS });
+        viewer.isEnabled = true;
+      });
+      ctx.onCleanup(() => { if (viewer) viewer.dispose(); });
+      scene.onPointerObservable.add((pi) => {
+        if (pi.type !== B.PointerEventTypes.POINTERTAP) return;
+        if (scene.pick(scene.pointerX, scene.pointerY, (m) => robotMeshes.has(m)).hit) play("Jump");
+      });
+      S.onSize(() => { cam.radius = fitRadius(S, 3.5, 3.0, 1.1); cam.lowerRadiusLimit = 5; cam.upperRadiusLimit = cam.radius * 2; });
+    },
+  },
+  {
+    id: "post", title: "後製管線",
+    api: "new DefaultRenderingPipeline(name, hdr, scene, [camera])",
+    desc: "一條 DefaultRenderingPipeline 就提供泛光、景深、色差、底片顆粒、暗角、FXAA 與 ACES 色調映射；逐項開關比較，並用滑桿移動景深的對焦距離。",
+    hint: "逐項開關效果・拖曳對焦距離看前後景模糊",
+    mount(ctx) {
+      const S = stage(ctx, { alpha: -Math.PI / 2 + 0.3, beta: 1.42, radius: 9, target: [0, 1.7, 7], fov: 0.75, pfov: 1.05 });
+      const { scene, cam } = S;
+      Object.assign(scene, { fogMode: B.Scene.FOGMODE_EXP2, fogDensity: 0.025, fogColor: hex("#07080b"), clearColor: B.Color4.FromHexString("#07080bff") });
+      const hemi = new B.HemisphericLight("hemi", new B.Vector3(0, 1, -0.2), scene);
+      hemi.intensity = 0.45;
+      const sun = new B.DirectionalLight("sun", new B.Vector3(0.3, -1, 0.6), scene);
+      sun.intensity = 0.9;
+      const floor = B.MeshBuilder.CreateGround("floor", { width: 16, height: 80 }, scene);
+      floor.position.z = 30;
+      floor.material = checkerMat(scene, 10, "#15181f", "#1c2029");
+      floor.material.diffuseTexture.vScale = 50;
+      for (let k = 0; k < 12; k++) {
+        const arch = B.MeshBuilder.CreateTorus("arch", { diameter: 5.4, thickness: 0.16, tessellation: 72 }, scene);
+        arch.rotation.x = Math.PI / 2;
+        arch.position.set(0, 2.7, k * 4.5 - 2);
+        const m = new B.StandardMaterial("arch" + k, scene);
+        m.emissiveColor = hex(PALETTE[k % PALETTE.length]);
+        m.disableLighting = true;
+        arch.material = m;
+      }
+      for (let k = 0; k < 18; k++) {
+        const s = 0.5 + ((k * 37) % 9) / 10;
+        const b = B.MeshBuilder.CreateBox("crate", { size: s }, scene);
+        b.position.set((k % 2 ? 1 : -1) * (3.4 + ((k * 13) % 5) * 0.25), s / 2, k * 2.4 - 1);
+        b.rotation.y = k * 0.7;
+        const m = new B.StandardMaterial("crate" + k, scene);
+        m.diffuseColor = hex(PALETTE[(k + 2) % PALETTE.length]).scale(0.55);
+        m.specularColor = new B.Color3(0.4, 0.4, 0.4);
+        b.material = m;
+      }
+      const knot = B.MeshBuilder.CreateTorusKnot("knot", { radius: 0.7, tube: 0.24, radialSegments: 160, tubularSegments: 24 }, scene);
+      knot.position.set(0, 1.7, 7);
+      const km = new B.StandardMaterial("knot", scene);
+      km.diffuseColor = hex("#e9e6dc");
+      km.specularColor = new B.Color3(0.9, 0.9, 0.9);
+      km.specularPower = 64;
+      km.emissiveColor = hex("#4cc9f0").scale(0.25);
+      knot.material = km;
+      S.onFrame((dt) => { knot.rotation.y += dt * 0.6; knot.rotation.x += dt * 0.25; });
+      const pp = new B.DefaultRenderingPipeline("pp", true, scene, [cam]);
+      Object.assign(pp, { bloomEnabled: true, bloomThreshold: 0.6, bloomWeight: 0.7, bloomKernel: 64, bloomScale: 0.5,
+        depthOfFieldBlurLevel: B.DepthOfFieldEffectBlurLevel.Medium, depthOfFieldEnabled: true, chromaticAberrationEnabled: true,
+        grainEnabled: true, fxaaEnabled: true, imageProcessingEnabled: true });
+      Object.assign(pp.depthOfField, { fStop: 1.4, focalLength: 50, focusDistance: 9000 });
+      Object.assign(pp.chromaticAberration, { aberrationAmount: 40, radialIntensity: 1.2 });
+      Object.assign(pp.grain, { intensity: 14, animated: true });
+      Object.assign(pp.imageProcessing, { toneMappingEnabled: true, toneMappingType: B.ImageProcessingConfiguration.TONEMAPPING_ACES, exposure: 1.1,
+        vignetteEnabled: true, vignetteWeight: 3, vignetteColor: new B.Color4(0, 0, 0, 0) });
+      ctx.toggle("光暈", true, (v) => { pp.bloomEnabled = v; });
+      ctx.toggle("景深", true, (v) => { pp.depthOfFieldEnabled = v; });
+      ctx.toggle("色差", true, (v) => { pp.chromaticAberrationEnabled = v; });
+      ctx.toggle("顆粒", true, (v) => { pp.grainEnabled = v; });
+      ctx.toggle("暗角", true, (v) => { pp.imageProcessing.vignetteEnabled = v; });
+      ctx.toggle("FXAA", true, (v) => { pp.fxaaEnabled = v; });
+      ctx.slider("對焦距離", { min: 2, max: 40, step: 0.5, value: 9, format: (v) => `${v.toFixed(1)} m` }, (v) => { pp.depthOfField.focusDistance = v * 1000; });
+      S.onSize(() => { cam.radius = Math.max(9, fitRadius(S, 2.8, 2.2, 1.1)); cam.lowerRadiusLimit = 4; cam.upperRadiusLimit = 30; });
+    },
+  },
+  {
+    id: "mesh", title: "網格建構",
+    api: "MeshBuilder.CreateLathe / CreateTube / CreateRibbon / ExtrudeShapeCustom / CreateGoldberg・new GizmoManager()",
+    desc: "MeshBuilder 從輪廓、路徑與函式即時生成幾何：車削、變徑管線、緞帶曲面、旋轉縮放擠出、戈德堡多面體。點選任一網格用 GizmoManager 拖曳移動、旋轉或縮放。",
+    hint: "點網格選取・拖曳控制把手・切換 Gizmo 類型",
+    mount(ctx) {
+      const S = stage(ctx, { alpha: -Math.PI / 2 + 0.25, beta: 1.2, pfov: 1.0 });
+      const { scene, cam } = S;
+      const hemi = new B.HemisphericLight("hemi", new B.Vector3(0.2, 1, -0.4), scene);
+      hemi.intensity = 0.7;
+      hemi.groundColor = hex("#202634");
+      const sun = new B.DirectionalLight("sun", new B.Vector3(-0.4, -0.8, 0.6), scene);
+      sun.intensity = 0.8;
+      const ui = makeUI(S);
+      const DS = B.Mesh.DOUBLESIDE;
+      const helix = [], ribbon = [], star = [], spine = [];
+      for (let i = 0; i <= 140; i++) { const a = (i / 140) * Math.PI * 6; helix.push(new B.Vector3(Math.cos(a) * 0.7, -1 + (i / 140) * 2, Math.sin(a) * 0.7)); }
+      for (let r = 0; r <= 24; r++) {
+        const row = [], y = -1 + (r / 24) * 2;
+        for (let i = 0; i <= 40; i++) { const x = -1.1 + (i / 40) * 2.2; row.push(new B.Vector3(x, y, Math.sin(x * 3 + y * 2.2) * 0.32)); }
+        ribbon.push(row);
+      }
+      for (let i = 0; i < 10; i++) { const a = (i / 10) * Math.PI * 2, r = i % 2 ? 0.3 : 0.68; star.push(new B.Vector3(Math.cos(a) * r, Math.sin(a) * r, 0)); }
+      for (let i = 0; i <= 30; i++) spine.push(new B.Vector3(0, -1 + (i / 30) * 2, 0));
+      const vase = [[0, -1.1], [0.55, -1.1], [0.78, -0.65], [0.62, -0.05], [0.36, 0.45], [0.4, 0.85], [0.58, 1.1]].map(([x, y]) => new B.Vector3(x, y, 0));
+      const SPECS = [
+        ["車削", "CreateLathe", () => B.MeshBuilder.CreateLathe("lathe", { shape: vase, tessellation: 64, sideOrientation: DS }, scene)],
+        ["變徑管線", "CreateTube", () => B.MeshBuilder.CreateTube("tube", { path: helix, tessellation: 20, cap: B.Mesh.CAP_ALL,
+          radiusFunction: (i) => 0.07 + 0.09 * (0.5 + 0.5 * Math.sin(i * 0.22)) }, scene)],
+        ["緞帶曲面", "CreateRibbon", () => B.MeshBuilder.CreateRibbon("ribbon", { pathArray: ribbon, sideOrientation: DS }, scene)],
+        ["扭轉擠出", "ExtrudeShapeCustom", () => B.MeshBuilder.ExtrudeShapeCustom("extrude", { shape: star, path: spine, closeShape: true, cap: B.Mesh.CAP_ALL,
+          scaleFunction: (i) => 1 - i * 0.014, rotationFunction: () => 0.05, sideOrientation: DS }, scene)],
+        ["戈德堡多面體", "CreateGoldberg", () => {
+          const g = B.MeshBuilder.CreateGoldberg("goldberg", { m: 3, n: 1, size: 1.1 }, scene);
+          const n = g.goldbergData.nbFaces, ranges = [];
+          for (let f = 0; f < n; f++) { const c = hex(PALETTE[f < 12 ? 0 : 1 + (f % 5)]); ranges.push([f, f, new B.Color4(c.r, c.g, c.b, 1)]); }
+          g.setGoldbergFaceColors(ranges);
+          return g;
+        }],
+        ["多面體", "CreatePolyhedron", () => B.MeshBuilder.CreatePolyhedron("poly", { type: 4, size: 0.85,
+          faceColors: Array.from({ length: 26 }, (_, i) => { const c = hex(PALETTE[i % PALETTE.length]); return new B.Color4(c.r, c.g, c.b, 1); }) }, scene)],
+      ];
+      const meshes = SPECS.map(([zh, api, make], i) => {
+        const mesh = make();
+        const m = new B.StandardMaterial("m" + i, scene);
+        m.diffuseColor = i >= 4 ? new B.Color3(1, 1, 1) : hex(PALETTE[(i + 1) % PALETTE.length]);
+        m.specularColor = new B.Color3(0.35, 0.35, 0.35);
+        m.backFaceCulling = false;
+        mesh.material = m;
+        mesh.metadata = { zh, api };
+        const a = new B.TransformNode("lab" + i, scene);
+        const tag = guiTag(ui, a, "");
+        return { mesh, a, tag };
+      });
+      const hl = new B.HighlightLayer("hl", scene);
+      const util = new B.UtilityLayerRenderer(scene), utilDepth = new B.UtilityLayerRenderer(scene);
+      utilDepth.utilityLayerScene.autoClearDepthAndStencil = false;
+      const gm = new B.GizmoManager(scene, 1, util, utilDepth);
+      gm.usePointerToAttachGizmos = true;
+      gm.attachableMeshes = meshes.map((x) => x.mesh);
+      gm.positionGizmoEnabled = true;
+      ctx.onCleanup(() => { gm.dispose(); util.dispose(); utilDepth.dispose(); });
+      const setChip = chip(ctx, "");
+      const describe = (m) => setChip(m
+        ? `${m.metadata.zh} ${m.metadata.api}：<b>${fmt(m.getTotalVertices())}</b> 個頂點・<b>${fmt(m.getTotalIndices() / 3)}</b> 個三角形`
+        : "點任一網格選取，查看頂點與三角形數");
+      gm.onAttachedToMeshObservable.add(describe);
+      let hovered = null;
+      scene.onPointerObservable.add((pi) => {
+        if (pi.type !== B.PointerEventTypes.POINTERMOVE) return;
+        const pick = scene.pick(scene.pointerX, scene.pointerY, (m) => gm.attachableMeshes.includes(m));
+        const m = pick.hit ? pick.pickedMesh : null;
+        if (m === hovered) return;
+        if (hovered) hl.removeMesh(hovered);
+        hovered = m;
+        if (m) hl.addMesh(m, hex(ACCENT));
+      });
+      const KINDS = ["positionGizmoEnabled", "rotationGizmoEnabled", "scaleGizmoEnabled", "boundingBoxGizmoEnabled"];
+      ctx.group(["移動", "旋轉", "縮放", "邊界框"], 0, (i) => { KINDS.forEach((k, j) => { gm[k] = i === j; }); });
+      ctx.toggle("線框", false, (v) => { for (const { mesh } of meshes) mesh.material.wireframe = v; });
+      ctx.button("重設位置", () => { layout(true); });
+      // Positions are only re-laid out on orientation change or reset, so gizmo edits survive chip-height refits.
+      let lastP = null;
+      const layout = (force) => {
+        const p = S.width < S.height, cols = p ? 2 : 3, sx = p ? 2.9 : 3.5, sy = p ? 3.3 : 3.4;
+        const short = p || S.width < 760;
+        for (const { mesh, tag } of meshes) tag.text.text = short ? mesh.metadata.zh : `${mesh.metadata.zh} ${mesh.metadata.api}`;
+        if (force !== true && p === lastP) return;
+        lastP = p;
+        meshes.forEach(({ mesh }, i) => {
+          const c = i % cols, r = Math.floor(i / cols), rows = Math.ceil(meshes.length / cols);
+          mesh.position.set((c - (cols - 1) / 2) * sx, ((rows - 1) / 2 - r) * sy + 0.25, 0);
+          mesh.rotationQuaternion = null;
+          mesh.rotation.set(0, 0, 0);
+          mesh.scaling.setAll(1);
+        });
+      };
+      S.onFrame(() => { for (const { mesh, a } of meshes) a.position.set(mesh.position.x, mesh.position.y - 1.45 * mesh.scaling.y, mesh.position.z); });
+      S.onSize(() => {
+        layout();
+        const p = S.width < S.height;
+        cam.radius = p ? fitRadius(S, 2.9, 5.2, 1.06) : fitRadius(S, 5.2, 3.5, 1.06);
+        cam.lowerRadiusLimit = cam.radius * 0.4;
+        cam.upperRadiusLimit = cam.radius * 2;
+      });
+      gm.attachToMesh(meshes[0].mesh);
+      describe(meshes[0].mesh);
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "mesh.thinInstanceSetBuffer(\"matrix\", m, 16)・new PhysicsAggregate(thinInstancedMesh, ...)",
+    desc: "一個 thin instance 網格掛上 PhysicsAggregate，每個實例都是一個 Havok 剛體，由旋轉的攪拌槳持續擾動；逐級加量，量測物理步進耗時與幀率。",
+    hint: "按「自動加壓」開始，可切換方塊或球體、開關攪拌槳",
+    async mount(ctx) {
+      ctx.html(`<div class="stress-view"></div>`);
+      const host = ctx.$(".stress-view");
+      ctx.controls.classList.add("bottom");
+      const st = ctx.status("載入 Havok 物理引擎（WebAssembly）…");
+      const havok = await getHavok().catch((e) => { st.error("Havok 載入失敗，請檢查網路後重試"); throw e; });
+      st.done();
+      if (!ctx.active) return;
+      const S = stage(ctx, { host, alpha: -Math.PI / 2 + 0.6, beta: 0.95, target: [0, 0.5, 0], bg: "#07080bff", maxBeta: 1.45 });
+      const { scene, cam } = S;
+      const hemi = new B.HemisphericLight("hemi", new B.Vector3(0.2, 1, -0.3), scene);
+      hemi.intensity = 0.75;
+      hemi.groundColor = hex("#1a1e28");
+      const sun = new B.DirectionalLight("sun", new B.Vector3(-0.5, -1, 0.4), scene);
+      sun.intensity = 0.9;
+      scene.enablePhysics(new B.Vector3(0, -9.81, 0), new B.HavokPlugin(false, havok));
+      const inst = new B.SceneInstrumentation(scene);
+      inst.capturePhysicsTime = true;
+      const wallMat = new B.StandardMaterial("wall", scene);
+      wallMat.diffuseColor = hex("#4cc9f0");
+      wallMat.alpha = 0.12;
+      const staticBox = (w, hgt, d, x, y, z, mat) => {
+        const b = B.MeshBuilder.CreateBox("static", { width: w, height: hgt, depth: d }, scene);
+        b.position.set(x, y, z);
+        b.material = mat;
+        new B.PhysicsAggregate(b, B.PhysicsShapeType.BOX, { mass: 0, friction: 0.6 }, scene);
+      };
+      staticBox(26, 1, 26, 0, -0.5, 0, checkerMat(scene, 6));
+      for (const [w, d, x, z] of [[26, 0.5, 0, 13.25], [26, 0.5, 0, -13.25], [0.5, 26, 13.25, 0], [0.5, 26, -13.25, 0]]) staticBox(w, 4, d, x, 2, z, wallMat);
+      const paddle = B.MeshBuilder.CreateBox("paddle", { width: 24, height: 1.2, depth: 0.6 }, scene);
+      paddle.position.y = 0.6;
+      paddle.material = new B.StandardMaterial("paddle", scene);
+      paddle.material.diffuseColor = hex(ACCENT);
+      const paddleAgg = new B.PhysicsAggregate(paddle, B.PhysicsShapeType.BOX, { mass: 1 }, scene);
+      paddleAgg.body.setMotionType(B.PhysicsMotionType.ANIMATED);
+      paddleAgg.body.disablePreStep = false;
+      let spin = true, yaw = 0, shape = 0, count = 0, mesh = null, agg = null;
+      S.onFrame((dt) => {
+        if (!spin) return;
+        yaw += dt * 0.7;
+        B.Quaternion.RotationYawPitchRollToRef(yaw, 0, 0, paddle.rotationQuaternion);
+      });
+      const mat = new B.StandardMaterial("bodies", scene);
+      mat.specularColor = new B.Color3(0.3, 0.3, 0.3);
+      const PAL = PALETTE.map(hex);
+      const rebuild = (n) => {
+        if (agg) agg.dispose();
+        if (mesh) mesh.dispose();
+        mesh = shape ? B.MeshBuilder.CreateSphere("body", { diameter: 0.55, segments: 8 }, scene) : B.MeshBuilder.CreateBox("body", { size: 0.5 }, scene);
+        mesh.material = mat;
+        const mats = new Float32Array(n * 16), cols = new Float32Array(n * 4);
+        const m = new B.Matrix(), q = new B.Quaternion(), one = new B.Vector3(1, 1, 1), p = new B.Vector3();
+        for (let i = 0; i < n; i++) {
+          const layer = Math.floor(i / 784), k = i % 784;
+          p.set(((k % 28) - 13.5) * 0.75 + (Math.random() - 0.5) * 0.1, 1.6 + layer * 0.75, (Math.floor(k / 28) - 13.5) * 0.75 + (Math.random() - 0.5) * 0.1);
+          B.Quaternion.RotationYawPitchRollToRef(Math.random() * Math.PI, 0, 0, q);
+          B.Matrix.ComposeToRef(one, q, p, m);
+          m.copyToArray(mats, i * 16);
+          const c = PAL[i % PAL.length];
+          cols.set([c.r, c.g, c.b, 1], i * 4);
+        }
+        mesh.thinInstanceSetBuffer("matrix", mats, 16, false);
+        mesh.thinInstanceSetBuffer("color", cols, 4);
+        mesh.alwaysSelectAsActiveMesh = true;
+        agg = new B.PhysicsAggregate(mesh, shape ? B.PhysicsShapeType.SPHERE : B.PhysicsShapeType.BOX,
+          { mass: 1, friction: 0.6, restitution: 0.1, center: B.Vector3.Zero(), extents: new B.Vector3(0.5, 0.5, 0.5), radius: 0.275 }, scene);
+      };
+      ctx.toggle("攪拌槳", true, (v) => { spin = v; });
+      ctx.group(["方塊", "球體"], 0, (i) => { shape = i; if (count) rebuild(count); });
+      S.onSize(() => { cam.radius = fitRadius(S, 14, 7, 1.05); cam.lowerRadiusLimit = 8; cam.upperRadiusLimit = 70; });
+      ctx.ramp({
+        label: "剛體數", unit: "個",
+        steps: [250, 500, 1000, 2000, 3000, 4500, 6000, 8000],
+        minFps: 30,
+        apply(n) { count = n; rebuild(n); },
+        metrics: () => ({ 物理步進: `${inst.physicsTimeCounter.lastSecAverage.toFixed(1)} ms`, "Draw calls": inst.drawCallsCounter.current }),
+        note: "所有剛體共用一個 thin instance 網格，繪製只需一次 draw call，瓶頸幾乎全在 Havok：WebAssembly 單執行緒求解器每步要處理大量接觸對，攪拌槳讓剛體無法進入休眠。關掉攪拌槳後堆疊靜止、剛體休眠，物理耗時會明顯下降。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

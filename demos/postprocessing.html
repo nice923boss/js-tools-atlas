@@ -3,211 +3,792 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>postprocessing 示範：霓虹長廊後製前後對比</title>
+<title>postprocessing 示範：八個場景看懂 three.js 後製與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["霓虹長廊","選擇性泛光","物件描邊","景深對焦","抗鋸齒","色調映射與 LUT","風格化效果","極限測試"]}</script>
 <style>
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
-  .btn { padding: 7px 10px; font-size: 12px; }
-  #split { position: fixed; top: 0; bottom: 0; width: 2px; background: var(--accent); z-index: 30; cursor: ew-resize; box-shadow: 0 0 12px rgba(247,223,30,.6); }
-  #split::after { content: "⇆"; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; font-weight: 700; }
-  #split::before { content: ""; position: absolute; inset: 0 -14px; }
-  .tag { position: fixed; top: 12px; z-index: 31; font-size: 12px; padding: 4px 9px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); pointer-events: none; white-space: nowrap; }
-  #tagRaw { transform: translateX(calc(-100% - 10px)); }
-  #tagFx { transform: translateX(10px); color: var(--accent); }
-  .controls { top: 48px; max-width: 360px; }
-  @media (max-width: 560px) { .controls { top: auto; bottom: 48px; right: 8px; left: 8px; justify-content: center; max-width: none; } }
+  canvas.gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  .lbl { position: absolute; z-index: 5; padding: 3px 8px; border-radius: 6px; background: var(--panel); border: 1px solid var(--line);
+    font: 500 11.5px/1.35 var(--mono); color: var(--fg); pointer-events: none; white-space: nowrap; backdrop-filter: blur(6px); }
+  .lbl b { color: var(--c1); font-weight: 600; }
+  .lbl.badge { left: 10px; top: calc(var(--sc-ctl-h, 0px) + 6px); white-space: normal; max-width: calc(100% - 20px); }
+  .lbl.split-tag { bottom: 46px; }
+  .lbl.focus { left: 0; top: 0; color: var(--c1); border-color: rgba(247, 223, 30, 0.5); }
+
+  /* draggable before/after divider */
+  .split { position: absolute; top: 0; bottom: 0; width: 28px; margin-left: -14px; z-index: 4; cursor: ew-resize; touch-action: none; }
+  .split::before { content: ""; position: absolute; left: 13px; top: 0; bottom: 0; width: 2px; background: var(--c1); box-shadow: 0 0 10px rgba(247, 223, 30, 0.55); }
+  .split::after { content: "\2194"; position: absolute; left: 50%; top: 50%; width: 26px; height: 26px; margin: -13px 0 0 -13px; border-radius: 50%;
+    background: var(--c1); color: #111; display: grid; place-items: center; font: 700 14px/1 var(--font); }
+
+  /* 5. anti-aliasing loupes */
+  .loupes { position: absolute; right: 10px; bottom: 10px; z-index: 6; display: flex; gap: 8px; pointer-events: none; }
+  .loupes figure { margin: 0; position: relative; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #000; }
+  .loupes canvas { display: block; width: 150px; height: 110px; image-rendering: pixelated; }
+  .loupes figcaption { position: absolute; left: 5px; top: 5px; padding: 3px 6px; border-radius: 5px; background: rgba(0, 0, 0, 0.65); font: 600 11px/1 var(--mono); color: var(--fg); }
+  .loupes figure:last-child figcaption { color: var(--c1); }
+  .probe { position: absolute; z-index: 5; border: 1.5px solid var(--c1); border-radius: 3px; pointer-events: none; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6); }
+  @media (max-width: 520px) { .loupes canvas { width: 118px; height: 88px; } }
+
+  /* 8. stress */
+  .stress-box { position: absolute; inset: 8px 8px 8px 350px; border-radius: 10px; overflow: hidden; }
+  @media (max-width: 760px) { .stress-box { inset: 8px; opacity: .9; } }
 </style>
 </head>
 <body>
-<canvas id="c"></canvas>
-<div id="split"></div>
-<div class="tag" id="tagRaw">原始畫面</div>
-<div class="tag" id="tagFx">後製效果</div>
-<div class="controls" id="fx"></div>
-<div class="hint">拖曳中間黃線比較前後・按鈕開關各種特效</div>
-
+<script src="_shared/showcase.js"></script>
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
-  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/",
+  "postprocessing": "https://cdn.jsdelivr.net/npm/postprocessing@6.39.5/build/index.js"
 } }
 </script>
 <script type="module">
+// postprocessing showcase: eight scenes from merged effect passes to an effect-count stress ramp.
 import * as THREE from "three";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import {
-  EffectComposer, RenderPass, EffectPass, BloomEffect, DepthOfFieldEffect, ChromaticAberrationEffect,
-  NoiseEffect, VignetteEffect, GlitchEffect, PixelationEffect, ToneMappingEffect, ToneMappingMode, BlendFunction,
-} from "https://cdn.jsdelivr.net/npm/postprocessing@6.39.5/build/index.js";
-
-const canvas = document.getElementById("c");
-// postprocessing wants antialias off on the renderer and tone mapping done as an effect
-const renderer = new THREE.WebGLRenderer({ canvas, powerPreference: "high-performance", antialias: false, stencil: false });
-renderer.setPixelRatio(1);
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x05060a);
-scene.fog = new THREE.Fog(0x05060a, 14, 40);
-const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-scene.environmentIntensity = 0.5;
-
-const camera = new THREE.PerspectiveCamera(50, 1, 0.3, 80);
-camera.position.set(0, 2.2, 9);
-
-// ---- Neon corridor scene ----
-const floor = new THREE.Mesh(
-  new THREE.PlaneGeometry(40, 80),
-  new THREE.MeshStandardMaterial({ color: 0x0b0d12, metalness: 0.9, roughness: 0.35 })
-);
-floor.rotation.x = -Math.PI / 2;
-floor.position.z = -20;
-scene.add(floor);
+  EffectComposer, RenderPass, EffectPass, Effect, BlendFunction, KernelSize,
+  BloomEffect, SelectiveBloomEffect, OutlineEffect, DepthOfFieldEffect, SMAAEffect, SMAAPreset, FXAAEffect, TextureEffect,
+  ToneMappingEffect, ToneMappingMode, LUT3DEffect, LookupTexture, HueSaturationEffect, BrightnessContrastEffect,
+  ChromaticAberrationEffect, NoiseEffect, VignetteEffect, ShockWaveEffect, GlitchEffect, PixelationEffect, DotScreenEffect,
+  ASCIIEffect, ASCIITexture, ScanlineEffect, ColorDepthEffect, SepiaEffect,
+} from "postprocessing";
 
 const NEON = [0xf72585, 0x4cc9f0, 0xf7df1e, 0x9d8cff];
-for (let i = 0; i < 9; i++) {
-  const color = NEON[i % NEON.length];
-  const arch = new THREE.Mesh(
-    new THREE.TorusGeometry(4.2, 0.07, 12, 120, Math.PI),
-    new THREE.MeshStandardMaterial({ color: 0x000000, emissive: color, emissiveIntensity: 3.2 })
-  );
-  arch.position.set(0, 0, -i * 4.2);
-  scene.add(arch);
-}
+const PALETTE = [0xf7df1e, 0x4cc9f0, 0xf72585, 0x7bd389, 0xff8c42, 0x9d8cff];
+const GEOS = [
+  () => new THREE.IcosahedronGeometry(0.62, 0),
+  () => new THREE.TorusGeometry(0.5, 0.18, 20, 64),
+  () => new THREE.BoxGeometry(0.85, 0.85, 0.85),
+  () => new THREE.ConeGeometry(0.55, 1.1, 32),
+  () => new THREE.TorusKnotGeometry(0.4, 0.13, 120, 16),
+  () => new THREE.OctahedronGeometry(0.62, 0),
+];
 
-// Hero object: chrome torus knot with glowing inner ring
-const hero = new THREE.Group();
-hero.position.set(0, 2.1, 1);
-const knot = new THREE.Mesh(
-  new THREE.TorusKnotGeometry(0.85, 0.28, 220, 32),
-  new THREE.MeshStandardMaterial({ color: 0xdddddd, metalness: 1, roughness: 0.18 })
-);
-hero.add(knot);
-const halo = new THREE.Mesh(
-  new THREE.TorusGeometry(1.6, 0.03, 8, 160),
-  new THREE.MeshStandardMaterial({ color: 0, emissive: 0xf7df1e, emissiveIntensity: 4 })
-);
-hero.add(halo);
-scene.add(hero);
-const keyLight = new THREE.PointLight(0xf72585, 30, 12);
-keyLight.position.set(-3, 3, 3);
-scene.add(keyLight);
-const fillLight = new THREE.PointLight(0x4cc9f0, 30, 12);
-fillLight.position.set(3, 1, 2);
-scene.add(fillLight);
+// ---------- shared helpers ----------
 
-// Floating emissive sparks at different depths (good bokeh material)
-const sparkGeo = new THREE.SphereGeometry(0.06, 8, 8);
-const sparks = [];
-for (let i = 0; i < 70; i++) {
-  const m = new THREE.Mesh(sparkGeo, new THREE.MeshStandardMaterial({ color: 0, emissive: NEON[i % 4], emissiveIntensity: 5 }));
-  m.position.set((Math.random() - 0.5) * 9, Math.random() * 4 + 0.3, 4 - Math.random() * 34);
-  m.userData.phase = Math.random() * 6.28;
-  sparks.push(m);
-  scene.add(m);
-}
-
-// ---- postprocessing effects ----
-const composer = new EffectComposer(renderer, { frameBufferType: THREE.HalfFloatType });
-composer.addPass(new RenderPass(scene, camera));
-
-const effects = {
-  dof: { label: "景深", on: true, fx: new DepthOfFieldEffect(camera, { focusDistance: 8, focusRange: 3.5, bokehScale: 3.2 }) },
-  bloom: { label: "泛光", on: true, fx: new BloomEffect({ mipmapBlur: true, luminanceThreshold: 0.6, luminanceSmoothing: 0.25, intensity: 1.25, radius: 0.75 }) },
-  ca: { label: "色差", on: true, fx: new ChromaticAberrationEffect({ offset: new THREE.Vector2(0.0018, 0.0012), radialModulation: true, modulationOffset: 0.2 }) },
-  glitch: { label: "故障", on: false, fx: new GlitchEffect({ delay: new THREE.Vector2(0.6, 1.8), duration: new THREE.Vector2(0.1, 0.4), strength: new THREE.Vector2(0.1, 0.3) }) },
-  pixel: { label: "像素化", on: false, fx: new PixelationEffect(6) },
-  noise: { label: "底片雜訊", on: true, late: true, fx: new NoiseEffect({ blendFunction: BlendFunction.SOFT_LIGHT, premultiply: false }) },
-  vignette: { label: "暗角", on: true, late: true, fx: new VignetteEffect({ offset: 0.3, darkness: 0.75 }) },
-};
-effects.noise.fx.blendMode.opacity.value = 0.12;
-const toneMap = new ToneMappingEffect({ mode: ToneMappingMode.AGX });
-
-let fxPass;
-function rebuild() {
-  if (fxPass) composer.removePass(fxPass);
-  const on = Object.values(effects).filter((e) => e.on);
-  const early = on.filter((e) => !e.late).map((e) => e.fx);
-  const late = on.filter((e) => e.late).map((e) => e.fx);
-  // EffectPass merges all effects into one shader in order; grain and vignette run after tone mapping
-  // so they blend on LDR values (soft light on HDR input produces speckles)
-  fxPass = new EffectPass(camera, ...early, toneMap, ...late);
-  composer.addPass(fxPass);
-}
-rebuild();
-
-const fxBox = document.getElementById("fx");
-for (const [key, e] of Object.entries(effects)) {
-  const b = document.createElement("button");
-  b.className = "btn";
-  b.textContent = e.label;
-  b.setAttribute("aria-pressed", String(e.on));
-  b.addEventListener("click", () => {
-    e.on = !e.on;
-    b.setAttribute("aria-pressed", String(e.on));
-    rebuild();
-  });
-  fxBox.append(b);
-}
-
-// ---- Before/after split ----
-const splitEl = document.getElementById("split");
-const tagRaw = document.getElementById("tagRaw");
-const tagFx = document.getElementById("tagFx");
-let split = 0.32;
-function placeSplit() {
-  const x = Math.round(split * innerWidth);
-  splitEl.style.left = x - 1 + "px";
-  tagRaw.style.left = x + "px";
-  tagFx.style.left = x + "px";
-  tagRaw.style.opacity = split < 0.12 ? 0 : 1;
-  tagFx.style.opacity = split > 0.88 ? 0 : 1;
-}
-let dragging = false;
-splitEl.addEventListener("pointerdown", (e) => { dragging = true; splitEl.setPointerCapture(e.pointerId); });
-splitEl.addEventListener("pointermove", (e) => { if (dragging) { split = Math.min(1, Math.max(0, e.clientX / innerWidth)); placeSplit(); } });
-splitEl.addEventListener("pointerup", () => { dragging = false; });
-
-const mouse = new THREE.Vector2();
-addEventListener("pointermove", (e) => { mouse.set(e.clientX / innerWidth - 0.5, e.clientY / innerHeight - 0.5); });
-
-function resize() {
-  const w = innerWidth, h = innerHeight;
-  renderer.setSize(w, h, false);
-  composer.setSize(w, h);
-  camera.aspect = w / h;
-  camera.fov = w < h ? 68 : 50;
-  camera.updateProjectionMatrix();
-  placeSplit();
-}
-addEventListener("resize", resize);
-resize();
-
-const clock = new THREE.Clock();
-renderer.setAnimationLoop(() => {
-  const dt = clock.getDelta(), t = clock.elapsedTime;
-  knot.rotation.x += dt * 0.4;
-  knot.rotation.y += dt * 0.6;
-  halo.rotation.x = Math.sin(t * 0.7) * 0.6;
-  halo.rotation.y = t * 0.5;
-  for (const s of sparks) s.position.y += Math.sin(t * 1.5 + s.userData.phase) * 0.004;
-  camera.position.x += (mouse.x * 3 - camera.position.x) * 0.04;
-  camera.position.y += (2.2 - mouse.y * 1.5 - camera.position.y) * 0.04;
-  camera.lookAt(0, 1.8, -4);
-
-  composer.render(dt);
-  // Overlay the untouched render on the left side of the divider
-  const sx = Math.round(split * innerWidth);
-  if (sx > 0) {
-    renderer.setRenderTarget(null);
-    renderer.setViewport(0, 0, innerWidth, innerHeight);
-    renderer.setScissor(0, 0, sx, innerHeight);
-    renderer.setScissorTest(true);
-    renderer.render(scene, camera);
-    renderer.setScissorTest(false);
+// Renderer + scene + EffectComposer bound to the scene element (or an inner box). Everything is disposed on unmount.
+function stage(ctx, { camera, env = 0, bg = 0x05060a, box = null, ratio = Math.min(devicePixelRatio || 1, 1.5) } = {}) {
+  const host = box || ctx.el;
+  const canvas = document.createElement("canvas");
+  canvas.className = "gl";
+  host.prepend(canvas);
+  // postprocessing wants antialias off on the renderer and tone mapping done as an effect
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, stencil: false, powerPreference: "high-performance" });
+  renderer.setPixelRatio(ratio);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(bg);
+  if (env) {
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    const room = new RoomEnvironment();
+    scene.environment = pmrem.fromScene(room, 0.04).texture;
+    scene.environmentIntensity = env;
+    room.dispose();
+    pmrem.dispose();
   }
-});
+  const composer = new EffectComposer(renderer, { frameBufferType: THREE.HalfFloatType });
+  composer.addPass(new RenderPass(scene, camera));
+  const S = {
+    canvas, renderer, scene, camera, composer, passes: [], w: 1, h: 1, onSize: null,
+    fit() {
+      const w = Math.max(1, host.clientWidth), h = Math.max(1, host.clientHeight);
+      S.w = w; S.h = h;
+      composer.setSize(w, h, false);
+      if (camera.isPerspectiveCamera) camera.aspect = w / h;
+      if (S.onSize) S.onSize(w, h);
+      camera.updateProjectionMatrix();
+    },
+  };
+  ctx.onResize(() => S.fit());
+  ctx.onCleanup(() => {
+    composer.dispose();
+    scene.traverse((o) => {
+      if (o.geometry) o.geometry.dispose();
+      const mats = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : [];
+      for (const m of mats) { if (m.map) m.map.dispose(); m.dispose(); }
+    });
+    if (scene.environment) scene.environment.dispose();
+    renderer.dispose();
+    renderer.forceContextLoss();
+  });
+  S.fit();
+  return S;
+}
+
+// Replace every EffectPass after the RenderPass. Each inner array becomes one merged EffectPass.
+function setPasses(S, groups) {
+  for (const p of S.passes) { S.composer.removePass(p); p.dispose(); }
+  S.passes = groups.filter((g) => g.length).map((g) => new EffectPass(S.camera, ...g));
+  for (const p of S.passes) S.composer.addPass(p);
+  return S.passes;
+}
+
+function tag(ctx, cls, html) {
+  const d = document.createElement("div");
+  d.className = `lbl ${cls}`;
+  d.innerHTML = html;
+  ctx.el.append(d);
+  return d;
+}
+
+const pick = (wrap, i) => [...wrap.children].forEach((b, k) => b.setAttribute("aria-pressed", String(k === i)));
+
+// Click-to-pick via raycasting against a list of meshes.
+function picker(ctx, S, targets, fn) {
+  const ray = new THREE.Raycaster(), v = new THREE.Vector2();
+  ctx.on(S.canvas, "click", (e) => {
+    const r = S.canvas.getBoundingClientRect();
+    v.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+    ray.setFromCamera(v, S.camera);
+    fn(ray.intersectObjects(targets, false)[0], ray);
+  });
+}
+
+// Before/after divider: the composer output covers the screen, then the raw render is scissored over the left part.
+function splitter(ctx, S, { left = "原始畫面", right = "後製效果" } = {}) {
+  const bar = document.createElement("div");
+  bar.className = "split";
+  ctx.el.append(bar);
+  const tl = tag(ctx, "split-tag", left), tr = tag(ctx, "split-tag", right);
+  let pos = 0.5, user = false, drag = false;
+  const place = () => {
+    const px = Math.round(Math.min(S.w - 14, Math.max(14, pos * S.w)));
+    bar.style.left = `${px}px`;
+    tl.style.left = `${Math.max(10, px - 10 - tl.offsetWidth)}px`;
+    tr.style.left = `${Math.max(10, Math.min(px + 10, S.w - tr.offsetWidth - 10))}px`;
+    return px;
+  };
+  ctx.on(bar, "pointerdown", (e) => { drag = user = true; bar.setPointerCapture(e.pointerId); e.preventDefault(); });
+  ctx.on(bar, "pointermove", (e) => {
+    if (!drag) return;
+    const r = ctx.el.getBoundingClientRect();
+    pos = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+  });
+  ctx.on(bar, "pointerup", () => { drag = false; });
+  return {
+    setRight(html) { tr.innerHTML = html; },
+    update(t) { if (!user) pos = 0.5 + Math.sin(t * 0.0006) * 0.28; },
+    draw() {
+      const px = place(), r = S.renderer;
+      r.setRenderTarget(null);
+      r.setViewport(0, 0, S.w, S.h);
+      r.setScissor(0, 0, px, S.h);
+      r.setScissorTest(true);
+      r.render(S.scene, S.camera);
+      r.setScissorTest(false);
+    },
+  };
+}
+
+function addFloor(scene, { y = 0, size = 40, color = 0x0b0d12, metalness = 0.9, roughness = 0.35 } = {}) {
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(size, size), new THREE.MeshStandardMaterial({ color, metalness, roughness }));
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.y = y;
+  scene.add(floor);
+  return floor;
+}
+
+// The neon corridor from the original demo, reused by scenes 1 and 8.
+function buildCorridor(scene) {
+  scene.background = new THREE.Color(0x05060a);
+  scene.fog = new THREE.Fog(0x05060a, 14, 40);
+  const floor = addFloor(scene, { size: 80 });
+  floor.position.z = -20;
+  for (let i = 0; i < 9; i++) {
+    const arch = new THREE.Mesh(new THREE.TorusGeometry(4.2, 0.07, 12, 120, Math.PI),
+      new THREE.MeshStandardMaterial({ color: 0x000000, emissive: NEON[i % 4], emissiveIntensity: 3.2 }));
+    arch.position.set(0, 0, -i * 4.2);
+    scene.add(arch);
+  }
+  const hero = new THREE.Group();
+  hero.position.set(0, 2.1, 1);
+  const knot = new THREE.Mesh(new THREE.TorusKnotGeometry(0.85, 0.28, 220, 32),
+    new THREE.MeshStandardMaterial({ color: 0xdddddd, metalness: 1, roughness: 0.18 }));
+  const halo = new THREE.Mesh(new THREE.TorusGeometry(1.6, 0.03, 8, 160),
+    new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xf7df1e, emissiveIntensity: 4 }));
+  hero.add(knot, halo);
+  scene.add(hero);
+  const key = new THREE.PointLight(0xf72585, 30, 12);
+  key.position.set(-3, 3, 3);
+  const fill = new THREE.PointLight(0x4cc9f0, 30, 12);
+  fill.position.set(3, 1, 2);
+  scene.add(key, fill);
+  const sparkGeo = new THREE.SphereGeometry(0.06, 8, 8);
+  const sparks = [];
+  for (let i = 0; i < 70; i++) {
+    const m = new THREE.Mesh(sparkGeo, new THREE.MeshStandardMaterial({ color: 0x000000, emissive: NEON[i % 4], emissiveIntensity: 5 }));
+    m.position.set((Math.random() - 0.5) * 9, Math.random() * 4 + 0.3, 4 - Math.random() * 34);
+    m.userData.y = m.position.y;
+    m.userData.phase = Math.random() * 6.28;
+    sparks.push(m);
+    scene.add(m);
+  }
+  return (t, dt) => {
+    knot.rotation.x += dt * 0.4;
+    knot.rotation.y += dt * 0.6;
+    halo.rotation.x = Math.sin(t * 0.7) * 0.6;
+    halo.rotation.y = t * 0.5;
+    for (const s of sparks) s.position.y = s.userData.y + Math.sin(t * 1.5 + s.userData.phase) * 0.18;
+  };
+}
+
+// 3D LUT from a per-colour function (sRGB in, sRGB out), stored as 8-bit to avoid float linear filtering quirks.
+const clamp01 = (x) => Math.min(1, Math.max(0, x));
+const lum = (r, g, b) => r * 0.2126 + g * 0.7152 + b * 0.0722;
+const mix = (a, b, t) => a + (b - a) * t;
+const sstep = (e0, e1, x) => { const t = clamp01((x - e0) / (e1 - e0)); return t * t * (3 - 2 * t); };
+function makeLUT(fn, size = 32) {
+  const data = new Float32Array(size ** 3 * 4), s = 1 / (size - 1);
+  for (let b = 0; b < size; b++) for (let g = 0; g < size; g++) for (let r = 0; r < size; r++) {
+    const o = fn(r * s, g * s, b * s), i = (r + g * size + b * size * size) * 4;
+    data[i] = clamp01(o[0]); data[i + 1] = clamp01(o[1]); data[i + 2] = clamp01(o[2]); data[i + 3] = 1;
+  }
+  return new LookupTexture(data, size).convertToUint8();
+}
+const LUTS = [
+  ["原色", (r, g, b) => [r, g, b]],
+  ["暖陽", (r, g, b) => [r * 1.06 + 0.04, g + 0.015, b * 0.8]],
+  ["青橘", (r, g, b) => {
+    const l = lum(r, g, b), k = sstep(0.12, 0.8, l), sat = (c) => l + (c - l) * 1.2;
+    return [sat(r) + mix(-0.1, 0.1, k), sat(g) + mix(0.05, 0.01, k), sat(b) + mix(0.12, -0.14, k)];
+  }],
+  ["黑白", (r, g, b) => { const l = sstep(0.03, 0.97, lum(r, g, b)); return [l * 1.02, l, l * 0.95]; }],
+  ["褪色", (r, g, b) => { const l = lum(r, g, b), d = (c) => 0.1 + mix(c, l, 0.35) * 0.78; return [d(r), d(g) + 0.02, d(b) + 0.035]; }],
+];
+
+const TONE_MODES = ["LINEAR", "REINHARD", "REINHARD2", "UNCHARTED2", "CINEON", "ACES_FILMIC", "AGX", "NEUTRAL"];
+
+// Shows the depth-of-field circle-of-confusion buffer: R = near blur, G = far blur.
+const COC_VIEW = `
+uniform sampler2D cocMap;
+void mainImage(const in vec4 inputColor, const in vec2 uv, out vec4 outputColor) {
+  vec2 c = texture2D(cocMap, uv).rg;
+  vec3 tint = vec3(1.0, 0.25, 0.55) * c.r + vec3(0.3, 0.8, 1.0) * c.g;
+  outputColor = vec4(inputColor.rgb * 0.45 + tint * 0.55, inputColor.a);
+}`;
+
+Showcase.run({ scenes: [
+  {
+    id: "corridor", title: "霓虹長廊",
+    api: "new EffectPass(camera, dof, bloom, ca, toneMapping, noise, vignette)",
+    desc: "景深、泛光、色差、色調映射、底片雜訊、暗角全部塞進同一個 EffectPass，編譯成一支著色器只畫一次全螢幕；分割線左側是未後製的原始輸出。",
+    hint: "拖曳黃色分割線比對・開關效果看差異・移動滑鼠有視差",
+    mount(ctx) {
+      const camera = new THREE.PerspectiveCamera(50, 1, 0.3, 80);
+      camera.position.set(0, 2.2, 9);
+      const S = stage(ctx, { camera, env: 0.5 });
+      const update = buildCorridor(S.scene);
+      S.onSize = (w, h) => { camera.fov = w < h ? 68 : 50; };
+      S.fit();
+      const on = { dof: true, bloom: true, ca: true, noise: true, vignette: true };
+      const NAMES = { dof: "景深", bloom: "泛光", ca: "色差", noise: "雜訊", vignette: "暗角" };
+      const badge = tag(ctx, "badge", "");
+      const rebuild = () => {
+        const early = [], late = [];
+        if (on.dof) early.push(new DepthOfFieldEffect(camera, { focusDistance: 8, focusRange: 3.5, bokehScale: 3.2 }));
+        if (on.bloom) early.push(new BloomEffect({ mipmapBlur: true, luminanceThreshold: 0.6, luminanceSmoothing: 0.25, intensity: 1.25, radius: 0.75 }));
+        if (on.ca) early.push(new ChromaticAberrationEffect({ offset: new THREE.Vector2(0.0018, 0.0012), radialModulation: true, modulationOffset: 0.2 }));
+        if (on.noise) {
+          const n = new NoiseEffect({ blendFunction: BlendFunction.SOFT_LIGHT, premultiply: false });
+          n.blendMode.opacity.value = 0.12;
+          late.push(n);
+        }
+        if (on.vignette) late.push(new VignetteEffect({ offset: 0.3, darkness: 0.75 }));
+        // grain and vignette run after tone mapping so they blend on LDR values
+        setPasses(S, [[...early, new ToneMappingEffect({ mode: ToneMappingMode.AGX }), ...late]]);
+        const names = Object.keys(on).filter((k) => on[k]).map((k) => NAMES[k]);
+        badge.innerHTML = `EffectPass <b>×1</b>・合併 <b>${names.length + 1}</b> 個效果：${[...names, "色調映射"].join("＋")}`;
+      };
+      rebuild();
+      for (const k of Object.keys(on)) ctx.toggle(NAMES[k], on[k], (v) => { on[k] = v; rebuild(); });
+      const split = splitter(ctx, S);
+      const mouse = { x: 0, y: 0 };
+      ctx.on(ctx.el, "pointermove", (e) => {
+        const r = ctx.el.getBoundingClientRect();
+        mouse.x = (e.clientX - r.left) / r.width - 0.5;
+        mouse.y = (e.clientY - r.top) / r.height - 0.5;
+      });
+      ctx.raf((t, dt) => {
+        update(t / 1000, dt / 1000);
+        camera.position.x += (mouse.x * 3 - camera.position.x) * 0.04;
+        camera.position.y += (2.2 - mouse.y * 1.5 - camera.position.y) * 0.04;
+        camera.lookAt(0, 1.8, -4);
+        S.composer.render(dt / 1000);
+        split.update(t);
+        split.draw();
+      });
+    },
+  },
+  {
+    id: "selective", title: "選擇性泛光",
+    api: "new SelectiveBloomEffect(scene, camera, opts).selection.toggle(mesh)",
+    desc: "十二個物件亮度相同，只有放進 selection 的物件會發光；selection 透過圖層遮罩決定誰參與泛光，inverted 可反轉成未選的發光。",
+    hint: "點物件切換發光・反向選取・拉強度",
+    mount(ctx) {
+      const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
+      const S = stage(ctx, { camera, env: 0.35, bg: 0x07080c });
+      const { scene } = S;
+      const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+      sun.position.set(3, 6, 4);
+      scene.add(sun);
+      addFloor(scene, { y: -0.62, size: 30, color: 0x10131a, metalness: 0.7, roughness: 0.45 });
+      const items = [];
+      for (let r = 0; r < 3; r++) for (let c = 0; c < 4; c++) {
+        const i = r * 4 + c, color = PALETTE[i % 6];
+        const m = new THREE.Mesh(GEOS[i % 6](), new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.55, metalness: 0.2, roughness: 0.4 }));
+        m.position.set((c - 1.5) * 2.1, 0.35, (1 - r) * 2.2);
+        m.userData.phase = i * 0.7;
+        const ring = new THREE.Mesh(new THREE.RingGeometry(0.72, 0.84, 48), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 }));
+        ring.rotation.x = -Math.PI / 2;
+        ring.position.set(m.position.x, -0.6, m.position.z);
+        ring.visible = false;
+        m.userData.ring = ring;
+        scene.add(m, ring);
+        items.push(m);
+      }
+      S.onSize = (w, h) => {
+        const p = w < h;
+        camera.fov = p ? 55 : 38;
+        camera.position.set(0, p ? 7 : 4.2, p ? 12.5 : 9.5);
+        camera.lookAt(0, -0.2, 0);
+      };
+      S.fit();
+      const bloom = new SelectiveBloomEffect(scene, camera, { mipmapBlur: true, luminanceThreshold: 0, luminanceSmoothing: 0.2, intensity: 3.2, radius: 0.72 });
+      bloom.ignoreBackground = true;
+      setPasses(S, [[bloom, new ToneMappingEffect({ mode: ToneMappingMode.AGX })]]);
+      const sel = bloom.selection;
+      const badge = tag(ctx, "badge", "");
+      const sync = () => {
+        for (const m of items) m.userData.ring.visible = sel.has(m);
+        badge.innerHTML = `selection <b>${sel.size}</b>／12${bloom.inverted ? "・inverted：未選的發光" : ""}`;
+      };
+      sel.set([items[0], items[5], items[10]]);
+      sync();
+      let user = false;
+      picker(ctx, S, items, (hit) => { if (!hit) return; user = true; sel.toggle(hit.object); sync(); });
+      ctx.interval(() => { if (!user) { sel.toggle(items[Math.floor(Math.random() * items.length)]); sync(); } }, 900);
+      ctx.toggle("反向選取", false, (v) => { bloom.inverted = v; sync(); });
+      ctx.slider("強度", { min: 0, max: 6, step: 0.1, value: 3.2, format: (v) => v.toFixed(1) }, (v) => { bloom.intensity = v; });
+      ctx.button("全選", () => { user = true; sel.set(items); sync(); });
+      ctx.button("清除", () => { user = true; sel.clear(); sync(); });
+      ctx.raf((t) => {
+        const s = t / 1000;
+        for (const m of items) {
+          m.rotation.y = s * 0.6 + m.userData.phase;
+          m.rotation.x = Math.sin(s * 0.5 + m.userData.phase) * 0.4;
+          m.position.y = 0.35 + Math.sin(s * 1.4 + m.userData.phase) * 0.12;
+        }
+        S.composer.render();
+      });
+    },
+  },
+  {
+    id: "outline", title: "物件描邊",
+    api: "new OutlineEffect(scene, camera, { xRay, edgeStrength, pulseSpeed, blur })",
+    desc: "描邊用遮罩加邊緣偵測產生；開啟 X 光時被柱子擋住的部分改用另一種顏色畫出，適合做選取提示或穿牆標記。",
+    hint: "點物件加入描邊・切換 X 光、脈動、模糊・換顏色",
+    mount(ctx) {
+      const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
+      const S = stage(ctx, { camera, env: 0.6, bg: 0x0b0d12 });
+      const { scene } = S;
+      const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+      sun.position.set(-4, 6, 5);
+      scene.add(sun);
+      const grid = new THREE.GridHelper(24, 24, 0x4cc9f0, 0x232833);
+      grid.position.y = -1;
+      scene.add(grid);
+      const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.7, 4, 48), new THREE.MeshStandardMaterial({ color: 0x2a2e38, metalness: 0.6, roughness: 0.35 }));
+      pillar.position.y = 1;
+      scene.add(pillar);
+      const orbiters = PALETTE.slice(0, 5).map((color, i) => {
+        const m = new THREE.Mesh(GEOS[i](), new THREE.MeshStandardMaterial({ color, metalness: 0.3, roughness: 0.35 }));
+        m.userData.a = (i / 5) * Math.PI * 2;
+        scene.add(m);
+        return m;
+      });
+      S.onSize = (w, h) => {
+        const p = w < h;
+        camera.fov = p ? 58 : 40;
+        camera.position.set(0, p ? 4.2 : 3, p ? 10.5 : 8.2);
+        camera.lookAt(0, 0.5, 0);
+      };
+      S.fit();
+      const outline = new OutlineEffect(scene, camera, {
+        blendFunction: BlendFunction.SCREEN, edgeStrength: 3, pulseSpeed: 0, visibleEdgeColor: 0xf7df1e, hiddenEdgeColor: 0x4cc9f0,
+        blur: false, xRay: true, kernelSize: KernelSize.VERY_SMALL,
+      });
+      setPasses(S, [[new ToneMappingEffect({ mode: ToneMappingMode.NEUTRAL }), outline]]);
+      const sel = outline.selection;
+      const badge = tag(ctx, "badge", "");
+      const sync = () => { badge.innerHTML = `描邊 <b>${sel.size}</b> 個・xRay <b>${outline.xRay ? "開" : "關"}</b>・被擋住的邊用青色`; };
+      let user = false, k = 0;
+      const auto = () => { sel.clear(); sel.add(orbiters[k % 5]); sel.add(orbiters[(k + 2) % 5]); k++; sync(); };
+      auto();
+      picker(ctx, S, [...orbiters, pillar], (hit) => { if (!hit) return; user = true; sel.toggle(hit.object); sync(); });
+      ctx.interval(() => { if (!user) auto(); }, 1200);
+      ctx.toggle("X 光", true, (v) => { outline.xRay = v; sync(); });
+      ctx.toggle("脈動", false, (v) => { outline.pulseSpeed = v ? 0.6 : 0; });
+      ctx.toggle("模糊", false, (v) => { outline.blur = v; });
+      ctx.slider("邊緣", { min: 1, max: 10, step: 0.5, value: 3, format: (v) => v.toFixed(1) }, (v) => { outline.edgeStrength = v; });
+      const COLORS = [0xf7df1e, 0xf72585, 0x7bd389];
+      ctx.group(["黃", "粉", "綠"], 0, (i) => { outline.visibleEdgeColor = new THREE.Color(COLORS[i]); });
+      ctx.raf((t) => {
+        const s = t / 1000;
+        orbiters.forEach((m, i) => {
+          const a = m.userData.a + s * 0.45;
+          m.position.set(Math.cos(a) * 2.6, 0.25 + Math.sin(s * 1.3 + i) * 0.25, Math.sin(a) * 2.6);
+          m.rotation.set(s * 0.7 + i, s * 0.9, 0);
+        });
+        S.composer.render();
+      });
+    },
+  },
+  {
+    id: "dof", title: "景深對焦",
+    api: "new DepthOfFieldEffect(camera, { bokehScale }).target = vector3",
+    desc: "設定 target 後景深每幀依物件位置自動計算對焦距離；開啟 CoC 檢視可看到模糊圈緩衝區，粉色是焦點前的模糊、青色是焦點後的模糊、暗處是清晰範圍。",
+    hint: "點物件對焦・切換近中遠・開 CoC 檢視",
+    mount(ctx) {
+      const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
+      const S = stage(ctx, { camera, env: 0.55, bg: 0x090b10 });
+      const { scene } = S;
+      scene.fog = new THREE.Fog(0x090b10, 18, 40);
+      const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+      sun.position.set(4, 7, 6);
+      scene.add(sun);
+      const grid = new THREE.GridHelper(60, 60, 0x9d8cff, 0x1d2230);
+      grid.position.set(0, -0.6, -10);
+      scene.add(grid);
+      const items = [];
+      for (let i = 0; i < 7; i++) {
+        const color = PALETTE[i % 6];
+        const m = new THREE.Mesh(GEOS[i % 6](), new THREE.MeshStandardMaterial({ color, metalness: 0.35, roughness: 0.3 }));
+        m.scale.setScalar(1.15);
+        m.position.set(i % 2 ? 1.25 : -1.25, 0.45, 3.2 - i * 3);
+        scene.add(m);
+        items.push(m);
+      }
+      const sparkGeo = new THREE.SphereGeometry(0.05, 8, 8);
+      for (let i = 0; i < 60; i++) {
+        const s = new THREE.Mesh(sparkGeo, new THREE.MeshStandardMaterial({ color: 0x000000, emissive: PALETTE[i % 6], emissiveIntensity: 4 }));
+        s.position.set((Math.random() - 0.5) * 10, Math.random() * 3.5 - 0.2, 5 - Math.random() * 26);
+        scene.add(s);
+      }
+      S.onSize = (w, h) => {
+        const p = w < h;
+        camera.fov = p ? 60 : 42;
+        camera.position.set(0, 1.7, p ? 10 : 8.5);
+        camera.lookAt(0, 0.5, -5);
+      };
+      S.fit();
+      const dof = new DepthOfFieldEffect(camera, { focusDistance: 5, focusRange: 1.5, bokehScale: 4 });
+      const focus = items[0].position.clone(), goal = focus.clone();
+      dof.target = focus;
+      const cocView = new Effect("CoCView", COC_VIEW, { blendFunction: BlendFunction.NORMAL, uniforms: new Map([["cocMap", new THREE.Uniform(dof.cocTexture)]]) });
+      cocView.blendMode.opacity.value = 0;
+      setPasses(S, [[dof, new ToneMappingEffect({ mode: ToneMappingMode.AGX }), new VignetteEffect({ offset: 0.35, darkness: 0.55 }), cocView]]);
+      const focusTag = tag(ctx, "focus", "焦點");
+      const badge = tag(ctx, "badge", "");
+      let user = false, idx = 0;
+      const focusOn = (i) => { idx = i; goal.copy(items[i].position); };
+      const seg = ctx.group(["近", "中", "遠"], 0, (i) => { user = true; focusOn([0, 3, 6][i]); });
+      picker(ctx, S, items, (hit) => { if (!hit) return; user = true; focusOn(items.indexOf(hit.object)); pick(seg, -1); });
+      const ORDER = [0, 3, 6, 2, 5];
+      let step = 0;
+      ctx.interval(() => {
+        if (user) return;
+        step = (step + 1) % ORDER.length;
+        focusOn(ORDER[step]);
+        pick(seg, [0, 3, 6].indexOf(ORDER[step]));
+      }, 2500);
+      ctx.slider("散景", { min: 0, max: 8, step: 0.1, value: 4, format: (v) => v.toFixed(1) }, (v) => { dof.bokehScale = v; });
+      ctx.slider("對焦範圍", { min: 0.3, max: 6, step: 0.1, value: 1.5, format: (v) => v.toFixed(1) }, (v) => { dof.cocMaterial.focusRange = v; });
+      ctx.toggle("CoC 檢視", false, (v) => { cocView.blendMode.opacity.value = v ? 1 : 0; });
+      const v3 = new THREE.Vector3();
+      ctx.raf((t, dt) => {
+        const s = t / 1000;
+        items.forEach((m, i) => { m.rotation.y = s * 0.5 + i; m.rotation.x = Math.sin(s * 0.4 + i) * 0.3; });
+        focus.lerp(goal, 1 - Math.exp(-dt / 180));
+        S.composer.render(dt / 1000);
+        v3.copy(items[idx].position).project(camera);
+        const x = Math.min(S.w - 40, Math.max(40, (v3.x * 0.5 + 0.5) * S.w));
+        const y = Math.min(S.h - 60, Math.max(60, (-v3.y * 0.5 + 0.5) * S.h));
+        focusTag.style.transform = `translate(${x}px, ${y}px) translate(-50%, -260%)`;
+        badge.innerHTML = `對焦距離 <b>${dof.cocMaterial.focusDistance.toFixed(2)}</b>・範圍 <b>${dof.cocMaterial.focusRange.toFixed(1)}</b>（世界單位）`;
+      });
+    },
+  },
+  {
+    id: "aa", title: "抗鋸齒",
+    api: "composer.multisampling = 4｜new SMAAEffect({ preset })｜new FXAAEffect()",
+    desc: "同一張高對比細線畫面切換四種抗鋸齒：MSAA 在繪製時多重取樣，FXAA 與 SMAA 是後製邊緣偵測；「SMAA 邊緣」直接顯示 SMAA 偵測到的邊緣貼圖。右下放大鏡是黃框處放大四倍。",
+    hint: "切換模式看放大鏡差異・換 SMAA 品質",
+    mount(ctx) {
+      ctx.html(`<div class="probe"></div><div class="loupes"><figure><canvas width="150" height="110"></canvas><figcaption>原始</figcaption></figure><figure><canvas width="150" height="110"></canvas><figcaption>SMAA</figcaption></figure></div>`);
+      const [lc1, lc2] = ctx.$$(".loupes canvas");
+      const cap = ctx.$(".loupes figure:last-child figcaption");
+      const probe = ctx.$(".probe");
+      const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+      const S = stage(ctx, { camera, bg: 0x111419 });
+      const { scene } = S;
+      const white = new THREE.MeshBasicMaterial({ color: 0xf2f2ee });
+      const fan = new THREE.Group();
+      for (let i = 0; i < 40; i++) {
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.022, 0.022), white);
+        const a = (i / 40) * Math.PI * 2;
+        bar.position.set(Math.cos(a) * 1.85, Math.sin(a) * 1.85, 0);
+        bar.rotation.z = a;
+        fan.add(bar);
+      }
+      for (const r of [1.2, 2.4, 3.55]) fan.add(new THREE.Mesh(new THREE.TorusGeometry(r, 0.014, 6, 220), new THREE.MeshBasicMaterial({ color: 0xf7df1e })));
+      fan.position.y = 0.4;
+      scene.add(fan);
+      const grid = new THREE.GridHelper(40, 80, 0xbfc3cc, 0x6b7180);
+      grid.position.y = -2.4;
+      scene.add(grid);
+      S.onSize = (w, h) => {
+        const p = w < h;
+        camera.fov = p ? 66 : 46;
+        camera.position.set(0, 1.2, p ? 10 : 8.5);
+        camera.lookAt(0, 0, 0);
+      };
+      S.fit();
+      const MODES = ["無", "MSAA ×4", "FXAA", "SMAA", "SMAA 邊緣"];
+      let mode = 3, preset = "HIGH", user = false;
+      const vig = () => new VignetteEffect({ offset: 0.35, darkness: 0.45 });
+      const setMode = (i) => {
+        mode = i;
+        S.composer.multisampling = i === 1 ? 4 : 0;
+        if (i <= 1) setPasses(S, [[vig()]]);
+        else if (i === 2) setPasses(S, [[new FXAAEffect(), vig()]]);
+        else {
+          const smaa = new SMAAEffect({ preset: SMAAPreset[preset] });
+          const groups = [[smaa, vig()]];
+          if (i === 4) groups.push([new BrightnessContrastEffect({ brightness: -0.35 }), new TextureEffect({ blendFunction: BlendFunction.ADD, texture: smaa.edgesTexture })]);
+          setPasses(S, groups);
+        }
+        cap.textContent = MODES[i];
+      };
+      const seg = ctx.group(MODES, mode, (i) => { user = true; setMode(i); });
+      ctx.select("SMAA", ["LOW", "MEDIUM", "HIGH", "ULTRA"], preset, (v) => { user = true; preset = v; if (mode >= 3) setMode(mode); });
+      setMode(mode);
+      ctx.interval(() => { if (user) return; const i = (mode + 1) % MODES.length; setMode(i); pick(seg, i); }, 2500);
+      const g1 = lc1.getContext("2d"), g2 = lc2.getContext("2d");
+      g1.imageSmoothingEnabled = g2.imageSmoothingEnabled = false;
+      const grab = (g) => {
+        const cw = g.canvas.width, ch = g.canvas.height, k = S.canvas.width / S.w;
+        const sw = cw / 4, sh = ch / 4, m = Math.min(S.w, S.h);
+        const sx = S.w * 0.5 + m * 0.2 - sw / 2, sy = S.h * 0.5 - m * 0.14 - sh / 2;
+        g.drawImage(S.canvas, sx * k, sy * k, sw * k, sh * k, 0, 0, cw, ch);
+        return [sx, sy, sw, sh];
+      };
+      ctx.raf((t, dt) => {
+        const s = t / 1000;
+        fan.rotation.z = s * 0.08;
+        fan.rotation.x = -0.35 + Math.sin(s * 0.3) * 0.1;
+        S.renderer.setRenderTarget(null);
+        S.renderer.render(scene, camera);
+        grab(g1);
+        S.composer.render(dt / 1000);
+        const [sx, sy, sw, sh] = grab(g2);
+        probe.style.cssText = `left:${sx}px;top:${sy}px;width:${sw}px;height:${sh}px`;
+      });
+    },
+  },
+  {
+    id: "grading", title: "色調映射與 LUT",
+    api: "new ToneMappingEffect({ mode })＋new LUT3DEffect(new LookupTexture(data, 32))",
+    desc: "照片乘上曝光倍率變成 HDR，左側直接截斷、右側經過色調映射再套 3D LUT 調色；LUT 是用程式即時算出的 32³ 查色表，換 LUT 只是替換貼圖不重建著色器。",
+    hint: "換色調映射與 LUT・拉曝光・拖曳分割線",
+    mount(ctx) {
+      const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 10);
+      camera.position.z = 1;
+      const S = stage(ctx, { camera, bg: 0x0e1013 });
+      const tex = new THREE.TextureLoader().load("_shared/img/photo-1.jpg");
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const mat = new THREE.MeshBasicMaterial({ map: tex });
+      mat.color.setScalar(2);
+      const quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat);
+      S.scene.add(quad);
+      S.onSize = (w, h) => { const a = w / h; if (a > 1.5) quad.scale.set(1, a / 1.5, 1); else quad.scale.set(1.5 / a, 1, 1); };
+      S.fit();
+      const luts = LUTS.map(([, fn]) => makeLUT(fn));
+      ctx.onCleanup(() => luts.forEach((l) => l.dispose()));
+      const tm = new ToneMappingEffect({ mode: ToneMappingMode.AGX });
+      const lutFx = new LUT3DEffect(luts[0]);
+      const hs = new HueSaturationEffect({ saturation: 0 });
+      setPasses(S, [[tm, lutFx, hs]]);
+      let toneName = "AGX", lutIdx = 0, user = false;
+      const split = splitter(ctx, S, { left: "直接截斷", right: "" });
+      const label = () => split.setRight(`${toneName}＋${LUTS[lutIdx][0]}`);
+      label();
+      const setLut = (i) => { lutIdx = i; lutFx.lut = luts[i]; label(); };
+      ctx.select("色調", TONE_MODES, toneName, (v) => { user = true; toneName = v; tm.mode = ToneMappingMode[v]; label(); });
+      const seg = ctx.group(LUTS.map((l) => l[0]), 0, (i) => { user = true; setLut(i); });
+      ctx.slider("曝光", { min: 0.5, max: 4, step: 0.1, value: 2, format: (v) => `${v.toFixed(1)}×` }, (v) => { mat.color.setScalar(v); });
+      ctx.slider("飽和", { min: -1, max: 1, step: 0.05, value: 0, format: (v) => v.toFixed(2) }, (v) => { user = true; hs.saturation = v; });
+      ctx.interval(() => { if (user) return; const i = (lutIdx + 1) % LUTS.length; setLut(i); pick(seg, i); }, 2200);
+      ctx.raf((t) => {
+        S.composer.render();
+        split.update(t);
+        split.draw();
+      });
+    },
+  },
+  {
+    id: "stylize", title: "風格化效果",
+    api: "ASCIIEffect・PixelationEffect・DotScreenEffect・GlitchEffect・ShockWaveEffect.explode()",
+    desc: "同一個場景套六種風格；會改 UV 的效果（故障、像素、震波）不能和卷積效果（色差）放在同一個 EffectPass，徽章會顯示實際拆成幾個 pass。",
+    hint: "切換風格・震波模式下點地面引爆",
+    mount(ctx) {
+      const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+      const S = stage(ctx, { camera, env: 0.6, bg: 0x0c0f16 });
+      const { scene } = S;
+      const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+      sun.position.set(3, 7, 5);
+      scene.add(sun);
+      const floor = addFloor(scene, { y: -0.7, size: 40, color: 0x1a2030, metalness: 0.2, roughness: 0.7 });
+      const grid = new THREE.GridHelper(40, 40, 0x4cc9f0, 0x2a3142);
+      grid.position.y = -0.69;
+      scene.add(grid);
+      const center = new THREE.Mesh(new THREE.TorusKnotGeometry(0.75, 0.24, 200, 28), new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.8, roughness: 0.2 }));
+      center.position.y = 0.9;
+      scene.add(center);
+      const ring = PALETTE.map((color, i) => {
+        const m = new THREE.Mesh(GEOS[i](), new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.25, metalness: 0.2, roughness: 0.4 }));
+        m.userData.a = (i / 6) * Math.PI * 2;
+        scene.add(m);
+        return m;
+      });
+      S.onSize = (w, h) => {
+        const p = w < h;
+        camera.fov = p ? 60 : 45;
+        camera.position.set(0, p ? 3.8 : 2.8, p ? 10 : 7.8);
+        camera.lookAt(0, 0.4, 0);
+      };
+      S.fit();
+      const noise = (o) => { const n = new NoiseEffect({ blendFunction: BlendFunction.SOFT_LIGHT, premultiply: false }); n.blendMode.opacity.value = o; return n; };
+      const tm = () => new ToneMappingEffect({ mode: ToneMappingMode.NEUTRAL });
+      let shock = null;
+      const STYLES = [
+        ["ASCII", () => [[tm(), new ASCIIEffect({ cellSize: 12, asciiTexture: new ASCIITexture({ characters: " .:-+*=%@#" }) })]]],
+        ["像素", () => [[tm(), new PixelationEffect(8)]]],
+        ["網點", () => {
+          const dots = new DotScreenEffect({ angle: Math.PI * 0.25, scale: 0.9 });
+          dots.blendMode.opacity.value = 0.45;
+          return [[tm(), dots, new ColorDepthEffect({ bits: 12 })]];
+        }],
+        ["CRT", () => {
+          const scan = new ScanlineEffect({ density: 1.4 });
+          scan.blendMode.opacity.value = 0.55;
+          return [[tm(), scan, noise(0.3), new VignetteEffect({ offset: 0.22, darkness: 0.85 }),
+            new ChromaticAberrationEffect({ offset: new THREE.Vector2(0.0025, 0.0012), radialModulation: true, modulationOffset: 0.1 })]];
+        }],
+        ["故障", () => {
+          const glitch = new GlitchEffect({ delay: new THREE.Vector2(0.3, 1), duration: new THREE.Vector2(0.15, 0.45), strength: new THREE.Vector2(0.2, 0.55), columns: 0.04, ratio: 0.85 });
+          return [[tm(), glitch, noise(0.25)], [new ChromaticAberrationEffect({ offset: new THREE.Vector2(0.004, 0.002) })]];
+        }],
+        ["震波", () => {
+          shock = new ShockWaveEffect(camera, new THREE.Vector3(), { speed: 1.25, maxRadius: 0.6, waveSize: 0.22, amplitude: 0.07 });
+          return [[tm(), shock, new VignetteEffect({ offset: 0.3, darkness: 0.6 })]];
+        }],
+      ];
+      const badge = tag(ctx, "badge", "");
+      let cur = 0, user = false;
+      const setStyle = (i) => {
+        cur = i;
+        shock = null;
+        const passes = setPasses(S, STYLES[i][1]());
+        const desc = passes.map((p) => p.effects.map((e) => e.name.replace("Effect", "")).join("＋")).join(" ｜ ");
+        badge.innerHTML = `EffectPass <b>×${passes.length}</b>：${desc}`;
+      };
+      const seg = ctx.group(STYLES.map((s) => s[0]), 0, (i) => { user = true; setStyle(i); });
+      setStyle(0);
+      ctx.interval(() => { if (user) return; const i = (cur + 1) % STYLES.length; setStyle(i); pick(seg, i); }, 2600);
+      const boom = (p) => { if (!shock) return; shock.position.copy(p); shock.explode(); };
+      picker(ctx, S, [floor], (hit) => { if (hit) { user = user || cur === 5; boom(hit.point); } });
+      ctx.interval(() => { if (!user && shock) boom(new THREE.Vector3((Math.random() - 0.5) * 4, -0.7, (Math.random() - 0.5) * 3)); }, 1400);
+      ctx.raf((t, dt) => {
+        const s = t / 1000;
+        center.rotation.set(s * 0.4, s * 0.6, 0);
+        ring.forEach((m, i) => {
+          const a = m.userData.a + s * 0.35;
+          m.position.set(Math.cos(a) * 2.4, 0.25 + Math.sin(s * 1.5 + i) * 0.2, Math.sin(a) * 2.4);
+          m.rotation.set(s * 0.8 + i, s, 0);
+        });
+        S.composer.render(dt / 1000);
+      });
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "new EffectPass(camera, ...effects) 對比 每效果一個 EffectPass",
+    desc: "長廊場景逐級增加同時開啟的效果數（最多 12 個），直到掉到 30 FPS 以下；預設把能合併的效果塞進同一個 EffectPass，可切換成每效果一個 pass 或提高解析度倍率再測一次比較。",
+    hint: "按「自動加壓」開始；切換 pass 模式或解析度後再測一次",
+    mount(ctx) {
+      ctx.html(`<div class="stress-box"></div>`);
+      const box = ctx.$(".stress-box");
+      const camera = new THREE.PerspectiveCamera(50, 1, 0.3, 80);
+      camera.position.set(0, 2.2, 9);
+      const S = stage(ctx, { camera, env: 0.5, box, ratio: 1 });
+      const update = buildCorridor(S.scene);
+      S.onSize = (w, h) => { camera.fov = w < h ? 68 : 50; };
+      S.fit();
+      // [name, isConvolution, factory]; convolution effects cannot share an EffectPass with each other
+      const FX = [
+        ["色調映射", false, () => new ToneMappingEffect({ mode: ToneMappingMode.AGX })],
+        ["泛光", false, () => new BloomEffect({ mipmapBlur: true, luminanceThreshold: 0.6, intensity: 1.2, radius: 0.7 })],
+        ["暗角", false, () => new VignetteEffect({ offset: 0.3, darkness: 0.7 })],
+        ["雜訊", false, () => { const n = new NoiseEffect({ blendFunction: BlendFunction.SOFT_LIGHT, premultiply: false }); n.blendMode.opacity.value = 0.12; return n; }],
+        ["色相飽和", false, () => new HueSaturationEffect({ saturation: 0.15 })],
+        ["SMAA", true, () => new SMAAEffect({ preset: SMAAPreset.HIGH })],
+        ["景深", false, () => new DepthOfFieldEffect(camera, { focusDistance: 8, focusRange: 3.5, bokehScale: 3 })],
+        ["色差", true, () => new ChromaticAberrationEffect({ offset: new THREE.Vector2(0.0015, 0.001), radialModulation: true, modulationOffset: 0.2 })],
+        ["掃描線", false, () => { const s = new ScanlineEffect({ density: 1.3 }); s.blendMode.opacity.value = 0.25; return s; }],
+        ["亮度對比", false, () => new BrightnessContrastEffect({ contrast: 0.08 })],
+        ["色深", false, () => new ColorDepthEffect({ bits: 24 })],
+        ["懷舊", false, () => new SepiaEffect({ intensity: 0.3 })],
+      ];
+      let count = 1, perEffect = false;
+      const rebuild = () => {
+        const list = FX.slice(0, count);
+        if (perEffect) { setPasses(S, list.map(([, , make]) => [make()])); return; }
+        const main = [], extra = [];
+        let convUsed = false;
+        for (const [, conv, make] of list) {
+          if (conv && convUsed) extra.push([make()]);
+          else { if (conv) convUsed = true; main.push(make()); }
+        }
+        setPasses(S, [main, ...extra]);
+      };
+      ctx.toggle("每效果一個 Pass", false, (v) => { perEffect = v; rebuild(); });
+      ctx.select("解析度", [{ value: "1", label: "1×" }, { value: "1.5", label: "1.5×" }, { value: "2", label: "2×" }], "1", (v) => { S.renderer.setPixelRatio(+v); S.fit(); });
+      ctx.controls.classList.add("bottom");
+      ctx.raf((t, dt) => {
+        const s = t / 1000;
+        update(s, dt / 1000);
+        camera.position.x = Math.sin(s * 0.4) * 1.2;
+        camera.lookAt(0, 1.8, -4);
+        S.composer.render(dt / 1000);
+      });
+      ctx.ramp({
+        label: "同時開啟的效果", unit: "個", steps: [1, 2, 4, 6, 8, 10, 12],
+        minFps: 30,
+        apply(n) { count = n; rebuild(); },
+        metrics: () => ({
+          "EffectPass": S.passes.length,
+          "最新加入": FX[count - 1][0],
+          "繪製尺寸": `${S.canvas.width}×${S.canvas.height}`,
+        }),
+        note: "後製成本主要是填充率：每個 EffectPass 都要再畫一次全螢幕，泛光與景深內部還有多次降採樣模糊。合併模式下非卷積效果共用一支著色器，只有 SMAA 與色差這類卷積效果需要拆 pass；解析度倍率加倍，像素數變四倍。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

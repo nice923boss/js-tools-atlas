@@ -3,81 +3,94 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>GPU.js 示範：同一段 JavaScript，GPU 與 CPU 賽跑</title>
+<title>GPU.js 示範：八個場景把 JavaScript 函式交給 GPU 平行運算</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["碎形縮放","三種後端","影像卷積","管線紋理","多重輸出","編譯管線","非同步讀回","極限測試"],"note":"沒有顯示卡的環境會用軟體模擬 WebGL，GPU 數字會偏慢，頁面會照實標示"}</script>
 <style>
-  #view { position: fixed; inset: 0; background: #04060b; }
-  #view canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-  .btn { padding: 7px 10px; font-size: 12px; }
-  .controls .label { font-size: 12px; align-self: center; padding: 6px 8px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); }
-  #race {
-    position: fixed; left: 12px; top: 12px; z-index: 40; width: 300px; padding: 12px 14px;
-    display: grid; grid-template-columns: minmax(0, 1fr); gap: 9px; font-size: 12px;
-  }
-  #race h2 { margin: 0; font-size: 14px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .chip { font: 11px/1.5 var(--mono); padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--c4); white-space: nowrap; }
-  .chip.cpu { color: var(--c5); }
-  .seg { display: flex; gap: 4px; align-items: center; }
-  .seg .btn { padding: 6px 8px; font-family: var(--mono); font-size: 11.5px; }
-  .seg .grow { flex: 1; }
-  .seg .btn.primary { font-family: var(--font); font-size: 12px; padding: 7px 12px; }
-  .btn:disabled { opacity: .5; cursor: progress; }
-  .lane { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; }
-  .lane .name { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .lane .ms { font-family: var(--mono); text-align: right; }
+  .sc-scene { background: #04060b; }
+  .sc-scene .sc-fps { white-space: normal; max-width: calc(100% - 20px); }
+  .sc-scene .sc-fps.under { top: calc(var(--sc-ctl-h, 0px) + 4px); }
+  .view { position: absolute; inset: 0; }
+  .view canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .tag { display: inline-block; font: 500 11px/1.7 var(--mono); padding: 0 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .tag.ok { color: var(--c4); }
+  .tag.no { color: var(--c5); }
+  .warn { color: var(--c5); }
+  .small { color: var(--muted); font-size: 11.5px; line-height: 1.55; margin: 0; }
+  .lbl { position: absolute; z-index: 2; pointer-events: none; font: 600 11.5px/1 var(--mono); padding: 5px 8px; border-radius: 99px; background: rgba(0, 0, 0, 0.62); color: #fff; white-space: nowrap; max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis; }
+  .lbl.tl { left: 8px; top: 8px; } .lbl.tr { right: 8px; top: 8px; } .lbl.bl { left: 8px; bottom: 8px; font-weight: 500; } .lbl.br { right: 8px; bottom: 8px; font-weight: 500; }
+
+  /* cards and lanes (scenes 2 and 6) */
+  .board { position: absolute; inset: 0; overflow: auto; overscroll-behavior: contain; padding: calc(var(--sc-ctl-h, 0px) + 10px) 12px 14px; display: grid; gap: 12px; align-content: start; grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr); }
+  .card { padding: 13px 15px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); min-width: 0; display: flex; flex-direction: column; gap: 9px; }
+  .card h3 { margin: 0; font-size: 14px; }
+  .tags { display: flex; flex-wrap: wrap; gap: 5px; }
+  .lane { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 10px; }
+  .lane .name { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lane .name small { color: var(--muted); font: 11px var(--mono); margin-left: 6px; }
+  .lane .ms { font: 600 12.5px var(--mono); text-align: right; white-space: nowrap; }
   .lane .track { grid-column: 1 / -1; height: 8px; border-radius: 4px; background: rgba(255, 255, 255, 0.07); overflow: hidden; }
-  .lane .fill { height: 100%; width: 0; border-radius: 4px; transition: width .7s cubic-bezier(.2, .8, .2, 1); }
-  .lane.gpu .fill { background: linear-gradient(90deg, var(--c2), var(--c6)); }
-  .lane.cpu .fill { background: linear-gradient(90deg, var(--c5), var(--c3)); }
+  .lane .fill { height: 100%; width: 0; border-radius: 4px; background: var(--lc, var(--c2)); transition: width .6s cubic-bezier(.2, .8, .2, 1); }
+  .lane .sub { grid-column: 1 / -1; color: var(--muted); font: 11px/1.4 var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .lane.win .ms { color: var(--accent); }
-  #verdict { font-size: 13px; font-weight: 600; }
-  #verdict b { color: var(--accent); }
-  #detail, #env { color: var(--muted); font-size: 11.5px; line-height: 1.55; }
-  #env .warn { color: var(--c5); }
-  #env .r { display: block; font-family: var(--mono); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #fps { position: fixed; right: 12px; bottom: 12px; z-index: 40; padding: 6px 10px; font: 11.5px/1.5 var(--mono); color: var(--muted); }
-  #fps b { color: var(--fg); font-weight: 600; }
-  @media (max-width: 600px) {
-    #race { left: 12px; right: 12px; width: auto; top: auto; bottom: 46px; gap: 7px; padding: 10px 12px; }
-    #env .long, #detail .long, #env .r { display: none; }
-    #fps { top: 52px; bottom: auto; padding: 4px 8px; font-size: 11px; }
-    #fps .wide { display: none; }
+  .verdict { font-size: 13px; font-weight: 600; line-height: 1.5; }
+  .verdict b { color: var(--accent); }
+  pre.src { margin: 0; font: 11.5px/1.55 var(--mono); color: #cfd6e6; white-space: pre; overflow: auto; padding: 10px; border-radius: 8px; background: rgba(0, 0, 0, 0.35); }
+  .heatmap { position: relative; width: 100%; aspect-ratio: 1; border-radius: 10px; overflow: hidden; background: #000; }
+  .heatmap canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  @media (max-width: 640px) {
+    .board { grid-template-columns: minmax(0, 1fr); }
+    .heatmap { max-width: 240px; justify-self: center; }
+  }
+
+  /* scene 3: convolution */
+  .conv { position: absolute; inset: calc(var(--sc-ctl-h, 0px) + 10px) 10px 10px; border-radius: 10px; overflow: hidden; cursor: ew-resize; touch-action: none; background: #000; }
+  .conv canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .conv .split { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--accent); box-shadow: 0 0 14px rgba(0, 0, 0, 0.7); pointer-events: none; z-index: 1; }
+
+  /* scene 4: reaction diffusion */
+  .gs { cursor: crosshair; touch-action: none; }
+
+  /* scene 5: kernel map */
+  .maps { position: absolute; inset: calc(var(--sc-ctl-h, 0px) + 10px) 10px 10px; display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "h r" "s r"; }
+  .maps figure { margin: 0; position: relative; border-radius: 10px; overflow: hidden; background: #0b0f18; min-height: 0; }
+  .maps canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; object-fit: cover; }
+  @media (max-width: 560px) { .maps { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: minmax(0, 2fr) minmax(0, 1fr); grid-template-areas: "r r" "h s"; } }
+
+  /* scene 7: async */
+  .field { position: absolute; inset: 0; width: 100%; height: 100%; display: block; object-fit: cover; }
+  .orbit { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
+  .gapbox { position: absolute; left: 10px; right: 10px; bottom: 10px; height: 96px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(6px); overflow: hidden; }
+  .gapbox canvas { width: 100%; height: 100%; display: block; }
+
+  /* scene 8: stress chart */
+  .mm { position: absolute; inset: 10px 10px 10px 350px; overflow: auto; overscroll-behavior: contain; padding: 12px 14px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+  .mm .hd { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 13px; }
+  .mm .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11.5px; color: var(--muted); }
+  .mm .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+  .mm .row { display: grid; grid-template-columns: 3.6em minmax(0, 1fr); gap: 2px 10px; padding-top: 6px; border-top: 1px dashed var(--line); }
+  .mm .row > b { font: 600 12px/1.3 var(--mono); text-align: right; padding-top: 1px; }
+  .mm .bars { display: grid; gap: 3px; min-width: 0; }
+  .mm .b { display: grid; grid-template-columns: 2.6em minmax(0, 1fr) 6.4em; align-items: center; gap: 6px; font: 11px/1.3 var(--mono); color: var(--muted); }
+  .mm .b .t { height: 7px; border-radius: 4px; background: rgba(255, 255, 255, 0.06); overflow: hidden; }
+  .mm .b .t i { display: block; height: 100%; width: 0; border-radius: 4px; transition: width .4s; }
+  .mm .b span:last-child { text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
+  .mm .say { grid-column: 2; font-size: 11.5px; color: var(--muted); }
+  .mm .say b { color: var(--accent); }
+  .mm .empty { color: var(--muted); font-size: 12px; }
+  @media (max-width: 760px) {
+    .mm { inset: auto 10px 10px 10px; height: calc(42% - 15px); padding: 10px 12px; }
+    .sc-scene[data-scene="stress"] .sc-lab { max-height: calc(58% - 15px); }
   }
 </style>
 </head>
 <body>
-<div id="view"></div>
-<div class="controls" id="engines">
-  <span class="label">碎形渲染</span>
-  <button class="btn" type="button" data-engine="gpu" aria-pressed="true">GPU</button>
-  <button class="btn" type="button" data-engine="cpu" aria-pressed="false">CPU</button>
-  <button class="btn" type="button" id="next">換放大點</button>
-</div>
-
-<section class="panel" id="race" aria-live="polite">
-  <h2>矩陣乘法對決 <span class="chip" id="modeChip">偵測中</span></h2>
-  <div class="seg" id="sizes">
-    <button class="btn" type="button" data-n="128" aria-pressed="false">128²</button>
-    <button class="btn" type="button" data-n="256" aria-pressed="true">256²</button>
-    <button class="btn" type="button" data-n="512" aria-pressed="false">512²</button>
-    <span class="grow"></span>
-    <button class="btn primary" type="button" id="go">開始比賽</button>
-  </div>
-  <div class="lane gpu" id="laneGpu"><span class="name" id="gpuName">GPU 核心</span><span class="ms" id="gpuMs">待命</span><div class="track"><div class="fill" id="gpuFill"></div></div></div>
-  <div class="lane cpu" id="laneCpu"><span class="name">CPU・純 JavaScript</span><span class="ms" id="cpuMs">待命</span><div class="track"><div class="fill" id="cpuFill"></div></div></div>
-  <div id="verdict">兩邊跑同一個 matMul 函式</div>
-  <div id="detail"></div>
-  <div id="env"></div>
-</section>
-
-<div class="panel" id="fps">準備中</div>
-<div class="hint">切換 GPU／CPU 看每幀耗時差距</div>
-
 <script src="https://cdn.jsdelivr.net/npm/gpu.js@2.24.1/dist/gpu-browser.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// ---------- Kernels: plain JavaScript that GPU.js transpiles to GLSL (or runs as JS on CPU) ----------
+// ---------- Kernels: plain JavaScript that GPU.js transpiles to GLSL, WebAssembly or JS ----------
 function mandelbrot(left, bottom, step, maxIter, shift) {
   const x0 = left + this.thread.x * step;
   const y0 = bottom + this.thread.y * step;
@@ -124,43 +137,290 @@ function matMul(a, b) {
   return sum;
 }
 
-// ---------- Helpers ----------
-const $ = (id) => document.getElementById(id);
-const view = $("view");
-const raceEl = $("race");
-
-function backendOf(shortcut) {
-  const inner = shortcut.kernel || shortcut;
-  const mode = inner.constructor.mode;
-  if (mode === "gpu") {
-    const isGl2 = typeof WebGL2RenderingContext !== "undefined" && inner.context instanceof WebGL2RenderingContext;
-    return { label: isGl2 ? "WebGL2" : "WebGL1", gpu: true };
-  }
-  if (mode === "webasm") return { label: "WebAssembly", gpu: false };
-  if (mode === "webgpu") return { label: "WebGPU", gpu: true };
-  return { label: "JavaScript", gpu: false };
-}
-
-function rendererOf(shortcut) {
-  const gl = (shortcut.kernel || shortcut).context;
-  if (!gl || typeof gl.getParameter !== "function") return "";
-  try {
-    let name = gl.getParameter(gl.RENDERER);
-    if (/^WebKit WebGL$/.test(name)) {
-      const ext = gl.getExtension("WEBGL_debug_renderer_info");
-      if (ext) name = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+// mode 0 box blur (radius r), 1 sharpen, 2 Sobel edges, 3 emboss
+function convolve(img, mode, r) {
+  const x = this.thread.x;
+  const y = this.thread.y;
+  const W = this.output.x - 1;
+  const H = this.output.y - 1;
+  const c = img[y][x];
+  if (mode === 0) {
+    let sr = 0;
+    let sg = 0;
+    let sb = 0;
+    let n = 0;
+    for (let j = -r; j <= r; j++) {
+      for (let i = -r; i <= r; i++) {
+        let yy = y + j;
+        let xx = x + i;
+        if (yy < 0) yy = 0;
+        if (yy > H) yy = H;
+        if (xx < 0) xx = 0;
+        if (xx > W) xx = W;
+        const p = img[yy][xx];
+        sr += p[0];
+        sg += p[1];
+        sb += p[2];
+        n++;
+      }
     }
-    return String(name || "");
-  } catch (err) {
-    console.warn(err);
-    return "";
+    this.color(sr / n, sg / n, sb / n, 1);
+  } else {
+    let xl = x - 1;
+    let xr = x + 1;
+    let yd = y - 1;
+    let yu = y + 1;
+    if (xl < 0) xl = 0;
+    if (xr > W) xr = W;
+    if (yd < 0) yd = 0;
+    if (yu > H) yu = H;
+    if (mode === 1) {
+      const n4 = img[y][xl];
+      const e4 = img[y][xr];
+      const s4 = img[yd][x];
+      const u4 = img[yu][x];
+      const k = r * 0.35;
+      this.color(
+        c[0] + (4 * c[0] - n4[0] - e4[0] - s4[0] - u4[0]) * k,
+        c[1] + (4 * c[1] - n4[1] - e4[1] - s4[1] - u4[1]) * k,
+        c[2] + (4 * c[2] - n4[2] - e4[2] - s4[2] - u4[2]) * k, 1);
+    } else {
+      const p00 = img[yd][xl]; const p10 = img[yd][x]; const p20 = img[yd][xr];
+      const p01 = img[y][xl]; const p21 = img[y][xr];
+      const p02 = img[yu][xl]; const p12 = img[yu][x]; const p22 = img[yu][xr];
+      const l00 = p00[0] * 0.3 + p00[1] * 0.59 + p00[2] * 0.11;
+      const l10 = p10[0] * 0.3 + p10[1] * 0.59 + p10[2] * 0.11;
+      const l20 = p20[0] * 0.3 + p20[1] * 0.59 + p20[2] * 0.11;
+      const l01 = p01[0] * 0.3 + p01[1] * 0.59 + p01[2] * 0.11;
+      const l21 = p21[0] * 0.3 + p21[1] * 0.59 + p21[2] * 0.11;
+      const l02 = p02[0] * 0.3 + p02[1] * 0.59 + p02[2] * 0.11;
+      const l12 = p12[0] * 0.3 + p12[1] * 0.59 + p12[2] * 0.11;
+      const l22 = p22[0] * 0.3 + p22[1] * 0.59 + p22[2] * 0.11;
+      if (mode === 2) {
+        const gx = (l20 + 2 * l21 + l22) - (l00 + 2 * l01 + l02);
+        const gy = (l02 + 2 * l12 + l22) - (l00 + 2 * l10 + l20);
+        const m = Math.min(1, Math.sqrt(gx * gx + gy * gy) * r * 0.45);
+        this.color(m * 0.3 + c[0] * 0.08, m * 0.79 + c[1] * 0.08, m * 0.94 + c[2] * 0.08, 1);
+      } else {
+        const e = 0.5 + (l22 + l21 + l12 - l00 - l01 - l10) * r * 0.25;
+        this.color(e, e * 0.97, e * 0.92, 1);
+      }
+    }
   }
 }
 
-const fmtMs = (ms) => (ms < 10 ? ms.toFixed(1) : Math.round(ms).toLocaleString()) + " ms";
-const nextFrame = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+// Gray-Scott reaction diffusion, state per cell is [u, v]
+function gsInit(seed) {
+  // Scatter round seeds of radius 5 over roughly one in six 16-cell blocks
+  const bx = Math.floor(this.thread.x / 16);
+  const by = Math.floor(this.thread.y / 16);
+  const hsh = Math.sin(bx * 12.9898 + by * 78.233 + seed) * 43758.5453;
+  const dx = this.thread.x - (bx * 16 + 8);
+  const dy = this.thread.y - (by * 16 + 8);
+  let u = 1;
+  let v = 0;
+  if (hsh - Math.floor(hsh) > 0.83 && dx * dx + dy * dy < 26) {
+    u = 0.5;
+    v = 0.25;
+  }
+  return [u, v];
+}
+function gsStep(s, f, k, px, py, pr) {
+  const x = this.thread.x;
+  const y = this.thread.y;
+  const w = this.output.x;
+  const h = this.output.y;
+  const xl = (x + w - 1) % w;
+  const xr = (x + 1) % w;
+  const yd = (y + h - 1) % h;
+  const yu = (y + 1) % h;
+  const c = s[y][x];
+  const n1 = s[y][xl]; const n2 = s[y][xr]; const n3 = s[yd][x]; const n4 = s[yu][x];
+  const d1 = s[yd][xl]; const d2 = s[yd][xr]; const d3 = s[yu][xl]; const d4 = s[yu][xr];
+  const lu = 0.2 * (n1[0] + n2[0] + n3[0] + n4[0]) + 0.05 * (d1[0] + d2[0] + d3[0] + d4[0]) - c[0];
+  const lv = 0.2 * (n1[1] + n2[1] + n3[1] + n4[1]) + 0.05 * (d1[1] + d2[1] + d3[1] + d4[1]) - c[1];
+  const uvv = c[0] * c[1] * c[1];
+  let u = c[0] + (lu - uvv + f * (1 - c[0]));
+  let v = c[1] + (0.5 * lv + uvv - (k + f) * c[1]);
+  const ddx = x - px;
+  const ddy = y - py;
+  if (ddx * ddx + ddy * ddy < pr * pr) {
+    u = 0.5;
+    v = 0.25;
+  }
+  return [Math.min(1, Math.max(0, u)), Math.min(1, Math.max(0, v))];
+}
+function gsRender(s) {
+  const c = s[this.thread.y][this.thread.x];
+  const a = Math.min(1, c[1] * 4.5);
+  const b = Math.min(1, Math.max(0, c[1] * 4.5 - 1.1));
+  this.color(0.02 + 0.28 * a + 0.67 * b, 0.03 + 0.76 * a - 0.62 * b, 0.07 + 0.87 * a - 0.4 * b, 1);
+}
 
-// ---------- Fractal: the same kernel on two engines ----------
+// Value noise helpers registered with gpu.addFunction
+function vhash(x, y) {
+  const n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return n - Math.floor(n);
+}
+function vnoise(x, y) {
+  const ix = Math.floor(x);
+  const iy = Math.floor(y);
+  const fx = x - ix;
+  const fy = y - iy;
+  const ux = fx * fx * (3 - 2 * fx);
+  const uy = fy * fy * (3 - 2 * fy);
+  const a = vhash(ix, iy);
+  const b = vhash(ix + 1, iy);
+  const c = vhash(ix, iy + 1);
+  const d = vhash(ix + 1, iy + 1);
+  return a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy;
+}
+function fbm(x, y, oct) {
+  let s = 0;
+  let amp = 0.5;
+  let fr = 1;
+  for (let i = 0; i < 8; i++) {
+    if (i < oct) s += amp * vnoise(x * fr, y * fr);
+    amp *= 0.42;
+    fr *= 2.03;
+  }
+  return s;
+}
+
+// One Jacobi sweep of the heat equation with sources q and fixed borders
+function sweep(u, q) {
+  const x = this.thread.x;
+  const y = this.thread.y;
+  const hi = this.constants.hi;
+  if (x === 0 || y === 0 || x === hi || y === hi) return u[y][x];
+  return 0.25 * (u[y][x - 1] + u[y][x + 1] + u[y - 1][x] + u[y + 1][x] + q[y][x]);
+}
+function copyGrid(a) {
+  return a[this.thread.y][this.thread.x];
+}
+
+// Glow of `iters` point lights spread along a morphing Lissajous curve.
+// More iterations only make the curve smoother, but the cost grows linearly: heavy on purpose.
+function field(t, iters, da, invW, invH, asp) {
+  const x = this.thread.x * invW - 0.5;
+  const y = (this.thread.y * invH - 0.5) * asp;
+  let s = 0;
+  for (let i = 0; i < iters; i++) {
+    const a = i * da;
+    const dx = x - Math.sin(a * 3 + t * 0.9) * 0.4;
+    const dy = y - Math.sin(a * 2 + t * 0.6) * 0.4 * asp;
+    s += 1 / (dx * dx + dy * dy + 0.0004);
+  }
+  return s / iters;
+}
+
+// ---------- Helpers ----------
+const { h, fmt, fmtMs, fmtCompact } = Showcase;
+const abort = () => new DOMException("Scene unmounted", "AbortError");
+
+function destroyGpu(gpu) {
+  try {
+    const p = gpu.destroy();
+    if (p && typeof p.catch === "function") p.catch((e) => console.warn("[gpujs] destroy failed", e));
+  } catch (e) {
+    console.warn("[gpujs] destroy failed", e);
+  }
+}
+// One GPU instance per scene (or per backend), destroyed with the scene
+function gpuFor(ctx, settings) {
+  const gpu = settings ? new GPU(settings) : new GPU();
+  ctx.onCleanup(() => destroyGpu(gpu));
+  return gpu;
+}
+// Let the browser paint, and stop if the viewer left the scene
+async function breathe(ctx) {
+  await ctx.frame(2);
+  await ctx.sleep(0);
+}
+function backendOf(k) {
+  const inner = k.kernel || k;
+  const mode = inner.constructor.mode;
+  if (mode === "gpu") return typeof WebGL2RenderingContext !== "undefined" && inner.context instanceof WebGL2RenderingContext ? "WebGL2" : "WebGL1";
+  if (mode === "webasm") return "WebAssembly";
+  if (mode === "webgpu") return "WebGPU";
+  return "JavaScript";
+}
+function randomInput(n) {
+  const m = new Float32Array(n * n);
+  for (let i = 0; i < m.length; i++) m[i] = Math.random();
+  return GPU.input(m, [n, n]);
+}
+function maxDiff(p, q) {
+  let d = 0;
+  for (let y = 0; y < p.length; y++) {
+    const rp = p[y], rq = q[y];
+    for (let x = 0; x < rp.length; x++) d = Math.max(d, Math.abs(rp[x] - rq[x]));
+  }
+  return d;
+}
+const gflops = (n, ms) => (2 * n ** 3) / (ms / 1000) / 1e9;
+const softwareGl = () => Showcase.device().software;
+const glName = () => Showcase.device().gpu || "未知";
+
+// 256-entry colour lookup table from [t, r, g, b] stops
+function lut(stops) {
+  const t = new Uint8ClampedArray(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const x = i / 255;
+    let j = 0;
+    while (j < stops.length - 2 && x > stops[j + 1][0]) j++;
+    const a = stops[j], b = stops[j + 1];
+    const f = Math.max(0, Math.min(1, (x - a[0]) / (b[0] - a[0])));
+    for (let c = 0; c < 3; c++) t[i * 3 + c] = a[c + 1] + (b[c + 1] - a[c + 1]) * f;
+  }
+  return t;
+}
+const HEAT = lut([[0, 5, 6, 16], [0.3, 86, 20, 125], [0.55, 214, 52, 96], [0.8, 255, 150, 60], [1, 255, 244, 170]]);
+const GREY = lut([[0, 10, 14, 24], [1, 236, 240, 248]]);
+const SLOPE = lut([[0, 8, 10, 22], [0.35, 40, 70, 160], [0.7, 76, 201, 240], [1, 240, 250, 255]]);
+const LAND = lut([[0, 18, 46, 98], [0.4, 46, 112, 170], [0.43, 214, 200, 150], [0.5, 96, 150, 72], [0.66, 52, 100, 54], [0.8, 128, 110, 92], [0.9, 236, 236, 240], [1, 255, 255, 255]]);
+
+// Draw a 2D result (array of rows) through a value -> [0, 1] mapping and a LUT,
+// optionally scaling brightness. Kernel rows start at the bottom, so `flip` puts row 0 last.
+function paint(cv, rows, map, table, flip, shade) {
+  const hh = rows.length, w = rows[0].length;
+  if (cv.width !== w || cv.height !== hh) { cv.width = w; cv.height = hh; }
+  const g = cv.getContext("2d");
+  const img = g.createImageData(w, hh);
+  const d = img.data;
+  for (let y = 0; y < hh; y++) {
+    const ry = flip ? hh - 1 - y : y;
+    const row = rows[ry];
+    for (let x = 0; x < w; x++) {
+      const v = map(row[x], x, ry);
+      const s = shade ? shade(row[x], x, ry) : 1;
+      const i = Math.max(0, Math.min(255, (v * 255) | 0)) * 3, o = (y * w + x) * 4;
+      d[o] = table[i] * s; d[o + 1] = table[i + 1] * s; d[o + 2] = table[i + 2] * s; d[o + 3] = 255;
+    }
+  }
+  g.putImageData(img, 0, 0);
+}
+
+// Lane rows used by the race scenes
+function laneRow(name, color) {
+  const nameEl = h("span", { class: "name", text: name });
+  const ms = h("span", { class: "ms", text: "待命" });
+  const fill = h("div", { class: "fill" });
+  const sub = h("div", { class: "sub", text: "" });
+  const el = h("div", { class: "lane", style: `--lc:${color}` }, nameEl, ms, h("div", { class: "track" }, fill), sub);
+  return {
+    el,
+    set(text, pct, win, subText) {
+      ms.textContent = text;
+      if (pct != null) fill.style.width = `${Math.max(2, Math.min(100, pct))}%`;
+      el.classList.toggle("win", !!win);
+      if (subText != null) sub.textContent = subText;
+    },
+    tag(t) { nameEl.replaceChildren(name, h("small", { text: t })); },
+  };
+}
+
+// ---------- Scene 1 constants ----------
 const TARGETS = [
   { name: "海馬谷", x: -0.743643887037151, y: 0.13182590420533 },
   { name: "螺旋", x: -0.77568377, y: 0.13646737 },
@@ -171,277 +431,717 @@ const HOLD = 3;             // seconds to show the whole set before diving in
 const PERIOD = 32;          // seconds for one zoom in and back out
 const MIN_SCALE = 2.6e-7;   // complex units per CSS pixel at the deepest point (float32 limit)
 
-let engine = "gpu";
-let engines = {};           // { gpu: {kernel, canvas, w, h}, cpu: {...} }
-let targetIndex = 0;
-let zoomStart = performance.now();
-let racing = false;
-let layout = null;
-let frameMs = { gpu: 0, cpu: 0 };
-let lastStamp = 0;
+Showcase.run({ scenes: [
+  {
+    id: "fractal", title: "碎形縮放",
+    api: "gpu.createKernel(mandelbrot).setGraphical(true).setLoopMaxIterations(520)",
+    desc: "同一個 JavaScript 函式被 GPU.js 轉成 GLSL，每個像素一條執行緒計算 Mandelbrot 逃逸次數，再用 this.color() 直接上色；切到 CPU 改由純 JavaScript 逐格執行同一個函式。",
+    hint: "切換 GPU／CPU 比較每幀耗時，「換放大點」跳到下一個深處",
+    mount(ctx) {
+      const view = h("div", { class: "view" });
+      ctx.el.append(view);
+      let engine = "gpu", engines = {}, target = 0, zoomStart = performance.now(), layout = null, info = null;
+      ctx.group(["GPU", "CPU"], 0, (i) => { engine = i ? "cpu" : "gpu"; });
+      ctx.button("換放大點", () => { target = (target + 1) % TARGETS.length; zoomStart = performance.now() - HOLD * 1000; });
+      const meter = ctx.fps({
+        extra: () => info ? { 後端: info.backend, 解析度: `${layout.w}×${layout.h}`, 迭代: info.maxIter, [info.name]: `${fmtCompact(Math.round(info.zoom))}×` } : {},
+      });
+      meter.el.classList.add("under");
 
-function computeLayout() {
-  const W = view.clientWidth, H = view.clientHeight;
-  const r = raceEl.getBoundingClientRect();
-  let x0 = 0, x1 = W, y0 = 52, y1 = H;
-  if (r.width < W * 0.6) x0 = r.right + 8; else y1 = r.top - 8;
-  const f = $("fps").getBoundingClientRect();
-  if (f.top < H / 2) y0 = Math.max(y0, f.bottom + 6);
-  const fw = Math.max(80, x1 - x0), fh = Math.max(80, y1 - y0);
-  const k = Math.min(1, Math.sqrt(420000 / (W * H)));
-  return {
-    W, H,
-    fx: x0 + fw / 2, fy: y0 + fh / 2,
-    s0: Math.max(2.9 / fw, 2.5 / fh),
-    w: Math.max(2, Math.round(W * k)), h: Math.max(2, Math.round(H * k)),
-  };
-}
-
-function buildEngine(kind) {
-  const gpu = kind === "cpu" ? new GPU({ mode: "cpu" }) : new GPU();
-  const kernel = gpu.createKernel(mandelbrot)
-    .setOutput([layout.w, layout.h])
-    .setGraphical(true)
-    .setLoopMaxIterations(520);
-  return { gpu, kernel, canvas: null };
-}
-
-function dropEngines() {
-  for (const e of Object.values(engines)) {
-    try {
-      const ctx = e.kernel.context;
-      e.kernel.destroy(true);
-      ctx?.getExtension?.("WEBGL_lose_context")?.loseContext();
-    } catch (err) {
-      console.warn(err);
-    }
-    e.canvas?.remove();
-  }
-  engines = {};
-}
-
-function zoomState(now) {
-  const t = (now - zoomStart) / 1000;
-  if (t > HOLD + PERIOD) {
-    targetIndex = (targetIndex + 1) % TARGETS.length;
-    zoomStart = now;
-    return zoomState(now);
-  }
-  const z = t < HOLD ? 0 : 0.5 - 0.5 * Math.cos((2 * Math.PI * (t - HOLD)) / PERIOD);
-  const s = layout.s0 * Math.pow(MIN_SCALE / layout.s0, z);
-  return { t, s, zoom: layout.s0 / s };
-}
-
-function renderFractal(now) {
-  const T = TARGETS[targetIndex];
-  const { t, s, zoom } = zoomState(now);
-  // The target point stays fixed on screen while the scale shrinks around it.
-  const cx = T.x + (HOME.x - T.x) * (s / layout.s0);
-  const cy = T.y + (HOME.y - T.y) * (s / layout.s0);
-  const left = cx - layout.fx * s;
-  const bottom = cy - (layout.H - layout.fy) * s;
-  const step = (s * layout.W) / layout.w;
-  const maxIter = Math.round(Math.min(500, 110 + 70 * Math.log10(zoom)));
-
-  if (!engines[engine]) engines[engine] = buildEngine(engine);
-  const e = engines[engine];
-  e.kernel(left, bottom, step, maxIter, t * 0.015);
-  // Show whichever canvas the kernel draws into (it changes if GPU.js falls back to CPU).
-  const c = e.kernel.canvas;
-  if (c !== e.canvas) {
-    e.canvas?.remove();
-    e.canvas = c;
-    view.append(c);
-  }
-  for (const other of Object.values(engines)) if (other.canvas) other.canvas.hidden = other !== e;
-  return { zoom, maxIter, T };
-}
-
-function updateFps(info) {
-  const be = backendOf(engines[engine].kernel);
-  const other = engine === "gpu" ? "cpu" : "gpu";
-  const otherTxt = frameMs[other] ? `<span class="wide">・${other.toUpperCase()} 上次 ${fmtMs(frameMs[other])}</span>` : "";
-  $("fps").innerHTML =
-    `<b>${engine.toUpperCase()}</b><span class="wide">（${be.label}）</span> 每幀 <b>${frameMs[engine] ? fmtMs(frameMs[engine]) : "…"}</b>${otherTxt}<br class="wide">` +
-    `<span class="wide">${layout.w}×${layout.h}・迭代 ${info.maxIter}</span>・${info.T.name} 放大 ${Math.round(info.zoom).toLocaleString()}×`;
-}
-
-let info = null;
-function loop(now) {
-  if (!racing) {
-    try {
-      if (lastStamp) {
-        const dt = now - lastStamp;
-        frameMs[engine] = frameMs[engine] ? frameMs[engine] * 0.85 + dt * 0.15 : dt;
+      function computeLayout() {
+        const W = view.clientWidth, H = view.clientHeight;
+        const top = ctx.controls.offsetHeight + meter.el.offsetHeight + 24, bottom = 16;
+        const fw = Math.max(80, W), fh = Math.max(80, H - top - bottom);
+        const k = Math.min(1, Math.sqrt(420000 / (W * H)));
+        return { W, H, fx: W / 2, fy: top + fh / 2, s0: Math.max(2.9 / fw, 2.5 / fh), w: Math.max(2, Math.round(W * k)), h: Math.max(2, Math.round(H * k)) };
       }
-      info = renderFractal(now);
-      updateFps(info);
-      lastStamp = now;
-    } catch (err) {
-      console.error(err);
-      $("fps").textContent = "碎形核心執行失敗：" + (err?.message || err);
-      return;
-    }
-  } else {
-    lastStamp = 0;
-  }
-  requestAnimationFrame(loop);
-}
+      function dropEngines() {
+        for (const e of Object.values(engines)) { destroyGpu(e.gpu); e.canvas?.remove(); }
+        engines = {};
+      }
+      ctx.onCleanup(dropEngines);
+      function engineFor(kind) {
+        if (!engines[kind]) {
+          const gpu = kind === "cpu" ? new GPU({ mode: "cpu" }) : new GPU();
+          const kernel = gpu.createKernel(mandelbrot).setOutput([layout.w, layout.h]).setGraphical(true).setLoopMaxIterations(520);
+          engines[kind] = { gpu, kernel, canvas: null };
+        }
+        return engines[kind];
+      }
+      ctx.onResize(() => {
+        const next = computeLayout();
+        if (!layout || next.w !== layout.w || next.h !== layout.h) dropEngines();
+        layout = next;
+      });
 
-document.querySelectorAll("#engines [data-engine]").forEach((b) => {
-  b.addEventListener("click", () => {
-    engine = b.dataset.engine;
-    lastStamp = 0;
-    frameMs[engine] = 0;
-    document.querySelectorAll("#engines [data-engine]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
-  });
-});
-$("next").addEventListener("click", () => {
-  targetIndex = (targetIndex + 1) % TARGETS.length;
-  zoomStart = performance.now() - HOLD * 1000;
-});
+      ctx.raf((now) => {
+        if (!layout) layout = computeLayout();
+        let t = (now - zoomStart) / 1000;
+        if (t > HOLD + PERIOD) { target = (target + 1) % TARGETS.length; zoomStart = now; t = 0; }
+        const z = t < HOLD ? 0 : 0.5 - 0.5 * Math.cos((2 * Math.PI * (t - HOLD)) / PERIOD);
+        const s = layout.s0 * Math.pow(MIN_SCALE / layout.s0, z);
+        const T = TARGETS[target];
+        // The target point stays fixed on screen while the scale shrinks around it.
+        const cx = T.x + (HOME.x - T.x) * (s / layout.s0);
+        const cy = T.y + (HOME.y - T.y) * (s / layout.s0);
+        const left = cx - layout.fx * s;
+        const bottom = cy - (layout.H - layout.fy) * s;
+        const step = (s * layout.W) / layout.w;
+        const zoom = layout.s0 / s;
+        const maxIter = Math.round(Math.min(500, 110 + 70 * Math.log10(zoom)));
+        const e = engineFor(engine);
+        e.kernel(left, bottom, step, maxIter, t * 0.015);
+        // Show whichever canvas the kernel draws into (it changes if GPU.js falls back to CPU).
+        const c = e.kernel.canvas;
+        if (c !== e.canvas) { e.canvas?.remove(); e.canvas = c; view.append(c); }
+        for (const other of Object.values(engines)) if (other.canvas) other.canvas.hidden = other !== e;
+        info = { backend: backendOf(e.kernel), maxIter, zoom, name: T.name };
+      });
+    },
+  },
 
-// ---------- Matrix multiplication race ----------
-const benchGpu = new GPU();
-const benchCpu = new GPU({ mode: "cpu" });
-const benchKernels = {};
-let size = 256;
+  {
+    id: "backends", title: "三種後端",
+    api: "new GPU({ mode: \"gpu\" | \"webasm\" | \"cpu\" }).createKernel(matMul)",
+    desc: "同一個矩陣乘法核心交給 WebGL 著色器、WebAssembly（SIMD）與純 JavaScript 執行，比較耗時、GFLOPS 與浮點誤差；偵測到 WebGPU 介面卡時會多一條跑道。",
+    hint: "選矩陣尺寸後按「開始比賽」",
+    async mount(ctx) {
+      const defs = [
+        { id: "gpu", name: "WebGL 著色器", settings: null, color: "var(--c2)" },
+        { id: "webasm", name: "WebAssembly", settings: { mode: "webasm" }, color: "var(--c6)" },
+        { id: "cpu", name: "純 JavaScript", settings: { mode: "cpu" }, color: "var(--c5)" },
+      ];
+      const sup = [
+        ["WebGL2", GPU.isWebGL2Supported], ["WebAssembly", GPU.isWebAssemblySupported],
+        ["單精度浮點", GPU.isSinglePrecisionSupported], ["核心映射", GPU.isKernelMapSupported],
+        ["OffscreenCanvas", GPU.isOffscreenCanvasSupported],
+      ];
+      const gpuTag = h("span", { class: "tag", text: "WebGPU 檢查中" });
+      const tags = h("div", { class: "tags" }, sup.map(([n, ok]) => h("span", { class: `tag ${ok ? "ok" : "no"}`, text: `${n} ${ok ? "可用" : "不支援"}` })), gpuTag);
+      const lanesEl = h("div", { style: "display:grid;gap:10px" });
+      const verdict = h("div", { class: "verdict", text: "同一個 matMul 函式，三種後端各跑一次" });
+      const detail = h("p", { class: "small" });
+      const env = h("p", { class: "small" });
+      const board = h("div", { class: "board" },
+        h("div", { class: "card" }, h("h3", { text: "矩陣乘法對決" }), tags, lanesEl, verdict, detail, env),
+        h("div", { class: "card" }, h("h3", { text: "核心函式（每條跑道共用）" }), h("pre", { class: "src", text: matMul.toString() }),
+          h("p", { class: "small", text: "this.thread.x／y 是輸出格子的座標，this.constants.size 在編譯時寫死。GPU.js 依後端把它轉成 GLSL、WebAssembly 位元組碼或 JavaScript 迴圈。" })));
+      ctx.el.append(board);
 
-function kernelsFor(n) {
-  if (!benchKernels[n]) {
-    benchKernels[n] = {
-      gpu: benchGpu.createKernel(matMul).setOutput([n, n]).setConstants({ size: n }),
-      cpu: benchCpu.createKernel(matMul).setOutput([n, n]).setConstants({ size: n }),
-    };
-  }
-  return benchKernels[n];
-}
+      let size = 256, busy = false;
+      ctx.group(["128²", "256²", "512²"], 1, (i) => { size = [128, 256, 512][i]; });
+      const runBtn = ctx.button("開始比賽", () => race(), { primary: true });
 
-function randomMatrix(n) {
-  const m = new Float32Array(n * n);
-  for (let i = 0; i < m.length; i++) m[i] = Math.random();
-  return GPU.input(m, [n, n]);
-}
+      if (GPU.isWebGPUSupported) {
+        let ok = false;
+        try { ok = await Promise.race([GPU.isWebGPUAvailable(), new Promise((r) => setTimeout(() => r(false), 1500))]); } catch { ok = false; }
+        if (!ctx.active) throw abort();
+        gpuTag.className = `tag ${ok ? "ok" : "no"}`;
+        gpuTag.textContent = ok ? "WebGPU 可用" : "WebGPU 無介面卡";
+        if (ok) defs.splice(1, 0, { id: "webgpu", name: "WebGPU 計算著色器", settings: { mode: "webgpu" }, color: "var(--c3)" });
+      } else {
+        gpuTag.className = "tag no"; gpuTag.textContent = "WebGPU 不支援";
+      }
+      const lanes = defs.map((d) => ({ ...d, gpu: gpuFor(ctx, d.settings), kernels: {}, row: laneRow(d.name, d.color) }));
+      lanesEl.append(...lanes.map((l) => l.row.el));
+      env.innerHTML = softwareGl()
+        ? `<span class="warn">偵測到軟體模擬的 WebGL（${glName().replace(/</g, "&lt;")}），WebGL 跑道其實是 CPU 在模擬著色器，所以不一定比較快。</span>換到有實體顯示卡的瀏覽器，512² 通常能拉開數倍差距。`
+        : `繪圖器：${glName().replace(/</g, "&lt;")}`;
 
-function timeRuns(kernel, a, b, runs) {
-  const times = [];
-  let out = null;
-  for (let i = 0; i < runs; i++) {
-    const t0 = performance.now();
-    out = kernel(a, b);
-    times.push(performance.now() - t0);
-  }
-  times.sort((x, y) => x - y);
-  return { ms: times[Math.floor(times.length / 2)], out };
-}
+      async function race() {
+        if (busy) return;
+        busy = true; runBtn.disabled = true;
+        const n = size, runs = n >= 512 ? 1 : n >= 256 ? 3 : 5;
+        verdict.textContent = `準備兩個 ${n}×${n} 隨機矩陣…`;
+        detail.textContent = "";
+        lanes.forEach((l) => l.row.set("等待", 0, false, ""));
+        try {
+          await breathe(ctx);
+          const A = randomInput(n), B = randomInput(n);
+          const res = [];
+          for (const l of lanes) {
+            l.row.set("編譯中…", 0);
+            await breathe(ctx);
+            const k = l.kernels[n] || (l.kernels[n] = l.gpu.createKernel(matMul).setOutput([n, n]).setConstants({ size: n }));
+            let t0 = performance.now();
+            await k(A, B);
+            const build = performance.now() - t0;
+            l.row.tag(backendOf(k));
+            l.row.set("計算中…", 0);
+            await breathe(ctx);
+            const times = [];
+            let out = null;
+            for (let i = 0; i < runs; i++) {
+              t0 = performance.now();
+              out = await k(A, B);
+              times.push(performance.now() - t0);
+            }
+            times.sort((a, b) => a - b);
+            const ms = times[Math.floor(times.length / 2)];
+            res.push({ l, ms, out, build });
+            l.row.set(fmtMs(ms), 100, false, `${gflops(n, ms).toFixed(2)} GFLOPS・首次編譯 ${fmtMs(build)}`);
+          }
+          const cpu = res[res.length - 1];
+          const max = Math.max(...res.map((r) => r.ms));
+          const best = res.reduce((a, b) => (b.ms < a.ms ? b : a));
+          for (const r of res) {
+            const ratio = cpu.ms / r.ms;
+            const vs = r === cpu ? "基準" : ratio >= 1 ? `比純 JS 快 ${ratio.toFixed(1)} 倍` : `比純 JS 慢 ${(1 / ratio).toFixed(1)} 倍`;
+            r.l.row.set(fmtMs(r.ms), (r.ms / max) * 100, r === best,
+              `${gflops(n, r.ms).toFixed(2)} GFLOPS・${vs}・誤差 ${r === cpu ? "0" : maxDiff(r.out, cpu.out).toExponential(1)}`);
+          }
+          verdict.innerHTML = `<b>${best.l.name}</b> 最快：${fmtMs(best.ms)}`;
+          detail.textContent = `${n}×${n}・${runs > 1 ? `取 ${runs} 次中位數` : "單次計時"}・首次呼叫的轉譯與編譯不計入・誤差是與純 JS 結果的最大差（GPU 用 32 位元浮點）`;
+        } catch (e) {
+          if (e && e.name === "AbortError") return;
+          console.error(e);
+          verdict.textContent = `比賽失敗：${e?.message || e}`;
+        } finally {
+          busy = false;
+          if (ctx.active) runBtn.disabled = false;
+        }
+      }
+      ctx.timeout(race, 500);
+    },
+  },
 
-function maxDiff(p, q) {
-  let d = 0;
-  for (let y = 0; y < p.length; y++) {
-    const rp = p[y], rq = q[y];
-    for (let x = 0; x < rp.length; x++) d = Math.max(d, Math.abs(rp[x] - rq[x]));
-  }
-  return d;
-}
+  {
+    id: "convolve", title: "影像卷積",
+    api: "kernel(canvas, mode, r)・img[y][x] → [r, g, b, a]",
+    desc: "把 canvas 直接當核心輸入，每個像素讀取周圍鄰居做卷積：方框模糊（迴圈範圍由參數決定）、銳化、Sobel 邊緣、浮雕；輸出尺寸用 setDynamicOutput 隨畫面調整。",
+    hint: "在圖上左右拖曳比對原圖，切換濾鏡與強度",
+    async mount(ctx) {
+      const img = new Image();
+      img.src = "_shared/img/photo-3.jpg";
+      await img.decode();
+      if (!ctx.active) throw abort();
+      const FILTERS = ["模糊", "銳化", "邊緣", "浮雕"];
+      let mode = 0, strength = 3, dirty = true, w = 0, hgt = 0, split = 0.5, manualUntil = 0, ms = 0;
+      const src = h("canvas");
+      const line = h("div", { class: "split" });
+      const right = h("span", { class: "lbl tr" });
+      const stat = h("span", { class: "lbl br" });
+      const box = h("div", { class: "conv" }, src, line, h("span", { class: "lbl tl", text: "原圖" }), right, stat);
+      ctx.el.append(box);
+      ctx.group(FILTERS, 0, (i) => { mode = i; dirty = true; });
+      ctx.slider("強度", { min: 1, max: 8, value: 3 }, (v) => { strength = v; dirty = true; });
 
-function setLane(which, text, pct, win) {
-  $(which + "Ms").textContent = text;
-  $(which + "Fill").style.width = pct + "%";
-  $("lane" + (which === "gpu" ? "Gpu" : "Cpu")).classList.toggle("win", !!win);
-}
+      const gpu = gpuFor(ctx);
+      const kernel = gpu.createKernel(convolve).setOutput([2, 2]).setGraphical(true).setDynamicOutput(true).setLoopMaxIterations(20);
+      function layout() {
+        const bw = box.clientWidth, bh = box.clientHeight;
+        if (!bw || !bh) return;
+        const k = Math.min(1, Math.sqrt(200000 / (bw * bh)));
+        const nw = Math.max(2, Math.round(bw * k)), nh = Math.max(2, Math.round(bh * k));
+        if (nw === w && nh === hgt) return;
+        w = nw; hgt = nh;
+        src.width = w; src.height = hgt;
+        // cover-fit the photo into the output size
+        const s = Math.max(w / img.naturalWidth, hgt / img.naturalHeight);
+        const dw = img.naturalWidth * s, dh = img.naturalHeight * s;
+        src.getContext("2d").drawImage(img, (w - dw) / 2, (hgt - dh) / 2, dw, dh);
+        kernel.setOutput([w, hgt]);
+        dirty = true;
+      }
+      ctx.onResize(layout);
+      ctx.on(box, "pointermove", (e) => {
+        const r = box.getBoundingClientRect();
+        split = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+        manualUntil = performance.now() + 2500;
+      });
+      ctx.raf((t) => {
+        if (!w) layout();
+        if (dirty && w) {
+          dirty = false;
+          const t0 = performance.now();
+          kernel(src, mode, strength);
+          kernel.getPixels(); // forces the GPU to finish so the timing is honest
+          ms = performance.now() - t0;
+          if (kernel.canvas.parentNode !== box) box.prepend(kernel.canvas);
+          const taps = mode === 0 ? (2 * strength + 1) ** 2 : mode === 1 ? 5 : 9;
+          right.textContent = `${FILTERS[mode]}・強度 ${strength}`;
+          stat.textContent = `${w}×${hgt}・每像素讀 ${taps} 點・${fmtMs(ms)}（含讀回）`;
+        }
+        if (t > manualUntil) split = 0.5 + 0.32 * Math.sin(t / 1400);
+        src.style.clipPath = `inset(0 ${(100 - split * 100).toFixed(2)}% 0 0)`;
+        line.style.left = `${(split * 100).toFixed(2)}%`;
+      });
+    },
+  },
 
-function describeEnv(k) {
-  const be = backendOf(k);
-  const renderer = rendererOf(k);
-  const soft = /swiftshader|llvmpipe|softpipe|software|basic render/i.test(renderer);
-  const chip = $("modeChip");
-  chip.textContent = "後端 " + be.label;
-  chip.classList.toggle("cpu", !be.gpu);
-  $("gpuName").textContent = be.gpu ? `GPU・${be.label} 著色器` : `GPU 核心（已退回 ${be.label}）`;
-  let html = "";
-  if (!be.gpu) {
-    html = `<span class="warn">這個瀏覽器沒有可用的 WebGL，GPU.js 自動退回 ${be.label}，兩條跑道其實都在 CPU 上。</span>`;
-  } else if (soft) {
-    html = `<span class="warn">偵測到軟體模擬的 WebGL，GPU 跑道其實是 CPU 在模擬著色器，所以不一定比較快。</span>` +
-      `<span class="long">換到有實體顯示卡的瀏覽器，512² 通常能拉開數倍差距。</span>`;
-  } else {
-    html = `<span class="long">GPU 每個像素一條執行緒同時算；CPU 逐格跑三層迴圈。</span>`;
-  }
-  if (renderer) html += `<span class="r" title="${renderer.replace(/"/g, "&quot;")}">繪圖器：${renderer.replace(/</g, "&lt;")}</span>`;
-  $("env").innerHTML = html;
-}
+  {
+    id: "pipeline", title: "管線紋理",
+    api: "createKernel(gsStep, { pipeline: true, immutable: true })・texture.delete()",
+    desc: "Gray-Scott 反應擴散：每格回傳 [u, v] 兩個值，結果以紋理留在 GPU 直接餵給下一步，再由圖形核心上色；打開「每步讀回」就能看到把資料搬回 JavaScript 的代價。",
+    hint: "按住拖曳滴入化學物質，切換參數組合",
+    mount(ctx) {
+      const PRESETS = [
+        { name: "珊瑚", f: 0.0545, k: 0.062 },
+        { name: "分裂", f: 0.0367, k: 0.0649 },
+        { name: "迷宮", f: 0.029, k: 0.057 },
+      ];
+      const { width: W, height: H } = ctx.size();
+      const gw = Math.max(120, Math.min(420, Math.round(Math.sqrt((70000 * W) / Math.max(1, H)))));
+      const gh = Math.max(90, Math.min(320, Math.round(70000 / gw)));
+      const gpu = gpuFor(ctx);
+      const init = gpu.createKernel(gsInit, { output: [gw, gh], pipeline: true, immutable: true });
+      const step = gpu.createKernel(gsStep, { output: [gw, gh], pipeline: true, immutable: true });
+      const render = gpu.createKernel(gsRender, { output: [gw, gh], graphical: true });
+      const view = h("div", { class: "view gs" });
+      ctx.el.append(view);
 
-async function race() {
-  if (racing) return;
-  racing = true;
-  const buttons = document.querySelectorAll("#race .btn");
-  buttons.forEach((b) => (b.disabled = true));
-  const n = size;
-  const runs = n >= 512 ? 1 : n >= 256 ? 3 : 5;
-  $("verdict").textContent = `準備兩個 ${n}×${n} 隨機矩陣…`;
-  $("detail").textContent = "";
-  setLane("gpu", "計算中", 0);
-  setLane("cpu", "等待", 0);
-  try {
-    await nextFrame();
-    const a = randomMatrix(n), b = randomMatrix(n);
-    const k = kernelsFor(n);
+      let P = PRESETS[0], steps = 12, readback = false, state = init(Math.random() * 100), drop = null, jsMs = 0, lastUser = 0;
+      ctx.onCleanup(() => { try { state.delete(); } catch (e) { console.warn(e); } });
+      ctx.group(PRESETS.map((p) => p.name), 0, (i) => { P = PRESETS[i]; });
+      ctx.slider("每幀步數", { min: 1, max: 30, value: steps }, (v) => { steps = v; });
+      ctx.toggle("每步讀回", false, (v) => { readback = v; });
+      ctx.button("重新播種", () => { state.delete(); state = init(Math.random() * 100); });
+      let meter = null;
+      meter = ctx.fps({
+        extra: () => ({ 網格: `${gw}×${gh}`, 每秒步數: meter ? fmtCompact(Math.round(steps * meter.read(800).fps)) : "…", "JS 端": `${jsMs.toFixed(1)} ms` }),
+      });
+      meter.el.classList.add("under");
 
-    // Warm-up: the first call transpiles JS to GLSL and compiles the shader.
-    let t0 = performance.now();
-    k.gpu(a, b);
-    const buildMs = performance.now() - t0;
-    describeEnv(k.gpu);
-    const g = timeRuns(k.gpu, a, b, runs);
-    setLane("gpu", fmtMs(g.ms), 100);
-    setLane("cpu", "計算中", 0);
-    await nextFrame();
+      const toGrid = (e) => {
+        const r = view.getBoundingClientRect();
+        return { x: ((e.clientX - r.left) / r.width) * gw, y: (1 - (e.clientY - r.top) / r.height) * gh };
+      };
+      ctx.on(view, "pointerdown", (e) => { drop = toGrid(e); lastUser = performance.now(); });
+      ctx.on(view, "pointermove", (e) => { if (e.buttons & 1) { drop = toGrid(e); lastUser = performance.now(); } });
+      // Keep the pattern alive when nobody touches it
+      ctx.interval(() => { if (performance.now() - lastUser > 4000) drop = { x: Math.random() * gw, y: Math.random() * gh }; }, 1400);
 
-    k.cpu(a, b);
-    const c = timeRuns(k.cpu, a, b, runs);
-    const max = Math.max(g.ms, c.ms);
-    setLane("gpu", fmtMs(g.ms), Math.max(3, (g.ms / max) * 100), g.ms < c.ms);
-    setLane("cpu", fmtMs(c.ms), Math.max(3, (c.ms / max) * 100), c.ms < g.ms);
+      ctx.raf(() => {
+        const t0 = performance.now();
+        for (let i = 0; i < steps; i++) {
+          const d = i === 0 && drop;
+          const next = step(state, P.f, P.k, d ? d.x : -99, d ? d.y : -99, d ? 5 : 0);
+          state.delete();
+          state = next;
+          if (readback) state.toArray();
+        }
+        drop = null;
+        render(state);
+        jsMs = performance.now() - t0;
+        if (render.canvas.parentNode !== view) view.append(render.canvas);
+      });
+    },
+  },
 
-    const ratio = g.ms < c.ms ? c.ms / g.ms : g.ms / c.ms;
-    $("verdict").innerHTML = g.ms < c.ms
-      ? `GPU 快 <b>${ratio.toFixed(1)}</b> 倍`
-      : `這台機器上 CPU 快 <b>${ratio.toFixed(1)}</b> 倍`;
-    const flops = (ms) => ((2 * n ** 3) / (ms / 1000) / 1e9).toFixed(2);
-    const diff = maxDiff(g.out, c.out);
-    $("detail").innerHTML =
-      `${n}×${n}・${runs > 1 ? `取 ${runs} 次中位數` : "單次計時"}・GFLOPS：GPU ${flops(g.ms)}／CPU ${flops(c.ms)}<br>` +
-      `結果最大差異 ${diff.toExponential(1)}（GPU 用 32 位元浮點）<span class="long">・首次呼叫轉譯並編譯 ${fmtMs(buildMs)}，未計入</span>`;
-  } catch (err) {
-    console.error(err);
-    $("verdict").textContent = "比賽失敗：" + (err?.message || err);
-  } finally {
-    buttons.forEach((b) => (b.disabled = false));
-    racing = false;
-  }
-}
+  {
+    id: "kernelmap", title: "多重輸出",
+    api: "gpu.addFunction(fbm)・gpu.createKernelMap({ height, slope }, main)",
+    desc: "addFunction 註冊雜訊函式給核心呼叫，createKernelMap 讓一次執行同時輸出高度、坡度與地形光影三份結果，JavaScript 端再各自上色。",
+    hint: "拖動太陽方位、調整細節層數，關掉漂移可定格",
+    mount(ctx) {
+      const fig = (area, label) => {
+        const cv = h("canvas");
+        return { cv, el: h("figure", { style: `grid-area:${area}` }, cv, h("span", { class: "lbl tl", text: label })) };
+      };
+      const fH = fig("h", "height：高度"), fS = fig("s", "slope：坡度"), fR = fig("r", "result：地形光影");
+      const info = h("span", { class: "lbl bl" });
+      fR.el.append(info);
+      const grid = h("div", { class: "maps" }, fH.el, fS.el, fR.el);
+      ctx.el.append(grid);
 
-document.querySelectorAll("#sizes [data-n]").forEach((b) => {
-  b.addEventListener("click", () => {
-    size = Number(b.dataset.n);
-    document.querySelectorAll("#sizes [data-n]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
-  });
-});
-$("go").addEventListener("click", race);
+      let drift = true, az = 315, oct = 6, ox = 3.2, w = 0, hgt = 0, ms = 0;
+      ctx.toggle("漂移", true, (v) => { drift = v; });
+      ctx.slider("太陽方位", { min: 0, max: 360, step: 5, value: az, format: (v) => `${v}°` }, (v) => { az = v; });
+      ctx.slider("細節", { min: 1, max: 8, value: oct, format: (v) => `${v} 層` }, (v) => { oct = v; });
 
-// ---------- Start ----------
-layout = computeLayout();
-let resizeTimer = 0;
-addEventListener("resize", () => {
-  clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => {
-    const next = computeLayout();
-    if (next.w !== layout.w || next.h !== layout.h) dropEngines();
-    layout = next;
-  }, 250);
-});
-requestAnimationFrame(loop);
-setTimeout(race, 700);
+      const gpu = gpuFor(ctx);
+      gpu.addFunction(vhash);
+      gpu.addFunction(vnoise);
+      gpu.addFunction(fbm);
+      const km = gpu.createKernelMap({
+        height: function saveHeight(v) { return v; },
+        slope: function saveSlope(v) { return v; },
+      }, function (ox, oy, sc, oct, az) {
+        const x = ox + this.thread.x * sc;
+        const y = oy + this.thread.y * sc;
+        const hc = fbm(x, y, oct);
+        const gx = (fbm(x + sc, y, oct) - fbm(x - sc, y, oct)) / (2 * sc);
+        const gy = (fbm(x, y + sc, oct) - fbm(x, y - sc, oct)) / (2 * sc);
+        saveHeight(hc);
+        saveSlope(Math.sqrt(gx * gx + gy * gy));
+        // Lambert hillshade, sun 40 degrees above the horizon
+        const nx = -gx * 0.3;
+        const ny = -gy * 0.3;
+        const inv = 1 / Math.sqrt(nx * nx + ny * ny + 1);
+        return Math.max(0, (nx * Math.cos(az) * 0.766 + ny * Math.sin(az) * 0.766 + 0.643) * inv);
+      }).setOutput([2, 2]).setDynamicOutput(true);
+
+      function layout() {
+        const bw = fR.el.clientWidth, bh = fR.el.clientHeight;
+        if (!bw || !bh) return;
+        const k = Math.sqrt(56000 / (bw * bh));
+        w = Math.max(16, Math.round(bw * k)); hgt = Math.max(16, Math.round(bh * k));
+        km.setOutput([w, hgt]);
+      }
+      ctx.onResize(layout);
+      ctx.raf((t, dt) => {
+        if (!w) layout();
+        if (!w) return;
+        if (drift) ox += dt * 0.00018;
+        const sc = 3 / Math.max(w, hgt);
+        const t0 = performance.now();
+        const r = km(ox, 1.7, sc, oct, (az * Math.PI) / 180);
+        ms = performance.now() - t0;
+        const hr = r.height, sl = r.slope;
+        const level = (v) => (v - 0.15) / 0.55;
+        let smax = 1e-6;
+        for (const row of sl) for (let x = 0; x < row.length; x++) if (row[x] > smax) smax = row[x];
+        paint(fH.cv, hr, level, GREY, true);
+        paint(fS.cv, sl, (v) => Math.sqrt(v / smax), SLOPE, true);
+        // Land colour comes from the height output, brightness from the hillshade result
+        paint(fR.cv, r.result, (v, x, y) => level(hr[y][x]), LAND, true,
+          (v, x, y) => (level(hr[y][x]) < 0.42 ? 0.92 : 0.25 + 0.95 * v));
+        info.textContent = `${w}×${hgt}・三份輸出一次執行 ${fmtMs(ms)}`;
+      });
+    },
+  },
+
+  {
+    id: "createpipe", title: "編譯管線",
+    api: "gpu.createPipeline(fn, { constants: { sweeps } })・pipeline.executorKind",
+    desc: "同一個熱擴散 Jacobi 迭代用五種方式跑：每步讀回、setPipeline 紋理串接、createPipeline（WebGL 與 WebAssembly），比較耗時並核對結果一致。熱源是「GPU.js」字樣。",
+    hint: "調整迭代次數會重新量測",
+    async mount(ctx) {
+      const N = 128;
+      // Heat sources: the text "GPU.js" rasterised into the grid
+      const tc = h("canvas", { width: N, height: N });
+      const tg = tc.getContext("2d");
+      tg.fillStyle = "#fff";
+      tg.textAlign = "center";
+      tg.textBaseline = "middle";
+      tg.font = "bold 34px system-ui, sans-serif";
+      tg.fillText("GPU.js", N / 2, N / 2 + 2);
+      const alpha = tg.getImageData(0, 0, N, N).data;
+      const q = new Float32Array(N * N);
+      for (let i = 0; i < q.length; i++) q[i] = alpha[i * 4 + 3] > 120 ? 0.6 : 0;
+      const U = GPU.input(new Float32Array(N * N), [N, N]), Q = GPU.input(q, [N, N]);
+
+      const heat = h("canvas");
+      const mapLbl = h("span", { class: "lbl bl" });
+      const verdict = h("div", { class: "verdict", text: "量測中…" });
+      const lanesEl = h("div", { style: "display:grid;gap:10px" });
+      const note = h("p", { class: "small" });
+      const board = h("div", { class: "board" },
+        h("div", { class: "card" }, h("h3", { text: `${N}×${N} 熱擴散：五種跑法` }), lanesEl, verdict, note),
+        h("div", { class: "card" }, h("div", { class: "heatmap" }, heat, mapLbl),
+          h("p", { class: "small", text: "邊界固定為 0 度，字樣持續加熱；每次迭代每格取上下左右平均。五條跑道算出的溫度場應該一模一樣。" })));
+      ctx.el.append(board);
+
+      let sweeps = 300, busy = false, again = false;
+      ctx.slider("迭代次數", { min: 50, max: 1000, step: 50, value: sweeps }, (v) => { sweeps = v; schedule(); });
+      ctx.button("重新量測", () => schedule());
+
+      const gl = gpuFor(ctx), wa = gpuFor(ctx, { mode: "webasm" });
+      const C = { constants: { hi: N - 1 }, output: [N, N] };
+      const kRead = gl.createKernel(sweep, C);
+      const kCopy = gl.createKernel(copyGrid, { output: [N, N], pipeline: true, immutable: true });
+      const kTex = gl.createKernel(sweep, { ...C, pipeline: true, immutable: true });
+      const kGlInner = gl.createKernel(sweep, C);
+      const kWasm = wa.createKernel(sweep, C);
+      const kWaInner = wa.createKernel(sweep, C);
+      const pipes = { n: 0, gl: null, wa: null };
+      const makePipe = (gpu, k, n) => gpu.createPipeline(function (u, q) {
+        for (let s = 0; s < this.constants.sweeps; s++) u = k(u, q);
+        return u;
+      }, { constants: { sweeps: n } });
+      ctx.onCleanup(() => { pipes.gl?.destroy?.(); pipes.wa?.destroy?.(); });
+
+      const perStep = (k) => (n) => { let u = k(U, Q); for (let i = 1; i < n; i++) u = k(u, Q); return u; };
+      const lanes = [
+        { name: "WebGL・每步讀回", color: "var(--c5)", warm: () => kRead(U, Q), run: perStep(kRead) },
+        {
+          name: "WebGL・紋理串接", color: "var(--c2)",
+          warm: () => { const a = kCopy(U), b = kTex(a, a); a.delete(); b.delete(); },
+          run: (n) => {
+            const tq = kCopy(Q);
+            let tu = kCopy(U);
+            for (let i = 0; i < n; i++) { const nt = kTex(tu, tq); tu.delete(); tu = nt; }
+            const out = tu.toArray();
+            tu.delete(); tq.delete();
+            return out;
+          },
+        },
+        { name: "WebGL・createPipeline", color: "var(--c6)", pipe: "gl" },
+        { name: "WASM・每步呼叫", color: "var(--c1)", warm: () => kWasm(U, Q), run: perStep(kWasm) },
+        { name: "WASM・createPipeline", color: "var(--c4)", pipe: "wa" },
+      ].map((l) => ({ ...l, row: laneRow(l.name, l.color) }));
+      lanesEl.append(...lanes.map((l) => l.row.el));
+
+      function schedule() {
+        again = true;
+        if (!busy) measure();
+      }
+      async function measure() {
+        busy = true;
+        try {
+          while (again) {
+            again = false;
+            const n = sweeps;
+            if (pipes.n !== n) {
+              pipes.gl?.destroy?.(); pipes.wa?.destroy?.();
+              pipes.gl = makePipe(gl, kGlInner, n); pipes.wa = makePipe(wa, kWaInner, n); pipes.n = n; pipes.warm = false;
+            }
+            verdict.textContent = `${n} 次迭代量測中…`;
+            lanes.forEach((l) => l.row.set("等待", 0, false));
+            const res = [];
+            for (const l of lanes) {
+              l.row.set("暖身中…", 0);
+              await breathe(ctx);
+              let out, t0;
+              if (l.pipe) {
+                const p = pipes[l.pipe];
+                await p(U, Q); // first call records the plan and compiles
+                l.row.set("計算中…", 0);
+                await breathe(ctx);
+                t0 = performance.now();
+                out = await p(U, Q);
+                l.row.tag(p.executorKind + (l.pipe === "wa" && p.fallbackReason ? "（退回）" : ""));
+              } else {
+                l.warm();
+                l.row.set("計算中…", 0);
+                await breathe(ctx);
+                t0 = performance.now();
+                out = l.run(n);
+              }
+              const ms = performance.now() - t0;
+              res.push({ l, ms, out });
+              l.row.set(fmtMs(ms), 100, false, "");
+              if (res.length === 1 || l.pipe === "gl") drawHeat(out);
+              if (again) break;
+            }
+            if (again) continue;
+            const base = res[0], max = Math.max(...res.map((r) => r.ms));
+            const best = res.reduce((a, b) => (b.ms < a.ms ? b : a));
+            for (const r of res) {
+              const x = base.ms / r.ms;
+              r.l.row.set(fmtMs(r.ms), (r.ms / max) * 100, r === best,
+                `${r === base ? "基準" : `${x >= 1 ? "快" : "慢"} ${(x >= 1 ? x : 1 / x).toFixed(1)} 倍`}・與基準最大差 ${r === base ? "0" : maxDiff(r.out, base.out).toExponential(1)}`);
+            }
+            verdict.innerHTML = `<b>${best.l.name}</b> 最快，是每步讀回的 ${(base.ms / best.ms).toFixed(1)} 倍`;
+            const pw = pipes.wa;
+            note.textContent = `WebGL 的 createPipeline 走 ${pipes.gl.executorKind} 執行器（依序呼叫核心，中間結果留在紋理，只在最後讀回）；WebAssembly 走 ${pw.executorKind}${pw.fallbackReason ? `，退回原因：${pw.fallbackReason}` : "，所有步驟在同一塊記憶體內連續執行"}。暖身呼叫（轉譯、編譯、記錄計畫）不計入。`;
+          }
+        } catch (e) {
+          if (e && e.name === "AbortError") return;
+          console.error(e);
+          verdict.textContent = `量測失敗：${e?.message || e}`;
+        } finally {
+          busy = false;
+        }
+      }
+      function drawHeat(rows) {
+        let m = 1e-6;
+        for (const row of rows) for (let x = 0; x < row.length; x++) m = Math.max(m, row[x]);
+        paint(heat, rows, (v) => Math.sqrt(v / m), HEAT, false);
+        mapLbl.textContent = `最高溫 ${m.toFixed(1)}`;
+      }
+      schedule();
+    },
+  },
+
+  {
+    id: "async", title: "非同步讀回",
+    api: "kernel.setAsyncMode(true)・await kernel(t, iters, …)",
+    desc: "同步呼叫要等 GPU 算完、讀回結果才回到主執行緒；setAsyncMode 在 WebGL2 改用像素緩衝與 fence 讀回，主執行緒照常跑動畫。下方時間軸是每一幀的間隔。",
+    hint: "切換同步／非同步，拉高迴圈數看卡頓差異",
+    mount(ctx) {
+      const field2d = h("canvas", { class: "field" });
+      const orbit = h("canvas", { class: "orbit" });
+      const tlc = h("canvas");
+      ctx.el.append(field2d, orbit, h("div", { class: "gapbox" }, tlc));
+      const { width: W, height: H } = ctx.size();
+      const fw = Math.max(64, Math.round(Math.sqrt((48000 * W) / Math.max(1, H)))), fh = Math.max(48, Math.round(48000 / fw));
+      const asp = fh / fw;
+      const gpu = gpuFor(ctx);
+      const MAX_ITERS = 20000;
+      const kSync = gpu.createKernel(field).setOutput([fw, fh]).setLoopMaxIterations(MAX_ITERS);
+      const kAsync = gpu.createKernel(field).setOutput([fw, fh]).setLoopMaxIterations(MAX_ITERS).setAsyncMode(true);
+      // Slider position 0..100 maps to 100..20000 iterations on a log scale
+      const itersAt = (p) => Math.max(100, Math.round((100 * Math.pow(200, p / 100)) / 50) * 50);
+
+      let useAsync = false, iters = itersAt(41), pending = false, lastFrame = 0, waitMs = 0, latency = 0, warm = false;
+      const gaps = [], shown = [];
+      ctx.group(["同步呼叫", "非同步 setAsyncMode"], 0, (i) => { useAsync = i === 1; });
+      ctx.slider("迴圈", { min: 0, max: 100, value: 41, format: (p) => fmt(itersAt(p)) }, (p) => { iters = itersAt(p); });
+      const rate = () => { const now = performance.now(); while (shown.length && shown[0] < now - 1000) shown.shift(); return shown.length; };
+      const meter = ctx.fps({ extra: () => ({ 輸出: `${fw}×${fh}`, 每秒結果: rate(), [useAsync ? "結果延遲" : "主執行緒等待"]: fmtMs(useAsync ? latency : waitMs) }) });
+      meter.el.classList.add("under");
+
+      const show = (rows) => {
+        // log scale between the dimmest and brightest pixel keeps the curve readable at any load
+        let lo = Infinity, hi = 0;
+        for (const row of rows) for (let x = 0; x < row.length; x++) { const v = row[x]; if (v < lo) lo = v; if (v > hi) hi = v; }
+        const span = Math.log(Math.max(hi / Math.max(lo, 1e-6), 1.0001));
+        paint(field2d, rows, (v) => Math.log(Math.max(v, lo) / Math.max(lo, 1e-6)) / span, HEAT, false);
+        shown.push(performance.now());
+      };
+      const sizeCanvas = (cv) => {
+        const dpr = Math.min(2, devicePixelRatio || 1);
+        const w = Math.round(cv.clientWidth * dpr), hh = Math.round(cv.clientHeight * dpr);
+        if (cv.width !== w || cv.height !== hh) { cv.width = w; cv.height = hh; }
+        return dpr;
+      };
+      function drawOrbit(t) {
+        const dpr = sizeCanvas(orbit);
+        const g = orbit.getContext("2d");
+        g.clearRect(0, 0, orbit.width, orbit.height);
+        const cx = orbit.width / 2, cy = (orbit.height - 110 * dpr) / 2 + 30 * dpr, R = Math.min(cx, cy) * 0.45;
+        for (let i = 0; i < 12; i++) {
+          const a = t / 260 - i * 0.16;
+          g.fillStyle = `rgba(120, 220, 255, ${(1 - i / 12).toFixed(2)})`;
+          g.beginPath();
+          g.arc(cx + Math.cos(a) * R, cy + Math.sin(a) * R, (9 - i * 0.55) * dpr, 0, Math.PI * 2);
+          g.fill();
+        }
+      }
+      function drawTimeline() {
+        const dpr = sizeCanvas(tlc);
+        const g = tlc.getContext("2d"), w = tlc.width, hh = tlc.height;
+        g.clearRect(0, 0, w, hh);
+        const top = 24 * dpr, base = hh - 8 * dpr, span = base - top;
+        const y = (ms) => base - Math.min(1, ms / 200) * span;
+        g.strokeStyle = "rgba(123, 211, 137, 0.6)"; g.setLineDash([4 * dpr, 4 * dpr]);
+        g.beginPath(); g.moveTo(0, y(16.7)); g.lineTo(w, y(16.7)); g.stroke();
+        g.strokeStyle = "rgba(247, 37, 133, 0.5)";
+        g.beginPath(); g.moveTo(0, y(100)); g.lineTo(w, y(100)); g.stroke();
+        g.setLineDash([]);
+        const bw = w / 180;
+        gaps.forEach((ms, i) => {
+          g.fillStyle = ms > 50 ? "#f72585" : ms > 25 ? "#ff8c42" : "#7bd389";
+          g.fillRect(w - (gaps.length - i) * bw, y(ms), Math.max(1, bw - 1), base - y(ms));
+        });
+        const worst = gaps.length ? Math.max(...gaps.slice(-120)) : 0;
+        g.fillStyle = "#cfd6e6"; g.font = `${11.5 * dpr}px ui-monospace, monospace`; g.textBaseline = "top";
+        g.fillText(`每幀間隔（最近 180 幀）  最長卡頓 ${worst.toFixed(0)} ms  虛線 16.7 ms／100 ms`, 8 * dpr, 7 * dpr);
+      }
+
+      ctx.raf((t) => {
+        const now = performance.now();
+        if (lastFrame) { gaps.push(now - lastFrame); if (gaps.length > 180) gaps.shift(); }
+        lastFrame = now;
+        drawOrbit(t);
+        if (!warm) { warm = true; kSync(0, 50, 0.1, 1 / fw, 1 / fh, asp); }
+        const n = iters, da = (2 * Math.PI) / n;
+        if (!useAsync) {
+          const t0 = performance.now();
+          const rows = kSync(t / 1000, n, da, 1 / fw, 1 / fh, asp);
+          waitMs = performance.now() - t0;
+          show(rows);
+        } else if (!pending) {
+          pending = true;
+          const t0 = performance.now();
+          kAsync(t / 1000, n, da, 1 / fw, 1 / fh, asp).then((rows) => {
+            pending = false;
+            if (!ctx.active) return;
+            latency = performance.now() - t0;
+            show(rows);
+          }, (e) => { pending = false; if (ctx.active) console.error(e); });
+        }
+        drawTimeline();
+      });
+    },
+  },
+
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "gpu.createKernel(matMul).setOutput([n, n]).setConstants({ size: n })",
+    desc: "矩陣邊長從 64 加到 2048，計時 WebGL 核心單次呼叫；右側同時列出 WebAssembly 與純 JavaScript 跑同一個函式的耗時。",
+    hint: "按「開始測試」",
+    mount(ctx) {
+      const KEYS = [
+        { id: "gpu", name: "GPU", color: "var(--c2)" },
+        { id: "webasm", name: "WASM", color: "var(--c6)" },
+        { id: "cpu", name: "JS", color: "var(--c5)" },
+      ];
+      const SIZES = [64, 128, 256, 384, 512, 768, 1024, 1536, 2048];
+      const SKIP = 2500;
+      const rowsEl = h("div", { style: "display:grid;gap:6px" }, h("div", { class: "empty", text: "按「開始測試」後逐級顯示三種後端的耗時。" }));
+      const chart = h("div", { class: "mm" },
+        h("div", { class: "hd" }, h("b", { text: "同一個 matMul，三種後端" }), h("span", { class: "small", text: "對數刻度・越短越快" })),
+        h("div", { class: "legend" }, KEYS.map((k) => h("span", {}, h("i", { style: `background:${k.color}` }), k.id === "gpu" ? "GPU（WebGL）" : k.id === "webasm" ? "WebAssembly" : "純 JavaScript"))),
+        rowsEl);
+      ctx.el.append(chart);
+      const gpus = { gpu: gpuFor(ctx), webasm: gpuFor(ctx, { mode: "webasm" }), cpu: gpuFor(ctx, { mode: "cpu" }) };
+      const perN3 = { webasm: 0, cpu: 0 };
+      const rows = new Map();
+
+      function rowFor(n) {
+        if (rows.has(n)) return rows.get(n);
+        if (!rows.size) rowsEl.replaceChildren();
+        const cells = {}, ms = {};
+        const say = h("div", { class: "say" });
+        const bars = h("div", { class: "bars" }, KEYS.map((k) => {
+          const i = h("i", { style: `background:${k.color}` });
+          const v = h("span", { text: "…" });
+          cells[k.id] = { i, v };
+          return h("div", { class: "b" }, h("span", { text: k.name }), h("div", { class: "t" }, i), v);
+        }));
+        rowsEl.append(h("div", { class: "row" }, h("b", { text: `${n}²` }), bars, say));
+        const api = {
+          set(id, value, text) {
+            const c = cells[id];
+            if (value != null) {
+              ms[id] = value;
+              c.i.style.width = `${Math.max(2, Math.min(100, ((Math.log10(Math.max(value, 0.1)) + 1) / 5) * 100))}%`;
+              c.v.textContent = fmtMs(value);
+            } else c.v.textContent = text;
+            c.v.title = c.v.textContent;
+          },
+          done() {
+            const g = ms.gpu, ref = ms.cpu ?? ms.webasm, refName = ms.cpu != null ? "純 JS" : "WASM";
+            let s = `${gflops(n, g).toFixed(2)} GFLOPS`;
+            if (ref != null) s += g <= ref ? `・GPU 比${refName}快 <b>${(ref / g).toFixed(1)}</b> 倍` : `・GPU 比${refName}慢 <b>${(g / ref).toFixed(1)}</b> 倍`;
+            say.innerHTML = s;
+          },
+        };
+        rows.set(n, api);
+        chart.scrollTop = chart.scrollHeight;
+        return api;
+      }
+
+      ctx.bench({
+        label: "矩陣邊長", sizes: SIZES, format: (n) => `${n}²`, target: 500, budget: 1500,
+        title: "極限測試：GPU 矩陣乘法",
+        note: "每列計時的是 WebGL 核心單次呼叫，含上傳兩個矩陣與讀回結果；首次呼叫的轉譯與著色器編譯不計入。右側的 WebAssembly 與純 JavaScript 在準備階段量測，預估超過 2.5 秒的級距略過，大尺寸只跑一次。沒有顯示卡（軟體模擬 WebGL）時 GPU 數字會偏慢，實體顯示卡在大尺寸通常領先。",
+        async prepare(n) {
+          rows.delete(n);
+          const row = rowFor(n);
+          const A = randomInput(n), B = randomInput(n);
+          row.set("gpu", null, "編譯中…");
+          await breathe(ctx);
+          const kg = gpus.gpu.createKernel(matMul).setOutput([n, n]).setConstants({ size: n });
+          kg(A, B);
+          for (const id of ["webasm", "cpu"]) {
+            const guess = perN3[id] * n ** 3;
+            if (guess > SKIP) { row.set(id, null, `略過 約${fmtMs(guess)}`); continue; }
+            row.set(id, null, "計算中…");
+            await breathe(ctx);
+            const k = gpus[id].createKernel(matMul).setOutput([n, n]).setConstants({ size: n });
+            if (guess < 400) k(A, B);
+            const t0 = performance.now();
+            k(A, B);
+            const ms = performance.now() - t0;
+            perN3[id] = ms / n ** 3;
+            row.set(id, ms);
+          }
+          row.set("gpu", null, "計時中…");
+          return { kg, A, B, row };
+        },
+        run(n, { kg, A, B, row }) {
+          const t0 = performance.now();
+          kg(A, B);
+          row.set("gpu", performance.now() - t0);
+          row.done();
+        },
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

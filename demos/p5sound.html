@@ -3,29 +3,82 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>p5.sound 示範：XY 觸控合成器</title>
+<title>p5.sound 示範：8 個場景看懂 p5 的聲音合成、效果與分析</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"]}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio","mic"],"scenes":["XY 合成器","波形與 ADSR 包絡","噪音與濾波器","延遲與殘響","音檔播放","變調與 3D 聲像","麥克風輸入","極限測試"],"note":"按場景內的按鈕或畫面才會建立 AudioContext 並發聲；麥克風只在「麥克風輸入」場景按下按鈕時才請求權限，沒有麥克風時可改用標示清楚的示範音源"}</script>
 <style>
-  main canvas { display: block; touch-action: none; cursor: crosshair; }
-  @media (max-width: 560px) {
-    .controls .btn { padding: 7px 9px; font-size: 12px; }
-  }
-</style>
-</head>
-<body>
-<div class="controls">
-  <button class="btn primary" id="auto">▶ 自動演奏</button>
-  <button class="btn" id="wave">波形：鋸齒波</button>
-  <button class="btn" id="echo" aria-pressed="true">回音</button>
-</div>
-<div class="hint">按住畫面拖曳演奏：左右換音高，上下調音色亮度</div>
+  .board { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); min-height: 0; }
+  .ps-one { display: grid; }
+  .ps-card { position: relative; min-width: 0; min-height: 0; border-radius: 10px; background: #0b0d11; border: 1px solid var(--line); overflow: hidden; }
+  .ps-cv { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+  .ps-cv > canvas { position: absolute; left: 0; top: 0; display: block; touch-action: none; }
+  .ps-m { font-family: var(--mono); }
+  .ps-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; }
+  .ps-lbl { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 11.5px; line-height: 1.4; color: var(--muted); white-space: nowrap; overflow: hidden; }
+  .ps-lbl > span { overflow: hidden; text-overflow: ellipsis; }
+  .ps-lbl b { color: var(--fg); font-weight: 600; }
+  .ps-lbl > .ps-time { flex: none; }
+  .ps-side { display: flex; flex-direction: column; justify-content: center; gap: 7px; padding: 10px 12px; }
+  .ps-h { font-size: 12px; font-weight: 600; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ps-h small { margin-left: 6px; font: 400 10.5px var(--mono); color: var(--muted); }
+  .ps-row { display: grid; grid-template-columns: 4.6em minmax(0, 1fr) 4.6em; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  .ps-row output { text-align: right; color: var(--fg); font: 11.5px var(--mono); white-space: nowrap; }
+  input.ps-rng { width: 100%; min-width: 0; margin: 0; accent-color: #f7df1e; }
+  .ps-xy canvas, .ps-ed canvas, .ps-flt canvas, .ps-tl canvas { cursor: crosshair; }
 
+  /* 2. envelope */
+  .ps-adsr { display: grid; grid-template-columns: minmax(0, 1fr) 120px; grid-template-rows: minmax(0, 1.2fr) minmax(0, 1fr); gap: 8px; }
+  .ps-ed { grid-column: 1; grid-row: 1; }
+  .ps-mon { grid-column: 1; grid-row: 2; }
+  .ps-pad { grid-column: 2; grid-row: 1 / span 2; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; min-width: 0; border-radius: 10px; border: 1px solid var(--line); background: radial-gradient(circle at 50% 42%, rgba(247, 223, 30, 0.16), #0b0d11 70%); color: var(--fg); font: 14px var(--font); cursor: pointer; touch-action: none; user-select: none; -webkit-user-select: none; transition: box-shadow .15s, transform .08s; }
+  .ps-pad b { font-weight: 600; }
+  .ps-pad span { font-size: 11px; color: var(--muted); }
+  .ps-pad.on { box-shadow: 0 0 0 1px #f7df1e, 0 0 26px -4px #f7df1e; transform: scale(0.98); }
+  @media (max-width: 560px) {
+    .ps-adsr { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1.1fr) minmax(0, 1fr) 46px; gap: 6px; }
+    .ps-pad { grid-column: 1; grid-row: 3; flex-direction: row; gap: 10px; }
+  }
+
+  /* 4. delay + reverb */
+  .ps-dl { display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 8px; }
+  @media (max-width: 560px) {
+    .ps-dl { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; gap: 6px; }
+    .ps-dl .ps-side { padding: 6px 8px; gap: 2px; }
+  }
+
+  /* 5. sound file */
+  .ps-fp { display: grid; grid-template-rows: auto minmax(0, 1fr) minmax(0, 0.85fr); gap: 8px; }
+  .ps-wave canvas { cursor: pointer; }
+
+  /* 6. pitch + 3D */
+  .ps-3d { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 8px; }
+  .ps-3d .ps-col > .ps-cv { flex: 1; }
+  .ps-plane canvas { cursor: grab; }
+  @media (max-width: 560px) {
+    .ps-3d { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; gap: 6px; }
+    .ps-3d .ps-col { gap: 6px; }
+    .ps-3d .ps-col > .ps-cv { flex: none; height: 78px; }
+    .ps-3d .ps-side { padding: 6px 8px; gap: 2px; }
+  }
+
+  /* 8. stress */
+  .ps-bv { position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px); border-radius: 10px; background: #050608; overflow: hidden; border: 1px solid var(--line); }
+  @media (min-width: 761px) { .ps-bv { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 350px; } }
+  .ps-bvin { position: absolute; inset: 0; }
+</style>
 <script src="https://cdn.jsdelivr.net/npm/p5@2.3.4/lib/p5.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/p5.sound@0.4.1/dist/p5.sound.min.js"></script>
+</head>
+<body>
+<script src="_shared/showcase.js"></script>
 <script>
-// p5.sound XY synth: Oscillator -> Envelope -> LowPass -> (Delay, Reverb), analysed by p5.FFT.
+const { h } = Showcase;
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+const CJK = '"Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif';
+const MONO = '"JetBrains Mono", ui-monospace, Consolas, monospace';
+const LOOP_SRC = "_shared/audio/loop.mp3";
 const NOTES = ["A2", "C3", "D3", "E3", "G3", "A3", "C4", "D4", "E4", "G4", "A4", "C5", "D5", "E5", "G5"];
 const MIDI = { C: 0, D: 2, E: 4, G: 7, A: 9 };
 const hz = (n) => 440 * Math.pow(2, (MIDI[n[0]] + 12 * (+n[1] + 1) - 69) / 12);
@@ -33,236 +86,1095 @@ const WAVES = [["sawtooth", "鋸齒波"], ["square", "方波"], ["triangle", "�
 // Auto-play phrase: [column, height 0..1 (1 = top / bright)]
 const PHRASE = [[5, 0.4], [7, 0.5], [8, 0.6], [10, 0.75], [9, 0.65], [8, 0.5], [6, 0.45], [7, 0.55],
   [3, 0.3], [5, 0.45], [8, 0.7], [11, 0.9], [12, 0.85], [10, 0.7], [9, 0.5], [5, 0.35]];
+const PC = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
 
-let au = null;          // audio graph, created on first gesture
-let waveIdx = 0;
-let echoOn = true;
-let held = false;
-let autoOn = false, autoStep = 0, nextAt = 0, releaseAt = 0;
-let cur = { col: 7, y: 0.5, x: 0, py: 0 };
-let ripples = [];
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const toDb = (x) => 20 * Math.log10(Math.max(1e-6, x));
+const fmtDb = (x) => { const d = toDb(x); return d < -90 ? "−∞ dB" : `${d < 0 ? "−" : ""}${Math.abs(d).toFixed(1)} dB`; };
+const fmtT = (s) => { s = Math.max(0, +s || 0); const m = Math.floor(s / 60); return `${m}:${(s - m * 60).toFixed(1).padStart(4, "0")}`; };
+const fmtHz = (f) => (f >= 1000 ? `${(f / 1000).toFixed(f >= 10000 ? 1 : 2)} kHz` : `${Math.round(f)} Hz`);
+const cutoffFor = (y) => 180 * Math.pow(2, 6.2 * y);   // y: 0 bottom .. 1 top
+function noteName(f) { const m = 69 + 12 * Math.log2(f / 440), r = Math.round(m); return { name: PC[((r % 12) + 12) % 12] + (Math.floor(r / 12) - 1), cents: Math.round((m - r) * 100) }; }
 
-function initAudio() {
-  if (au) return au;
-  userStartAudio();
-  const osc = new p5.Oscillator(hz("E4"), WAVES[waveIdx][0]);
-  const env = new p5.Envelope(0.01, 0.2, 0.55, 0.35);
-  const lp = new p5.LowPass(1200);
-  lp.res(6);
-  const echo = new p5.Delay(0.27, 0.42);
-  const verb = new p5.Reverb(2.5);
-  // route: osc -> env -> lowpass -> speakers, plus parallel delay and reverb sends
-  osc.disconnect(); osc.connect(env);
-  env.disconnect(); env.connect(lp);
-  lp.connect(echo); lp.connect(verb);
-  echo.output.gain.value = echoOn ? 0.4 : 0;
-  verb.output.gain.value = 0.35;
-  const fft = new p5.FFT(512);
-  fft.setInput(lp); fft.setInput(echo); fft.setInput(verb);
-  osc.start();
-  au = { osc, env, lp, echo, verb, fft };
-  return au;
+// ---------- drawing helpers (plain 2D context of each p5 canvas) ----------
+function txt(g, s, x, y, color = "#9aa0aa", mono = false, align = "left", size = 11) {
+  g.save(); g.font = `${size}px ${mono ? MONO : CJK}`; g.textAlign = align; g.textBaseline = "top"; g.fillStyle = color; g.fillText(s, x, y); g.restore();
+}
+function lane(g, x, y, w, hh) { g.fillStyle = "rgba(255,255,255,.025)"; g.fillRect(x, y, w, hh); g.fillStyle = "rgba(255,255,255,.08)"; g.fillRect(x, y + hh / 2, w, 1); }
+// x position of a frequency on a log axis.
+const fx = (f, x, w, lo, hi) => x + (Math.log(f / lo) / Math.log(hi / lo)) * w;
+// p5.FFT.analyze() returns linear magnitudes (Tone FFT, normalRange); fold them into log-spaced bands, 0..1 over dbLo..dbHi.
+function specBands(spec, sr, n, lo, hi, dbLo = -100, dbHi = -20) {
+  const out = new Float32Array(n), binHz = sr / 2 / spec.length;
+  for (let i = 0; i < n; i++) {
+    const a = Math.floor((lo * Math.pow(hi / lo, i / n)) / binHz), b = Math.max(a + 1, Math.ceil((lo * Math.pow(hi / lo, (i + 1) / n)) / binHz));
+    let m = 0;
+    for (let j = a; j < b && j < spec.length; j++) m = Math.max(m, spec[j]);
+    out[i] = clamp((toDb(m) - dbLo) / (dbHi - dbLo), 0, 1);
+  }
+  return out;
+}
+function drawBands(g, vals, x, y, w, hh, hue0 = 190, span = 150, alpha = 1) {
+  const n = vals.length, bw = w / n;
+  for (let i = 0; i < n; i++) {
+    const bh = vals[i] * hh;
+    if (bh < 0.5) continue;
+    g.fillStyle = `hsla(${hue0 + (i / n) * span}, 85%, 60%, ${alpha})`;
+    g.fillRect(x + i * bw + 0.5, y + hh - bh, Math.max(1, bw - 1), bh);
+  }
+}
+function drawLive(g, arr, x, y, w, hh, color, gain = 1, from = 0, count = arr.length) {
+  const mid = y + hh / 2, cols = Math.max(2, Math.floor(w));
+  g.strokeStyle = color; g.lineWidth = 1.4; g.beginPath();
+  for (let i = 0; i < cols; i++) {
+    const yy = mid - clamp(arr[from + Math.floor((i / cols) * count)] * gain, -1, 1) * hh / 2;
+    if (i) g.lineTo(x + (i / cols) * w, yy); else g.moveTo(x, yy);
+  }
+  g.stroke();
+}
+function freqGrid(g, x, y, w, hh, lo, hi) {
+  for (const f of [50, 100, 200, 500, 1000, 2000, 5000, 10000]) {
+    if (f <= lo || f >= hi) continue;
+    const xx = fx(f, x, w, lo, hi);
+    g.fillStyle = "rgba(255,255,255,.06)"; g.fillRect(xx, y, 1, hh);
+    txt(g, f >= 1000 ? `${f / 1000}k` : `${f}`, xx + 3, y + hh - 12, "#5d636e", true, "left", 9.5);
+  }
+}
+function meter(g, x, y, w, hh, v, label) {
+  g.fillStyle = "rgba(255,255,255,.05)"; g.fillRect(x, y, w, hh);
+  const k = clamp((toDb(v) + 60) / 60, 0, 1), gr = g.createLinearGradient(0, y + hh, 0, y);
+  gr.addColorStop(0, "#2ec4b6"); gr.addColorStop(0.7, "#f7df1e"); gr.addColorStop(1, "#f72585");
+  g.fillStyle = gr; g.fillRect(x, y + hh * (1 - k), w, hh * k);
+  if (label) txt(g, label, x + w / 2, y + hh + 4, "#9aa0aa", false, "center", 10.5);
+}
+function local(el, e) { const r = el.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top, r.width, r.height]; }
+function watch(ctx, el, fn) { const ro = new ResizeObserver(() => ctx.active && fn()); ro.observe(el); ctx.onCleanup(() => ro.disconnect()); }
+
+// Each canvas is a p5 instance-mode sketch sized to its container; draw(p, g, w, h) runs in p5's draw loop.
+function sketch(ctx, el, draw, init) {
+  const S = { p: null, ready: false };
+  const size = () => [Math.max(1, Math.floor(el.clientWidth)), Math.max(1, Math.floor(el.clientHeight))];
+  S.p = new p5((p) => {
+    p.setup = () => { const [w, hh] = size(); p.createCanvas(w, hh); p.pixelDensity(DPR); if (init) init(p); S.ready = true; };
+    p.draw = () => { if (ctx.active) draw(p, p.drawingContext, p.width, p.height); };
+  }, el);
+  watch(ctx, el, () => { if (!S.ready) return; const [w, hh] = size(); if (w !== S.p.width || hh !== S.p.height) S.p.resizeCanvas(w, hh); });
+  ctx.onCleanup(() => S.p.remove());
+  return S;
 }
 
-function cutoffFor(y) { return 180 * Math.pow(2, 6.2 * y); }   // y: 0 bottom .. 1 top
-
-function setVoice(col, y) {
-  cur.col = col; cur.y = y;
-  if (!au) return;
-  au.osc.freq(hz(NOTES[col]), 0.04);
-  au.lp.freq(cutoffFor(y));
+// ---------- p5.sound plumbing ----------
+// p5.sound creates its AudioContext on first use, so audio() and every node constructor only run inside a click or tap.
+function audio() {
+  const ac = p5.prototype.getAudioContext();
+  if (ac.state !== "running") p5.prototype.userStartAudio();
+  return ac;
 }
-
-function noteOn(col, y) {
-  initAudio();
-  setVoice(col, y);
-  au.env.triggerAttack();
-  ripples.push({ x: colX(col), y: (1 - y) * height, t: millis(), c: colColor(col) });
-}
-function noteOff() { if (au) au.env.triggerRelease(); }
-
-const colW = () => width / NOTES.length;
-const colX = (c) => (c + 0.5) * colW();
-function colColor(c) { return color(`hsl(${200 + c * 9}, 85%, 62%)`); }
-
-function setup() {
-  createCanvas(windowWidth, windowHeight);
-  pixelDensity(Math.min(2, displayDensity()));
-  textFont("sans-serif");
-  const cv = document.querySelector("main canvas") || document.querySelector("canvas");
-  const pick = (e) => {
-    const r = cv.getBoundingClientRect();
-    const col = constrain(Math.floor(((e.clientX - r.left) / r.width) * NOTES.length), 0, NOTES.length - 1);
-    const y = constrain(1 - (e.clientY - r.top) / r.height, 0, 1);
-    return [col, y];
+// AudioIn.start() calls a bare userStartAudio(), which only exists as a global in p5 global mode.
+if (typeof window.userStartAudio !== "function") window.userStartAudio = () => p5.prototype.userStartAudio();
+// p5.sound 0.4.1 has no dispose(): each node wraps a Tone node between two native gains and its output is
+// wired to the speakers on construction, so cleanup disconnects both gains and disposes the Tone node.
+let TUNED = false;
+function rack(ctx) {
+  const set = new Set();
+  const kill = (x) => {
+    if (!x || !set.delete(x)) return;
+    x.output.disconnect(); x.input.disconnect();
+    if (x instanceof p5.FFT) { x.analyzer.dispose(); x.samples.dispose(); }
+    x.node.dispose();
   };
-  cv.addEventListener("pointerdown", (e) => {
-    cv.setPointerCapture(e.pointerId);
-    held = true;
-    stopAuto();
-    const [c, y] = pick(e);
-    noteOn(c, y);
+  ctx.onCleanup(() => [...set].forEach(kill));
+  return {
+    add(x) {
+      set.add(x);
+      // Tone's default 100 ms look-ahead makes a played instrument feel late.
+      if (!TUNED) { x.node.context.lookAhead = 0.02; TUNED = true; }
+      return x;
+    },
+    kill,
+  };
+}
+const fail = (ctx, what) => (e) => {
+  if (e && e.name === "AbortError") return;
+  console.error(`[p5.sound] ${what}`, e);
+  if (ctx.active) ctx.status("").error(`${what}失敗：${e && e.message ? e.message : e}`);
+};
+// loadSound() resolves with a p5.SoundFile; it has no error path in 0.4.1, so a timeout makes a failed load visible.
+function loadLoop(ctx, R) {
+  return new Promise((res, rej) => {
+    const t = setTimeout(() => rej(new Error("音檔載入逾時")), 20000);
+    p5.prototype.loadSound(LOOP_SRC).then((sf) => {
+      clearTimeout(t);
+      R.add(sf);
+      if (!ctx.active) { R.kill(sf); rej(new DOMException("Scene unmounted", "AbortError")); return; }
+      res(sf);
+    });
   });
-  cv.addEventListener("pointermove", (e) => {
-    if (!held) return;
-    const [c, y] = pick(e);
-    if (c !== cur.col) ripples.push({ x: colX(c), y: (1 - y) * height, t: millis(), c: colColor(c) });
-    setVoice(c, y);
-  });
-  const up = () => { if (held) { held = false; noteOff(); } };
-  cv.addEventListener("pointerup", up);
-  cv.addEventListener("pointercancel", up);
-  cur.x = colX(cur.col); cur.py = (1 - cur.y) * height;
 }
-
-function windowResized() { resizeCanvas(windowWidth, windowHeight); }
-
-function stopAuto() {
-  if (!autoOn) return;
-  autoOn = false;
-  noteOff();
-  document.getElementById("auto").textContent = "▶ 自動演奏";
+// Decoded once with an OfflineAudioContext for the waveform overview shown before any sound plays.
+let LOOP = null;
+function decodeLoop() {
+  return (LOOP ||= fetch(LOOP_SRC)
+    .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.arrayBuffer(); })
+    .then((ab) => new OfflineAudioContext(1, 1, 44100).decodeAudioData(ab))
+    .then((buf) => {
+      const d = buf.getChannelData(0), cols = 1200, pk = new Float32Array(cols), step = d.length / cols;
+      for (let c = 0; c < cols; c++) { let m = 0; const e = Math.min(d.length, Math.floor((c + 1) * step)); for (let i = Math.floor(c * step); i < e; i++) m = Math.max(m, Math.abs(d[i])); pk[c] = m; }
+      return { pk, dur: buf.duration, ch: buf.numberOfChannels, sr: buf.sampleRate };
+    })
+    .catch((e) => { LOOP = null; throw e; }));
 }
-
-function runAuto() {
-  if (!autoOn) return;
-  const now = millis();
-  if (releaseAt && now >= releaseAt) { noteOff(); releaseAt = 0; }
-  if (now >= nextAt) {
-    const [c, y] = PHRASE[autoStep % PHRASE.length];
-    noteOn(c, y);
-    autoStep++;
-    releaseAt = now + 190;
-    nextAt = now + 300;
+function drawOverview(g, pk, x, y, w, hh, split, cA, cB) {
+  const mid = y + hh / 2, n = Math.max(1, Math.floor(w / 2));
+  for (let i = 0; i < n; i++) {
+    const a = Math.floor((i / n) * pk.length), b = Math.max(a + 1, Math.floor(((i + 1) / n) * pk.length));
+    let m = 0;
+    for (let j = a; j < b; j++) m = Math.max(m, pk[j]);
+    const xx = x + (i / n) * w, bh = Math.max(1, m * hh * 0.92);
+    g.fillStyle = xx < split ? cA : cB;
+    g.fillRect(xx, mid - bh / 2, Math.max(1, w / n - 0.6), bh);
   }
 }
 
-function draw() {
-  runAuto();
-  const W = width, H = height, cw = colW();
-  background(14, 16, 19);
-  noStroke();
+Showcase.run({
+  scenes: [
+    {
+      id: "xy", title: "XY 合成器",
+      api: "p5.Oscillator・p5.Envelope・p5.LowPass・p5.Delay・p5.Reverb・p5.FFT",
+      desc: "原本的招牌示範：左右換五聲音階的音高，上下調低通濾波器的截止頻率。聲音走 Oscillator → Envelope → LowPass，再並聯 Delay 與 Reverb；畫面上的頻譜與波形都來自 p5.FFT，黃色虛線是目前的截止頻率。",
+      hint: "按住畫面拖曳演奏，或按「▶ 自動演奏」；上方可切換波形、回音與殘響。",
+      mount(ctx) {
+        ctx.html(`<div class="board ps-one"><div class="ps-card ps-cv ps-xy"></div></div>`);
+        const R = rack(ctx), el = ctx.$(".ps-xy");
+        let au = null, wave = 0, echoOn = true, verbOn = true, held = false, auto = false, step = 0, nextAt = 0, relAt = 0, ripples = [];
+        const cur = { col: 7, y: 0.5, x: -1, py: 0 };
+        const build = () => {
+          if (au) return au;
+          const ac = audio();
+          const osc = R.add(new p5.Oscillator(hz(NOTES[cur.col]), WAVES[wave][0]));
+          const env = R.add(new p5.Envelope(0.01, 0.2, 0.55, 0.35));
+          const lp = R.add(new p5.LowPass(cutoffFor(cur.y)));
+          lp.res(6);
+          const echo = R.add(new p5.Delay(0.27, 0.42)), verb = R.add(new p5.Reverb(2.5));
+          // osc -> env -> lowpass -> speakers, plus parallel delay and reverb sends
+          osc.disconnect(); osc.connect(env);
+          env.disconnect(); env.connect(lp);
+          lp.connect(echo); lp.connect(verb);
+          echo.output.gain.value = echoOn ? 0.4 : 0;
+          verb.output.gain.value = verbOn ? 0.35 : 0;
+          const fft = R.add(new p5.FFT(1024));
+          fft.setInput(lp); fft.setInput(echo); fft.setInput(verb);
+          osc.start();
+          au = { osc, env, lp, echo, verb, fft, sr: ac.sampleRate };
+          return au;
+        };
+        const setVoice = (col, y) => { cur.col = col; cur.y = y; if (au) { au.osc.freq(hz(NOTES[col]), 0.04); au.lp.freq(cutoffFor(y)); } };
+        const noteOn = (col, y, now) => { build(); setVoice(col, y); au.env.triggerAttack(); ripples.push({ col, y, t: now }); };
+        const noteOff = () => { if (au) au.env.triggerRelease(); };
+        const stopAuto = () => { if (!auto) return; auto = false; noteOff(); autoBtn.textContent = "▶ 自動演奏"; };
+        const autoBtn = ctx.button("▶ 自動演奏", () => {
+          if (auto) return stopAuto();
+          build(); auto = true; step = 0; nextAt = 0; autoBtn.textContent = "■ 停止";
+        }, { primary: true });
+        ctx.group(WAVES.map((w) => w[1]), 0, (i) => { wave = i; if (au) au.osc.setType(WAVES[i][0]); });
+        ctx.toggle("回音", true, (v) => { echoOn = v; if (au) au.echo.output.gain.value = v ? 0.4 : 0; });
+        ctx.toggle("殘響", true, (v) => { verbOn = v; if (au) au.verb.output.gain.value = v ? 0.35 : 0; });
+        const pick = (e) => { const [x, y, w, hh] = local(el, e); return [clamp(Math.floor((x / w) * NOTES.length), 0, NOTES.length - 1), clamp(1 - y / hh, 0, 1)]; };
+        ctx.on(el, "pointerdown", (e) => { el.setPointerCapture(e.pointerId); held = true; stopAuto(); const [c, y] = pick(e); noteOn(c, y, performance.now()); });
+        ctx.on(el, "pointermove", (e) => {
+          if (!held) return;
+          const [c, y] = pick(e);
+          if (c !== cur.col) ripples.push({ col: c, y, t: performance.now() });
+          setVoice(c, y);
+        });
+        const up = () => { if (held) { held = false; noteOff(); } };
+        ctx.on(el, "pointerup", up); ctx.on(el, "pointercancel", up);
+        const runAuto = (now) => {
+          if (!auto) return;
+          if (relAt && now >= relAt) { noteOff(); relAt = 0; }
+          if (now >= nextAt) {
+            const [c, y] = PHRASE[step % PHRASE.length];
+            noteOn(c, y, now); step++;
+            relAt = now + 190; nextAt = now + 300;
+          }
+        };
+        sketch(ctx, el, (p, g, W, H) => {
+          const now = performance.now(), cw = W / NOTES.length, colX = (c) => (c + 0.5) * cw;
+          runAuto(now);
+          if (cur.x < 0) { cur.x = colX(cur.col); cur.py = (1 - cur.y) * H; }
+          p.background(14, 16, 19);
+          p.noStroke();
+          // Pitch columns with a vertical brightness ramp (top = open filter)
+          for (let c = 0; c < NOTES.length; c++) {
+            const active = (held || auto) && c === cur.col;
+            const grad = g.createLinearGradient(0, 0, 0, H);
+            grad.addColorStop(0, `hsla(${200 + c * 9}, 85%, 62%, ${c % 2 ? 0.17 : 0.13})`);
+            grad.addColorStop(1, `hsla(${200 + c * 9}, 85%, 62%, 0.02)`);
+            g.save(); g.fillStyle = grad; g.fillRect(c * cw, 0, cw - 1, H); g.restore();   // keep p5's cached fill state intact
+            if (active) { const col = p.color(`hsl(${200 + c * 9}, 85%, 62%)`); col.setAlpha(46); p.fill(col); p.rect(c * cw, 0, cw, H); }
+            if (cw >= 26 || c % 2 === 0 || active) {   // narrow screens label every other column
+              p.fill(active ? 240 : 120); p.textSize(Math.min(12, Math.max(9, cw * 0.42))); p.textAlign(p.CENTER, p.BOTTOM);
+              p.text(NOTES[c], c * cw + cw / 2, H - 44);
+            }
+          }
+          // Spectrum on a log frequency axis, with the LowPass cutoff marked
+          const base = H - 60, sh = H * 0.45, cf = cutoffFor(cur.y);
+          if (au) {
+            const n = Math.max(24, Math.floor(W / 6)), bands = specBands(au.fft.analyze(), au.sr, n, 40, 16000), bw = W / n;
+            for (let i = 0; i < n; i++) {
+              const v = bands[i];
+              if (v <= 0.01) continue;
+              p.fill(`hsla(${190 + (i / n) * 140}, 90%, 60%, 0.55)`);
+              p.rect(i * bw, base - v * sh, Math.max(1, bw - 1), v * sh);
+            }
+          }
+          const cx = fx(cf, 0, W, 40, 16000), right = cx > W - 130;
+          g.save(); g.setLineDash([3, 4]); g.strokeStyle = "rgba(247,223,30,.5)"; g.beginPath(); g.moveTo(cx + 0.5, base - sh); g.lineTo(cx + 0.5, base); g.stroke(); g.restore();
+          p.noStroke(); p.fill(247, 223, 30, 200); p.textSize(11); p.textAlign(right ? p.RIGHT : p.LEFT, p.TOP);
+          p.text(`LowPass 截止 ${fmtHz(cf)}`, right ? cx - 5 : cx + 5, base - sh);
+          // Waveform (live audio) or an idle preview wave
+          const wv = au ? au.fft.waveform() : null;
+          let pk = 0;
+          if (wv) for (let i = 0; i < wv.length; i += 4) pk = Math.max(pk, Math.abs(wv[i]));
+          const live = pk > 0.002, mid = H * 0.42;
+          p.noFill();
+          for (const [a, sw] of [[40, 9], [230, 2.5]]) {
+            p.stroke(247, 223, 30, a); p.strokeWeight(sw); p.beginShape();
+            for (let x = 0; x <= W; x += 4) {
+              const v = live ? wv[Math.floor((x / W) * (wv.length - 1))] * 0.9 : 0.12 * Math.sin(x * 0.018 + now * 0.002) * Math.sin(x * 0.004 + now * 0.0007);
+              p.vertex(x, mid + v * H * 0.28);
+            }
+            p.endShape();
+          }
+          // Ripples on note changes
+          ripples = ripples.filter((r) => now - r.t < 900);
+          for (const r of ripples) {
+            const k = (now - r.t) / 900, c = p.color(`hsl(${200 + r.col * 9}, 85%, 62%)`);
+            c.setAlpha(255 * (1 - k)); p.stroke(c); p.strokeWeight(2);
+            p.circle(colX(r.col), (1 - r.y) * H, 20 + k * 140);
+          }
+          // Cursor eases toward the active voice
+          cur.x = p.lerp(cur.x, colX(cur.col), 0.25);
+          cur.py = p.lerp(cur.py, (1 - cur.y) * H, 0.25);
+          p.noStroke();
+          if (held || auto) {
+            const c = p.color(`hsl(${200 + cur.col * 9}, 85%, 62%)`); c.setAlpha(70);
+            p.fill(c); p.circle(cur.x, cur.py, 46); p.fill(255); p.circle(cur.x, cur.py, 12);
+          }
+          // Readout
+          p.fill(236, 235, 230); p.textAlign(p.LEFT, p.TOP); p.textSize(15);
+          p.text(`${NOTES[cur.col]}  ${hz(NOTES[cur.col]).toFixed(1)} Hz`, 16, 16);
+          p.fill(155, 153, 143); p.textSize(12);
+          p.text(`濾波截止 ${Math.round(cf)} Hz・${WAVES[wave][1]}・回音${echoOn ? "開" : "關"}・殘響${verbOn ? "開" : "關"}`, 16, 38);
+          p.fill(110, 116, 128); p.textSize(11);
+          p.text("Oscillator → Envelope → LowPass → Delay／Reverb", 16, 58);
+          if (W >= 480) {
+            p.push(); p.translate(W - 14, H * 0.5); p.rotate(-p.HALF_PI); p.textAlign(p.CENTER, p.CENTER);
+            p.fill(155, 153, 143, 160); p.text("越上面音色越亮 →", 0, 0); p.pop();
+          }
+          if (!au) {
+            p.textAlign(p.CENTER, p.CENTER); p.textSize(Math.min(18, W / 22));
+            p.fill(236, 235, 230, 150 + 60 * Math.sin(now / 500));
+            p.text("按住畫面任一處開始演奏", W / 2, H * 0.66);
+          }
+        }, (p) => p.textFont(CJK));
+      },
+    },
+    {
+      id: "adsr", title: "波形與 ADSR 包絡",
+      api: "Oscillator.setType()・Envelope.setADSR()・triggerAttack()・triggerRelease()・p5.Amplitude.getLevel()",
+      desc: "p5.Envelope 控制音量隨時間起伏：Attack 起音、Decay 衰減到 Sustain 音量，放開後 Release 收尾。上方是設定的包絡，黃點是 p5.Amplitude 實測的音量；下方是實測音量軌跡、波形與諧波，換波形就看得出諧波差異。",
+      hint: "按住「按住發聲」聽包絡，放開進入 Release；拖曳曲線上的三個控制點，或用上方預設切換。",
+      mount(ctx) {
+        ctx.html(`<div class="board ps-adsr">
+          <div class="ps-card ps-cv ps-ed"></div>
+          <button class="ps-pad" type="button"><b>按住發聲</b><span class="ps-m">A3・220 Hz</span></button>
+          <div class="ps-card ps-cv ps-mon"></div></div>`);
+        const R = rack(ctx), ed = ctx.$(".ps-ed"), pad = ctx.$(".ps-pad");
+        const PRESETS = [["打擊", [0.002, 0.25, 0, 0.12]], ["撥弦", [0.005, 0.7, 0.15, 0.5]], ["風琴", [0.01, 0.05, 1, 0.05]], ["弦樂 Pad", [0.6, 0.5, 0.7, 1.4]]];
+        const TYPES = [["sine", "正弦波"], ["triangle", "三角波"], ["sawtooth", "鋸齒波"], ["square", "方波"]];
+        // RMS of each full-scale waveform, used to express the measured level as a fraction of the envelope.
+        const RMS1 = { sine: 0.7071, triangle: 0.5774, sawtooth: 0.5774, square: 1 };
+        const F0 = 220, HOLD = 0.4, TMAX = 8, GAIN = 0.35;
+        const E = { a: 0.005, d: 0.7, s: 0.15, r: 0.5 };
+        let au = null, type = 0, on = false, onAt = 0, offAt = -1e9, auto = false, nextOn = 0, autoOff = 0, drag = -1, lvN = 0;
+        const hist = new Float32Array(240);
+        let hi = 0;
+        const build = () => {
+          if (au) return au;
+          const ac = audio();
+          const osc = R.add(new p5.Oscillator(F0, TYPES[type][0]));
+          osc.amp(GAIN, 0.01);
+          const env = R.add(new p5.Envelope(E.a, E.d, E.s, E.r));
+          osc.disconnect(); osc.connect(env);
+          // Amplitude.setInput() fails for p5 sources in 0.4.1, so the source connects into the meter instead.
+          const amp = R.add(new p5.Amplitude());
+          env.connect(amp);
+          const fft = R.add(new p5.FFT(2048));
+          fft.setInput(env);
+          osc.start();
+          au = { osc, env, amp, fft, sr: ac.sampleRate };
+          return au;
+        };
+        const applyE = () => { if (au) au.env.setADSR(E.a, E.d, E.s, E.r); };
+        const noteOn = () => { build(); au.env.triggerAttack(); on = true; onAt = performance.now(); };
+        const noteOff = () => { if (!on) return; au.env.triggerRelease(); on = false; offAt = performance.now(); };
+        const autoBtn = ctx.button("▶ 自動示範", () => {
+          auto = !auto; autoBtn.textContent = auto ? "■ 停止" : "▶ 自動示範";
+          if (auto) { build(); nextOn = 0; } else noteOff();
+        }, { primary: true });
+        ctx.group(TYPES.map((t) => t[1]), 0, (i) => { type = i; if (au) au.osc.setType(TYPES[i][0]); });
+        const presets = ctx.group(PRESETS.map((x) => x[0]), 1, (i) => { [E.a, E.d, E.s, E.r] = PRESETS[i][1]; applyE(); });
+        ctx.on(pad, "pointerdown", (e) => {
+          pad.setPointerCapture(e.pointerId); pad.classList.add("on");
+          if (auto) { auto = false; autoBtn.textContent = "▶ 自動示範"; noteOff(); }
+          noteOn();
+        });
+        const release = () => { pad.classList.remove("on"); noteOff(); };
+        ctx.on(pad, "pointerup", release); ctx.on(pad, "pointercancel", release);
 
-  // Pitch columns with a vertical brightness ramp (top = open filter)
-  for (let c = 0; c < NOTES.length; c++) {
-    const active = (held || autoOn) && c === cur.col;
-    const grad = drawingContext.createLinearGradient(0, 0, 0, H);
-    grad.addColorStop(0, `hsla(${200 + c * 9}, 85%, 62%, ${c % 2 ? 0.17 : 0.13})`);
-    grad.addColorStop(1, `hsla(${200 + c * 9}, 85%, 62%, 0.02)`);
-    drawingContext.save();   // keep p5's cached fill state intact
-    drawingContext.fillStyle = grad;
-    drawingContext.fillRect(c * cw, 0, cw - 1, H);
-    drawingContext.restore();
-    if (active) {
-      const col = colColor(c);
-      col.setAlpha(46);
-      fill(col);
-      rect(c * cw, 0, cw, H);
-    }
-    fill(active ? 240 : 120);
-    textSize(Math.min(12, cw * 0.42));
-    textAlign(CENTER, BOTTOM);
-    text(NOTES[c], c * cw + cw / 2, H - 44);
-  }
+        // Envelope editor on a square-root time axis, so 2 ms and 2 s attacks both stay visible.
+        const G = { L: 40, R: 14, T: 30, B: 24, w: 1, h: 1 };
+        const tx = (t) => G.L + Math.sqrt(clamp(t, 0, TMAX) / TMAX) * G.w;
+        const ty = (v) => G.T + (1 - v) * G.h;
+        const tOf = (x) => Math.pow(clamp((x - G.L) / G.w, 0, 1), 2) * TMAX;
+        const handles = () => [[tx(E.a), ty(1)], [tx(E.a + E.d), ty(E.s)], [tx(E.a + E.d + HOLD + E.r), ty(0)]];
+        ctx.on(ed, "pointerdown", (e) => {
+          const [x, y] = local(ed, e);
+          let best = 22;
+          drag = -1;
+          handles().forEach(([hx, hy], i) => { const d = Math.hypot(hx - x, hy - y); if (d < best) { best = d; drag = i; } });
+          if (drag >= 0) { ed.setPointerCapture(e.pointerId); presets.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", "false")); }
+        });
+        ctx.on(ed, "pointermove", (e) => {
+          if (drag < 0) return;
+          const [x, y] = local(ed, e), t = tOf(x);
+          if (drag === 0) E.a = clamp(t, 0.001, 2);
+          else if (drag === 1) { E.d = clamp(t - E.a, 0.005, 2); E.s = clamp(1 - (y - G.T) / G.h, 0, 1); }
+          else E.r = clamp(t - (E.a + E.d + HOLD), 0.01, 3);
+          applyE();
+        });
+        const endDrag = () => { drag = -1; };
+        ctx.on(ed, "pointerup", endDrag); ctx.on(ed, "pointercancel", endDrag);
+        const shape = (t) => {   // drawn curve: linear attack, exponential decay and release (Tone's defaults)
+          if (t <= E.a) return t / E.a;
+          if (t <= E.a + E.d) return E.s + (1 - E.s) * Math.exp((-5 * (t - E.a)) / E.d);
+          if (t <= E.a + E.d + HOLD) return E.s;
+          return E.s * Math.exp((-5 * (t - E.a - E.d - HOLD)) / E.r);
+        };
 
-  // Spectrum + waveform (live audio) or an idle preview wave
-  const live = au && (held || autoOn || ripples.length);
-  if (au) {
-    const spec = au.fft.analyze();
-    const n = spec.length;
-    for (let i = 1; i < n; i++) {
-      const x0 = (Math.log(i) / Math.log(n)) * W;
-      const x1 = (Math.log(i + 1) / Math.log(n)) * W;
-      const db = 20 * Math.log10(spec[i] + 1e-9);
-      const v = constrain(map(db, -95, -15, 0, 1), 0, 1);
-      if (v <= 0.01) continue;
-      fill(`hsla(${190 + (i / n) * 140}, 90%, 60%, 0.55)`);
-      rect(x0, H - 60 - v * H * 0.45, Math.max(1, x1 - x0 - 1), v * H * 0.45);
-    }
-  }
-  noFill();
-  strokeWeight(3);
-  const wave = au ? au.fft.waveform() : null;
-  const mid = H * 0.42;
-  for (const glow of [[247, 223, 30, 40, 9], [247, 223, 30, 230, 2.5]]) {
-    stroke(glow[0], glow[1], glow[2], glow[3]);
-    strokeWeight(glow[4]);
-    beginShape();
-    for (let x = 0; x <= W; x += 4) {
-      let v;
-      if (wave && live) v = wave[Math.floor((x / W) * (wave.length - 1))] * 0.9;
-      else v = 0.12 * Math.sin(x * 0.018 + millis() * 0.002) * Math.sin(x * 0.004 + millis() * 0.0007);
-      vertex(x, mid + v * H * 0.28);
-    }
-    endShape();
-  }
+        sketch(ctx, ed, (p, g, w, hh) => {
+          const now = performance.now();
+          if (auto) {
+            if (!on && now >= nextOn) { noteOn(); autoOff = now + (E.a + E.d + 0.35) * 1000; }
+            else if (on && now >= autoOff) { noteOff(); nextOn = now + (E.r + 0.45) * 1000; }
+          }
+          if (au) {
+            const lv = au.amp.getLevel();
+            lvN = lv / (RMS1[TYPES[type][0]] * GAIN);
+            hist[hi] = lvN; hi = (hi + 1) % hist.length;
+          }
+          G.w = w - G.L - G.R; G.h = hh - G.T - G.B;
+          g.clearRect(0, 0, w, hh);
+          for (const t of [0.01, 0.1, 0.5, 1, 2, 4]) {
+            const x = tx(t);
+            g.fillStyle = "rgba(255,255,255,.06)"; g.fillRect(x, G.T, 1, G.h);
+            txt(g, t < 1 ? `${t * 1000} ms` : `${t} s`, x + 3, hh - 18, "#5d636e", true, "left", 9.5);
+          }
+          for (const v of [0, 0.5, 1]) { g.fillStyle = "rgba(255,255,255,.06)"; g.fillRect(G.L, ty(v), G.w, 1); txt(g, v.toFixed(1), G.L - 6, ty(v) - 6, "#5d636e", true, "right", 9.5); }
+          const end = E.a + E.d + HOLD + E.r;
+          g.beginPath(); g.moveTo(tx(0), ty(0));
+          for (let i = 1; i <= 240; i++) { const t = (i / 240) * end; g.lineTo(tx(t), ty(shape(t))); }
+          g.lineTo(tx(end), ty(0)); g.closePath();
+          g.fillStyle = "rgba(247,223,30,.12)"; g.fill();
+          g.strokeStyle = "#f7df1e"; g.lineWidth = 2; g.stroke();
+          g.save(); g.setLineDash([3, 4]); g.strokeStyle = "rgba(255,255,255,.25)";
+          g.beginPath(); g.moveTo(tx(E.a + E.d), G.T); g.lineTo(tx(E.a + E.d), G.T + G.h); g.moveTo(tx(E.a + E.d + HOLD), G.T); g.lineTo(tx(E.a + E.d + HOLD), G.T + G.h); g.stroke(); g.restore();
+          txt(g, "按住", (tx(E.a + E.d) + tx(E.a + E.d + HOLD)) / 2, G.T + 2, "#7d8490", false, "center", 10);
+          const labels = [`A ${E.a < 1 ? Math.round(E.a * 1000) + " ms" : E.a.toFixed(2) + " s"}`, `D ${E.d < 1 ? Math.round(E.d * 1000) + " ms" : E.d.toFixed(2) + " s"}・S ${E.s.toFixed(2)}`, `R ${E.r < 1 ? Math.round(E.r * 1000) + " ms" : E.r.toFixed(2) + " s"}`];
+          handles().forEach(([x, y], i) => {
+            g.fillStyle = drag === i ? "#f72585" : "#0b0d11"; g.strokeStyle = "#f7df1e"; g.lineWidth = 2;
+            g.beginPath(); g.arc(x, y, 6, 0, Math.PI * 2); g.fill(); g.stroke();
+            // A: right of the handle; D/S: above-left, clear of the hold span; R: above, flipped near the edge
+            const left = i === 1 ? x > G.L + 120 : x > w - 110;
+            txt(g, labels[i], left ? x - 9 : x + 9, i === 0 ? y + 6 : y - 18, "#e8e6e3", true, left ? "right" : "left", 10.5);
+          });
+          // Measured level placed on the time axis of the note that is playing.
+          const since = (now - offAt) / 1000;
+          if (au && (on || since < E.r + 0.4)) {
+            const t = on ? Math.min((now - onAt) / 1000, E.a + E.d + HOLD) : E.a + E.d + HOLD + since;
+            g.fillStyle = "#f72585"; g.beginPath(); g.arc(tx(t), ty(clamp(lvN, 0, 1.1)), 5, 0, Math.PI * 2); g.fill();
+          }
+          txt(g, "Envelope.setADSR(a, d, s, r)", 12, 9, "#e8e6e3", true, "left", 11.5);
+          if (w >= 520) txt(g, "拖曳控制點・粉紅點＝實測音量", w - 12, 10, "#7d8490", false, "right", 10.5);
+        });
 
-  // Ripples on note changes
-  noFill();
-  ripples = ripples.filter((r) => millis() - r.t < 900);
-  for (const r of ripples) {
-    const k = (millis() - r.t) / 900;
-    const c = color(r.c);
-    c.setAlpha(255 * (1 - k));
-    stroke(c);
-    strokeWeight(2);
-    circle(r.x, r.y, 20 + k * 140);
-  }
+        const ideal = (t, x) => { x -= Math.floor(x); return t === "sine" ? Math.sin(2 * Math.PI * x) : t === "triangle" ? 1 - 4 * Math.abs(x - 0.5) : t === "sawtooth" ? 2 * x - 1 : x < 0.5 ? 1 : -1; };
+        sketch(ctx, ctx.$(".ps-mon"), (p, g, w, hh) => {
+          g.clearRect(0, 0, w, hh);
+          const lw = Math.floor(w * 0.56), y0 = 26, ph = hh - y0 - 10, ty2 = (v) => y0 + (1 - clamp(v, 0, 1.1) / 1.1) * ph;
+          // Level history, newest on the right
+          lane(g, 10, y0, lw - 20, ph);
+          g.save(); g.setLineDash([3, 4]); g.strokeStyle = "rgba(247,223,30,.5)"; g.beginPath(); g.moveTo(10, ty2(E.s)); g.lineTo(lw - 10, ty2(E.s)); g.stroke(); g.restore();
+          g.beginPath(); g.moveTo(10, ty2(0));
+          for (let i = 0; i < hist.length; i++) g.lineTo(10 + (i / (hist.length - 1)) * (lw - 20), ty2(hist[(hi + i) % hist.length]));
+          g.lineTo(lw - 10, ty2(0)); g.closePath();
+          g.fillStyle = "rgba(247,37,133,.22)"; g.fill(); g.strokeStyle = "#f72585"; g.lineWidth = 1.5; g.stroke();
+          txt(g, "實測音量（最近 4 秒）", 12, 7, "#e8e6e3", false, "left", 11);
+          txt(g, `S ${E.s.toFixed(2)}`, lw - 12, ty2(E.s) - 14, "#f7df1e", true, "right", 10);
+          // Waveform and harmonics
+          const rx = lw + 4, rw = w - rx - 10, wh = Math.floor(ph * 0.55), t = TYPES[type][0];
+          lane(g, rx, y0, rw, wh);
+          if (au && lvN > 0.02) {
+            const wv = au.fft.waveform(), span = Math.round((3 * au.sr) / F0);
+            let s0 = 1;
+            while (s0 < wv.length - span - 1 && !(wv[s0 - 1] < 0 && wv[s0] >= 0)) s0++;
+            drawLive(g, wv, rx, y0, rw, wh, "#4cc9f0", 1 / (GAIN * 1.15), s0, Math.min(span, wv.length - s0));
+            txt(g, `${TYPES[type][1]}・3 個週期`, rx, 7, "#e8e6e3", false, "left", 11);
+          } else {
+            g.strokeStyle = "rgba(76,201,240,.45)"; g.lineWidth = 1.4; g.beginPath();
+            for (let i = 0; i <= rw; i += 2) { const y = y0 + wh / 2 - ideal(t, (i / rw) * 3) * wh * 0.42; if (i) g.lineTo(rx + i, y); else g.moveTo(rx, y); }
+            g.stroke();
+            txt(g, rw >= 220 ? `${TYPES[type][1]}・理想形狀（尚未發聲）` : `${TYPES[type][1]}・理想形狀`, rx, 7, "#7d8490", false, "left", 11);
+          }
+          const by = y0 + wh + 8, bh = ph - wh - 8 - 14, bw = rw / 12;
+          lane(g, rx, by, rw, bh);
+          if (au) {
+            const sp = au.fft.analyze(), binHz = au.sr / 2 / sp.length;
+            for (let k = 1; k <= 12; k++) {
+              const b = Math.round((k * F0) / binHz);
+              const m = Math.max(sp[b - 1] || 0, sp[b], sp[b + 1] || 0), v = clamp((toDb(m) + 100) / 80, 0, 1);
+              g.fillStyle = `hsl(${190 + k * 10}, 80%, 60%)`; g.fillRect(rx + (k - 1) * bw + 1, by + bh * (1 - v), bw - 2, bh * v);
+            }
+          }
+          for (let k = 1; k <= 12; k += k < 4 ? 1 : 4) txt(g, `${k}`, rx + (k - 0.5) * bw, by + bh + 2, "#5d636e", true, "center", 9);
+          if (!au) txt(g, rw >= 200 ? "按住發聲後顯示第 1～12 諧波" : "發聲後顯示諧波", rx + rw / 2, by + bh / 2 - 6, "#5d636e", false, "center", 10.5);
+        });
+      },
+    },
+    {
+      id: "filter", title: "噪音與濾波器",
+      api: "new p5.Noise(type)・amp()・new p5.Biquad(freq, type)・setType()・freq()・res()",
+      desc: "p5.Noise 產生白、粉紅、棕三種噪音，經過 p5.Biquad 濾波器（LowPass、HighPass、BandPass 都是它的子類別）。灰色是濾波前、彩色是濾波後的實測頻譜，黃線是同參數 BiquadFilterNode 的理論響應。",
+      hint: "按「▶ 播放噪音」；在畫面上拖曳：左右調截止頻率，上下調共振 res（Q）。",
+      mount(ctx) {
+        ctx.html(`<div class="board ps-one"><div class="ps-card ps-cv ps-flt"></div></div>`);
+        const R = rack(ctx), el = ctx.$(".ps-flt");
+        const TYPES = [["lowpass", "低通"], ["highpass", "高通"], ["bandpass", "帶通"], ["notch", "陷波"]];
+        const NOISES = [["white", "白噪音"], ["pink", "粉紅噪音"], ["brown", "棕噪音"]];
+        const F = { type: 0, noise: 1, freq: 1200, q: 4 }, LO = 30, HI = 18000, NR = 240;
+        const freqs = new Float32Array(NR), mag = new Float32Array(NR), phs = new Float32Array(NR);
+        for (let i = 0; i < NR; i++) freqs[i] = LO * Math.pow(HI / LO, i / (NR - 1));
+        let au = null, playing = false, drag = false, bq = null, dirty = true;
+        const G = { L: 44, R: 46, T: 34, B: 22, w: 1, h: 1 };
+        const yOfQ = (q) => G.T + (1 - Math.log(q / 0.5) / Math.log(30)) * G.h;
+        const build = () => {
+          if (au) return au;
+          const ac = audio();
+          const noise = R.add(new p5.Noise(NOISES[F.noise][0]));
+          noise.amp(0.25, 0.01);
+          const filt = R.add(new p5.Biquad(F.freq, TYPES[F.type][0]));
+          filt.res(F.q);
+          noise.disconnect(); noise.connect(filt);
+          const fin = R.add(new p5.FFT(2048)), fout = R.add(new p5.FFT(2048));
+          fin.setInput(noise); fout.setInput(filt);
+          au = { noise, filt, fin, fout, sr: ac.sampleRate };
+          bq = null; dirty = true;
+          return au;
+        };
+        const playBtn = ctx.button("▶ 播放噪音", () => {
+          build();
+          playing = !playing;
+          if (playing) au.noise.start(); else au.noise.stop();
+          playBtn.textContent = playing ? "■ 停止" : "▶ 播放噪音";
+        }, { primary: true });
+        ctx.group(NOISES.map((x) => x[1]), F.noise, (i) => { F.noise = i; if (au) au.noise.type(NOISES[i][0]); });
+        ctx.group(TYPES.map((x) => x[1]), F.type, (i) => { F.type = i; dirty = true; if (au) au.filt.setType(TYPES[i][0]); });
+        const set = (e) => {
+          const [x, y] = local(el, e);
+          F.freq = LO * Math.pow(HI / LO, clamp((x - G.L) / G.w, 0, 1));
+          F.q = 0.5 * Math.pow(30, clamp(1 - (y - G.T) / G.h, 0, 1));
+          dirty = true;
+          if (au) { au.filt.freq(F.freq); au.filt.res(F.q); }
+        };
+        ctx.on(el, "pointerdown", (e) => { el.setPointerCapture(e.pointerId); drag = true; set(e); });
+        ctx.on(el, "pointermove", (e) => { if (drag) set(e); });
+        const end = () => { drag = false; };
+        ctx.on(el, "pointerup", end); ctx.on(el, "pointercancel", end);
+        sketch(ctx, el, (p, g, w, hh) => {
+          G.T = w < 600 ? 50 : 34; G.w = w - G.L - G.R; G.h = hh - G.T - G.B;
+          if (dirty) {
+            // Theoretical curve from a native BiquadFilterNode with the same settings (an offline context makes no sound).
+            if (!bq) bq = new OfflineAudioContext(1, 1, au ? au.sr : 48000).createBiquadFilter();
+            bq.type = TYPES[F.type][0]; bq.frequency.value = F.freq; bq.Q.value = F.q;
+            bq.getFrequencyResponse(freqs, mag, phs);
+            dirty = false;
+          }
+          g.clearRect(0, 0, w, hh);
+          lane(g, G.L, G.T, G.w, G.h);
+          freqGrid(g, G.L, G.T, G.w, G.h, LO, HI);
+          const DBL = -110, DBH = -30, RT = 24, RB = -48, yr = (db) => G.T + ((RT - clamp(db, RB, RT)) / (RT - RB)) * G.h;
+          for (const db of [-40, -60, -80, -100]) txt(g, `${db}`, G.L - 6, G.T + ((DBH - db) / (DBH - DBL)) * G.h - 6, "#5d636e", true, "right", 9.5);
+          for (const db of [12, 0, -24]) { txt(g, `${db > 0 ? "+" : ""}${db}`, G.L + G.w + 6, yr(db) - 6, "#8a7a20", true, "left", 9.5); }
+          g.fillStyle = "rgba(247,223,30,.12)"; g.fillRect(G.L, yr(0), G.w, 1);
+          if (au && playing) {
+            const n = Math.max(32, Math.floor(G.w / 3));
+            drawBands(g, specBands(au.fin.analyze(), au.sr, n, LO, HI, DBL, DBH), G.L, G.T, G.w, G.h, 0, 0, 0.18);
+            drawBands(g, specBands(au.fout.analyze(), au.sr, n, LO, HI, DBL, DBH), G.L, G.T, G.w, G.h, 190, 150, 0.85);
+          }
+          g.strokeStyle = "#f7df1e"; g.lineWidth = 2; g.beginPath();
+          for (let i = 0; i < NR; i++) { const x = fx(freqs[i], G.L, G.w, LO, HI), y = yr(toDb(mag[i])); if (i) g.lineTo(x, y); else g.moveTo(x, y); }
+          g.stroke();
+          const hx = fx(F.freq, G.L, G.w, LO, HI), hy = yOfQ(F.q);
+          g.fillStyle = drag ? "#f72585" : "#0b0d11"; g.strokeStyle = "#f7df1e"; g.lineWidth = 2;
+          g.beginPath(); g.arc(hx, hy, 7, 0, Math.PI * 2); g.fill(); g.stroke();
+          const right = hx > w - 150;
+          txt(g, `freq ${fmtHz(F.freq)}・res ${F.q.toFixed(1)}`, right ? hx - 12 : hx + 12, hy - 6, "#e8e6e3", true, right ? "right" : "left", 11);
+          txt(g, `${NOISES[F.noise][1]} → Biquad「${TYPES[F.type][0]}」`, 12, 10, "#e8e6e3", false, "left", 12);
+          if (w < 600) txt(g, "灰＝濾波前・彩＝濾波後・黃線＝理論響應（右軸）", 12, 28, "#7d8490", false, "left", 10);
+          else txt(g, "灰＝濾波前・彩＝濾波後（左軸 dB）・黃線＝理論響應（右軸 dB）", w - 12, 11, "#7d8490", false, "right", 10.5);
+          if (!playing) txt(g, au ? "已停止：按「▶ 播放噪音」繼續" : "按「▶ 播放噪音」讓噪音通過濾波器，拖曳黃點改參數", G.L + G.w / 2, G.T + G.h * 0.72, "#9aa0aa", false, "center", 13);
+        });
+      },
+    },
+    {
+      id: "space", title: "延遲與殘響",
+      api: "p5.Delay.delayTime()・feedback()・wet()・p5.Reverb.set(decay)・wet()",
+      desc: "短促的撥弦音經過 p5.Delay 再進 p5.Reverb。左圖從撥奏那一刻開始畫 4 秒的實測音量（dB），黃色刻度是依延遲時間與回授算出的理論回聲位置，實測的回聲峰應該落在刻度上；殘響則把峰與峰之間填滿。",
+      hint: "按「撥一下」或點左圖撥奏，「▶ 自動撥奏」每 2.4 秒一次；右側滑桿即時改延遲與殘響。",
+      mount(ctx) {
+        const SL = [
+          ["p5.Delay", "delayTime・feedback・wet"],
+          ["time", "延遲時間", 0.05, 1, 0.01, 0.3, (v) => `${Math.round(v * 1000)} ms`],
+          ["fb", "回授", 0, 0.9, 0.01, 0.45, (v) => v.toFixed(2)],
+          ["dwet", "濕訊號", 0, 1, 0.01, 0.6, (v) => `${Math.round(v * 100)}%`],
+          ["p5.Reverb", "set(decay)・wet"],
+          ["decay", "殘響長度", 0.5, 10, 0.1, 3, (v) => `${v.toFixed(1)} s`],
+          ["rwet", "濕訊號", 0, 1, 0.01, 0.3, (v) => `${Math.round(v * 100)}%`],
+        ];
+        ctx.html(`<div class="board ps-dl"><div class="ps-card ps-cv ps-tl"></div><div class="ps-card ps-side">${SL.map((s) => s.length === 2
+          ? `<div class="ps-h">${s[0]}<small>${s[1]}</small></div>`
+          : `<label class="ps-row"><span>${s[1]}</span><input class="ps-rng" type="range" min="${s[2]}" max="${s[3]}" step="${s[4]}" value="${s[5]}" data-k="${s[0]}"><output>${s[6](s[5])}</output></label>`).join("")}</div></div>`);
+        const R = rack(ctx), el = ctx.$(".ps-tl"), V = {};
+        SL.filter((s) => s.length > 2).forEach((s) => (V[s[0]] = s[5]));
+        const PL = ["E4", "G4", "A4", "C5", "D5", "E5", "D5", "A4"];
+        let au = null, auto = false, nextAt = 0, pl = 0, tp = -1e9, ref = 1e-4, trace = [], decT = 0;
+        const build = () => {
+          if (au) return au;
+          const ac = audio();
+          const osc = R.add(new p5.Oscillator(hz("E4"), "triangle"));
+          const env = R.add(new p5.Envelope(0.002, 0.16, 0, 0.12));
+          const dly = R.add(new p5.Delay(V.time, V.fb)), verb = R.add(new p5.Reverb(V.decay));
+          dly.wet(V.dwet); verb.wet(V.rwet);
+          osc.disconnect(); osc.connect(env);
+          env.disconnect(); env.connect(dly);
+          dly.disconnect(); dly.connect(verb);
+          const amp = R.add(new p5.Amplitude()), fft = R.add(new p5.FFT(1024));
+          verb.connect(amp); fft.setInput(verb);
+          osc.start();
+          au = { osc, env, dly, verb, amp, fft, sr: ac.sampleRate };
+          return au;
+        };
+        const pluck = () => {
+          build();
+          au.osc.freq(hz(PL[pl++ % PL.length]));
+          au.env.triggerAttack();
+          ctx.timeout(() => au.env.triggerRelease(), 40);
+          tp = performance.now(); trace = []; ref = 1e-4;
+        };
+        const apply = {
+          time: (v) => au.dly.delayTime(v), fb: (v) => au.dly.feedback(v), dwet: (v) => au.dly.wet(v), rwet: (v) => au.verb.wet(v),
+          // Reverb.set() regenerates the impulse response, so slider drags are coalesced.
+          decay: (v) => { clearTimeout(decT); decT = setTimeout(() => ctx.active && au.verb.set(v), 200); },
+        };
+        ctx.onCleanup(() => clearTimeout(decT));
+        ctx.$$(".ps-rng").forEach((inp) => ctx.on(inp, "input", () => {
+          const k = inp.dataset.k, v = +inp.value, s = SL.find((x) => x[0] === k);
+          V[k] = v; inp.nextElementSibling.textContent = s[6](v);
+          if (au) apply[k](v);
+        }));
+        ctx.button("撥一下", pluck, { primary: true });
+        const autoBtn = ctx.button("▶ 自動撥奏", () => { auto = !auto; autoBtn.textContent = auto ? "■ 停止" : "▶ 自動撥奏"; nextAt = 0; });
+        ctx.on(el, "pointerdown", pluck);
+        sketch(ctx, el, (p, g, w, hh) => {
+          const now = performance.now();
+          if (auto && now >= nextAt) { pluck(); nextAt = now + 2400; }
+          const el2 = (now - tp) / 1000;
+          if (au && el2 < 4) {
+            const lv = au.amp.getLevel();
+            if (el2 < 0.25) ref = Math.max(ref, lv);
+            trace.push([el2, lv]);
+          }
+          g.clearRect(0, 0, w, hh);
+          const L = 40, T = 30, pw = w - L - 12, ph = Math.floor((hh - T) * 0.66) - 18, xt = (t) => L + (t / 4) * pw, yd = (db) => T + (clamp(-db, 0, 48) / 48) * ph;
+          lane(g, L, T, pw, ph);
+          for (const db of [0, -12, -24, -36, -48]) { g.fillStyle = "rgba(255,255,255,.05)"; g.fillRect(L, yd(db), pw, 1); txt(g, `${db}`, L - 6, yd(db) - 6, "#5d636e", true, "right", 9.5); }
+          for (let s = 1; s < 4; s++) txt(g, `${s} s`, xt(s), T + ph + 3, "#5d636e", true, "center", 9.5);
+          // Theory: dry hit at 0, then echoes every delayTime, each feedback times the previous one.
+          const taps = [[0, 1 - V.dwet]];
+          for (let k = 1; k * V.time < 4 && k < 40; k++) taps.push([k * V.time, V.dwet * Math.pow(V.fb, k - 1)]);
+          const tmax = Math.max(...taps.map((x) => x[1]), 1e-6);
+          for (const [t, a] of taps) {
+            if (a <= 0) continue;
+            const x = xt(t), y = yd(toDb(a / tmax));
+            g.fillStyle = "rgba(247,223,30,.35)"; g.fillRect(x - 0.5, y, 1.5, T + ph - y);
+            g.fillStyle = "#f7df1e"; g.beginPath(); g.moveTo(x - 4, y - 5); g.lineTo(x + 4, y - 5); g.lineTo(x, y); g.closePath(); g.fill();
+          }
+          if (trace.length > 1) {
+            let mx = 1e-6;
+            for (const [, lv] of trace) mx = Math.max(mx, lv);
+            g.strokeStyle = "#f72585"; g.lineWidth = 1.6; g.beginPath();
+            trace.forEach(([t, lv], i) => { const x = xt(t), y = yd(toDb(lv / mx)); if (i) g.lineTo(x, y); else g.moveTo(x, y); });
+            g.stroke();
+          }
+          txt(g, w < 640 ? "實測音量（dB）" : "撥奏後 4 秒的音量（實測，dB）", 12, 9, "#e8e6e3", false, "left", 11.5);
+          txt(g, w < 640 ? `理論回聲 ${Math.round(V.time * 1000)} ms・×${V.fb.toFixed(2)}` : `理論回聲：每 ${Math.round(V.time * 1000)} ms・每次 ×${V.fb.toFixed(2)}`, w - 12, 10, "#f7df1e", false, "right", 10.5);
+          if (!au) txt(g, "按「撥一下」或點這裡撥奏", L + pw / 2, T + ph * 0.55, "#9aa0aa", false, "center", 13);
+          const by = T + ph + 22, bh = hh - by - 8;
+          lane(g, L, by, pw, bh);
+          if (au) drawBands(g, specBands(au.fft.analyze(), au.sr, Math.max(24, Math.floor(pw / 4)), 60, 12000), L, by, pw, bh);
+          txt(g, "頻譜", 12, by + 2, "#7d8490", false, "left", 10.5);
+        });
+      },
+    },
+    {
+      id: "file", title: "音檔播放",
+      api: "loadSound()・SoundFile.play／pause／stop・loop()・loopPoints()・jump()・rate()・onended()",
+      desc: "loadSound() 在 p5 2.x 回傳 Promise，取得 p5.SoundFile 後可播放、暫停、跳轉、循環與變速。上方波形來自 OfflineAudioContext 解碼的同一個檔案，下方是 p5.FFT 頻譜與 p5.Amplitude 音量。",
+      hint: "按「▶ 播放」；點波形跳到該位置，拖曳一段設成循環區段（loopPoints），雙擊清除；滑桿改速度。",
+      mount(ctx) {
+        ctx.html(`<div class="board ps-fp">
+          <div class="ps-lbl"><span><b>loop.mp3</b>　<span class="ps-m ps-meta">解碼中…</span></span><span class="ps-m ps-time">0:00.0 / 0:00.0</span></div>
+          <div class="ps-card ps-cv ps-wave"></div>
+          <div class="ps-card ps-cv ps-an"></div></div>`);
+        const R = rack(ctx), wave = ctx.$(".ps-wave"), meta = ctx.$(".ps-meta"), timeEl = ctx.$(".ps-time");
+        let A = null, sf = null, au = null, st = "idle", pos = 0, rate = 1, loopOn = true, region = null, sel = null, lastAc = 0, peakHold = 0;
+        decodeLoop().then((a) => { if (!ctx.active) return; A = a; meta.textContent = `${a.dur.toFixed(1)} s・${a.ch} 聲道・${(a.sr / 1000).toFixed(1)} kHz`; }).catch(fail(ctx, "音檔解碼"));
+        const dur = () => (sf ? sf.duration() : A ? A.dur : 1);
+        const loopA = () => (region ? region[0] : 0), loopB = () => (region ? region[1] : dur());
+        const ensure = async () => {
+          if (sf) return sf;
+          st = "loading"; playBtn.textContent = "載入中…";
+          const ac = audio();
+          sf = await loadLoop(ctx, R);
+          const fft = R.add(new p5.FFT(1024)), amp = R.add(new p5.Amplitude());
+          fft.setInput(sf); sf.connect(amp);
+          sf.amp(0.8, 0.01);
+          sf.loop(loopOn); sf.rate(rate);
+          if (region) sf.loopPoints(region[0], region[1] - region[0]);
+          // onended() fires for every source that stops, including the old one replaced by jump(), before the
+          // player state updates, so the state is read a moment later.
+          sf.onended(() => ctx.timeout(() => { if (st === "playing" && sf.node.state === "stopped") { st = "stopped"; pos = 0; playBtn.textContent = "▶ 播放"; } }, 30));
+          au = { fft, amp, ac, sr: ac.sampleRate };
+          return sf;
+        };
+        const play = async () => {
+          if (st === "loading") return;
+          if (st === "playing") { sf.pause(); st = "paused"; playBtn.textContent = "▶ 繼續"; return; }
+          await ensure();
+          if (!ctx.active) return;
+          const resume = st === "paused";
+          sf.play();
+          if (!resume && pos > 0.02) sf.jump(pos);
+          st = "playing"; lastAc = au.ac.currentTime; playBtn.textContent = "❚❚ 暫停";
+        };
+        const playBtn = ctx.button("▶ 播放", () => play().catch((e) => { st = "idle"; playBtn.textContent = "▶ 播放"; fail(ctx, "載入")(e); }), { primary: true });
+        ctx.button("■ 停止", () => {
+          if (!sf || st === "idle" || st === "loading") return;
+          // stop() leaves the paused flag set in 0.4.1, which would keep the next play() from starting.
+          sf.stop(); sf.paused = false; st = "stopped"; pos = loopA(); playBtn.textContent = "▶ 播放";
+        });
+        const loopBtn = ctx.toggle("循環", true, (v) => { loopOn = v; if (sf) sf.loop(v); });
+        ctx.slider("速度", { min: 0.25, max: 2, step: 0.05, value: 1, format: (v) => `${v.toFixed(2)}×` }, (v) => {
+          rate = v;
+          if (!sf) return;
+          sf.rate(v);
+          if (st === "paused") sf.pause();   // rate() also sets playbackRate, which would resume a paused file
+        });
+        const tAt = (x, w) => clamp((x - 10) / (w - 20), 0, 1) * dur();
+        ctx.on(wave, "pointerdown", (e) => { wave.setPointerCapture(e.pointerId); const [x] = local(wave, e); sel = [x, x]; });
+        ctx.on(wave, "pointermove", (e) => { if (sel) sel[1] = local(wave, e)[0]; });
+        ctx.on(wave, "pointerup", (e) => {
+          if (!sel) return;
+          const w = wave.clientWidth, a = tAt(Math.min(...sel), w), b = tAt(Math.max(...sel), w);
+          sel = null;
+          if (b - a > 0.25) {
+            region = [a, b];
+            if (!loopOn) { loopOn = true; loopBtn.setAttribute("aria-pressed", "true"); }
+            if (sf) { sf.loopPoints(a, b - a); sf.loop(true); }
+            pos = a;
+          } else pos = tAt(local(wave, e)[0], w);
+          if (sf && (st === "playing" || st === "paused")) sf.jump(pos);
+        });
+        ctx.on(wave, "pointercancel", () => { sel = null; });
+        ctx.on(wave, "dblclick", () => { region = null; if (sf) sf.loopPoints(0, sf.duration()); });
 
-  // Cursor eases toward the active voice
-  cur.x = lerp(cur.x, colX(cur.col), 0.25);
-  cur.py = lerp(cur.py, (1 - cur.y) * H, 0.25);
-  if (held || autoOn) {
-    noStroke();
-    const c = colColor(cur.col);
-    c.setAlpha(70);
-    fill(c);
-    circle(cur.x, cur.py, 46);
-    fill(255);
-    circle(cur.x, cur.py, 12);
-  }
-
-  // Readout
-  noStroke();
-  fill(236, 235, 230);
-  textAlign(LEFT, TOP);
-  textSize(15);
-  text(`${NOTES[cur.col]}  ${hz(NOTES[cur.col]).toFixed(1)} Hz`, 16, 18);
-  fill(155, 153, 143);
-  textSize(12);
-  text(`濾波截止 ${Math.round(cutoffFor(cur.y))} Hz・${WAVES[waveIdx][1]}`, 16, 40);
-  push();
-  translate(W - 14, H * 0.5);
-  rotate(-HALF_PI);
-  textAlign(CENTER, CENTER);
-  fill(155, 153, 143, 160);
-  text("越上面音色越亮 →", 0, 0);
-  pop();
-  if (!au) {
-    textAlign(CENTER, CENTER);
-    textSize(Math.min(18, W / 22));
-    fill(236, 235, 230, 150 + 60 * Math.sin(millis() / 500));
-    text("按住畫面任一處開始演奏", W / 2, H * 0.66);
-  }
-}
-
-document.getElementById("auto").addEventListener("click", (e) => {
-  if (autoOn) { stopAuto(); return; }
-  initAudio();
-  autoOn = true;
-  autoStep = 0;
-  nextAt = 0;
-  e.currentTarget.textContent = "■ 停止";
-});
-document.getElementById("wave").addEventListener("click", (e) => {
-  waveIdx = (waveIdx + 1) % WAVES.length;
-  e.currentTarget.textContent = `波形：${WAVES[waveIdx][1]}`;
-  if (au) au.osc.setType(WAVES[waveIdx][0]);
-});
-document.getElementById("echo").addEventListener("click", (e) => {
-  echoOn = !echoOn;
-  e.currentTarget.setAttribute("aria-pressed", echoOn);
-  if (au) au.echo.output.gain.value = echoOn ? 0.4 : 0;
+        sketch(ctx, wave, (p, g, w, hh) => {
+          // p5.sound 0.4.1 has no currentTime(): the playhead is integrated from the audio clock and the rate set here.
+          if (au && st === "playing") {
+            const t = au.ac.currentTime;
+            pos += (t - lastAc) * rate; lastAc = t;
+            if (loopOn && pos >= loopB()) pos = loopA() + ((pos - loopA()) % Math.max(0.01, loopB() - loopA()));
+            pos = Math.min(pos, dur());
+          }
+          timeEl.textContent = `${fmtT(pos)} / ${fmtT(dur())}`;
+          g.clearRect(0, 0, w, hh);
+          const x0 = 10, ww = w - 20, y0 = 22, wh = hh - y0 - 18, xp = x0 + (pos / dur()) * ww;
+          lane(g, x0, y0, ww, wh);
+          if (region) { g.fillStyle = "rgba(76,201,240,.14)"; g.fillRect(x0 + (region[0] / dur()) * ww, y0, ((region[1] - region[0]) / dur()) * ww, wh); }
+          if (sel) { g.fillStyle = "rgba(247,37,133,.18)"; g.fillRect(Math.min(...sel), y0, Math.abs(sel[1] - sel[0]), wh); }
+          if (A) drawOverview(g, A.pk, x0, y0, ww, wh, xp, "#f7df1e", "rgba(247,223,30,.35)");
+          else txt(g, "解碼中…", w / 2, y0 + wh / 2 - 7, "#7d8490", false, "center", 12);
+          g.fillStyle = "#f72585"; g.fillRect(xp - 1, y0 - 4, 2, wh + 8);
+          for (let s = 0; s < dur(); s += 5) txt(g, fmtT(s), x0 + (s / dur()) * ww + 2, y0 + wh + 3, "#5d636e", true, "left", 9.5);
+          const label = { idle: "尚未載入：按「▶ 播放」", loading: "loadSound() 載入中…", playing: `播放中 ${rate.toFixed(2)}×`, paused: "已暫停（pause 把 playbackRate 設為 0）", stopped: "已停止" }[st];
+          txt(g, label, x0, 5, st === "playing" ? "#e8e6e3" : "#9aa0aa", false, "left", 11);
+          txt(g, region ? `循環區段 ${region[0].toFixed(2)}～${region[1].toFixed(2)} s・雙擊清除` : "拖曳一段設成循環區段", w - 10, 5, "#7d8490", false, "right", 10.5);
+        });
+        sketch(ctx, ctx.$(".ps-an"), (p, g, w, hh) => {
+          g.clearRect(0, 0, w, hh);
+          const mw = 54, sw = w - mw - 30, y0 = 24, sh = hh - y0 - 18;
+          lane(g, 10, y0, sw, sh);
+          freqGrid(g, 10, y0, sw, sh, 40, 16000);
+          let lv = 0;
+          if (au) {
+            drawBands(g, specBands(au.fft.analyze(), au.sr, Math.max(24, Math.floor(sw / 5)), 40, 16000), 10, y0, sw, sh);
+            lv = au.amp.getLevel();
+          }
+          peakHold = Math.max(lv, peakHold * 0.985);
+          meter(g, w - mw, y0, 22, sh - 14, lv);
+          g.fillStyle = "#f72585"; g.fillRect(w - mw, y0 + (sh - 14) * (1 - clamp((toDb(peakHold) + 60) / 60, 0, 1)), 22, 2);
+          txt(g, fmtDb(lv), w - mw + 11, y0 + sh - 10, "#e8e6e3", true, "center", 9.5);
+          txt(g, "p5.FFT 頻譜", 12, 6, "#e8e6e3", false, "left", 11);
+          txt(g, sf ? `isPlaying() ${sf.isPlaying()}・isLooping() ${sf.isLooping()}・${sf.channels()} ch` : "Amplitude", w - 10, 7, "#7d8490", true, "right", 10);
+        });
+      },
+    },
+    {
+      id: "spatial", title: "變調與 3D 聲像",
+      api: "p5.PitchShifter.shift()・p5.Panner3D.set(x, y, z)・setFalloff(rolloff, maxDist)",
+      desc: "音樂循環先經過 p5.PitchShifter 移調（不改速度），再進 p5.Panner3D 放到 3D 空間。聽者在中央面向上方（−z），拖曳聲源改變位置；右側是左右聲道的實測音量，距離衰減依所選模型計算。",
+      hint: "按「▶ 播放」；拖曳聲源或開「自動繞圈」，HRTF 用耳機聽前後方差異最明顯；右側滑桿調移調與衰減。",
+      mount(ctx) {
+        ctx.html(`<div class="board ps-3d">
+          <div class="ps-card ps-cv ps-plane"></div>
+          <div class="ps-col">
+            <div class="ps-card ps-cv ps-lr"></div>
+            <div class="ps-card ps-side">
+              <div class="ps-h">p5.PitchShifter<small>shift(semitones)</small></div>
+              <label class="ps-row"><span>移調</span><input class="ps-rng" type="range" min="-12" max="12" step="1" value="0" data-k="shift"><output>0 半音</output></label>
+              <div class="ps-h">p5.Panner3D<small>setFalloff(rolloff, maxDist)</small></div>
+              <label class="ps-row"><span>衰減係數</span><input class="ps-rng" type="range" min="0" max="3" step="0.1" value="1" data-k="roll"><output>1.0</output></label>
+              <label class="ps-row"><span>最遠距離</span><input class="ps-rng" type="range" min="2" max="20" step="1" value="10" data-k="max"><output>10 m</output></label>
+            </div>
+          </div></div>`);
+        const R = rack(ctx), plane = ctx.$(".ps-plane");
+        const MODELS = [["inverse", "反比衰減"], ["linear", "線性衰減"], ["exponential", "指數衰減"]];
+        const S = { x: 3, z: -3 }, V = { shift: 0, roll: 1, max: 10 };
+        let sf = null, au = null, st = "idle", model = 0, hrtf = true, orbit = true, ang = Math.atan2(-3, 3), drag = false, lastT = 0;
+        const fmt = { shift: (v) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v)} 半音`, roll: (v) => v.toFixed(1), max: (v) => `${v} m` };
+        const gainAt = (d) => {
+          const ref = 1, dd = Math.max(d, ref);
+          if (model === 0) return ref / (ref + V.roll * (dd - ref));
+          if (model === 1) return 1 - (Math.min(V.roll, 1) * (Math.min(dd, V.max) - ref)) / Math.max(1e-6, V.max - ref);
+          return Math.pow(dd / ref, -V.roll);
+        };
+        const build = async () => {
+          if (sf) return;
+          st = "loading"; playBtn.textContent = "載入中…";
+          const ac = audio();
+          sf = await loadLoop(ctx, R);
+          const ps = R.add(new p5.PitchShifter(V.shift)), p3 = R.add(new p5.Panner3D());
+          p3.node.panningModel = hrtf ? "HRTF" : "equalpower";
+          p3.node.distanceModel = MODELS[model][0];
+          p3.setFalloff(V.roll, V.max);
+          p3.set(S.x, 0, S.z);
+          sf.disconnect(); sf.connect(ps);
+          ps.disconnect(); ps.connect(p3);
+          sf.loop(true); sf.amp(0.9, 0.01);
+          // Left/right meters tap the Panner3D output with native analysers.
+          const sp = ac.createChannelSplitter(2), L = ac.createAnalyser(), Rr = ac.createAnalyser();
+          L.fftSize = Rr.fftSize = 1024;
+          p3.output.connect(sp); sp.connect(L, 0); sp.connect(Rr, 1);
+          ctx.onCleanup(() => sp.disconnect());
+          au = { ps, p3, L, R: Rr, bl: new Float32Array(1024), br: new Float32Array(1024) };
+        };
+        const playBtn = ctx.button("▶ 播放", async () => {
+          if (st === "loading") return;
+          if (st === "playing") { sf.stop(); st = "stopped"; playBtn.textContent = "▶ 播放"; return; }
+          try { await build(); } catch (e) { st = "idle"; playBtn.textContent = "▶ 播放"; fail(ctx, "載入")(e); return; }
+          if (!ctx.active) return;
+          sf.play(); st = "playing"; playBtn.textContent = "■ 停止";
+        }, { primary: true });
+        const orbitBtn = ctx.toggle("自動繞圈", true, (v) => { orbit = v; ang = Math.atan2(S.z, S.x); });
+        ctx.group(["HRTF", "等功率"], 0, (i) => { hrtf = i === 0; if (au) au.p3.node.panningModel = hrtf ? "HRTF" : "equalpower"; });
+        ctx.group(MODELS.map((m) => m[1]), 0, (i) => { model = i; if (au) au.p3.node.distanceModel = MODELS[i][0]; });
+        ctx.$$(".ps-rng").forEach((inp) => ctx.on(inp, "input", () => {
+          const k = inp.dataset.k, v = +inp.value;
+          V[k] = v; inp.nextElementSibling.textContent = fmt[k](v);
+          if (!au) return;
+          if (k === "shift") au.ps.shift(v); else au.p3.setFalloff(V.roll, V.max);
+        }));
+        const G = { cx: 0, cy: 0, sc: 1 };
+        const toWorld = (e) => { const [x, y] = local(plane, e); return [clamp((x - G.cx) / G.sc, -10, 10), clamp((y - G.cy) / G.sc, -10, 10)]; };
+        ctx.on(plane, "pointerdown", (e) => {
+          plane.setPointerCapture(e.pointerId); drag = true;
+          if (orbit) { orbit = false; orbitBtn.setAttribute("aria-pressed", "false"); }
+          [S.x, S.z] = toWorld(e);
+        });
+        ctx.on(plane, "pointermove", (e) => { if (drag) [S.x, S.z] = toWorld(e); });
+        const end = () => { drag = false; };
+        ctx.on(plane, "pointerup", end); ctx.on(plane, "pointercancel", end);
+        sketch(ctx, plane, (p, g, w, hh) => {
+          const now = performance.now(), dt = lastT ? Math.min(0.1, (now - lastT) / 1000) : 0;
+          lastT = now;
+          if (orbit) { const r = Math.max(1.5, Math.hypot(S.x, S.z)); ang += dt * 0.7; S.x = Math.cos(ang) * r; S.z = Math.sin(ang) * r; }
+          if (au) au.p3.set(S.x, 0, S.z);
+          G.cx = w / 2; G.cy = hh / 2 + 6; G.sc = (Math.min(w, hh - 30) / 2 / 10) * 0.94;
+          g.clearRect(0, 0, w, hh);
+          for (const r of [1, 2, 5, 10]) {
+            g.strokeStyle = r === V.max ? "rgba(247,223,30,.35)" : "rgba(255,255,255,.08)"; g.lineWidth = 1;
+            g.beginPath(); g.arc(G.cx, G.cy, r * G.sc, 0, Math.PI * 2); g.stroke();
+            txt(g, `${r} m`, G.cx + r * G.sc * 0.707 + 3, G.cy + r * G.sc * 0.707, "#5d636e", true, "left", 9.5);
+          }
+          if (V.max !== 10 && V.max !== 5 && V.max !== 2) { g.strokeStyle = "rgba(247,223,30,.35)"; g.beginPath(); g.arc(G.cx, G.cy, V.max * G.sc, 0, Math.PI * 2); g.stroke(); }
+          g.fillStyle = "rgba(255,255,255,.08)"; g.fillRect(G.cx - 0.5, G.cy - 10 * G.sc, 1, 20 * G.sc); g.fillRect(G.cx - 10 * G.sc, G.cy - 0.5, 20 * G.sc, 1);
+          txt(g, "前方（−z）", G.cx + 6, G.cy - 10 * G.sc + 2, "#7d8490", false, "left", 10);
+          // Listener head with ears
+          g.fillStyle = "#e8e6e3"; g.beginPath(); g.arc(G.cx, G.cy, 9, 0, Math.PI * 2); g.fill();
+          g.fillStyle = "#4cc9f0"; g.fillRect(G.cx - 13, G.cy - 3, 4, 6);
+          g.fillStyle = "#f72585"; g.fillRect(G.cx + 9, G.cy - 3, 4, 6);
+          g.fillStyle = "#e8e6e3"; g.beginPath(); g.moveTo(G.cx - 5, G.cy - 8); g.lineTo(G.cx + 5, G.cy - 8); g.lineTo(G.cx, G.cy - 15); g.closePath(); g.fill();
+          const sx = G.cx + S.x * G.sc, sy = G.cy + S.z * G.sc, d = Math.hypot(S.x, S.z), gn = clamp(gainAt(d), 0, 1);
+          if (st === "playing") for (let k = 0; k < 3; k++) {
+            const ph = ((now / 1000 + k / 3) % 1);
+            g.strokeStyle = `rgba(247,223,30,${(1 - ph) * 0.5})`; g.lineWidth = 1.5; g.beginPath(); g.arc(sx, sy, 8 + ph * 26, 0, Math.PI * 2); g.stroke();
+          }
+          g.fillStyle = "#f7df1e"; g.beginPath(); g.arc(sx, sy, 7 + gn * 5, 0, Math.PI * 2); g.fill();
+          const az = Math.round((Math.atan2(S.x, -S.z) * 180) / Math.PI);
+          txt(g, `聲源 (${S.x.toFixed(1)}, 0, ${S.z.toFixed(1)})・距離 ${d.toFixed(1)} m・方位 ${az}°`, 10, 8, "#e8e6e3", true, "left", 10.5);
+          txt(g, `${MODELS[model][1]}理論增益 ${fmtDb(gn)}`, 10, 24, "#f7df1e", false, "left", 10.5);
+          if (st !== "playing") txt(g, st === "loading" ? "loadSound() 載入中…" : "按「▶ 播放」後拖曳黃色聲源", w / 2, hh - 22, "#9aa0aa", false, "center", 12);
+        });
+        const rms = (an, buf) => { an.getFloatTimeDomainData(buf); let s = 0; for (let i = 0; i < buf.length; i++) s += buf[i] * buf[i]; return Math.sqrt(s / buf.length); };
+        const hold = [0, 0];
+        sketch(ctx, ctx.$(".ps-lr"), (p, g, w, hh) => {
+          g.clearRect(0, 0, w, hh);
+          let l = 0, r = 0;
+          if (au && st === "playing") { l = rms(au.L, au.bl); r = rms(au.R, au.br); }
+          hold[0] = Math.max(l, hold[0] * 0.9); hold[1] = Math.max(r, hold[1] * 0.9);
+          const y0 = 22, bh = hh - y0 - 20, bw = 18, sw = w - 2 * bw - 50;
+          meter(g, 12, y0, bw, bh, hold[0], "左");
+          meter(g, 12 + bw + 8, y0, bw, bh, hold[1], "右");
+          const x0 = 12 + 2 * bw + 22;
+          lane(g, x0, y0, sw, bh);
+          if (au && st === "playing") { drawLive(g, au.bl, x0, y0, sw, bh, "rgba(76,201,240,.9)", 2, 0, 512); drawLive(g, au.br, x0, y0, sw, bh, "rgba(247,37,133,.8)", 2, 0, 512); }
+          const diff = toDb(hold[1]) - toDb(hold[0]);
+          txt(g, "左右聲道實測", 12, 5, "#e8e6e3", false, "left", 11);
+          txt(g, au && st === "playing" ? `右減左 ${diff >= 0 ? "+" : "−"}${Math.abs(diff).toFixed(1)} dB` : "未播放", w - 10, 6, "#9aa0aa", true, "right", 10);
+        });
+      },
+    },
+    {
+      id: "mic", title: "麥克風輸入",
+      api: "new p5.AudioIn()・start()・stop()・p5.FFT.setInput(mic)・p5.Amplitude",
+      desc: "p5.AudioIn 取得麥克風串流，交給 p5.FFT 畫成捲動的頻譜圖，並用 p5.Amplitude 量音量。頻譜峰值換算成音名，對著麥克風哼一個音就看得到。麥克風不接到喇叭，避免回授嘯叫。",
+      hint: "按「🎤 開啟麥克風」並允許權限；沒有麥克風時按「改用示範音源」，它是標示清楚的 p5.Oscillator 旋律，不是麥克風。",
+      mount(ctx) {
+        ctx.html(`<div class="board ps-one"><div class="ps-card ps-cv ps-mic"></div></div>`);
+        const R = rack(ctx), COLS = 256, ROWS = 96, LO = 60, HI = 12000;
+        let au = null, mic = null, demo = null, src = null, micState = "", note = "", step = 0, nextAt = 0;
+        const img = new ImageData(COLS, ROWS), off = h("canvas", { width: COLS, height: ROWS }), og = off.getContext("2d");
+        const lut = (() => {
+          const c = h("canvas", { width: 256, height: 1 }), cg = c.getContext("2d"), gr = cg.createLinearGradient(0, 0, 256, 0);
+          ["#05060a", "#2a0f5e", "#7a1d86", "#d4436b", "#fb9a5c", "#fcf5b5"].forEach((col, i, a) => gr.addColorStop(i / (a.length - 1), col));
+          cg.fillStyle = gr; cg.fillRect(0, 0, 256, 1);
+          return cg.getImageData(0, 0, 256, 1).data;
+        })();
+        for (let i = 0; i < img.data.length; i += 4) { img.data[i] = lut[0]; img.data[i + 1] = lut[1]; img.data[i + 2] = lut[2]; img.data[i + 3] = 255; }
+        const MEL = ["A3", "C4", "D4", "E4", "G4", "E4", "D4", "C4", "A3", "G3", "A3", "C4"];
+        const build = () => {
+          if (au) return au;
+          const ac = audio();
+          au = { fft: R.add(new p5.FFT(1024)), amp: R.add(new p5.Amplitude()), sr: ac.sampleRate };
+          return au;
+        };
+        const stopDemo = () => { if (demo && demo.started) demo.stop(); demoBtn.textContent = "改用示範音源"; if (src === "demo") src = null; };
+        const stopMic = () => { if (mic && src === "mic") mic.stop(); micBtn.textContent = "🎤 開啟麥克風"; if (src === "mic") src = null; micState = ""; };
+        const openMic = () => {
+          if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { note = "這個環境無法使用麥克風（需要 HTTPS 或 localhost），可改按「改用示範音源」"; return; }
+          build(); stopDemo();
+          if (!mic) {
+            mic = R.add(new p5.AudioIn());
+            mic.disconnect();   // never to the speakers
+            au.fft.setInput(mic); mic.connect(au.amp);
+          }
+          mic.start(); src = "mic"; micState = "opening"; note = "等待麥克風權限…"; micBtn.textContent = "■ 關閉麥克風";
+          // AudioIn.start() only logs when getUserMedia fails, so the stream state is polled to report it.
+          const t0 = performance.now();
+          const poll = () => {
+            if (!ctx.active || src !== "mic") return;
+            if (mic.node.state === "started") { micState = "on"; note = ""; return; }
+            if (performance.now() - t0 > 6000) { stopMic(); note = "沒有取得麥克風（權限被拒或沒有裝置），可改按「改用示範音源」"; return; }
+            ctx.timeout(poll, 200);
+          };
+          poll();
+        };
+        const micBtn = ctx.button("🎤 開啟麥克風", () => (src === "mic" ? stopMic() : openMic()), { primary: true });
+        const demoBtn = ctx.button("改用示範音源", () => {
+          if (src === "demo") return stopDemo();
+          build(); stopMic(); note = "";
+          if (!demo) {
+            demo = R.add(new p5.Oscillator(hz("A3"), "triangle"));
+            demo.amp(0.15, 0.01);
+            au.fft.setInput(demo); demo.connect(au.amp);
+          }
+          demo.start(); src = "demo"; nextAt = 0; demoBtn.textContent = "■ 停止示範音源";
+        });
+        const peakHz = (spec, sr) => {
+          const binHz = sr / 2 / spec.length, a = Math.ceil(70 / binHz), b = Math.min(spec.length - 2, Math.floor(4000 / binHz));
+          let bi = -1, bm = 0;
+          for (let i = a; i <= b; i++) if (spec[i] > bm) { bm = spec[i]; bi = i; }
+          if (bi < 1) return 0;
+          const y0 = toDb(spec[bi - 1]), y1 = toDb(spec[bi]), y2 = toDb(spec[bi + 1]), den = y0 - 2 * y1 + y2;
+          return (bi + (den ? clamp((0.5 * (y0 - y2)) / den, -0.5, 0.5) : 0)) * binHz;
+        };
+        let lastF = 0, lastLv = 0;
+        sketch(ctx, ctx.$(".ps-mic"), (p, g, w, hh) => {
+          const now = performance.now(), active = au && ((src === "mic" && micState === "on") || src === "demo");
+          if (src === "demo" && now >= nextAt) { demo.freq(hz(MEL[step++ % MEL.length]) * (1 + 0.004 * Math.sin(now / 90)), 0.06); nextAt = now + 420; }
+          let wv = null;
+          if (active) {
+            const spec = au.fft.analyze(), bands = specBands(spec, au.sr, ROWS, LO, HI, -110, -30), d = img.data;
+            for (let y = 0; y < ROWS; y++) {
+              const row = y * COLS * 4;
+              d.copyWithin(row, row + 4, row + COLS * 4);
+              const k = Math.round(bands[ROWS - 1 - y] * 255) * 4, o = row + (COLS - 1) * 4;
+              d[o] = lut[k]; d[o + 1] = lut[k + 1]; d[o + 2] = lut[k + 2];
+            }
+            og.putImageData(img, 0, 0);
+            lastLv = au.amp.getLevel();
+            lastF = lastLv > 0.004 ? peakHz(spec, au.sr) : 0;
+            wv = au.fft.waveform();
+          } else lastLv = 0;
+          g.clearRect(0, 0, w, hh);
+          const wide = w >= 560, sx = 40, sy = 30, sw = wide ? Math.floor(w * 0.66) - sx : w - sx - 10, sh = wide ? hh - sy - 12 : Math.floor((hh - sy) * 0.6);
+          g.save(); g.imageSmoothingEnabled = true; g.drawImage(off, sx, sy, sw, sh); g.restore();
+          g.strokeStyle = "rgba(255,255,255,.1)"; g.strokeRect(sx + 0.5, sy + 0.5, sw - 1, sh - 1);
+          for (const f of [100, 200, 500, 1000, 2000, 5000, 10000]) {
+            const y = sy + sh - (Math.log(f / LO) / Math.log(HI / LO)) * sh;
+            txt(g, f >= 1000 ? `${f / 1000}k` : `${f}`, sx - 5, y - 6, "#5d636e", true, "right", 9.5);
+          }
+          const srcLabel = src === "demo" ? "示範音源（p5.Oscillator，非麥克風）" : src === "mic" ? (micState === "on" ? "麥克風（p5.AudioIn）" : "麥克風開啟中…") : "未開啟";
+          txt(g, `頻譜圖・來源：${srcLabel}`, 12, 9, src === "demo" ? "#f7df1e" : "#e8e6e3", false, "left", 11.5);
+          if (!active) txt(g, note || "按「🎤 開啟麥克風」或「改用示範音源」", sx + sw / 2, sy + sh / 2 - 8, "#9aa0aa", false, "center", 12.5);
+          // Side panel: level, waveform, detected pitch
+          const px = wide ? sx + sw + 14 : 12, py = wide ? sy : sy + sh + 12, pw = wide ? w - px - 12 : w - 24, ph = wide ? sh : hh - py - 10;
+          const mh = wide ? ph * 0.5 : ph - 4, mw = 20;
+          meter(g, px, py, mw, mh - 16, lastLv);
+          txt(g, fmtDb(lastLv), px + mw + 8, py, "#e8e6e3", true, "left", 11);
+          txt(g, "p5.Amplitude", px + mw + 8, py + 16, "#7d8490", false, "left", 10);
+          const nn = lastF ? noteName(lastF) : null;
+          txt(g, nn ? nn.name : "－", px + mw + 8, py + 36, "#f7df1e", true, "left", wide ? 30 : 22);
+          txt(g, nn ? `${lastF.toFixed(1)} Hz・${nn.cents >= 0 ? "+" : "−"}${Math.abs(nn.cents)} 音分` : "頻譜峰值換算音名", px + mw + 8, py + (wide ? 72 : 62), "#9aa0aa", true, "left", 10.5);
+          const wx = wide ? px : px + Math.min(220, pw * 0.5), wy = wide ? py + mh + 6 : py, ww = wide ? pw : pw - (wx - px), wh2 = wide ? ph - mh - 6 : mh - 16;
+          lane(g, wx, wy, ww, wh2);
+          if (wv) drawLive(g, wv, wx, wy, ww, wh2, "#4cc9f0", 3);
+          txt(g, "波形", wx + 4, wy + 3, "#7d8490", false, "left", 10);
+        });
+      },
+    },
+    {
+      id: "stress", title: "極限測試", kind: "stress",
+      api: "N × new p5.Oscillator → p5.Panner → p5.Gain・每格 freq(f, t) 與 pan(v)",
+      desc: "同時開 N 個 p5.Oscillator，各自經過 p5.Panner 匯到同一個 p5.Gain。每一格畫面都對每個聲音呼叫 freq() 做顫音、pan() 移動聲像，就像在 draw() 裡逐格改參數的 p5 寫法，成本隨 N 成長。",
+      hint: "按「自動加壓」從 8 個逐級加到 1024 個；「▶ 試聽」用目前數量發聲，「■ 停止聲音」全部釋放。",
+      mount(ctx) {
+        ctx.html(`<div class="ps-bv"><div class="ps-cv ps-bvin"></div></div>`);
+        ctx.controls.classList.add("bottom");
+        const R = rack(ctx), RATIO = [1, 9 / 8, 5 / 4, 3 / 2, 5 / 3];
+        let started = false, target = 8, voices = [], master = null, fft = null, sr = 48000, buildMs = 0, calls = 0, callRate = 0;
+        const clk = { a: 0, p: 0, r: 0 };
+        const baseOf = (i) => 110 * RATIO[i % 5] * Math.pow(2, Math.floor(i / 5) % 4) * (1 + (((i * 0.618) % 1) - 0.5) * 0.012);
+        const ensure = () => {
+          if (master) return;
+          sr = audio().sampleRate;
+          master = R.add(new p5.Gain(1));
+          fft = R.add(new p5.FFT(1024));
+          fft.setInput(master);
+        };
+        const apply = (n) => {
+          target = n;
+          if (!started) return;
+          ensure();
+          const t0 = performance.now();
+          let made = 0;
+          while (voices.length < n) {
+            const i = voices.length, f = baseOf(i);
+            const osc = R.add(new p5.Oscillator(f, i % 2 ? "triangle" : "sine")), pan = R.add(new p5.Panner(0));
+            osc.disconnect(); osc.connect(pan);
+            pan.disconnect(); pan.connect(master);
+            osc.start();
+            voices.push({ osc, pan, f, k: 0.6 + ((i * 0.37) % 1) * 1.8, ph: i * 2.399 });
+            made++;
+          }
+          while (voices.length > n) { const v = voices.pop(); R.kill(v.osc); R.kill(v.pan); }
+          // Unrelated frequencies add up in power, so the bus is scaled by 1/sqrt(N).
+          master.node.gain.rampTo(0.5 / Math.sqrt(n), 0.1);
+          if (made) buildMs = (performance.now() - t0) / made;
+        };
+        const r = ctx.ramp({
+          label: "同時發聲數", unit: "個", steps: [8, 16, 32, 64, 128, 256, 512, 1024], apply,
+          title: "極限測試：同時發聲的 p5.Oscillator",
+          note: "FPS 反映主執行緒成本：每格對 N 個聲音各呼叫一次 freq() 與 pan()，每次都會排一筆 Tone.js 參數自動化。建立耗時是每個 Oscillator＋Panner 的平均建構時間；音訊時鐘比值低於 0.98 代表音訊執行緒開始跟不上。",
+          metrics: () => ({ "發聲中": voices.length, "建立耗時": buildMs ? `${buildMs.toFixed(2)} ms／個` : "…", "每秒 API 呼叫": callRate || "…", "音訊時鐘／實際": clk.r ? clk.r.toFixed(3) : "…" }),
+        });
+        // The ramp's own run button is the gesture that may create the AudioContext.
+        ctx.on(ctx.el, "click", (e) => { if (e.target.closest && e.target.closest("[data-sc-run]")) { started = true; ensure(); } }, { capture: true });
+        ctx.button("▶ 試聽", () => { started = true; apply(r.value); }, { primary: true });
+        ctx.button("■ 停止聲音", () => { started = false; voices.forEach((v) => { R.kill(v.osc); R.kill(v.pan); }); voices = []; });
+        ctx.interval(() => {
+          callRate = calls; calls = 0;
+          const ac = master ? p5.prototype.getAudioContext() : null;
+          if (!ac || !started) { clk.p = 0; clk.r = 0; return; }
+          const a = ac.currentTime, pn = performance.now();
+          if (clk.p) clk.r = (a - clk.a) / ((pn - clk.p) / 1000);
+          clk.a = a; clk.p = pn;
+        }, 1000);
+        const hold = new Float32Array(96);
+        sketch(ctx, ctx.$(".ps-bvin"), (p, g, w, hh) => {
+          const t = performance.now() / 1000, n = voices.length || target, live = voices.length > 0;
+          for (let i = 0; i < voices.length; i++) {
+            const v = voices[i];
+            v.osc.freq(v.f * (1 + 0.008 * Math.sin(t * v.k * 5 + v.ph)), 0.03);
+            v.pan.pan(Math.sin(t * 0.25 * v.k + v.ph));
+          }
+          calls += voices.length * 2;
+          g.clearRect(0, 0, w, hh);
+          const th = Math.min(110, hh * 0.24);
+          lane(g, 10, 26, w - 20, th);
+          const lb = live ? specBands(fft.analyze(), sr, 96, 60, 8000) : null;
+          for (let i = 0; i < 96; i++) hold[i] = Math.max(lb ? lb[i] : 0, hold[i] * 0.9);
+          drawBands(g, hold, 10, 26, w - 20, th);
+          txt(g, live ? `p5.Gain 匯流排頻譜・每聲道增益 ${(0.5 / Math.sqrt(n)).toFixed(4)}` : "尚未發聲：按「自動加壓」或「▶ 試聽」", 12, 8, live ? "#e8e6e3" : "#7d8490");
+          // Stereo field: x = pan, y = pitch
+          const fy = 26 + th + 22, fh = hh - fy - 12, fw = w - 20, rad = clamp(150 / Math.sqrt(n), 1.5, 9);
+          g.fillStyle = "rgba(255,255,255,.05)"; g.fillRect(10 + fw / 2, fy, 1, fh);
+          txt(g, "左", 14, fy - 14, "#7d8490", false, "left", 10.5);
+          txt(g, "右", w - 14, fy - 14, "#7d8490", false, "right", 10.5);
+          txt(g, `${live ? `發聲中 ${voices.length}` : `待命 ${n}`} 個・橫軸＝pan()・縱軸＝音高`, w / 2, fy - 14, "#9aa0aa", false, "center", 10.5);
+          for (let i = 0; i < n; i++) {
+            const k = 0.6 + ((i * 0.37) % 1) * 1.8, ph = i * 2.399, f = baseOf(i);
+            const pan = live ? Math.sin(t * 0.25 * k + ph) : ((i * 0.618) % 1) * 2 - 1;
+            const x = 10 + ((pan + 1) / 2) * fw, y = fy + fh - (Math.log(f / 100) / Math.log(1800 / 100)) * fh;
+            g.fillStyle = `hsla(${185 + (i % 5) * 34}, 85%, ${live ? 62 : 35}%, ${live ? 0.85 : 0.5})`;
+            if (rad < 3) g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+            else { g.beginPath(); g.arc(x, y, rad, 0, Math.PI * 2); g.fill(); }
+          }
+        });
+      },
+    },
+  ],
 });
 </script>
 </body>

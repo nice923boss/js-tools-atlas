@@ -3,183 +3,826 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SVG.js 示範：會動的天氣圖示卡片</title>
+<title>SVG.js 示範：八個場景看懂 API 與動畫 runner</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["天氣卡片","鏈式建立","緩動與控制器","時間軸","路徑變形","事件與拖曳","漸層與遮罩","極限測試"]}</script>
 <style>
-  #stage { position: fixed; inset: 0; }
-  #stage svg { display: block; }
-  #stage text { font-family: "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", sans-serif; }
-  .card { cursor: pointer; }
-  .card-bg { filter: drop-shadow(0 8px 18px rgba(0,0,0,0.35)); }
+  .stage { position: absolute; left: 0; right: 0; top: var(--sc-ctl-h, 0px); bottom: var(--sc-ctl-b, 0px); }
+  .stage > svg, .box > svg, .stress-stage > svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  svg text { font-family: var(--font); -webkit-user-select: none; user-select: none; }
+  svg .mono { font-family: var(--mono); }
+  .readout { position: absolute; right: 10px; bottom: calc(var(--sc-ctl-b, 0px) + 10px); padding: 6px 10px; font: 500 11.5px/1.5 var(--mono); color: var(--muted); pointer-events: none; max-width: calc(100% - 20px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .readout b { color: var(--fg); font-weight: 600; }
+
+  /* 1. weather cards */
+  .wcard { cursor: pointer; }
+  .wcard-bg { filter: drop-shadow(0 8px 18px rgba(0,0,0,.35)); }
+
+  /* 2. chain builder */
+  .chain { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 8px) 10px calc(var(--sc-ctl-b, 0px) + 10px); display: grid; gap: 8px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 330px); }
+  .chain .art { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 8px 10px; }
+  .box { position: relative; flex: 1; min-height: 0; }
+  .meta { font: 500 11px/1.4 var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 4px; }
+  .meta b { color: var(--fg); font-weight: 600; }
+  .chain .code { position: relative; margin: 0; padding: 8px 10px 8px 34px; min-height: 0; overflow: auto; font: 500 11.5px/1.5 var(--mono); color: var(--muted); }
+  .chain .code li { white-space: pre-wrap; word-break: break-word; padding: 3px 6px; margin: 1px 0; border-radius: 6px; transition: background .2s, color .2s; }
+  .chain .code li.done { color: var(--fg); }
+  .chain .code li.now { background: rgba(247,223,30,.13); color: var(--fg); }
+  @media (max-width: 620px) { .chain { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1.25fr) minmax(0, 1fr); } }
+
+  /* 6. events */
+  .graph svg { touch-action: none; }
+  .graph .node { cursor: grab; }
+  .graph.locked .node { cursor: not-allowed; }
+  .log { position: absolute; right: 10px; top: calc(var(--sc-ctl-h, 0px) + 10px); width: 260px; margin: 0; padding: 8px 12px; list-style: none; font: 500 11.5px/1.65 var(--mono); color: var(--muted); pointer-events: none; }
+  .log li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .log li:first-child { color: var(--fg); }
+  .log b { color: var(--accent); font-weight: 600; }
+  @media (max-width: 620px) { .log { top: auto; bottom: calc(var(--sc-ctl-b, 0px) + 10px); left: 10px; right: 10px; width: auto; } .log li:nth-child(n+4) { display: none; } }
+
+  /* 7. defs quad */
+  .quad { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 8px) 10px calc(var(--sc-ctl-b, 0px) + 10px); display: grid; gap: 8px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
+  .pane { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 8px 10px; }
+  .pane h2 { margin: 0 0 4px; font: 600 12.5px/1.3 var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pane h2 code { font: 500 11.5px var(--mono); color: var(--accent); margin-left: 6px; }
+  .pane svg { touch-action: none; }
+
+  /* 8. stress */
+  .stress-stage { position: absolute; top: 8px; right: 8px; bottom: calc(var(--sc-ctl-b, 0px) + 8px); left: 350px; border-radius: 10px; background: #12151a; border: 1px solid var(--line); overflow: hidden; }
+  @media (max-width: 760px) { .stress-stage { left: 8px; } }
 </style>
 </head>
 <body>
-<div id="stage"></div>
-<div class="controls">
-  <button class="btn" id="pause">暫停</button>
-  <button class="btn" id="slow">慢動作</button>
-</div>
-<div class="hint">滑過卡片浮起・點擊卡片播放漣漪</div>
-
 <script src="https://cdn.jsdelivr.net/npm/@svgdotjs/svg.js@3.2.8/dist/svg.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Six weather icons drawn and animated purely with SVG.js shapes and runners (animate/loop/ease).
+// SVG.js showcase: every scene builds real SVG nodes with the chainable API and animates them with runners on timelines.
+const css = getComputedStyle(document.documentElement);
+const C = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6"].map((v) => css.getPropertyValue(v).trim());
+const FG = css.getPropertyValue("--fg").trim() || "#ecebe6";
+const MUTED = css.getPropertyValue("--muted").trim() || "#9b998f";
+const LINE = "rgba(255,255,255,0.14)";
+const fmt = Showcase.fmt;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+// Redraw hook for an element's box size (window resize, control bar wrapping).
+function watch(ctx, el, fn) {
+  let raf = 0, lw = -1, lh = -1;
+  const ro = new ResizeObserver(() => {
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() => {
+      if (!ctx.active) return;
+      const w = el.clientWidth, h = el.clientHeight;
+      if (!w || !h || (w === lw && h === lh)) return;
+      lw = w; lh = h;
+      fn(w, h);
+    });
+  });
+  ro.observe(el);
+  ctx.onCleanup(() => { ro.disconnect(); cancelAnimationFrame(raf); });
+}
+// A fresh SVG root that fills its container.
+const paper = (el) => SVG().addTo(el).size("100%", "100%");
+// Stop every runner on these elements and drop their timelines' queues.
+function halt(list) { for (const el of list) el.timeline().terminate(); }
+
+// ---------- scene 1: weather cards (ported from the original demo) ----------
+function weatherKit(draw, track) {
+  const W = 240, H = 200, CX = 120, CY = 80;
+  function cloudShape(parent, x, y, s, color) {
+    const g = parent.group();
+    g.circle(46).center(0, 0);
+    g.circle(34).center(-26, 10);
+    g.circle(38).center(26, 8);
+    g.rect(84, 22).radius(11).move(-42, 6);
+    g.fill(color).transform({ translate: [x, y], scale: s });
+    return parent.group().add(g);
+  }
+  function sun(parent, x, y, r) {
+    const rays = track(parent.group());
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2;
+      rays.line(x + Math.cos(a) * (r + 8), y + Math.sin(a) * (r + 8), x + Math.cos(a) * (r + 18), y + Math.sin(a) * (r + 18))
+        .stroke({ color: "#fff3b0", width: 5, linecap: "round" });
+    }
+    rays.animate({ duration: 12000 }).ease("-").rotate(360, x, y).loop();
+    const core = track(parent.circle(r * 2).center(x, y).fill(draw.gradient("radial", (add) => { add.stop(0, "#fffbe0"); add.stop(0.6, "#ffe066"); add.stop(1, "#ffb627"); })));
+    core.animate(1500).ease("<>").attr({ r: r * 1.1 }).loop(true, true);
+  }
+  const icons = {
+    sunny(g) { sun(g, CX, CY, 30); },
+    cloudy(g) {
+      sun(g, CX + 26, CY - 16, 20);
+      const c1 = track(cloudShape(g, CX - 8, CY + 8, 1.15, "#ffffff"));
+      c1.animate(3200).ease("<>").translate(16, 0).loop(true, true);
+      const c2 = track(cloudShape(g, CX + 40, CY + 26, 0.6, "#dbe9ff"));
+      c2.animate(2600).ease("<>").translate(-12, 0).loop(true, true);
+    },
+    storm(g) {
+      for (let i = 0; i < 7; i++) {
+        const x = CX - 36 + i * 12;
+        const drop = track(g.line(x, CY + 18, x - 4, CY + 30).stroke({ color: "#8fd3ff", width: 3, linecap: "round" }));
+        drop.animate({ duration: 900, delay: (i * 137) % 900 }).ease("-").translate(-8, 46).attr({ opacity: 0 }).loop();
+      }
+      const bolt = track(g.polygon([[CX + 2, CY + 6], [CX - 14, CY + 36], [CX - 2, CY + 36], [CX - 10, CY + 62], [CX + 18, CY + 26], [CX + 5, CY + 26], [CX + 14, CY + 6]]).fill("#f7df1e").opacity(0));
+      bolt.animate(160).attr({ opacity: 1 }).loop(true, true, 1700);
+      cloudShape(g, CX, CY - 6, 1.25, "#b9bfd6");
+    },
+    snow(g) {
+      cloudShape(g, CX, CY - 8, 1.2, "#f4f8ff");
+      for (let i = 0; i < 8; i++) {
+        const x = CX - 44 + i * 12.5, y = CY + 22;
+        const f = track(g.group());
+        for (let k = 0; k < 3; k++) f.line(x - 5, y, x + 5, y).stroke({ color: "#ffffff", width: 2, linecap: "round" }).rotate(k * 60, x, y);
+        f.animate({ duration: 2600, delay: (i * 331) % 2600 }).ease("-").translate((i % 2 ? 1 : -1) * 8, 56).rotate(180).attr({ opacity: 0 }).loop();
+      }
+    },
+    typhoon(g) {
+      const sp = g.group();
+      const arm = "M0,-34 C22,-34 34,-20 30,-4 C26,-18 14,-24 0,-20 Z";
+      sp.circle(26).center(0, 0).fill("#e8f6ff");
+      sp.path(arm).fill("#e8f6ff");
+      sp.path(arm).fill("#e8f6ff").rotate(180, 0, 0);
+      sp.circle(10).center(0, 0).fill("#2f8f9d");
+      sp.transform({ translate: [CX, CY], scale: 1.45 });
+      const inner = track(g.group().add(sp));
+      inner.animate(1800).ease("-").rotate(-360, CX, CY).loop();
+      for (let i = 0; i < 4; i++) {
+        const y = CY - 30 + i * 22;
+        const w = track(g.line(CX + 56, y, CX + 86, y).stroke({ color: "rgba(255,255,255,0.7)", width: 3, linecap: "round" }));
+        w.animate({ duration: 1300, delay: i * 260 }).ease("-").translate(-150, 0).attr({ opacity: 0 }).loop();
+      }
+    },
+    night(g) {
+      const pts = [[CX - 60, CY - 30], [CX + 52, CY - 40], [CX + 70, CY + 10], [CX - 48, CY + 30], [CX + 20, CY + 46], [CX - 20, CY - 52]];
+      pts.forEach(([x, y], i) => {
+        const s = track(g.path("M0,-7 L2,-2 L7,0 L2,2 L0,7 L-2,2 L-7,0 L-2,-2 Z").fill("#fff7d6").center(x, y));
+        s.animate({ duration: 900 + i * 170, delay: i * 210 }).ease("<>").attr({ opacity: 0.15 }).loop(true, true);
+      });
+      const moon = track(g.path("M18,-30 A34,34 0 1,0 30,22 A28,28 0 1,1 18,-30 Z").fill("#ffe9a8").transform({ translate: [CX - 4, CY + 2] }));
+      moon.animate(2400).ease("<>").translate(0, -6).loop(true, true);
+    },
+  };
+  return { W, H, CX, CY, icons };
+}
 const CARDS = [
-  { city: "台北", cond: "晴時多雲", temp: "33°", grad: ["#ffc65c", "#ff7b54"], icon: sunny },
-  { city: "台中", cond: "多雲", temp: "29°", grad: ["#7fc8f8", "#3f6fb5"], icon: cloudy },
-  { city: "花蓮", cond: "午後雷陣雨", temp: "26°", grad: ["#5b5f97", "#23253a"], icon: storm },
-  { city: "合歡山", cond: "降雪", temp: "-2°", grad: ["#8fbfef", "#4a74b8"], icon: snow },
-  { city: "蘭嶼", cond: "颱風警報", temp: "27°", grad: ["#2f8f9d", "#123c52"], icon: typhoon },
-  { city: "台南", cond: "晴朗夜空", temp: "27°", grad: ["#3a2f7a", "#100c2b"], icon: night },
+  { city: "台北", cond: "晴時多雲", temp: "33°", grad: ["#ffc65c", "#ff7b54"], icon: "sunny" },
+  { city: "台中", cond: "多雲", temp: "29°", grad: ["#7fc8f8", "#3f6fb5"], icon: "cloudy" },
+  { city: "花蓮", cond: "午後雷陣雨", temp: "26°", grad: ["#5b5f97", "#23253a"], icon: "storm" },
+  { city: "合歡山", cond: "降雪", temp: "-2°", grad: ["#8fbfef", "#4a74b8"], icon: "snow" },
+  { city: "蘭嶼", cond: "颱風警報", temp: "27°", grad: ["#2f8f9d", "#123c52"], icon: "typhoon" },
+  { city: "台南", cond: "晴朗夜空", temp: "27°", grad: ["#3a2f7a", "#100c2b"], icon: "night" },
 ];
-const W = 240, H = 200, CX = 120, CY = 80;
-const draw = SVG().addTo("#stage").size("100%", "100%");
-let animated = [];
-let paused = false, slow = false;
 
-// Every looping element is tracked so the buttons can pause or slow all timelines at once
-function track(el) { animated.push(el); return el; }
+// ---------- scene 2: chain builder steps (executed for real, one per click) ----------
+const STEPS = [
+`draw.rect(140, 90).move(20, 20).radius(16).fill("#f7df1e")`,
+`draw.circle(84).center(240, 65)
+  .fill("none").stroke({ color: "#4cc9f0", width: 6 })`,
+`draw.ellipse(130, 64).center(390, 65).fill("#f72585").opacity(0.8)`,
+`draw.polygon("0,-44 13,-14 46,-14 20,6 29,40 0,20 -29,40 -20,6 -46,-14 -13,-14")
+  .center(80, 175).fill("#7bd389")`,
+`draw.polyline("160,200 185,150 210,200 235,150 260,200 285,150")
+  .fill("none").stroke({ color: "#ff8c42", width: 5, linejoin: "round" })`,
+`draw.path("M330,200 C330,120 460,120 460,200")
+  .fill("none").stroke({ color: "#9d8cff", width: 5, dasharray: "12 8" })`,
+`draw.line(20, 262, 140, 262).stroke({ color: "#ecebe6", width: 3 })
+  .marker("end", 4, 4, (m) => m.path("M0,0 L4,2 L0,4 Z").fill("#ecebe6"))`,
+`draw.text((t) => { t.tspan("SVG").fill("#f7df1e"); t.tspan(".js").fill("#ecebe6") })
+  .font({ size: 38, weight: 700 }).move(170, 238)`,
+`const heart = draw.defs().symbol().viewbox(0, 0, 20, 20)
+heart.path("M10,18 L2,9 A4.5,4.5 0 0 1 10,4 A4.5,4.5 0 0 1 18,9 Z").fill("#f72585")
+for (const x of [340, 380, 420]) draw.use(heart).size(30, 30).move(x, 240)`,
+`const wave = draw.path("M20,312 C120,282 200,342 300,312 S420,282 470,306")
+  .fill("none").stroke({ color: "#9b998f", width: 1, dasharray: "3 5" })
+draw.plain("沿著路徑排列的 textPath").path(wave)
+  .font({ size: 15 }).fill("#ecebe6").attr("startOffset", 0)
+  .animate({ duration: 2600, times: Infinity, swing: true }).attr({ startOffset: 190 })`,
+`draw.children().filter((el) => el.type !== "defs")
+  .each((el, i) => el.animate(380, i * 70).scale(1.12).loop(2, true))`,
+];
 
-function cloudShape(parent, x, y, s, color) {
-  const g = parent.group();
-  g.circle(46).center(0, 0);
-  g.circle(34).center(-26, 10);
-  g.circle(38).center(26, 8);
-  g.rect(84, 22).radius(11).move(-42, 6);
-  g.fill(color).transform({ translate: [x, y], scale: s });
-  return parent.group().add(g);
-}
-
-function sun(parent, x, y, r) {
-  const rays = track(parent.group());
-  for (let i = 0; i < 12; i++) {
-    const a = (i / 12) * Math.PI * 2;
-    rays.line(x + Math.cos(a) * (r + 8), y + Math.sin(a) * (r + 8), x + Math.cos(a) * (r + 18), y + Math.sin(a) * (r + 18))
-      .stroke({ color: "#fff3b0", width: 5, linecap: "round" });
-  }
-  rays.animate({ duration: 12000 }).ease("-").rotate(360, x, y).loop();
-  const core = track(parent.circle(r * 2).center(x, y).fill(draw.gradient("radial", (add) => { add.stop(0, "#fffbe0"); add.stop(0.6, "#ffe066"); add.stop(1, "#ffb627"); })));
-  core.animate(1500).ease("<>").attr({ r: r * 1.1 }).loop(true, true);
-}
-
-function sunny(g) { sun(g, CX, CY, 30); }
-
-function cloudy(g) {
-  sun(g, CX + 26, CY - 16, 20);
-  const c1 = track(cloudShape(g, CX - 8, CY + 8, 1.15, "#ffffff"));
-  c1.animate(3200).ease("<>").translate(16, 0).loop(true, true);
-  const c2 = track(cloudShape(g, CX + 40, CY + 26, 0.6, "#dbe9ff"));
-  c2.animate(2600).ease("<>").translate(-12, 0).loop(true, true);
-}
-
-function storm(g) {
-  for (let i = 0; i < 7; i++) {
-    const x = CX - 36 + i * 12;
-    const drop = track(g.line(x, CY + 18, x - 4, CY + 30).stroke({ color: "#8fd3ff", width: 3, linecap: "round" }));
-    drop.animate({ duration: 900, delay: (i * 137) % 900 }).ease("-").translate(-8, 46).attr({ opacity: 0 }).loop();
-  }
-  const bolt = track(g.polygon([[CX + 2, CY + 6], [CX - 14, CY + 36], [CX - 2, CY + 36], [CX - 10, CY + 62], [CX + 18, CY + 26], [CX + 5, CY + 26], [CX + 14, CY + 6]]).fill("#f7df1e").opacity(0));
-  bolt.animate(160).attr({ opacity: 1 }).loop(true, true, 1700);
-  cloudShape(g, CX, CY - 6, 1.25, "#b9bfd6");
-}
-
-function snow(g) {
-  cloudShape(g, CX, CY - 8, 1.2, "#f4f8ff");
-  for (let i = 0; i < 8; i++) {
-    const x = CX - 44 + i * 12.5, y = CY + 22;
-    const f = track(g.group());
-    for (let k = 0; k < 3; k++) f.line(x - 5, y, x + 5, y).stroke({ color: "#ffffff", width: 2, linecap: "round" }).rotate(k * 60, x, y);
-    f.animate({ duration: 2600, delay: (i * 331) % 2600 }).ease("-").translate((i % 2 ? 1 : -1) * 8, 56).rotate(180).attr({ opacity: 0 }).loop();
-  }
-}
-
-function typhoon(g) {
-  const sp = track(g.group());
-  const arm = "M0,-34 C22,-34 34,-20 30,-4 C26,-18 14,-24 0,-20 Z";
-  sp.circle(26).center(0, 0).fill("#e8f6ff");
-  sp.path(arm).fill("#e8f6ff");
-  sp.path(arm).fill("#e8f6ff").rotate(180, 0, 0);
-  sp.circle(10).center(0, 0).fill("#2f8f9d");
-  sp.transform({ translate: [CX, CY], scale: 1.45 });
-  const inner = track(g.group().add(sp));
-  inner.animate(1800).ease("-").rotate(-360, CX, CY).loop();
-  for (let i = 0; i < 4; i++) {
-    const y = CY - 30 + i * 22;
-    const w = track(g.line(CX + 56, y, CX + 86, y).stroke({ color: "rgba(255,255,255,0.7)", width: 3, linecap: "round" }));
-    w.animate({ duration: 1300, delay: i * 260 }).ease("-").translate(-150, 0).attr({ opacity: 0 }).loop();
-  }
-}
-
-function night(g) {
-  const pts = [[CX - 60, CY - 30], [CX + 52, CY - 40], [CX + 70, CY + 10], [CX - 48, CY + 30], [CX + 20, CY + 46], [CX - 20, CY - 52]];
-  pts.forEach(([x, y], i) => {
-    const s = track(g.path("M0,-7 L2,-2 L7,0 L2,2 L0,7 L-2,2 L-7,0 L-2,-2 Z").fill("#fff7d6").center(x, y));
-    s.animate({ duration: 900 + i * 170, delay: i * 210 }).ease("<>").attr({ opacity: 0.15 }).loop(true, true);
+// ---------- scene 5: morph targets, all resampled to 40 cubic segments ----------
+const N = 40, TAU = Math.PI * 2;
+const around = (fn) => Array.from({ length: N }, (_, i) => fn((i / N) * TAU, i));
+function polyRing(verts, per) {
+  const pts = [];
+  verts.forEach((v, k) => {
+    const w = verts[(k + 1) % verts.length];
+    for (let j = 0; j < per; j++) pts.push([v[0] + ((w[0] - v[0]) * j) / per, v[1] + ((w[1] - v[1]) * j) / per]);
   });
-  const moon = track(g.path("M18,-30 A34,34 0 1,0 30,22 A28,28 0 1,1 18,-30 Z").fill("#ffe9a8").transform({ translate: [CX - 4, CY + 2] }));
-  moon.animate(2400).ease("<>").translate(0, -6).loop(true, true);
+  return pts;
 }
-
-function card(spec, x, y, s) {
-  const outer = draw.group().transform({ translate: [x, y], scale: s, origin: [0, 0] });
-  const inner = outer.group().addClass("card");
-  const grad = draw.gradient("linear", (add) => { add.stop(0, spec.grad[0]); add.stop(1, spec.grad[1]); }).from(0, 0).to(0.4, 1);
-  inner.rect(W, H).radius(18).fill(grad).stroke({ color: "rgba(255,255,255,0.18)", width: 1 }).addClass("card-bg");
-  const iconLayer = inner.group();
-  // Keep falling particles inside the card
-  const clip = draw.clip().add(draw.rect(W, H).radius(18));
-  iconLayer.clipWith(clip);
-  spec.icon(iconLayer);
-  inner.plain(spec.city).font({ size: 19, weight: 700 }).fill("#ffffff").attr({ x: 18, y: 166 });
-  inner.plain(spec.cond).font({ size: 12 }).fill("rgba(255,255,255,0.78)").attr({ x: 18, y: 185 });
-  inner.plain(spec.temp).font({ size: 34, weight: 700 }).fill("#ffffff").attr({ x: W - 18, y: 182, "text-anchor": "end" });
-  inner.on("mouseenter", () => inner.animate(260, 0, "now").ease(">").transform({ scale: 1.05, origin: [W / 2, H / 2] }));
-  inner.on("mouseleave", () => inner.animate(260, 0, "now").ease(">").transform({ scale: 1, origin: [W / 2, H / 2] }));
-  inner.on("click", () => {
-    const ring = iconLayer.circle(10).center(CX, CY).fill("none").stroke({ color: "#ffffff", width: 4 });
-    ring.animate(800).ease(">").attr({ r: 110, "stroke-width": 0.5, opacity: 0 }).after(() => ring.remove());
-  });
+function squareRing(s) {
+  const pts = [], seg = (a, b, n) => { for (let j = 0; j < n; j++) pts.push([a[0] + ((b[0] - a[0]) * j) / n, a[1] + ((b[1] - a[1]) * j) / n]); };
+  seg([0, -s], [s, -s], 5); seg([s, -s], [s, s], 10); seg([s, s], [-s, s], 10); seg([-s, s], [-s, -s], 10); seg([-s, -s], [0, -s], 5);
+  return pts;
 }
-
-function build() {
-  draw.clear();
-  animated = [];
-  const w = innerWidth, h = innerHeight;
-  draw.viewbox(0, 0, w, h);
-  draw.plain("今日各地天氣・示意資料").font({ size: 13 }).fill("#a9abb3").attr({ x: 16, y: 32 });
-  const cols = w >= 640 ? 3 : 2, rows = 6 / cols;
-  const top = 58, bottom = 50, side = 16, gap = 14;
-  const cw = (w - side * 2 - gap * (cols - 1)) / cols;
-  const ch = (h - top - bottom - gap * (rows - 1)) / rows;
-  const s = Math.min(cw / W, ch / H);
-  const gw = cols * W * s + (cols - 1) * gap, gh = rows * H * s + (rows - 1) * gap;
-  const x0 = (w - gw) / 2, y0 = top + (h - top - bottom - gh) / 2;
-  CARDS.forEach((spec, i) => card(spec, x0 + (i % cols) * (W * s + gap), y0 + Math.floor(i / cols) * (H * s + gap), s));
-  applyTimeline();
-}
-
-function applyTimeline() {
-  for (const el of animated) {
-    const tl = el.timeline();
-    tl.speed(slow ? 0.3 : 1);
-    if (paused) tl.pause(); else tl.play();
+// Closed Catmull-Rom spline written as one M, N cubic C segments and Z; sharp points get zero tangents.
+function toPath(pts, sharp) {
+  const p = (i) => pts[(i + N) % N];
+  const k = (i) => (sharp === true || sharp.includes((i + N) % N) ? 0 : 1 / 6);
+  const f = (v) => v.toFixed(2);
+  let d = `M${f(p(0)[0])},${f(p(0)[1])}`;
+  for (let i = 0; i < N; i++) {
+    const a = p(i - 1), b = p(i), c = p(i + 1), e = p(i + 2), kb = k(i), kc = k(i + 1);
+    d += ` C${f(b[0] + (c[0] - a[0]) * kb)},${f(b[1] + (c[1] - a[1]) * kb)} ${f(c[0] - (e[0] - b[0]) * kc)},${f(c[1] - (e[1] - b[1]) * kc)} ${f(c[0])},${f(c[1])}`;
   }
+  return d + " Z";
 }
+const SHAPES = [
+  { name: "圓", color: C[1], d: toPath(around((a) => [100 * Math.sin(a), -100 * Math.cos(a)]), []) },
+  { name: "心", color: C[2], d: toPath(around((u) => [6.4 * 16 * Math.sin(u) ** 3, 6.4 * (-(13 * Math.cos(u) - 5 * Math.cos(2 * u) - 2 * Math.cos(3 * u) - Math.cos(4 * u)) - 2.5)]), [0, 20]) },
+  { name: "星", color: C[0], d: toPath(polyRing(Array.from({ length: 10 }, (_, k) => { const r = k % 2 ? 42 : 100, a = (k / 10) * TAU; return [r * Math.sin(a), -r * Math.cos(a)]; }), 4), true) },
+  { name: "水滴", color: C[1], d: toPath(around((u) => [110 * Math.sin(u) * Math.sin(u / 2), -100 * Math.cos(u)]), [0]) },
+  { name: "花", color: C[5], d: toPath(around((a) => { const r = 74 + 26 * Math.cos(6 * a); return [r * Math.sin(a), -r * Math.cos(a)]; }), []) },
+  { name: "方", color: C[3], d: toPath(squareRing(85), true) },
+];
+const STAR10 = "0,-34 10,-11 33,-10 15,5 21,28 0,15 -21,28 -15,5 -33,-10 -10,-11";
 
-const pauseBtn = document.getElementById("pause");
-pauseBtn.addEventListener("click", () => {
-  paused = !paused;
-  pauseBtn.setAttribute("aria-pressed", paused);
-  pauseBtn.textContent = paused ? "繼續" : "暫停";
-  applyTimeline();
-});
-const slowBtn = document.getElementById("slow");
-slowBtn.addEventListener("click", () => { slow = !slow; slowBtn.setAttribute("aria-pressed", slow); applyTimeline(); });
-let rt;
-addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(build, 120); });
-build();
+Showcase.run({ scenes: [
+  {
+    id: "weather", title: "天氣卡片",
+    api: 'el.animate(1500).ease("<>").attr({ r }).loop(true, true)',
+    desc: "六張天氣卡片的圖示全部用 SVG.js 的圖形與 runner 組成：太陽光芒 rotate 無限迴圈、雲朵 translate 來回、雨滴與雪花錯開 delay、閃電用 loop 的 wait 參數間歇閃爍。每個會動的元素各有一條 timeline，可以一起暫停或變速。",
+    hint: "滑過卡片浮起・點擊卡片播放漣漪",
+    mount(ctx) {
+      ctx.html(`<div class="stage"></div>`);
+      const stage = ctx.$(".stage"), draw = paper(stage);
+      let animated = [], paused = false, speed = 1;
+      const kit = weatherKit(draw, (el) => { animated.push(el); return el; });
+      const { W, H, CX, CY } = kit;
+      const apply = () => {
+        for (const el of animated) {
+          const tl = el.timeline();
+          tl.speed(speed);
+          if (paused) tl.pause(); else tl.play();
+        }
+      };
+      const card = (spec, x, y, s) => {
+        const outer = draw.group().transform({ translate: [x, y], scale: s, origin: [0, 0] });
+        const inner = outer.group().addClass("wcard");
+        const grad = draw.gradient("linear", (add) => { add.stop(0, spec.grad[0]); add.stop(1, spec.grad[1]); }).from(0, 0).to(0.4, 1);
+        inner.rect(W, H).radius(18).fill(grad).stroke({ color: "rgba(255,255,255,0.18)", width: 1 }).addClass("wcard-bg");
+        const iconLayer = inner.group();
+        // Keep falling particles inside the card
+        iconLayer.clipWith(draw.clip().add(draw.rect(W, H).radius(18)));
+        kit.icons[spec.icon](iconLayer);
+        inner.plain(spec.city).font({ size: 19, weight: 700 }).fill("#ffffff").attr({ x: 18, y: 166 });
+        inner.plain(spec.cond).font({ size: 12 }).fill("rgba(255,255,255,0.78)").attr({ x: 18, y: 185 });
+        inner.plain(spec.temp).font({ size: 34, weight: 700 }).fill("#ffffff").attr({ x: W - 18, y: 182, "text-anchor": "end" });
+        inner.on("mouseenter", () => inner.animate(260, 0, "now").ease(">").transform({ scale: 1.05, origin: [W / 2, H / 2] }));
+        inner.on("mouseleave", () => inner.animate(260, 0, "now").ease(">").transform({ scale: 1, origin: [W / 2, H / 2] }));
+        inner.on("click", () => {
+          const ring = iconLayer.circle(10).center(CX, CY).fill("none").stroke({ color: "#ffffff", width: 4 });
+          ring.animate(800).ease(">").attr({ r: 110, "stroke-width": 0.5, opacity: 0 }).after(() => ring.remove());
+        });
+      };
+      const build = (w, h) => {
+        halt(draw.find("*"));
+        draw.clear().viewbox(0, 0, w, h);
+        animated = [];
+        draw.plain("今日各地天氣・示意資料").font({ size: 13 }).fill(MUTED).attr({ x: 16, y: 24 });
+        const info = draw.plain("").addClass("mono").font({ size: 11.5 }).fill(MUTED).attr({ x: w - 16, y: 24, "text-anchor": "end" });
+        const cols = w / h > 2.6 ? 6 : w >= 640 ? 3 : 2, rows = 6 / cols;
+        const top = 38, bottom = 14, side = 14, gap = 12;
+        const cw = (w - side * 2 - gap * (cols - 1)) / cols;
+        const ch = (h - top - bottom - gap * (rows - 1)) / rows;
+        const s = Math.max(0.1, Math.min(cw / W, ch / H));
+        const gw = cols * W * s + (cols - 1) * gap, gh = rows * H * s + (rows - 1) * gap;
+        const x0 = (w - gw) / 2, y0 = top + (h - top - bottom - gh) / 2;
+        CARDS.forEach((spec, i) => card(spec, x0 + (i % cols) * (W * s + gap), y0 + Math.floor(i / cols) * (H * s + gap), s));
+        info.plain(`${animated.length} 條 timeline`);
+        apply();
+      };
+      watch(ctx, stage, build);
+      ctx.toggle("暫停", false, (v) => { paused = v; apply(); });
+      ctx.group(["0.3×", "1×", "2×"], 1, (i) => { speed = [0.3, 1, 2][i]; apply(); });
+      ctx.onCleanup(() => halt(draw.find("*")));
+    },
+  },
+  {
+    id: "chain", title: "鏈式建立",
+    api: 'draw.rect(140, 90).move(20, 20).radius(16).fill("#f7df1e")',
+    desc: "SVG.js 的建立方法都回傳元素本身，可以一路串接 move、fill、stroke、marker。右邊每一行程式碼都會真的交給 SVG.js 執行（每步額外淡入），左邊同步長出矩形、圓、多邊形、箭頭 marker、symbol 與 use、沿路徑排字的 textPath，最後一步把全部元素依序彈一下。",
+    hint: "按「下一步」逐行執行；關掉自動播放就能自己控制節奏",
+    mount(ctx) {
+      ctx.html(`<div class="chain"><div class="panel art"><div class="box"></div><div class="meta"></div></div><ol class="panel code"></ol></div>`);
+      const draw = paper(ctx.$(".box")).viewbox(0, 0, 480, 340);
+      const meta = ctx.$(".meta"), list = ctx.$(".code");
+      const items = STEPS.map((code) => { const li = document.createElement("li"); li.textContent = code; list.append(li); return li; });
+      let step = 0, auto = true, idle = 0;
+      const paint = () => {
+        items.forEach((li, i) => { li.classList.toggle("done", i < step); li.classList.toggle("now", i === step - 1); });
+        const li = items[Math.max(0, step - 1)];
+        list.scrollTop = li.offsetTop - (list.clientHeight - li.offsetHeight) / 2;
+        meta.innerHTML = `第 <b>${step}</b> / ${STEPS.length} 步・元素 <b>${draw.find("*").length}</b> 個・draw.svg() <b>${fmt(draw.svg().length)}</b> 字元`;
+      };
+      const next = () => {
+        if (step >= STEPS.length) return;
+        const before = new Set(draw.children().map((el) => el.node));
+        new Function("draw", STEPS[step])(draw);
+        for (const el of draw.children()) {
+          if (before.has(el.node) || el.type === "defs") continue;
+          const o = el.attr("opacity");
+          el.attr("opacity", 0).animate(350, 0, "now").attr({ opacity: o });
+        }
+        step++; idle = 0;
+        paint();
+      };
+      const reset = () => { halt(draw.find("*")); draw.clear(); step = 0; idle = 0; paint(); };
+      ctx.button("下一步", () => {
+        auto = false; autoBtn.setAttribute("aria-pressed", "false");
+        if (step >= STEPS.length) reset();
+        next();
+      }, { primary: true });
+      ctx.button("重來", () => { reset(); next(); });
+      const autoBtn = ctx.toggle("自動播放", true, (v) => { auto = v; });
+      ctx.interval(() => {
+        if (!auto) return;
+        if (step < STEPS.length) next();
+        else if (++idle > 3) { reset(); next(); }
+      }, 1100);
+      next(); next();
+      ctx.onCleanup(() => halt(draw.find("*")));
+    },
+  },
+  {
+    id: "ease", title: "緩動與控制器",
+    api: "ball.animate(new SVG.Spring(1200, 20)).cx(x)  // 之後 runner.cx(x2) 直接改目標",
+    desc: "上六條是 ease() 的時間曲線：內建四種、自訂 bezier 與 steps。下兩條把時長換成控制器 Spring 與 PID，runner 變成宣告式：沒有固定長度，每格依目前位置與速度計算下一步；中途改目標時保留速度，不會從頭重跑。殘影顯示最近幾格的位置。",
+    hint: "點畫面任一處讓所有球追過去；拉時長比較曲線，PID 不受時長影響",
+    mount(ctx) {
+      ctx.html(`<div class="stage"></div>`);
+      const stage = ctx.$(".stage"), draw = paper(stage);
+      const LANES = [
+        ['"-"', "等速", "-"],
+        ['"<>"', "緩入緩出", "<>"],
+        ['">"', "減速停下", ">"],
+        ['"<"', "加速出發", "<"],
+        ["bezier(.5,-.6,.5,1.6)", "預備與回彈", SVG.easing.bezier(0.5, -0.6, 0.5, 1.6)],
+        ["steps(6)", "分六格跳", SVG.easing.steps(6)],
+        ["new SVG.Spring(時長, 20)", "彈簧：保留速度", "spring"],
+        ["new SVG.PID()", "PID：逐格修正（不看時長）", "pid"],
+      ];
+      let dur = 1200, side = 1, auto = true, tid = 0, f = 0.14, first = true;
+      let lanes = [], x0 = 0, x1 = 1, goal = null, goalR = null;
+      const spring = new SVG.Spring(dur, 20), pid = new SVG.PID();
+      const go = (frac) => {
+        f = clamp(frac, 0.04, 0.96);
+        const x = x0 + (x1 - x0) * f;
+        if (goalR) goalR.unschedule();
+        goalR = goal.animate(220, 0, "now").ease(">").attr({ x1: x, x2: x });
+        for (const L of lanes) {
+          if (L.ctl) {
+            if (L.r) L.r.cx(x); else L.r = L.ball.animate(L.ctl).cx(x);
+          } else {
+            if (L.r) L.r.unschedule();
+            L.r = L.ball.animate(dur, 0, "now").ease(L.ease).cx(x);
+          }
+        }
+      };
+      const cycle = () => {
+        clearTimeout(tid);
+        if (!auto) return;
+        tid = ctx.timeout(() => { side = 1 - side; go(side ? 0.86 : 0.14); cycle(); }, dur + 900);
+      };
+      const build = (w, h) => {
+        halt(draw.find("*"));
+        draw.clear().viewbox(0, 0, w, h);
+        x0 = 28; x1 = w - 28;
+        const lh = (h - 16) / LANES.length, r = clamp(lh * 0.18, 5, 9), fs = lh < 40 ? 10.5 : 12;
+        const fx = x0 + (x1 - x0) * f;
+        goal = draw.line(fx, 8, fx, h - 8).stroke({ color: C[0], width: 1.5, dasharray: "4 5", opacity: 0.55 });
+        goalR = null;
+        lanes = LANES.map(([code, zh, ease], i) => {
+          const cy = 8 + lh * (i + 0.64);
+          const ctl = ease === "spring" ? spring : ease === "pid" ? pid : null;
+          const col = ctl ? C[3] : C[1];
+          draw.line(x0, cy, x1, cy).stroke({ color: LINE, width: 1 });
+          draw.text((t) => { t.tspan(code).addClass("mono").fill(FG); t.tspan(zh).fill(MUTED).dx(8); }).font({ size: fs }).attr({ x: x0 - r, y: cy - r - 5 });
+          const ghosts = [0.32, 0.18, 0.08].map((o) => draw.circle(r * 2).center(fx, cy).fill(col).opacity(o));
+          const ball = draw.circle(r * 2).center(fx, cy).fill(col);
+          return { ball, ghosts, ctl, ease, r: null, hist: [] };
+        });
+        if (first) { first = false; side = 1; go(0.86); cycle(); }
+      };
+      watch(ctx, stage, build);
+      ctx.raf(() => {
+        for (const L of lanes) {
+          L.hist.unshift(L.ball.cx());
+          if (L.hist.length > 10) L.hist.length = 10;
+          L.ghosts.forEach((g, k) => g.cx(L.hist[Math.min(L.hist.length - 1, 3 * (k + 1))]));
+        }
+      });
+      draw.on("pointerdown", (e) => {
+        const p = draw.point(e.clientX, e.clientY);
+        go((p.x - x0) / (x1 - x0));
+        cycle();
+      });
+      ctx.toggle("自動來回", true, (v) => { auto = v; cycle(); });
+      ctx.button("換邊", () => { side = 1 - side; go(side ? 0.86 : 0.14); cycle(); });
+      ctx.slider("時長", { min: 300, max: 3000, step: 100, value: dur, format: (v) => (v / 1000).toFixed(1) + " s" }, (v) => { dur = v; spring.duration(v); });
+      ctx.onCleanup(() => { clearTimeout(tid); halt(draw.find("*")); });
+    },
+  },
+  {
+    id: "timeline", title: "時間軸",
+    api: 'el.timeline(tl); el.animate(800, 1200, "absolute")  // when："last"、"with-last"、"absolute"',
+    desc: "多個元素共用一條 SVG.Timeline，用 animate 的 delay 與 when 參數排程：absolute 指定絕對時間、last 接在上一個 runner 之後、with-last 與上一個同時開始。下方甘特圖直接讀 tl.schedule() 畫出，播放頭可以拖動、倒放、變速，persist(true) 讓跑完的 runner 留著以便倒回。",
+    hint: "拖「時間」滑桿逐格檢查；按「反向」倒放",
+    mount(ctx) {
+      ctx.html(`<div class="stage"></div>`);
+      const stage = ctx.$(".stage"), draw = paper(stage);
+      const tl = new SVG.Timeline().persist(true);
+      const END = 3600, fmtS = (v) => (v / 1000).toFixed(2) + " s";
+      let playing = true, dir = 1, speed = 1, tid = 0, jumping = false;
+      let bars = [], head = null, headText = null, xOf = () => 0, gx0 = 0, gx1 = 1;
+      const jump = (t) => { jumping = true; tl.time(t); jumping = false; };
+      // Listeners survive terminate(), so this is registered once.
+      tl.on("finished", () => {
+        if (!playing || jumping) return;
+        clearTimeout(tid);
+        tid = ctx.timeout(() => { if (!playing) return; jump(dir > 0 ? 0 : END); tl.play(); }, 800);
+      });
+      const build = (w, h) => {
+        const keep = tl.time();
+        clearTimeout(tid);
+        tl.terminate(); tl.persist(true);
+        draw.clear().viewbox(0, 0, w, h);
+        const narrow = w < 560;
+        const gh = Math.max(150, Math.min(h * 0.46, 236)), ah = h - gh - 6;
+        const s = Math.max(0.2, Math.min(w / 660, ah / 210, 1.5));
+        const stg = draw.group().transform({ translate: [(w - 660 * s) / 2, Math.max(0, (ah - 210 * s) / 2)], scale: s, origin: [0, 0] });
+        const box = stg.rect(60, 60).move(40, 40).radius(8).fill(C[0]).timeline(tl);
+        const circle = stg.circle(60).center(420, 70).fill(C[1]).timeline(tl);
+        const arrow = stg.polygon("-34,-14 6,-14 6,-32 36,0 6,32 6,14 -34,14").center(560, 70).fill(C[3]).timeline(tl);
+        const label = stg.plain("時間軸可以拖、倒放、變速").font({ size: 22, weight: 700 }).fill(FG)
+          .attr({ x: 330, y: 170, "text-anchor": "middle", opacity: 0, "letter-spacing": 0 }).timeline(tl);
+        const R = [
+          [box.animate(900, 0, "absolute").ease("<>").x(240), "box.x(240)", '"absolute", 0', C[0]],
+          [box.animate(700).rotate(135), "box.rotate(135)", '"last"', C[0]],
+          [circle.animate(800, 0, "with-last").ease(">").attr({ r: 46 }), "circle.attr({ r: 46 })", '"with-last"', C[1]],
+          [circle.animate(1000, 200).fill(C[2]), "circle.fill(c3)", '"last", +200', C[1]],
+          [arrow.animate(800, 1200, "absolute").ease("<>").flip("x"), 'arrow.flip("x")', '"absolute", 1200', C[3]],
+          [arrow.animate(700).ease(">").skew(-20, 0), "arrow.skew(-20, 0)", '"last"', C[3]],
+          [label.animate(1000, 2600, "absolute").attr({ opacity: 1, "letter-spacing": 4 }), "text.attr({ opacity, letter-spacing })", '"absolute", 2600', FG],
+        ];
+        const meta = new Map(R.map(([r, code, when, color]) => [r.id, { code, when, color }]));
+        // Gantt chart straight from tl.schedule()
+        const gTop = h - gh, gBot = h - 8;
+        gx0 = 14; gx1 = w - 14;
+        xOf = (t) => gx0 + (t / END) * (gx1 - gx0);
+        draw.rect(w - 16, gh - 4).move(8, gTop).radius(10).fill("rgba(255,255,255,0.03)").stroke({ color: LINE, width: 1 });
+        for (let t = 0; t <= END; t += 500) {
+          const x = xOf(t);
+          draw.line(x, gTop + 22, x, gBot - 16).stroke({ color: LINE, width: 1 });
+          if (!narrow || t % 1000 === 0) draw.plain(`${t / 1000}s`).addClass("mono").font({ size: 10 }).fill(MUTED).attr({ x, y: gBot - 4, "text-anchor": t === 0 ? "start" : "middle" });
+        }
+        const sched = tl.schedule();
+        const rTop = gTop + 26, rBot = gBot - 20, rh = (rBot - rTop) / sched.length;
+        const bh = Math.min(rh * 0.66, 18), fs = clamp(bh * 0.62, 9, 11), est = (str) => str.length * fs * 0.6;
+        bars = sched.map((it, i) => {
+          const m = meta.get(it.runner.id);
+          const y = rTop + rh * i + rh / 2, bx0 = xOf(it.start), bx1 = xOf(it.end);
+          const bar = draw.rect(Math.max(2, bx1 - bx0), bh).move(bx0, y - bh / 2).radius(4).fill(m.color).opacity(0.45);
+          const roomR = gx1 - bx1 - 6, roomL = bx0 - gx0 - 6, full = est(m.code) + 8 + est(m.when);
+          const right = full <= roomR || (full > roomL && roomR >= roomL);
+          const both = full <= (right ? roomR : roomL);
+          draw.text((t) => { t.tspan(m.code).fill(FG); if (both) t.tspan(m.when).fill(MUTED).dx(8); })
+            .addClass("mono").font({ size: fs })
+            .attr({ x: right ? bx1 + 6 : bx0 - 6, y, "text-anchor": right ? "start" : "end", "dominant-baseline": "central" });
+          return { bar, start: it.start, end: it.end, on: false };
+        });
+        head = draw.line(0, gTop + 22, 0, gBot - 16).stroke({ color: C[0], width: 2 });
+        headText = draw.plain("").addClass("mono").font({ size: 10.5, weight: 600 }).fill(C[0]).attr({ y: gTop + 15, "text-anchor": "middle" });
+        tl.pause(); tl.speed(dir * speed); jump(Math.min(keep, END));
+        if (playing) tl.play();
+      };
+      watch(ctx, stage, build);
+      const playBtn = ctx.toggle("播放", true, (v) => {
+        playing = v; clearTimeout(tid);
+        if (!v) { tl.pause(); return; }
+        const t = tl.time();
+        if (dir > 0 && t >= END) jump(0);
+        if (dir < 0 && t <= 0) jump(END);
+        tl.play();
+      });
+      ctx.button("反向", () => { dir = -dir; clearTimeout(tid); tl.speed(dir * speed); if (playing) tl.play(); });
+      ctx.group(["0.5×", "1×", "2×"], 1, (i) => { speed = [0.5, 1, 2][i]; tl.speed(dir * speed); });
+      const slider = ctx.slider("時間", { min: 0, max: END, step: 10, value: 0, format: fmtS }, (v) => {
+        playing = false; playBtn.setAttribute("aria-pressed", "false"); clearTimeout(tid);
+        tl.pause(); jump(v);
+      });
+      const out = slider.nextElementSibling;
+      ctx.raf(() => {
+        if (!head) return;
+        const t = tl.time(), x = xOf(t);
+        head.attr({ x1: x, x2: x });
+        headText.plain(fmtS(t)).attr({ x: clamp(x, gx0 + 26, gx1 - 26) });
+        for (const b of bars) {
+          const on = t >= b.start && t <= b.end;
+          if (on !== b.on) { b.on = on; b.bar.opacity(on ? 1 : 0.45); }
+        }
+        if (playing) { slider.value = t; out.textContent = fmtS(t); }
+      });
+      ctx.onCleanup(() => { clearTimeout(tid); tl.terminate(); });
+    },
+  },
+  {
+    id: "morph", title: "路徑變形",
+    api: "shape.animate(900).ease(\"<>\").plot(d).fill(color)",
+    desc: "Path 的 plot() 也能放進 runner：SVG.js 把兩條 PathArray 的數值逐一內插，所以起點與終點的指令結構必須完全一致。核心沒有自動對齊路徑的功能，這裡把六種形狀都取樣成同樣的 M + 40 段三次貝茲 + Z 再變形。小白點是 40 個節點，大白點用 length() 與 pointAt() 沿外框跑。",
+    hint: "點形狀按鈕切換；選 Spring 後連續快速點擊，同一個 runner 會中途改目標",
+    mount(ctx) {
+      ctx.html(`<div class="stage"></div><div class="readout panel"></div>`);
+      const stage = ctx.$(".stage"), readout = ctx.$(".readout");
+      const draw = paper(stage).viewbox(-150, -150, 300, 300);
+      const ghost = draw.path(SHAPES[0].d).fill("none").stroke({ color: MUTED, width: 1, dasharray: "4 5" });
+      const shape = draw.path(SHAPES[0].d).fill(SHAPES[0].color).opacity(0.92);
+      const dots = Array.from({ length: N }, () => draw.circle(3.6).fill(FG));
+      const traveller = draw.circle(12).fill(FG).stroke({ color: "#12151a", width: 3 });
+      const EASES = { "<>": "<>", ">": ">", back: SVG.easing.bezier(0.5, -0.6, 0.5, 1.6) };
+      let cur = 0, easeName = "<>", springR = null, lastR = null, fillR = null, auto = true, nodesOn = true;
+      const count = ghost.array().reduce((n, seg) => n + seg.length - 1, 0);
+      const paint = () => { readout.innerHTML = `目標 <b>${SHAPES[cur].name}</b>・PathArray：M + ${N} × C + Z・<b>${count}</b> 個數值`; };
+      const morph = (i) => {
+        cur = i;
+        const { d, color } = SHAPES[i];
+        ghost.plot(d);
+        if (easeName === "spring") {
+          // Controller steppers choke on attr() object bags in 3.2.8, so the colour gets its own eased runner.
+          if (springR) springR.plot(d);
+          else springR = shape.animate(new SVG.Spring(700, 30), 0, "now").plot(d);
+          if (fillR) fillR.unschedule();
+          fillR = shape.animate(500, 0, "now").fill(color);
+        } else {
+          if (lastR) lastR.unschedule();
+          lastR = shape.animate(900, 0, "now").ease(EASES[easeName]).plot(d).fill(color);
+        }
+        paint();
+      };
+      const seg = ctx.group(SHAPES.map((s) => s.name), 0, (i) => { auto = false; autoBtn.setAttribute("aria-pressed", "false"); morph(i); });
+      ctx.select("緩動", [{ value: "<>", label: '"<>" 緩入緩出' }, { value: ">", label: '">" 減速' }, { value: "back", label: "bezier 回彈" }, { value: "spring", label: "Spring（可中途改目標）" }], easeName, (v) => {
+        if (springR) { springR.unschedule(); springR = null; }
+        if (lastR) { lastR.unschedule(); lastR = null; }
+        if (fillR) { fillR.unschedule(); fillR = null; }
+        easeName = v;
+      });
+      const autoBtn = ctx.toggle("自動輪播", true, (v) => { auto = v; });
+      ctx.toggle("顯示節點", true, (v) => { nodesOn = v; dots.forEach((c) => (v ? c.show() : c.hide())); });
+      ctx.interval(() => {
+        if (!auto) return;
+        morph((cur + 1) % SHAPES.length);
+        [...seg.children].forEach((b, k) => b.setAttribute("aria-pressed", String(k === cur)));
+      }, 2200);
+      ctx.raf((t) => {
+        const arr = shape.array();
+        if (nodesOn) {
+          dots[0].center(arr[0][1], arr[0][2]);
+          for (let i = 1; i < N; i++) { const s = arr[i]; if (s && s[0] === "C") dots[i].center(s[5], s[6]); }
+        }
+        const L = shape.length();
+        if (L > 0) { const p = shape.pointAt((t * 0.12) % L); traveller.center(p.x, p.y); }
+      });
+      paint();
+      ctx.timeout(() => morph(1), 600);
+      ctx.onCleanup(() => halt(draw.find("*")));
+    },
+  },
+  {
+    id: "events", title: "事件與拖曳",
+    api: 'node.on("pointerdown.drag", fn); node.fire("node-drop", detail, { bubbles: true })',
+    desc: "節點用 on() 綁定 pointer 事件，事件名稱加上命名空間 .drag 之後，可以用 off(\".drag\") 一次解除。拖曳中由 draw.point() 把螢幕座標換成 SVG 座標，放開時用 runner 吸附到格線；每次抓起與放下都 fire() 一個自訂事件並冒泡到根元素，右上角的紀錄就是根元素收到的事件。",
+    hint: "拖動節點；滑過節點會亮起相連的線",
+    mount(ctx) {
+      ctx.html(`<div class="stage graph"></div><ol class="log panel"></ol>`);
+      const stage = ctx.$(".stage"), draw = paper(stage), logEl = ctx.$(".log");
+      const G = 40, EDGE = "rgba(255,255,255,0.26)";
+      const NAMES = ["資料", "解析", "轉換", "繪製", "動畫", "輸出"];
+      const POS = [[0.14, 0.3], [0.36, 0.22], [0.58, 0.34], [0.34, 0.66], [0.62, 0.7], [0.84, 0.62]];
+      const POS_NARROW = [[0.27, 0.14], [0.72, 0.26], [0.3, 0.4], [0.72, 0.52], [0.28, 0.66], [0.7, 0.8]];
+      const EDGES = [[0, 1], [1, 2], [2, 3], [3, 4], [4, 5], [1, 3], [2, 4]];
+      let W = 0, H = 0, snap = true, drag = null, placed = false;
+      const snapV = (v) => Math.round((v - G / 2) / G) * G + G / 2;
+      const dotPat = draw.pattern(G, G, (p) => p.circle(3).center(G / 2, G / 2).fill("rgba(255,255,255,0.16)"));
+      draw.rect("100%", "100%").fill(dotPat);
+      const edgeLayer = draw.group(), nodeLayer = draw.group();
+      const edges = EDGES.map(([a, b]) => ({ a, b, path: edgeLayer.path("M0,0").fill("none").stroke({ color: EDGE, width: 2 }) }));
+      const nodes = NAMES.map((name, i) => {
+        const g = nodeLayer.group();
+        const rect = g.rect(92, 38).radius(10).fill("#1d222b").stroke({ color: C[i], width: 2 }).addClass("node");
+        const label = g.plain(name).font({ size: 14, weight: 600 }).fill(FG).attr({ "text-anchor": "middle", "dominant-baseline": "central", "pointer-events": "none" });
+        return { name, i, g, rect, label, r: null };
+      });
+      const pos = (n) => [+n.rect.attr("x") + 46, +n.rect.attr("y") + 19];
+      const log = (html) => {
+        const li = document.createElement("li");
+        li.innerHTML = html;
+        logEl.prepend(li);
+        while (logEl.children.length > 5) logEl.lastChild.remove();
+      };
+      draw.on("node-grab node-drop graph-shuffle", (e) => {
+        const d = e.detail || {};
+        log(`<b>${e.type}</b> ${d.name ? `${d.name} (${d.x}, ${d.y})` : `${d.count} 個節點`}`);
+      });
+      const hi = (n, on) => {
+        n.rect.fill(on ? "#262c38" : "#1d222b");
+        for (const e of edges) if (e.a === n.i || e.b === n.i) e.path.stroke({ color: on ? C[n.i] : EDGE, width: on ? 3 : 2 });
+      };
+      const bind = (n) => {
+        n.rect.on("pointerdown.drag", (e) => {
+          if (n.r) { n.r.unschedule(); n.r = null; }
+          const p = draw.point(e.clientX, e.clientY), [x, y] = pos(n);
+          drag = { n, dx: p.x - x, dy: p.y - y };
+          draw.node.setPointerCapture(e.pointerId);
+          n.g.front();
+          n.g.fire("node-grab", { name: n.name, x: Math.round(x), y: Math.round(y) }, { bubbles: true });
+          e.preventDefault();
+        });
+      };
+      nodes.forEach((n) => {
+        bind(n);
+        n.g.on("pointerenter", () => hi(n, true));
+        n.g.on("pointerleave", () => hi(n, false));
+      });
+      draw.on("pointermove", (e) => {
+        if (!drag) return;
+        const p = draw.point(e.clientX, e.clientY);
+        drag.n.rect.center(p.x - drag.dx, p.y - drag.dy);
+      });
+      draw.on("pointerup pointercancel", () => {
+        if (!drag) return;
+        const { n } = drag;
+        drag = null;
+        let [x, y] = pos(n);
+        if (snap) { x = snapV(x); y = snapV(y); }
+        x = clamp(x, 50, W - 50); y = clamp(y, 23, H - 23);
+        n.r = n.rect.animate(450, 0, "now").ease(SVG.easing.bezier(0.5, 0, 0.5, 1.6)).center(x, y);
+        n.g.fire("node-drop", { name: n.name, x: Math.round(x), y: Math.round(y) }, { bubbles: true });
+      });
+      watch(ctx, stage, (w, h) => {
+        W = w; H = h;
+        for (const [k, n] of nodes.entries()) {
+          if (n.r) { n.r.unschedule(); n.r = null; }
+          const P0 = (w < 560 ? POS_NARROW : POS)[k];
+          let [x, y] = placed ? pos(n) : [snapV(P0[0] * w), snapV(P0[1] * h)];
+          n.rect.center(clamp(x, 50, w - 50), clamp(y, 23, h - 23));
+        }
+        placed = true;
+      });
+      ctx.raf(() => {
+        if (!placed) return;
+        const P = nodes.map((n) => { const p = pos(n); n.label.attr({ x: p[0], y: p[1] }); return p; });
+        for (const e of edges) {
+          const [ax, ay] = P[e.a], [bx, by] = P[e.b], mx = (ax + bx) / 2;
+          e.path.plot(`M${ax},${ay} C${mx},${ay} ${mx},${by} ${bx},${by}`);
+        }
+      });
+      ctx.toggle("對齊格線", true, (v) => { snap = v; });
+      ctx.toggle("允許拖曳", true, (v) => {
+        stage.classList.toggle("locked", !v);
+        if (v) { nodes.forEach(bind); log(`<b>on</b>("pointerdown.drag") 重新綁定`); }
+        else { nodes.forEach((n) => n.rect.off(".drag")); log(`<b>off</b>(".drag") 解除拖曳`); }
+      });
+      ctx.button("打亂", () => {
+        nodes.forEach((n, i) => {
+          if (n.r) n.r.unschedule();
+          const x = clamp(snapV(50 + Math.random() * (W - 100)), 50, W - 50), y = clamp(snapV(23 + Math.random() * (H - 46)), 23, H - 23);
+          n.r = n.rect.animate(700, i * 60, "now").ease("<>").center(x, y);
+        });
+        draw.fire("graph-shuffle", { count: nodes.length });
+      });
+      log(`draw.<b>on</b>("node-grab node-drop graph-shuffle")`);
+      ctx.onCleanup(() => halt(draw.find("*")));
+    },
+  },
+  {
+    id: "defs", title: "漸層與遮罩",
+    api: 'stop.animate({ times: Infinity, swing: true }).attr({ offset: .85 })',
+    desc: "漸層、圖樣、遮罩與裁切都是放在 defs 裡的元素，所以同樣可以用 runner 做動畫：漸層的 stop 位置與顏色、徑向漸層的焦點、圖樣的位移與旋轉、遮罩形狀的位置。遮罩那格用 Spring 控制器跟著游標，閒置時自己遊走。",
+    hint: "滑鼠移到「遮罩」那一格，聚光燈會跟著走",
+    mount(ctx) {
+      ctx.html(`<div class="quad">
+        <div class="panel pane"><h2>漸層<code>gradient().stop()</code></h2><div class="box" data-k="a"></div></div>
+        <div class="panel pane"><h2>圖樣<code>pattern()</code></h2><div class="box" data-k="b"></div></div>
+        <div class="panel pane"><h2>遮罩<code>maskWith()</code></h2><div class="box" data-k="c"></div></div>
+        <div class="panel pane"><h2>裁切<code>clipWith()</code></h2><div class="box" data-k="d"></div></div></div>`);
+      const pad = (k) => paper(ctx.$(`[data-k="${k}"]`)).viewbox(0, 0, 240, 150);
+      const loops = [];
+      const loop = (el, dur, swing) => { loops.push(el); return el.animate({ duration: dur, times: Infinity, swing }); };
+      // A: linear stop offset and colour, radial focal point
+      const a = pad("a");
+      let mid;
+      const lin = a.gradient("linear", (add) => { add.stop(0, C[1]); mid = add.stop(0.5, C[0]); add.stop(1, C[2]); }).from(0, 0).to(1, 1);
+      a.rect(110, 120).move(8, 15).radius(12).fill(lin);
+      loop(mid, 2200, true).ease("<>").attr({ offset: 0.85, "stop-color": C[5] });
+      const rad = a.gradient("radial", (add) => { add.stop(0, "#ffffff"); add.stop(0.35, C[3]); add.stop(1, "#1d222b"); }).from(0.3, 0.3).to(0.5, 0.5).radius(0.5);
+      a.circle(112).center(180, 75).fill(rad);
+      loop(rad, 1800, true).ease("<>").attr({ fx: 0.7, fy: 0.65 });
+      // B: stripes slide via pattern x, dots spin via patternTransform
+      const b = pad("b");
+      const stripes = b.pattern(12, 12, (p) => { p.rect(12, 12).fill("#1d222b"); p.rect(6, 12).fill(C[4]); }).attr("transform", "rotate(45)");
+      b.rect(110, 120).move(8, 15).radius(12).fill(stripes);
+      loop(stripes, 1200, false).ease("-").attr({ x: 12 });
+      const dotsPat = b.pattern(16, 16, (p) => { p.rect(16, 16).fill("#1d222b"); p.circle(7).center(8, 8).fill(C[3]); });
+      b.circle(112).center(180, 75).fill(dotsPat);
+      loop(dotsPat, 9000, false).ease("-").rotate(360, 180, 75);
+      // C: bright copy of a dim layer, revealed through a spring-driven mask
+      const c = pad("c");
+      const dim = c.group();
+      const bokeh = [[30, 40, 26], [80, 110, 34], [128, 36, 22], [172, 100, 30], [214, 46, 24], [120, 82, 18], [60, 70, 14], [200, 128, 16]];
+      bokeh.forEach(([x, y, r], i) => dim.circle(r * 2).center(x, y).fill(C[i % 6]));
+      dim.plain("maskWith").font({ size: 32, weight: 800 }).fill("#ffffff").attr({ x: 120, y: 86, "text-anchor": "middle" });
+      dim.opacity(0.22);
+      const bright = dim.clone().addTo(c).opacity(1);
+      const spotFill = c.gradient("radial", (add) => { add.stop(0, "#ffffff"); add.stop(0.55, "#ffffff"); add.stop(1, "#000000"); });
+      const mask = c.mask();
+      const spots = [mask.circle(96).center(120, 75).fill(spotFill), mask.polygon(STAR10).size(110, 104).center(120, 75).fill("#ffffff").hide()];
+      bright.maskWith(mask);
+      const follow = new SVG.Spring(650, 18);
+      const runners = spots.map((s) => s.animate(follow).center(120, 75));
+      let lastMove = -1e9;
+      const aim = (x, y) => runners.forEach((r) => r.center(x, y));
+      c.on("pointermove", (e) => { const p = c.point(e.clientX, e.clientY); lastMove = performance.now(); aim(p.x, p.y); });
+      ctx.interval(() => { if (performance.now() - lastMove > 1500) aim(40 + Math.random() * 160, 30 + Math.random() * 90); }, 1300);
+      // D: colour bars sliding behind a text clip, dashed outline marching on top
+      const d = pad("d");
+      const clip = d.clip();
+      clip.plain("裁切").font({ size: 92, weight: 900 }).attr({ x: 120, y: 108, "text-anchor": "middle" });
+      const holder = d.group().clipWith(clip);
+      const bars = holder.group().skew(-24, 0).group();
+      for (let i = -6; i < 12; i++) bars.rect(24, 200).move(i * 24, -25).fill(C[(i + 12) % 6]);
+      loop(bars, 2400, false).ease("-").translate(144, 0);
+      const outline = d.plain("裁切").font({ size: 92, weight: 900 }).fill("none").stroke({ color: FG, width: 1.2, dasharray: "8 12" })
+        .attr({ x: 120, y: 108, "text-anchor": "middle", "stroke-dashoffset": 0 });
+      loop(outline, 1500, false).ease("-").attr({ "stroke-dashoffset": -40 });
+      ctx.toggle("動畫", true, (v) => loops.forEach((el) => (v ? el.timeline().play() : el.timeline().pause())));
+      ctx.group(["圓形聚光", "星形聚光"], 0, (i) => spots.forEach((s, k) => (k === i ? s.show() : s.hide())));
+      ctx.onCleanup(() => { for (const p of [a, b, c, d]) halt(p.find("*")); });
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: 'el.animate({ duration, times: Infinity, swing: true, when: "now" }).center(x, y)',
+    desc: "每個圓點掛一個無限來回的 runner，逐級加量直到掉到 30 FPS 以下。可切換三種寫法再測一次：每個元素各自一條 timeline（SVG.js 預設）、全部共用一條 timeline、或完全不用 runner 改在 rAF 裡手動 center()，比較 runner 本身的成本。",
+    hint: "按「自動加壓」開始；切換模式後再測一次比較",
+    mount(ctx) {
+      ctx.html(`<div class="stress-stage"></div>`);
+      const draw = paper(ctx.$(".stress-stage")).viewbox(0, 0, 800, 500).attr("preserveAspectRatio", "xMidYMid slice");
+      const layer = draw.group();
+      const items = [];
+      let mode = "own", n = 0, addMs = 0, shared = new SVG.Timeline();
+      const rnd = (a, b) => a + Math.random() * (b - a);
+      const add = () => {
+        const i = items.length, x = rnd(10, 790), y = rnd(10, 490);
+        const el = layer.circle(rnd(8, 14)).center(x, y).fill(C[i % 6]).opacity(0.8);
+        const it = { el, x, y, x2: clamp(x + rnd(-120, 120), 6, 794), y2: clamp(y + rnd(-80, 80), 6, 494), dur: rnd(1200, 2600), ph: rnd(0, TAU), r: null };
+        if (mode !== "raf") {
+          if (mode === "shared") el.timeline(shared);
+          it.r = el.animate({ duration: it.dur, times: Infinity, swing: true, when: "now" }).ease("<>").center(it.x2, it.y2);
+        }
+        items.push(it);
+      };
+      const drop = () => { const it = items.pop(); if (it.r) it.r.unschedule(); it.el.remove(); };
+      const clearAll = () => {
+        if (mode === "shared") shared.terminate(); else for (const it of items) if (it.r) it.el.timeline().terminate();
+        layer.clear(); items.length = 0;
+      };
+      const fill = () => {
+        const t0 = performance.now();
+        if (n < items.length / 2) clearAll();
+        while (items.length > n) drop();
+        while (items.length < n) add();
+        addMs = performance.now() - t0;
+      };
+      ctx.raf((t) => {
+        if (mode !== "raf") return;
+        for (const it of items) {
+          const s = 0.5 - 0.5 * Math.cos((t / it.dur) * Math.PI + it.ph);
+          it.el.center(it.x + (it.x2 - it.x) * s, it.y + (it.y2 - it.y) * s);
+        }
+      });
+      ctx.select("模式", [
+        { value: "own", label: "每個元素各自 timeline" },
+        { value: "shared", label: "共用一條 timeline" },
+        { value: "raf", label: "手動 rAF（不用 runner）" },
+      ], mode, (v) => { clearAll(); mode = v; shared = new SVG.Timeline(); fill(); });
+      ctx.controls.classList.add("bottom");
+      ctx.ramp({
+        label: "圓點", unit: "個", steps: [100, 250, 500, 1000, 2000, 4000, 8000, 16000], minFps: 30,
+        apply(count) { n = count; fill(); },
+        metrics: () => ({ "模式": mode === "own" ? "各自 timeline" : mode === "shared" ? "共用 timeline" : "手動 rAF", "Timeline 數": mode === "own" ? fmt(items.length) : mode === "shared" ? "1" : "0", "上次增減": `${addMs.toFixed(0)} ms` }),
+        note: "每個 runner 每格都要算緩動、重組屬性再寫回 DOM；共用 timeline 少了排程佇列，但每次 schedule 都會重新排序整份 runner 清單，一次加入上千個時「上次增減」會明顯變長。",
+      });
+      ctx.onCleanup(() => { clearAll(); });
+    },
+  },
+] });
 </script>
 </body>
 </html>

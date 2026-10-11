@@ -3,475 +3,1377 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>rot.js 示範：地城探索</title>
+<title>rot.js 示範：8 個場景看懂 Roguelike 工具箱與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["地城探索","地圖產生器","視野演算法","光照混色","尋路比較","回合排程","雜訊與版面","極限測試"]}</script>
 <style>
-  body { background: #0b0c0f; }
-  #top { position: fixed; left: 0; right: 0; top: 0; z-index: 50; display: flex; flex-wrap: wrap; gap: 6px 10px;
-    align-items: center; justify-content: space-between; padding: 8px 10px; }
-  #hud { font-weight: 700; color: var(--c1); font-size: 14px; white-space: nowrap; }
-  #hud .hp { color: var(--c3); }
-  #hud .dim { color: var(--muted); font-weight: 500; }
-  #top .btns { display: flex; gap: 6px; flex-wrap: wrap; }
-  #top .btn { padding: 6px 10px; }
-  #wrap { position: fixed; left: 0; right: 0; display: grid; place-items: center; }
-  #wrap canvas { display: block; border-radius: 6px; box-shadow: 0 0 0 1px var(--line); touch-action: none; cursor: crosshair; }
-  #bot { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; padding: 6px 12px 8px; font-size: 13px; line-height: 1.5; }
-  #log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  #log div:first-child { color: var(--muted); }
-  #bot .tip { color: var(--muted); font-size: 12px; }
-  .overlay { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; pointer-events: none; transition: opacity .3s; }
-  .overlay.hide { opacity: 0; }
-  .overlay .card { text-align: center; padding: 14px 22px; border-radius: 14px; background: rgba(11, 12, 15, .78);
-    backdrop-filter: blur(3px); border: 1px solid var(--line); max-width: 88vw; }
-  .overlay h1 { margin: 0; font-size: clamp(24px, 5.5vw, 38px); letter-spacing: 4px; color: var(--c5);
-    text-shadow: 0 0 18px rgba(255, 140, 66, .55); }
-  .overlay p { margin: 4px 0 0; }
-  .overlay .blink { color: var(--c2); animation: blink 1.2s steps(2) infinite; }
-  @keyframes blink { 50% { opacity: .25; } }
-  #flash { position: fixed; inset: 0; z-index: 45; pointer-events: none; opacity: 0;
-    box-shadow: inset 0 0 90px 20px rgba(247, 37, 133, .65); transition: opacity .25s; }
-  #flash.on { opacity: 1; transition: none; }
+  .board { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); min-height: 0; }
+  .rot-pane { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; border-radius: 10px; background: #08090c; border: 1px solid var(--line); }
+  .rot-tag { flex: none; padding: 5px 9px 4px; font-size: 11.5px; line-height: 1.35; color: #d8d6cf; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
+  .rot-tag b { display: block; font: 600 12px var(--mono); color: #8fd9f5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rot-tag span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rot-view { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+  .rot-view > canvas { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: block; touch-action: none; }
+
+  /* 1. dungeon */
+  .rot-dun { display: flex; flex-direction: column; gap: 6px; }
+  .rot-hud { flex: none; font-weight: 700; color: var(--c1); font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 20px; }
+  .rot-hud .hp { color: var(--c3); }
+  .rot-hud .dim { color: var(--muted); font-weight: 500; }
+  .rot-wrap { position: relative; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
+  .rot-wrap canvas { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: block; border-radius: 6px; box-shadow: 0 0 0 1px var(--line); touch-action: none; cursor: crosshair; }
+  .rot-log { flex: none; font-size: 13px; line-height: 1.5; min-height: 39px; }
+  .rot-log div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rot-log div:first-child { color: var(--muted); }
+  .rot-ov { position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; pointer-events: none; transition: opacity 0.3s; }
+  .rot-ov.hide { opacity: 0; }
+  .rot-ov .card { text-align: center; padding: 14px 22px; border-radius: 14px; background: rgba(11, 12, 15, 0.78); backdrop-filter: blur(3px); border: 1px solid var(--line); max-width: 88%; }
+  .rot-ov h1 { margin: 0; font-size: clamp(22px, 5vw, 36px); letter-spacing: 4px; color: var(--c5); text-shadow: 0 0 18px rgba(255, 140, 66, 0.55); }
+  .rot-ov p { margin: 4px 0 0; color: #ecebe6; }
+  .rot-ov .blink { color: var(--c2); animation: rot-blink 1.2s steps(2) infinite; }
+  @keyframes rot-blink { 50% { opacity: 0.25; } }
+  .rot-flash { position: absolute; inset: 0; z-index: 6; pointer-events: none; opacity: 0; box-shadow: inset 0 0 90px 20px rgba(247, 37, 133, 0.65); transition: opacity 0.25s; }
+  .rot-flash.on { opacity: 1; transition: none; }
+
+  /* 2. generators */
+  .rot-maps { display: flex; flex-direction: column; gap: 6px; }
+  .rot-seed { flex: none; font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rot-seed b { font-family: var(--mono); color: var(--c1); }
+  .rot-cards { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .rot-card { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-radius: 10px; background: #08090c; border: 1px solid var(--line); overflow: hidden; }
+  .rot-mapbox { position: relative; flex: 1; min-height: 0; }
+  .rot-mapbox canvas { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: block; }
+  .rot-cap { flex: none; padding: 4px 8px 5px; font-size: 11px; line-height: 1.35; color: #d8d6cf; }
+  .rot-cap b { display: block; font: 600 11.5px var(--mono); color: #8fd9f5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rot-cap span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  @media (max-aspect-ratio: 1/1) { .rot-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(4, minmax(0, 1fr)); } }
+
+  /* 3 / 5 / 7. multi-pane boards */
+  .rot-tri { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .rot-duo { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .rot-quad { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .rot-one { display: grid; }
+  @media (max-aspect-ratio: 5/4) {
+    .rot-tri { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(3, minmax(0, 1fr)); }
+    .rot-duo { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+  }
+  .rot-quad .tile canvas { image-rendering: pixelated; }
+
+  /* 6. scheduler */
+  .rot-sched { display: flex; flex-direction: column; gap: 6px; }
+  .rot-legend { flex: none; display: flex; flex-wrap: wrap; gap: 3px 12px; font-size: 12.5px; line-height: 1.5; }
+  .rot-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: 0; }
+  .rot-legend em { font-style: normal; color: var(--muted); font-size: 11.5px; }
+  .rot-sgrid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 8px; }
+  @media (max-aspect-ratio: 5/4) { .rot-sgrid { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1.1fr) minmax(0, 1fr); } }
+
+  /* 8. stress */
+  .rot-bv { position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px); border-radius: 10px; background: #050608; overflow: hidden; border: 1px solid var(--line); }
+  @media (min-width: 761px) { .rot-bv { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 350px; } }
+  .rot-bvin { position: absolute; inset: 0; }
+  .rot-bv canvas { position: absolute; left: 0; top: 0; display: block; }
+  .rot-bvtag { position: absolute; right: 10px; top: 10px; max-width: calc(100% - 20px); padding: 3px 9px; border-radius: 6px; background: rgba(0, 0, 0, 0.62); color: #fff; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 </style>
 </head>
 <body>
-<div id="top">
-  <div id="hud"></div>
-  <div class="btns">
-    <button class="btn" id="b-dungeon" aria-pressed="true">房間走廊</button>
-    <button class="btn" id="b-cave" aria-pressed="false">洞穴</button>
-    <button class="btn" id="b-reveal" aria-pressed="false">透視全圖</button>
-    <button class="btn primary" id="b-regen">重新生成</button>
-  </div>
-</div>
-<div id="wrap"></div>
-<div id="bot">
-  <div id="log"></div>
-  <div class="tip">方向鍵／WASD 移動，點擊地圖自動走過去，撞怪即攻擊，走到 &gt; 下樓</div>
-</div>
-<div class="overlay" id="overlay">
-  <div class="card">
-    <h1 id="ov-title">地城探索</h1>
-    <p id="ov-sub">每層即時產生，視野用陰影投射計算</p>
-    <p class="blink" id="ov-go">按任意鍵或點擊開始</p>
-  </div>
-</div>
-<div id="flash"></div>
-
 <script src="https://cdn.jsdelivr.net/npm/rot-js@2.2.1/dist/rot.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// rot.js roguelike: Map.Digger / Map.Cellular generation, FOV.PreciseShadowcasting, Path.AStar, Display, Color, RNG.
-const WALL = 0, FLOOR = 1, DOOR = 2, OPEN = 3, STAIRS = 4;
-const RADIUS = 7, MAX_HP = 6;
-const DIRS8 = ROT.DIRS[8];
-const $ = (id) => document.getElementById(id);
-const MONSTERS = {
-  rat: { ch: "r", fg: "#d9c2a7", name: "老鼠", hp: 1 },
-  goblin: { ch: "g", fg: "#7bd389", name: "哥布林", hp: 2 },
-  bat: { ch: "b", fg: "#b9a8ff", name: "蝙蝠", hp: 1 },
-};
-const ITEMS = { gold: { ch: "$", fg: "#ffd166" }, potion: { ch: "!", fg: "#f72585" } };
-// light ramps: [near, far] for lit tiles, single value for remembered tiles
-const LIT = {
-  floorBg: [[66, 50, 30], [22, 22, 28]], floorFg: [[170, 140, 96], [70, 70, 82]],
-  wallBg: [[104, 80, 50], [40, 40, 50]], wallFg: [[232, 196, 132], [96, 96, 112]],
-};
-const MEM = { floorBg: [14, 16, 22], floorFg: [42, 50, 66], wallBg: [24, 28, 38], wallFg: [60, 70, 92] };
-const UNKNOWN = "#0b0c0f";
+const { h, fmt, fmtCompact } = Showcase;
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+const MONO = '"JetBrains Mono", Consolas, "Courier New", "Microsoft JhengHei", monospace';
+const CJK = '"Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif';
+const C = ROT.Color;
 
-let kind = "dungeon", reveal = false, mode = "demo"; // demo | play | over
-let W = 40, H = 24, map, explored, visible = new Map();
-let player = { x: 0, y: 0 }, items = new Map(), monsters = [];
-let depth = 1, hp = MAX_HP, gold = 0, kills = 0, logs = [], walkQueue = [], overAt = 0;
-
-const inb = (x, y) => x >= 0 && y >= 0 && x < W && y < H;
-const passable = (t) => t !== WALL;
-const transparent = (t) => t === FLOOR || t === OPEN || t === STAIRS;
-const monsterAt = (x, y) => monsters.find((m) => m.x === x && m.y === y);
-const cheb = (a, b) => Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
-
-const display = new ROT.Display({
-  width: W, height: H, fontSize: 16, forceSquareRatio: true, bg: UNKNOWN,
-  fontFamily: '"JetBrains Mono", Consolas, "Courier New", monospace', fontStyle: "bold",
-});
-const canvas = display.getContainer();
-$("wrap").appendChild(canvas);
-
-const fov = new ROT.FOV.PreciseShadowcasting((x, y) => inb(x, y) && transparent(map[x + y * W]), { topology: 8 });
-
-function areas() {
-  const top = $("top").offsetHeight, bot = $("bot").offsetHeight;
-  return { top, bot, w: innerWidth - 16, h: innerHeight - top - bot - 6 };
+// ROT.Display runs an endless rAF loop and has no destroy(); stop it and drop the canvas on unmount.
+function makeDisplay(ctx, parent, opts) {
+  const d = new ROT.Display({ fontFamily: MONO, bg: "#08090c", width: 10, height: 10, fontSize: 12, ...opts });
+  const c = d.getContainer();
+  parent.append(c);
+  ctx.onCleanup(() => { d._tick = () => {}; c.remove(); });
+  return d;
 }
-
-function fit() {
-  const a = areas(), dpr = Math.min(2, devicePixelRatio || 1);
-  $("wrap").style.top = a.top + "px";
-  $("wrap").style.bottom = a.bot + "px";
-  const cell = Math.min(a.w / W, a.h / H);
-  display.setOptions({ width: W, height: H, fontSize: Math.max(6, Math.floor(cell * dpr)) });
-  canvas.style.width = canvas.width / dpr + "px";
-  canvas.style.height = canvas.height / dpr + "px";
-  render();
+// Square cells (forceSquareRatio) sized to fit aw x ah CSS pixels, drawn at device resolution.
+function fitSquare(d, W, H, aw, ah, min = 4) {
+  const fs = Math.max(min, Math.floor(Math.min(aw / W, ah / H) * DPR));
+  d.setOptions({ width: W, height: H, fontSize: fs });
+  const c = d.getContainer();
+  c.style.width = c.width / DPR + "px";
+  c.style.height = c.height / DPR + "px";
+  return fs / DPR;
 }
-
-function bfsFrom(start, ok) {
-  const dist = new Int32Array(W * H).fill(-1), queue = [start];
-  dist[start] = 0;
-  for (let q = 0; q < queue.length; q++) {
-    const c = queue[q], cx = c % W, cy = (c / W) | 0;
-    for (const [dx, dy] of DIRS8) {
-      const nx = cx + dx, ny = cy + dy, n = nx + ny * W;
-      if (inb(nx, ny) && dist[n] < 0 && ok(n)) { dist[n] = dist[c] + 1; queue.push(n); }
-    }
-  }
-  return { dist, order: queue };
+// A dark pane with a caption row on top and a view area for a canvas.
+function pane(parent, cls = "") {
+  const tag = h("div", { class: "rot-tag" }), view = h("div", { class: "rot-view" });
+  const el = h("div", { class: `rot-pane ${cls}` }, tag, view);
+  parent.append(el);
+  const set = (fn, line) => { tag.innerHTML = `<b>${fn}</b><span>${line}</span>`; };
+  set("&nbsp;", "&nbsp;"); // reserve both lines so later text does not resize the view
+  return { el, tag, view, set };
 }
-
-function generate() {
-  const a = areas();
-  // pick a map size that keeps cells readable for the current viewport
-  const cell = Math.max(14, Math.min(22, Math.floor(Math.min(a.w / 40, a.h / 24))));
-  W = Math.max(20, Math.floor(a.w / cell));
-  H = Math.max(16, Math.floor(a.h / cell));
-  map = new Uint8Array(W * H);
-  explored = new Uint8Array(W * H);
-  let start = -1;
-  if (kind === "dungeon") {
-    const dg = new ROT.Map.Digger(W, H, { roomWidth: [3, 9], roomHeight: [3, 6], corridorLength: [2, 7], dugPercentage: 0.34 });
-    dg.create((x, y, v) => { if (!v) map[x + y * W] = FLOOR; });
-    const rooms = dg.getRooms();
-    for (const r of rooms) r.getDoors((x, y) => { if (ROT.RNG.getUniform() < 0.5) map[x + y * W] = DOOR; });
-    const [cx, cy] = rooms[0].getCenter();
-    start = cx + cy * W;
-  } else {
-    const cv = new ROT.Map.Cellular(W, H);
-    cv.randomize(0.53);
-    for (let i = 0; i < 4; i++) cv.create();
-    cv.connect((x, y, v) => { if (v === 1 && x > 0 && y > 0 && x < W - 1 && y < H - 1) map[x + y * W] = FLOOR; }, 1);
-  }
-  const floors = [];
-  for (let i = 0; i < W * H; i++) if (map[i] === FLOOR) floors.push(i);
-  if (start < 0 || map[start] !== FLOOR) start = ROT.RNG.getItem(floors);
-  player = { x: start % W, y: (start / W) | 0 };
-  // stairs go on the floor tile farthest from the start
-  const { dist, order } = bfsFrom(start, (n) => map[n] !== WALL);
-  map[order[order.length - 1]] = STAIRS;
-
-  const free = ROT.RNG.shuffle(floors.filter((i) => i !== start && map[i] === FLOOR));
-  items = new Map();
-  monsters = [];
-  const nGold = Math.max(3, Math.round(floors.length / 55)), nPotion = 2;
-  for (let k = 0; k < nGold + nPotion && free.length; k++) items.set(free.pop(), k < nGold ? "gold" : "potion");
-  const nMon = Math.min(3 + depth * 2, Math.round(floors.length / 30));
-  for (const i of free) {
-    if (monsters.length >= nMon) break;
-    if (dist[i] < 8) continue;
-    const type = ROT.RNG.getWeightedValue({ rat: 4, goblin: depth > 1 ? 3 : 1, bat: 2 });
-    monsters.push({ x: i % W, y: (i / W) | 0, type, hp: MONSTERS[type].hp, alert: 0 });
-  }
-  walkQueue = [];
-  visible = new Map();
-  fit();
-  computeFov();
-  render();
+// Size a canvas to its box at device resolution; the returned context draws in CSS pixels.
+function sizeCanvas(cv, box) {
+  const w = Math.max(1, box.clientWidth), hh = Math.max(1, box.clientHeight);
+  const pw = Math.round(w * DPR), ph = Math.round(hh * DPR);
+  if (cv.width !== pw || cv.height !== ph) { cv.width = pw; cv.height = ph; }
+  cv.style.width = w + "px"; cv.style.height = hh + "px";
+  const g = cv.getContext("2d");
+  g.setTransform(DPR, 0, 0, DPR, 0, 0);
+  return { g, w, h: hh };
 }
-
-function computeFov() {
-  visible = new Map();
-  fov.compute(player.x, player.y, RADIUS, (x, y, r, vis) => {
-    if (!vis || !inb(x, y)) return;
-    const i = x + y * W;
-    visible.set(i, r);
-    explored[i] = 1;
-  });
+function watch(ctx, el, fn) {
+  const ro = new ResizeObserver(() => ctx.active && fn());
+  ro.observe(el);
+  ctx.onCleanup(() => ro.disconnect());
 }
+const randomFloor = (grid, W) => { let i; do { i = ROT.RNG.getUniformInt(0, grid.length - 1); } while (!grid[i]); return { x: i % W, y: (i / W) | 0 }; };
+const newSeed = () => 1 + Math.floor(Math.random() * 99998);
 
-const mix = (pair, f) => ROT.Color.toRGB(ROT.Color.interpolate(pair[0], pair[1], f));
-const glyph = (t) => (t === WALL ? "#" : t === DOOR ? "+" : t === OPEN ? "'" : t === STAIRS ? ">" : "·");
+// Taiwanese township names: training corpus for ROT.StringGenerator.
+const PLACES = "板橋 三重 中和 永和 新莊 新店 樹林 鶯歌 三峽 淡水 汐止 瑞芳 土城 蘆洲 五股 泰山 林口 深坑 石碇 坪林 三芝 石門 八里 平溪 雙溪 貢寮 金山 萬里 烏來 中壢 大溪 楊梅 蘆竹 大園 龜山 八德 龍潭 平鎮 新屋 觀音 竹北 竹東 新埔 關西 湖口 新豐 橫山 北埔 寶山 峨眉 頭份 竹南 苑裡 通霄 後龍 卓蘭 大湖 公館 銅鑼 南庄 頭屋 三義 豐原 東勢 大甲 清水 沙鹿 梧棲 后里 神岡 潭子 大雅 新社 石岡 外埔 大安 烏日 大肚 龍井 霧峰 太平 大里 鹿港 和美 線西 伸港 福興 秀水 花壇 芬園 員林 溪湖 田中 大村 埔鹽 埔心 永靖 社頭 二水 北斗 二林 田尾 埤頭 芳苑 竹塘 溪州 埔里 草屯 竹山 集集 名間 鹿谷 中寮 魚池 國姓 水里 信義 仁愛 斗六 斗南 虎尾 西螺 土庫 北港 古坑 大埤 莿桐 林內 二崙 崙背 麥寮 褒忠 元長 四湖 口湖 水林 朴子 布袋 大林 民雄 溪口 新港 六腳 東石 義竹 鹿草 太保 水上 中埔 竹崎 梅山 番路 新營 鹽水 白河 柳營 後壁 麻豆 下營 六甲 官田 大內 佳里 學甲 西港 七股 將軍 北門 新化 善化 新市 安定 山上 玉井 楠西 南化 左鎮 仁德 歸仁 關廟 龍崎 永康 鳳山 林園 大寮 大樹 大社 仁武 鳥松 岡山 橋頭 燕巢 田寮 阿蓮 路竹 湖內 茄萣 彌陀 梓官 旗山 美濃 六龜 甲仙 杉林 內門 茂林 桃源 潮州 東港 恆春 萬丹 長治 麟洛 九如 里港 鹽埔 高樹 萬巒 內埔 竹田 新埤 枋寮 新園 崁頂 林邊 南州 佳冬 琉球 車城 滿州 枋山 羅東 蘇澳 頭城 礁溪 壯圍 員山 冬山 五結 三星 南澳 鳳林 玉里 新城 吉安 壽豐 光復 豐濱 瑞穗 富里 秀林 萬榮 卓溪 成功 關山 卑南 鹿野 池上 東河 長濱 太麻里 大武 綠島 海端 延平 金峰 達仁 蘭嶼 馬公 湖西 白沙 西嶼 望安 七美".split(" ");
 
-function render() {
-  if (!map) return;
-  const now = performance.now() / 1000;
-  const flicker = Math.sin(now * 9) * 0.04 + Math.sin(now * 23) * 0.03;
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const i = x + y * W, t = map[i], r = visible.get(i);
-      const wall = t === WALL;
-      let ch = glyph(t), fg, bg;
-      if (r !== undefined) {
-        const f = Math.max(0, Math.min(1, r / (RADIUS + 0.5) + flicker));
-        bg = mix(wall ? LIT.wallBg : LIT.floorBg, f);
-        fg = mix(wall ? LIT.wallFg : LIT.floorFg, f);
-        if (t === DOOR || t === OPEN) fg = "#ff8c42";
-        if (t === STAIRS) fg = "#4cc9f0";
-        const it = items.get(i);
-        if (it) { ch = ITEMS[it].ch; fg = ITEMS[it].fg; }
-        const m = monsterAt(x, y);
-        if (m) { ch = MONSTERS[m.type].ch; fg = MONSTERS[m.type].fg; }
-      } else if (explored[i] || reveal) {
-        bg = ROT.Color.toRGB(wall ? MEM.wallBg : MEM.floorBg);
-        fg = ROT.Color.toRGB(wall ? MEM.wallFg : MEM.floorFg);
-        if (t === STAIRS) fg = "#2a6f86";
-        if (reveal) {
-          const it = items.get(i);
-          if (it) { ch = ITEMS[it].ch; fg = ITEMS[it].fg; }
-          const m = monsterAt(x, y);
-          if (m) { ch = MONSTERS[m.type].ch; fg = "#8a8aa0"; }
+Showcase.run({
+  scenes: [
+    // ---------- 1. dungeon crawler (port of the original demo) ----------
+    {
+      id: "dungeon", title: "地城探索",
+      api: "Map.Digger・Map.Cellular・FOV.PreciseShadowcasting・Path.AStar・Color.interpolate",
+      desc: "原版示範的移植：每層用 Digger（房間走廊）或 Cellular（洞穴）即時產生，玩家視野用 PreciseShadowcasting 計算並記住走過的地方，怪物發現你後用 A* 追過來（被驚動的怪物底色轉紅），點地圖會沿已探索的格子自動走過去。沒有操作時是自動探索的展示模式。",
+      hint: "方向鍵／WASD 移動，點地圖自動走，撞怪攻擊，走到 > 下樓",
+      mount(ctx) {
+        ctx.html(`<div class="board rot-dun">
+          <div class="rot-hud"></div><div class="rot-wrap"></div><div class="rot-log"></div>
+          <div class="rot-ov"><div class="card"><h1>地城探索</h1><p>每層即時產生，視野用陰影投射計算</p><p class="blink">按任意鍵或點擊開始</p></div></div>
+          <div class="rot-flash"></div></div>`);
+        const board = ctx.$(".rot-dun"), hudEl = ctx.$(".rot-hud"), wrap = ctx.$(".rot-wrap"), logEl = ctx.$(".rot-log");
+        const ov = ctx.$(".rot-ov"), [ovTitle, ovSub, ovGo] = ctx.$$(".rot-ov h1, .rot-ov p"), flashEl = ctx.$(".rot-flash");
+        const WALL = 0, FLOOR = 1, DOOR = 2, OPEN = 3, STAIRS = 4, RADIUS = 7, MAX_HP = 6;
+        const DIRS8 = ROT.DIRS[8];
+        const MONSTERS = {
+          rat: { ch: "r", fg: "#d9c2a7", name: "老鼠", hp: 1 },
+          goblin: { ch: "g", fg: "#7bd389", name: "哥布林", hp: 2 },
+          bat: { ch: "b", fg: "#b9a8ff", name: "蝙蝠", hp: 1 },
+        };
+        const ITEMS = { gold: { ch: "$", fg: "#ffd166" }, potion: { ch: "!", fg: "#f72585" } };
+        // light ramps: [near, far] for lit tiles, single value for remembered tiles
+        const LIT = {
+          floorBg: [[66, 50, 30], [22, 22, 28]], floorFg: [[170, 140, 96], [70, 70, 82]],
+          wallBg: [[104, 80, 50], [40, 40, 50]], wallFg: [[232, 196, 132], [96, 96, 112]],
+        };
+        const MEM = { floorBg: [14, 16, 22], floorFg: [42, 50, 66], wallBg: [24, 28, 38], wallFg: [60, 70, 92] };
+        const UNKNOWN = "#0b0c0f", ALERT = [150, 30, 60];
+
+        let kind = "dungeon", reveal = false, mode = "demo"; // demo | play | over
+        let W = 40, H = 24, map = null, explored, visible = new Map();
+        let player = { x: 0, y: 0 }, items = new Map(), monsters = [];
+        let depth = 1, hp = MAX_HP, gold = 0, kills = 0, logs = [], walkQueue = [], overAt = 0;
+
+        const inb = (x, y) => x >= 0 && y >= 0 && x < W && y < H;
+        const passable = (t) => t !== WALL;
+        const transparent = (t) => t === FLOOR || t === OPEN || t === STAIRS;
+        const monsterAt = (x, y) => monsters.find((m) => m.x === x && m.y === y);
+        const cheb = (a, b) => Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
+
+        ctx.group(["房間走廊", "洞穴"], 0, (i) => {
+          kind = i ? "cave" : "dungeon";
+          generate();
+          log(i ? "改用細胞自動機產生洞穴（Cellular）" : "改用房間走廊產生器（Digger）");
+        });
+        ctx.toggle("透視全圖", false, (v) => { reveal = v; render(); });
+        ctx.button("重新生成", () => { generate(); log("重新產生這一層"); }, { primary: true });
+
+        const display = makeDisplay(ctx, wrap, { width: W, height: H, fontSize: 16, forceSquareRatio: true, bg: UNKNOWN, fontStyle: "bold" });
+        const canvas = display.getContainer();
+        const fov = new ROT.FOV.PreciseShadowcasting((x, y) => inb(x, y) && transparent(map[x + y * W]), { topology: 8 });
+
+        function fit() {
+          if (!map) return;
+          fitSquare(display, W, H, wrap.clientWidth, wrap.clientHeight, 6);
+          render();
         }
-      } else {
-        ch = " "; fg = null; bg = UNKNOWN;
-      }
-      if (x === player.x && y === player.y) { ch = "@"; fg = mode === "over" ? "#6d6b64" : "#f7df1e"; }
-      display.draw(x, y, ch, fg, bg);
-    }
-  }
-}
+        function bfsFrom(start, ok) {
+          const dist = new Int32Array(W * H).fill(-1), queue = [start];
+          dist[start] = 0;
+          for (let q = 0; q < queue.length; q++) {
+            const c = queue[q], cx = c % W, cy = (c / W) | 0;
+            for (const [dx, dy] of DIRS8) {
+              const nx = cx + dx, ny = cy + dy, n = nx + ny * W;
+              if (inb(nx, ny) && dist[n] < 0 && ok(n)) { dist[n] = dist[c] + 1; queue.push(n); }
+            }
+          }
+          return { dist, order: queue };
+        }
+        function generate() {
+          const aw = wrap.clientWidth || 640, ah = wrap.clientHeight || 400;
+          // pick a map size that keeps cells readable for the current viewport
+          const cell = Math.max(14, Math.min(22, Math.floor(Math.min(aw / 40, ah / 24))));
+          W = Math.max(20, Math.floor(aw / cell));
+          H = Math.max(14, Math.floor(ah / cell));
+          map = new Uint8Array(W * H);
+          explored = new Uint8Array(W * H);
+          let start = -1;
+          if (kind === "dungeon") {
+            const dg = new ROT.Map.Digger(W, H, { roomWidth: [3, 9], roomHeight: [3, 6], corridorLength: [2, 7], dugPercentage: 0.34 });
+            dg.create((x, y, v) => { if (!v) map[x + y * W] = FLOOR; });
+            const rooms = dg.getRooms();
+            for (const r of rooms) r.getDoors((x, y) => { if (ROT.RNG.getUniform() < 0.5) map[x + y * W] = DOOR; });
+            const [cx, cy] = rooms[0].getCenter();
+            start = cx + cy * W;
+          } else {
+            const cv = new ROT.Map.Cellular(W, H);
+            cv.randomize(0.53);
+            for (let i = 0; i < 4; i++) cv.create();
+            cv.connect((x, y, v) => { if (v === 1 && x > 0 && y > 0 && x < W - 1 && y < H - 1) map[x + y * W] = FLOOR; }, 1);
+          }
+          const floors = [];
+          for (let i = 0; i < W * H; i++) if (map[i] === FLOOR) floors.push(i);
+          if (start < 0 || map[start] !== FLOOR) start = ROT.RNG.getItem(floors);
+          player = { x: start % W, y: (start / W) | 0 };
+          // stairs go on the floor tile farthest from the start
+          const { dist, order } = bfsFrom(start, (n) => map[n] !== WALL);
+          map[order[order.length - 1]] = STAIRS;
+          const free = ROT.RNG.shuffle(floors.filter((i) => i !== start && map[i] === FLOOR));
+          items = new Map();
+          monsters = [];
+          const nGold = Math.max(3, Math.round(floors.length / 55)), nPotion = 2;
+          for (let k = 0; k < nGold + nPotion && free.length; k++) items.set(free.pop(), k < nGold ? "gold" : "potion");
+          const nMon = Math.min(3 + depth * 2, Math.round(floors.length / 30));
+          for (const i of free) {
+            if (monsters.length >= nMon) break;
+            if (dist[i] < 8) continue;
+            const type = ROT.RNG.getWeightedValue({ rat: 4, goblin: depth > 1 ? 3 : 1, bat: 2 });
+            monsters.push({ x: i % W, y: (i / W) | 0, type, hp: MONSTERS[type].hp, alert: 0 });
+          }
+          walkQueue = [];
+          computeFov();
+          fit();
+          hud();
+        }
+        function computeFov() {
+          visible = new Map();
+          fov.compute(player.x, player.y, RADIUS, (x, y, r, vis) => {
+            if (!vis || !inb(x, y)) return;
+            const i = x + y * W;
+            visible.set(i, r);
+            explored[i] = 1;
+          });
+        }
+        const mix = (pair, f) => C.toRGB(C.interpolate(pair[0], pair[1], f));
+        const glyph = (t) => (t === WALL ? "#" : t === DOOR ? "+" : t === OPEN ? "'" : t === STAIRS ? ">" : "·");
+        function render() {
+          if (!map) return;
+          const now = performance.now() / 1000;
+          const flicker = Math.sin(now * 9) * 0.04 + Math.sin(now * 23) * 0.03;
+          for (let y = 0; y < H; y++) {
+            for (let x = 0; x < W; x++) {
+              const i = x + y * W, t = map[i], r = visible.get(i);
+              const wall = t === WALL;
+              let ch = glyph(t), fg, bg;
+              if (r !== undefined) {
+                const f = Math.max(0, Math.min(1, r / (RADIUS + 0.5) + flicker));
+                bg = mix(wall ? LIT.wallBg : LIT.floorBg, f);
+                fg = mix(wall ? LIT.wallFg : LIT.floorFg, f);
+                if (t === DOOR || t === OPEN) fg = "#ff8c42";
+                if (t === STAIRS) fg = "#4cc9f0";
+                const it = items.get(i);
+                if (it) { ch = ITEMS[it].ch; fg = ITEMS[it].fg; }
+                const m = monsterAt(x, y);
+                if (m) {
+                  ch = MONSTERS[m.type].ch; fg = MONSTERS[m.type].fg;
+                  if (m.alert) bg = C.toRGB(C.interpolate(C.fromString(bg), ALERT, 0.5));
+                }
+              } else if (explored[i] || reveal) {
+                bg = C.toRGB(wall ? MEM.wallBg : MEM.floorBg);
+                fg = C.toRGB(wall ? MEM.wallFg : MEM.floorFg);
+                if (t === STAIRS) fg = "#2a6f86";
+                if (reveal) {
+                  const it = items.get(i);
+                  if (it) { ch = ITEMS[it].ch; fg = ITEMS[it].fg; }
+                  const m = monsterAt(x, y);
+                  if (m) { ch = MONSTERS[m.type].ch; fg = "#8a8aa0"; }
+                }
+              } else {
+                ch = " "; fg = null; bg = UNKNOWN;
+              }
+              if (x === player.x && y === player.y) { ch = "@"; fg = mode === "over" ? "#6d6b64" : "#f7df1e"; }
+              display.draw(x, y, ch, fg, bg);
+            }
+          }
+        }
+        function log(msg) {
+          logs.push(msg);
+          logs = logs.slice(-2);
+          logEl.innerHTML = logs.map((m) => `<div>${m}</div>`).join("");
+        }
+        function hud() {
+          const seen = `<span class="dim">視野 ${visible.size} 格</span>`;
+          hudEl.innerHTML = mode === "demo"
+            ? `展示模式　<span class="dim">第 ${depth} 層</span>　${seen}`
+            : `第 ${depth} 層　<span class="hp">♥ ${hp}/${MAX_HP}</span>　金幣 ${gold}　<span class="dim">擊倒 ${kills}</span>　${seen}`;
+        }
+        function flash() {
+          flashEl.classList.add("on");
+          requestAnimationFrame(() => requestAnimationFrame(() => flashEl.classList.remove("on")));
+        }
+        function pickup(i) {
+          const it = items.get(i);
+          if (!it) return;
+          items.delete(i);
+          if (it === "gold") {
+            const n = ROT.RNG.getUniformInt(5, 20) * depth;
+            gold += n;
+            log(`撿到 ${n} 枚金幣`);
+          } else {
+            hp = Math.min(MAX_HP, hp + 2);
+            log("喝下藥水，生命回復 2 點");
+          }
+        }
+        function descend() {
+          depth = mode === "demo" && depth >= 3 ? 1 : depth + 1;
+          log(`走下樓梯，來到第 ${depth} 層`);
+          generate();
+        }
+        function monstersAct() {
+          for (const m of monsters) {
+            const info = MONSTERS[m.type], d = cheb(m, player);
+            if (visible.has(m.x + m.y * W) && d <= RADIUS) m.alert = 8;
+            else if (m.alert > 0) m.alert--;
+            if (m.alert && d === 1) {
+              if (ROT.RNG.getUniform() < 0.55) {
+                if (mode === "play") { hp--; flash(); }
+                log(`${info.name}咬了你一口${mode === "play" ? "（生命 -1）" : ""}`);
+              } else log(`${info.name}撲空了`);
+              continue;
+            }
+            let step = null;
+            const erratic = m.type === "bat" && ROT.RNG.getUniform() < 0.45;
+            if (m.alert && !erratic) {
+              // A* toward the player through open floor (monsters cannot open doors)
+              const astar = new ROT.Path.AStar(player.x, player.y, (x, y) => inb(x, y) && transparent(map[x + y * W]), { topology: 8 });
+              const path = [];
+              astar.compute(m.x, m.y, (x, y) => path.push([x, y]));
+              if (path.length > 1) step = path[1];
+            } else if (erratic || ROT.RNG.getUniform() < 0.35) {
+              const [dx, dy] = ROT.RNG.getItem(DIRS8);
+              step = [m.x + dx, m.y + dy];
+            }
+            if (!step) continue;
+            const [nx, ny] = step;
+            if (inb(nx, ny) && transparent(map[nx + ny * W]) && !monsterAt(nx, ny) && !(nx === player.x && ny === player.y)) {
+              m.x = nx; m.y = ny;
+            }
+          }
+        }
+        function endTurn() {
+          computeFov();
+          monstersAct();
+          render();
+          hud();
+          if (mode === "play" && hp <= 0) {
+            mode = "over";
+            overAt = performance.now();
+            walkQueue = [];
+            log("你倒下了……");
+            overlay("你倒下了", `抵達第 ${depth} 層，帶著 ${gold} 枚金幣`, "按任意鍵或點擊重新開始");
+            render();
+            hud();
+          }
+        }
+        // returns "moved", "acted" (door or attack), or false when blocked
+        function tryMove(dx, dy) {
+          const nx = player.x + dx, ny = player.y + dy;
+          if (!inb(nx, ny)) return false;
+          const i = nx + ny * W, t = map[i];
+          if (t === WALL) return false;
+          const m = monsterAt(nx, ny);
+          if (m) {
+            m.hp--;
+            const name = MONSTERS[m.type].name;
+            if (m.hp <= 0) {
+              monsters.splice(monsters.indexOf(m), 1);
+              kills++;
+              log(`擊倒了${name}`);
+            } else log(`砍中${name}，牠還站著`);
+            endTurn();
+            return "acted";
+          }
+          if (t === DOOR) {
+            map[i] = OPEN;
+            log("推開了一扇門");
+            endTurn();
+            return "acted";
+          }
+          player.x = nx; player.y = ny;
+          pickup(i);
+          if (t === STAIRS) { descend(); return "moved"; }
+          endTurn();
+          return "moved";
+        }
+        function walkTo(tx, ty) {
+          const ti = tx + ty * W;
+          if (!inb(tx, ty) || map[ti] === WALL) return;
+          if (!explored[ti] && !reveal) { log("那裡還沒探索過"); return; }
+          const astar = new ROT.Path.AStar(tx, ty, (x, y) => inb(x, y) && passable(map[x + y * W]) && (explored[x + y * W] || reveal), { topology: 8 });
+          const path = [];
+          astar.compute(player.x, player.y, (x, y) => path.push([x, y]));
+          walkQueue = path.slice(1);
+        }
+        const seenMonsters = () => monsters.filter((m) => visible.has(m.x + m.y * W)).length;
+        function walkStep() {
+          if (mode !== "play" || !walkQueue.length) return;
+          const before = seenMonsters();
+          const [x, y] = walkQueue[0];
+          const wasDoor = map[x + y * W] === DOOR;
+          const res = tryMove(x - player.x, y - player.y);
+          if (res === "moved") walkQueue.shift();
+          else if (!(res === "acted" && wasDoor)) walkQueue = []; // keep walking through a door we just opened
+          if (seenMonsters() > before) walkQueue = []; // stop when something new shows up
+        }
+        // demo autopilot: chase visible monsters and items, otherwise explore the nearest frontier, then take the stairs
+        function autoStep() {
+          const start = player.x + player.y * W;
+          const isTarget = (n) => {
+            const x = n % W, y = (n / W) | 0;
+            if (visible.has(n) && (monsterAt(x, y) || items.has(n))) return true;
+            for (const [dx, dy] of DIRS8) if (inb(x + dx, y + dy) && !explored[x + dx + (y + dy) * W]) return true;
+            return false;
+          };
+          const prev = new Int32Array(W * H).fill(-1), queue = [start];
+          prev[start] = start;
+          let goal = -1;
+          for (let q = 0; q < queue.length && goal < 0; q++) {
+            const c = queue[q], cx = c % W, cy = (c / W) | 0;
+            for (const [dx, dy] of DIRS8) {
+              const nx = cx + dx, ny = cy + dy, n = nx + ny * W;
+              if (!inb(nx, ny) || prev[n] >= 0 || map[n] === WALL || !explored[n]) continue;
+              prev[n] = c;
+              queue.push(n);
+              if (isTarget(n)) { goal = n; break; }
+            }
+          }
+          if (goal < 0) goal = queue.find((n) => map[n] === STAIRS) ?? -1;
+          if (goal < 0) { generate(); return; }
+          let step = goal;
+          while (prev[step] !== start) step = prev[step];
+          tryMove((step % W) - player.x, ((step / W) | 0) - player.y);
+        }
+        function overlay(title, sub, go) {
+          ovTitle.textContent = title;
+          ovSub.textContent = sub;
+          ovGo.textContent = go;
+          ov.classList.remove("hide");
+        }
+        function startGame() {
+          if (mode === "over" && performance.now() - overAt < 800) return; // let the death screen register
+          mode = "play";
+          depth = 1; hp = MAX_HP; gold = 0; kills = 0;
+          ov.classList.add("hide");
+          logs = [];
+          log("你踏進地城，找到藍色的 &gt; 往下走");
+          generate();
+        }
 
-function log(msg) {
-  logs.push(msg);
-  logs = logs.slice(-2);
-  $("log").innerHTML = logs.map((m) => `<div>${m}</div>`).join("");
-}
+        const KEYS = {
+          ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
+          KeyW: [0, -1], KeyS: [0, 1], KeyA: [-1, 0], KeyD: [1, 0],
+          Numpad8: [0, -1], Numpad2: [0, 1], Numpad4: [-1, 0], Numpad6: [1, 0],
+          Numpad7: [-1, -1], Numpad9: [1, -1], Numpad1: [-1, 1], Numpad3: [1, 1],
+        };
+        ctx.on(window, "keydown", (e) => {
+          if (e.ctrlKey || e.metaKey || e.altKey || e.key === "Tab") return;
+          if (e.target.closest && e.target.closest(".sc-tabs, input, select, textarea")) return;
+          if (e.target.tagName === "BUTTON" && (e.key === " " || e.key === "Enter")) return;
+          if (mode !== "play") { if (!e.repeat) startGame(); e.preventDefault(); return; }
+          const d = KEYS[e.code];
+          if (d) { e.preventDefault(); walkQueue = []; tryMove(d[0], d[1]); }
+          else if (e.code === "Space" || e.code === "Period" || e.code === "Numpad5") { e.preventDefault(); log("原地等待"); endTurn(); }
+        });
+        ctx.on(board, "pointerdown", (e) => {
+          if (mode !== "play") { e.preventDefault(); startGame(); return; }
+          if (e.target !== canvas) return;
+          e.preventDefault();
+          const [x, y] = display.eventToPosition(e);
+          if (x >= 0) walkTo(x, y);
+        });
 
-function hud() {
-  $("hud").innerHTML = mode === "demo"
-    ? `展示模式 <span class="dim">第 ${depth} 層</span>`
-    : `第 ${depth} 層　<span class="hp">♥ ${hp}/${MAX_HP}</span>　金幣 ${gold}　<span class="dim">擊倒 ${kills}</span>`;
-}
+        ctx.interval(() => { if (mode === "demo" && map) autoStep(); }, 130);
+        ctx.interval(walkStep, 75);
+        ctx.interval(render, 120); // torch flicker
+        watch(ctx, wrap, fit);
+        log("展示模式：自動探索中");
+        ctx.frame(2).then(() => { if (ctx.active) generate(); });
+      },
+    },
 
-function flash() {
-  const el = $("flash");
-  el.classList.add("on");
-  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.remove("on")));
-}
+    // ---------- 2. map generators ----------
+    {
+      id: "maps", title: "地圖產生器",
+      api: "Map.Digger／Uniform／Rogue／Cellular／DividedMaze／EllerMaze／IceyMaze・RNG.setSeed",
+      desc: "同一個種子交給八種產生器。Digger、Uniform 用 getRooms() 與 getDoors() 回報房間與門（房間各自染色、門是橘色），Rogue 是 3 × 3 宮格的經典 Rogue 佈局，Cellular 的 connect() 會把孤立洞穴挖隧道接起來（洋紅色就是補挖的隧道），IceyMaze 的 regularity 越大，直線越長、轉彎越少。種子不變，地圖就完全一樣。",
+      hint: "按「換種子」或等它自動輪替；每張卡片最後是產生耗時",
+      mount(ctx) {
+        ctx.html(`<div class="board rot-maps"><div class="rot-seed"></div><div class="rot-cards"></div></div>`);
+        const seedEl = ctx.$(".rot-seed"), cardsEl = ctx.$(".rot-cards");
+        const MW = 41, MH = 25;
+        const ROOM = Array.from({ length: 24 }, (_, k) => `hsl(${(k * 47) % 360} 38% 46%)`);
+        const colorOf = (c) => (c === 1 ? "#7d8292" : c === 2 ? "#ff8c42" : c === 3 ? "#f72585" : ROOM[(c - 10) % ROOM.length]);
+        // cell codes: 0 wall, 1 floor or corridor, 2 door, 3 dug tunnel, 10 + k room k
+        function dungeon(m) {
+          const g = new Int16Array(MW * MH);
+          m.create((x, y, v) => { if (!v) g[x + y * MW] = 1; });
+          const rooms = m.getRooms();
+          rooms.forEach((r, k) => {
+            for (let y = r.getTop(); y <= r.getBottom(); y++) for (let x = r.getLeft(); x <= r.getRight(); x++) g[x + y * MW] = 10 + k;
+            r.getDoors((x, y) => { g[x + y * MW] = 2; });
+          });
+          return { g, info: `房間 ${rooms.length}・走廊 ${m.getCorridors().length}` };
+        }
+        function rogue() {
+          const m = new ROT.Map.Rogue(MW, MH);
+          const g = new Int16Array(MW * MH);
+          m.create((x, y, v) => { if (!v) g[x + y * MW] = 1; });
+          let k = 0;
+          for (const col of m.rooms) for (const r of col) {
+            for (let y = r.y; y < r.y + r.height; y++) for (let x = r.x; x < r.x + r.width; x++) g[x + y * MW] = 10 + k;
+            k++;
+          }
+          return { g, info: `${m.rooms.length} × ${m.rooms[0].length} 宮格・房間 ${k}` };
+        }
+        function cellular() {
+          const m = new ROT.Map.Cellular(MW, MH);
+          m.randomize(0.5);
+          for (let i = 0; i < 3; i++) m.create();
+          const before = new Uint8Array(MW * MH);
+          m.create((x, y, v) => { before[x + y * MW] = v; });
+          const g = new Int16Array(MW * MH);
+          let tunnels = 0;
+          m.connect((x, y, v) => { const i = x + y * MW; g[i] = v ? (before[i] ? 1 : 3) : 0; }, 1, () => tunnels++);
+          return { g, info: `補挖隧道 ${tunnels} 條` };
+        }
+        function maze(m, info) {
+          const g = new Int16Array(MW * MH);
+          m.create((x, y, v) => { if (!v) g[x + y * MW] = 1; });
+          return { g, info };
+        }
+        const GENS = [
+          { fn: "Map.Digger", make: () => dungeon(new ROT.Map.Digger(MW, MH, { dugPercentage: 0.3 })) },
+          { fn: "Map.Uniform", make: () => dungeon(new ROT.Map.Uniform(MW, MH, { roomDugPercentage: 0.25 })) },
+          { fn: "Map.Rogue", make: rogue },
+          { fn: "Map.Cellular + connect()", make: cellular },
+          { fn: "Map.DividedMaze", make: () => maze(new ROT.Map.DividedMaze(MW, MH), "遞迴切割") },
+          { fn: "Map.EllerMaze", make: () => maze(new ROT.Map.EllerMaze(MW, MH), "逐列合併") },
+          { fn: "Map.IceyMaze(w, h, 0)", make: () => maze(new ROT.Map.IceyMaze(MW, MH, 0), "regularity 0，彎曲") },
+          { fn: "Map.IceyMaze(w, h, 8)", make: () => maze(new ROT.Map.IceyMaze(MW, MH, 8), "regularity 8，長直") },
+        ];
+        const cards = GENS.map((G) => {
+          const cv = h("canvas"), box = h("div", { class: "rot-mapbox" }, cv);
+          const info = h("span");
+          cardsEl.append(h("div", { class: "rot-card" }, box, h("div", { class: "rot-cap" }, h("b", { text: G.fn }), info)));
+          return { cv, box, info, res: null };
+        });
+        function draw(card) {
+          if (!card.res) return;
+          const bw = card.box.clientWidth, bh = card.box.clientHeight;
+          const cs = Math.min(bw / MW, bh / MH);
+          const w = Math.max(1, Math.floor(cs * MW)), hh = Math.max(1, Math.floor(cs * MH));
+          card.cv.width = Math.round(w * DPR); card.cv.height = Math.round(hh * DPR);
+          card.cv.style.width = w + "px"; card.cv.style.height = hh + "px";
+          const g = card.cv.getContext("2d"), s = card.cv.width / MW, t = card.cv.height / MH;
+          g.fillStyle = "#151821";
+          g.fillRect(0, 0, card.cv.width, card.cv.height);
+          for (let y = 0; y < MH; y++) for (let x = 0; x < MW; x++) {
+            const c = card.res.g[x + y * MW];
+            if (!c) continue;
+            g.fillStyle = colorOf(c);
+            const x0 = Math.floor(x * s), y0 = Math.floor(y * t);
+            g.fillRect(x0, y0, Math.floor((x + 1) * s) - x0, Math.floor((y + 1) * t) - y0);
+          }
+        }
+        let seed = 1234, auto = true;
+        function regen() {
+          seedEl.innerHTML = `ROT.RNG.setSeed(<b>${seed}</b>)　同一個種子永遠產生同一組地圖`;
+          GENS.forEach((G, i) => {
+            ROT.RNG.setSeed(seed);
+            const t0 = performance.now();
+            const res = G.make();
+            const ms = performance.now() - t0;
+            let f = 0;
+            for (const c of res.g) if (c) f++;
+            const line = `${res.info}・地板 ${Math.round((f * 100) / (MW * MH))}%・${ms.toFixed(1)} ms`;
+            cards[i].res = res;
+            cards[i].info.textContent = line;
+            cards[i].info.title = line;
+            draw(cards[i]);
+          });
+        }
+        ctx.toggle("自動換種子", true, (v) => (auto = v));
+        ctx.button("換種子", () => { seed = newSeed(); regen(); }, { primary: true });
+        ctx.interval(() => { if (auto) { seed = newSeed(); regen(); } }, 4500);
+        watch(ctx, cardsEl, () => cards.forEach(draw));
+        regen();
+      },
+    },
 
-function pickup(i) {
-  const it = items.get(i);
-  if (!it) return;
-  items.delete(i);
-  if (it === "gold") {
-    const n = ROT.RNG.getUniformInt(5, 20) * depth;
-    gold += n;
-    log(`撿到 ${n} 枚金幣`);
-  } else {
-    hp = Math.min(MAX_HP, hp + 2);
-    log("喝下藥水，生命回復 2 點");
-  }
-}
+    // ---------- 3. field of view ----------
+    {
+      id: "fov", title: "視野演算法",
+      api: "FOV.PreciseShadowcasting・FOV.RecursiveShadowcasting・compute90()・Map.Arena",
+      desc: "同一張地圖、同一個觀察點：左邊 PreciseShadowcasting、中間 RecursiveShadowcasting，右邊用 Recursive 的 compute90() 只算 90 度錐形視野，方向跟著移動方向轉。洋紅色是兩種演算法結果不同的格子，數字是可見格數與單次計算時間（重複 20 次取平均）。地圖是 Map.Arena 加上隨機柱子。",
+      hint: "滑鼠移到任一張地圖上控制觀察點，放開 2.5 秒後恢復自動漫遊",
+      mount(ctx) {
+        ctx.html(`<div class="board rot-tri"></div>`);
+        const board = ctx.$(".board");
+        // Calibrate compute90 directions: centroid angle of the cone for each dir index.
+        const cal = (() => {
+          const f = new ROT.FOV.RecursiveShadowcasting(() => true);
+          return Array.from({ length: 8 }, (_, d) => {
+            let sx = 0, sy = 0;
+            f.compute90(0, 0, 6, d, (x, y) => { sx += x; sy += y; });
+            return Math.atan2(sy, sx);
+          });
+        })();
+        const dirFor = (dx, dy) => {
+          const a = Math.atan2(dy, dx);
+          let best = 0, bd = 9;
+          cal.forEach((c, i) => { const d = Math.abs(Math.atan2(Math.sin(a - c), Math.cos(a - c))); if (d < bd) { bd = d; best = i; } });
+          return best;
+        };
+        let W = 0, H = 0, grid = null, viewer = { x: 1, y: 1 }, path = [], cone = 2, radius = 8, manualUntil = 0;
+        const inb = (x, y) => x >= 0 && y >= 0 && x < W && y < H;
+        const light = (x, y) => inb(x, y) && grid[x + y * W] === 1;
+        const ALGOS = [
+          { fn: "FOV.PreciseShadowcasting", f: new ROT.FOV.PreciseShadowcasting(light), run: (f, cb) => f.compute(viewer.x, viewer.y, radius, cb) },
+          { fn: "FOV.RecursiveShadowcasting", f: new ROT.FOV.RecursiveShadowcasting(light), run: (f, cb) => f.compute(viewer.x, viewer.y, radius, cb) },
+          { fn: "Recursive.compute90()", f: new ROT.FOV.RecursiveShadowcasting(light), run: (f, cb) => f.compute90(viewer.x, viewer.y, radius, cone, cb) },
+        ];
+        const panes = ALGOS.map(() => {
+          const p = pane(board);
+          p.d = makeDisplay(ctx, p.view, { forceSquareRatio: true });
+          const c = p.d.getContainer();
+          const steer = (e) => {
+            const [x, y] = p.d.eventToPosition(e);
+            if (x < 0 || !light(x, y)) return;
+            manualUntil = performance.now() + 2500;
+            path = [];
+            moveTo(x, y);
+          };
+          ctx.on(c, "pointermove", steer);
+          ctx.on(c, "pointerdown", steer);
+          return p;
+        });
+        const NEAR = [210, 190, 140], FAR = [70, 66, 70];
+        function build() {
+          const v = panes[0].view, pw = v.clientWidth, ph = v.clientHeight;
+          if (pw < 20 || ph < 20) return;
+          const cs = Math.max(7, Math.sqrt((pw * ph) / 620));
+          const nW = Math.max(12, Math.floor(pw / cs)), nH = Math.max(9, Math.floor(ph / cs));
+          if (grid && nW === W && nH === H) { panes.forEach((p) => fitSquare(p.d, W, H, pw, ph)); return draw(); }
+          W = nW; H = nH;
+          grid = new Uint8Array(W * H);
+          new ROT.Map.Arena(W, H).create((x, y, wall) => { grid[x + y * W] = wall ? 0 : 1; });
+          for (let i = 0; i < W * H; i++) if (grid[i] && ROT.RNG.getPercentage() <= 7) grid[i] = 0;
+          for (let k = 0; k < 4; k++) {
+            const horiz = ROT.RNG.getUniform() < 0.5, len = ROT.RNG.getUniformInt(3, 6);
+            const x0 = ROT.RNG.getUniformInt(2, W - 3), y0 = ROT.RNG.getUniformInt(2, H - 3);
+            for (let j = 0; j < len; j++) { const x = horiz ? x0 + j : x0, y = horiz ? y0 : y0 + j; if (x < W - 1 && y < H - 1) grid[x + y * W] = 0; }
+          }
+          viewer = randomFloor(grid, W);
+          path = [];
+          panes.forEach((p) => fitSquare(p.d, W, H, pw, ph));
+          compute();
+        }
+        function moveTo(x, y) {
+          const dx = Math.sign(x - viewer.x), dy = Math.sign(y - viewer.y);
+          if (dx || dy) cone = dirFor(dx, dy);
+          viewer = { x, y };
+          compute();
+        }
+        function wander() {
+          if (!grid || performance.now() < manualUntil) return;
+          if (!path.length) {
+            const t = randomFloor(grid, W);
+            new ROT.Path.AStar(t.x, t.y, light, { topology: 8 }).compute(viewer.x, viewer.y, (x, y) => path.push([x, y]));
+            path.shift();
+            if (!path.length) return;
+          }
+          const [x, y] = path.shift();
+          moveTo(x, y);
+        }
+        let sets = [], stats = [];
+        function compute() {
+          sets = ALGOS.map((a) => {
+            const s = new Map();
+            a.run(a.f, (x, y, r, vis) => { if (vis && inb(x, y)) s.set(x + y * W, r); });
+            return s;
+          });
+          stats = ALGOS.map((a) => {
+            const t0 = performance.now();
+            for (let i = 0; i < 20; i++) a.run(a.f, () => {});
+            return (performance.now() - t0) / 20;
+          });
+          draw();
+        }
+        function draw() {
+          if (!grid) return;
+          const [A, B] = sets;
+          let diff = 0;
+          for (const k of A.keys()) if (!B.has(k)) diff++;
+          for (const k of B.keys()) if (!A.has(k)) diff++;
+          panes.forEach((p, k) => {
+            const s = sets[k], other = k === 0 ? B : k === 1 ? A : null;
+            for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+              const i = x + y * W, wall = !grid[i], r = s.get(i);
+              const odd = other && s.has(i) !== other.has(i);
+              let ch = wall ? "#" : "·", fg, bg;
+              if (r !== undefined) {
+                const f = Math.min(1, r / (radius + 0.5));
+                const c = C.interpolate(NEAR, FAR, f);
+                bg = C.toRGB(C.multiply(c, wall ? [170, 150, 120] : [110, 100, 90]));
+                fg = C.toRGB(wall ? c : C.multiply(c, [255, 240, 200]));
+              } else { bg = "#0b0d12"; fg = wall ? "#2b3040" : "#1a1e28"; }
+              if (odd) { bg = s.has(i) ? "#8a1f55" : "#3a0f28"; fg = "#ff8ac4"; }
+              if (x === viewer.x && y === viewer.y) { ch = "@"; fg = "#f7df1e"; }
+              p.d.draw(x, y, ch, fg, bg);
+            }
+            const extra = k < 2 ? `・差異 ${diff} 格` : `・朝向 dir ${cone}`;
+            p.set(ALGOS[k].fn, `可見 ${s.size} 格・${stats[k] < 0.1 ? stats[k].toFixed(3) : stats[k].toFixed(2)} ms${extra}`);
+          });
+        }
+        ctx.slider("半徑", { min: 2, max: 20, value: radius }, (v) => { radius = v; compute(); });
+        ctx.button("新地圖", () => { grid = null; W = 0; build(); }, { primary: true });
+        ctx.interval(wander, 150);
+        watch(ctx, panes[0].view, build); // observe a nested node: the shell resizes .board from its own observer
+        ctx.frame(2).then(() => ctx.active && build());
+      },
+    },
 
-function descend() {
-  depth = mode === "demo" && depth >= 3 ? 1 : depth + 1;
-  log(`走下樓梯，來到第 ${depth} 層`);
-  generate();
-  hud();
-}
+    // ---------- 4. lighting ----------
+    {
+      id: "light", title: "光照混色",
+      api: "ROT.Lighting・setLight()・setFOV()・compute()・Color.add／multiply",
+      desc: "四盞彩色燈在地城裡巡邏。ROT.Lighting 先用 FOV 找出每盞燈照得到的格子，再依 passes 做反射：光打到地板會反彈，把顏色帶進看不到燈的角落。每格最後的顏色 = 底色 × (環境光 + 所有燈光相加)，分別用 Color.add 與 Color.multiply 算出。燈光重疊的地方會混色。",
+      hint: "滑鼠移到地圖上會多一盞白光；切換反射次數看暗角怎麼變亮",
+      mount(ctx) {
+        ctx.html(`<div class="board rot-one"></div>`);
+        const P = pane(ctx.$(".board"));
+        const d = makeDisplay(ctx, P.view, { forceSquareRatio: true });
+        let W = 0, H = 0, grid = null, L = null, passes = 2, refl = 0.3, mouse = null, lights = [];
+        const inb = (x, y) => x >= 0 && y >= 0 && x < W && y < H;
+        const floor = (x, y) => inb(x, y) && grid[x + y * W] === 1;
+        const COLORS = [[255, 130, 30], [50, 120, 255], [60, 230, 110], [240, 50, 160]];
+        const AMB = [26, 26, 34];
+        // Reflections add up fast (every lit floor cell re-emits). Compress the brightest channel and scale
+        // the others with it, so overlapping lights still mix but a room does not clip to flat white.
+        const tone = (c) => {
+          const m = Math.max(c[0], c[1], c[2]);
+          if (m <= 200) return c;
+          const k = (200 + 170 * (1 - Math.exp(-(m - 200) / 500))) / m;
+          return c.map((v) => v * k);
+        };
+        const lightAt = (i, lit) => tone(lit.has(i) ? C.add(AMB, lit.get(i)) : AMB);
+        function build() {
+          const pw = P.view.clientWidth, ph = P.view.clientHeight;
+          if (pw < 40 || ph < 40) return;
+          const cs = Math.max(9, Math.min(16, Math.sqrt((pw * ph) / 1500)));
+          W = Math.max(20, Math.floor(pw / cs)); H = Math.max(12, Math.floor(ph / cs));
+          grid = new Uint8Array(W * H);
+          new ROT.Map.Digger(W, H, { roomWidth: [4, 10], roomHeight: [3, 7], corridorLength: [2, 6], dugPercentage: 0.55 })
+            .create((x, y, v) => { if (!v) grid[x + y * W] = 1; });
+          L = new ROT.Lighting((x, y) => (floor(x, y) ? refl : 0), { range: 12, passes });
+          L.setFOV(new ROT.FOV.PreciseShadowcasting(floor));
+          lights = COLORS.map((c) => ({ ...randomFloor(grid, W), c, path: [] }));
+          fitSquare(d, W, H, pw, ph);
+          relight();
+        }
+        function step() {
+          if (!grid) return;
+          for (const l of lights) {
+            if (!l.path.length) {
+              const t = randomFloor(grid, W);
+              new ROT.Path.AStar(t.x, t.y, floor, { topology: 8 }).compute(l.x, l.y, (x, y) => l.path.push([x, y]));
+              l.path.shift();
+            }
+            const nx = l.path.shift();
+            if (nx) { l.x = nx[0]; l.y = nx[1]; }
+          }
+          relight();
+        }
+        function relight() {
+          L.clearLights();
+          for (const l of lights) L.setLight(l.x, l.y, l.c);
+          if (mouse) L.setLight(mouse.x, mouse.y, [235, 235, 235]);
+          const lit = new Map();
+          const t0 = performance.now();
+          L.compute((x, y, c) => { lit.set(x + y * W, c); });
+          const ms = performance.now() - t0;
+          for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+            const i = x + y * W, wall = !grid[i];
+            const lc = lightAt(i, lit);
+            const bg = C.multiply(wall ? [120, 110, 100] : [80, 76, 72], lc);
+            const fg = C.multiply(wall ? [235, 220, 200] : [170, 165, 155], lc);
+            d.draw(x, y, wall ? "#" : "·", C.toRGB(fg), C.toRGB(bg));
+          }
+          for (const l of lights) d.draw(l.x, l.y, "*", C.toRGB(C.interpolate(l.c, [255, 255, 255], 0.5)), C.toRGB(C.multiply([80, 76, 72], lightAt(l.x + l.y * W, lit))));
+          if (mouse) d.draw(mouse.x, mouse.y, "@", "#ffffff", "#6d6b64");
+          const n = lights.length + (mouse ? 1 : 0);
+          P.set("ROT.Lighting", `燈 ${n} 盞・照亮 ${fmt(lit.size)} 格・passes ${passes}・反射率 ${refl.toFixed(2)}・${ms.toFixed(1)} ms`);
+        }
+        const c = d.getContainer();
+        const aim = (e) => {
+          const [x, y] = d.eventToPosition(e);
+          const next = x >= 0 && floor(x, y) ? { x, y } : null;
+          if ((next && mouse && next.x === mouse.x && next.y === mouse.y) || (!next && !mouse)) return;
+          mouse = next;
+          relight();
+        };
+        ctx.on(c, "pointermove", aim);
+        ctx.on(c, "pointerdown", aim);
+        ctx.on(c, "pointerleave", () => { mouse = null; if (grid) relight(); });
+        ctx.group(["只算直射", "反射 1 次", "反射 2 次"], 1, (i) => { passes = i + 1; L && L.setOptions({ passes }); grid && relight(); });
+        ctx.slider("地板反射率", { min: 0, max: 0.6, step: 0.05, value: refl }, (v) => { refl = v; if (L) { L.reset(); relight(); } });
+        ctx.button("新地圖", build, { primary: true });
+        ctx.interval(step, 170);
+        watch(ctx, P.view, build);
+        ctx.frame(2).then(() => ctx.active && build());
+      },
+    },
 
-function monstersAct() {
-  for (const m of monsters) {
-    const info = MONSTERS[m.type], d = cheb(m, player);
-    if (visible.has(m.x + m.y * W) && d <= RADIUS) m.alert = 8;
-    else if (m.alert > 0) m.alert--;
-    if (m.alert && d === 1) {
-      if (ROT.RNG.getUniform() < 0.55) {
-        if (mode === "play") { hp--; flash(); }
-        log(`${info.name}咬了你一口${mode === "play" ? "（生命 -1）" : ""}`);
-      } else log(`${info.name}撲空了`);
-      continue;
-    }
-    let step = null;
-    const erratic = m.type === "bat" && ROT.RNG.getUniform() < 0.45;
-    if (m.alert && !erratic) {
-      // A* toward the player through open floor (monsters cannot open doors)
-      const astar = new ROT.Path.AStar(player.x, player.y,
-        (x, y) => inb(x, y) && transparent(map[x + y * W]), { topology: 8 });
-      const path = [];
-      astar.compute(m.x, m.y, (x, y) => path.push([x, y]));
-      if (path.length > 1) step = path[1];
-    } else if (erratic || ROT.RNG.getUniform() < 0.35) {
-      const [dx, dy] = ROT.RNG.getItem(DIRS8);
-      step = [m.x + dx, m.y + dy];
-    }
-    if (!step) continue;
-    const [nx, ny] = step;
-    if (inb(nx, ny) && transparent(map[nx + ny * W]) && !monsterAt(nx, ny) && !(nx === player.x && ny === player.y)) {
-      m.x = nx; m.y = ny;
-    }
-  }
-}
+    // ---------- 5. pathfinding ----------
+    {
+      id: "path", title: "尋路比較",
+      api: "Path.AStar・Path.Dijkstra・topology 4／8・passableCallback",
+      desc: "同一組起點與終點，左邊 A*、右邊 Dijkstra。把 passableCallback 包一層記錄被查詢的格子，就能看出兩者搜尋了多少地方：亮青色是最早查詢的格子，越晚越暗。rot.js 從終點往起點搜尋，所以擴散的中心在「終」。A* 有啟發函式，通常只查詢一小部分；Dijkstra 會向四周均勻擴散。注意耗時：rot.js 的 A* 用排序陣列逐一插入待處理格，Dijkstra 是單純的廣度優先佇列，在迷宮這種啟發函式幫不上忙的地圖，A* 查得少卻可能反而比較慢。",
+      hint: "點地圖設定終點，拖曳可即時移動；切換洞穴／迷宮與 4／8 方向",
+      mount(ctx) {
+        ctx.html(`<div class="board rot-duo"></div>`);
+        const board = ctx.$(".board");
+        const ALGOS = [{ fn: "Path.AStar", C: ROT.Path.AStar }, { fn: "Path.Dijkstra", C: ROT.Path.Dijkstra }];
+        const HEAT = Array.from({ length: 32 }, (_, k) => C.toRGB(C.interpolate([90, 225, 245], [40, 36, 120], k / 31)));
+        let W = 0, H = 0, cs = 8, grid = null, kind = 0, topo = 8, start, goal, runs = [], anim0 = 0, animating = false, idleUntil = 0;
+        const inb = (x, y) => x >= 0 && y >= 0 && x < W && y < H;
+        const plain = (x, y) => inb(x, y) && grid[x + y * W] === 1;
+        const panes = ALGOS.map(() => {
+          const p = pane(board);
+          p.cv = h("canvas");
+          p.view.append(p.cv);
+          const cell = (e) => {
+            const r = p.cv.getBoundingClientRect();
+            return { x: Math.floor(((e.clientX - r.left) / r.width) * W), y: Math.floor(((e.clientY - r.top) / r.height) * H) };
+          };
+          ctx.on(p.cv, "pointerdown", (e) => {
+            const c = cell(e);
+            if (!plain(c.x, c.y)) return;
+            p.cv.setPointerCapture(e.pointerId);
+            goal = c; idleUntil = performance.now() + 8000;
+            solve(true);
+          });
+          ctx.on(p.cv, "pointermove", (e) => {
+            if (!e.buttons) return;
+            const c = cell(e);
+            if (!plain(c.x, c.y) || (c.x === goal.x && c.y === goal.y)) return;
+            goal = c; idleUntil = performance.now() + 8000;
+            solve(false);
+          });
+          return p;
+        });
+        function build() {
+          const v = panes[0].view, pw = v.clientWidth, ph = v.clientHeight;
+          if (pw < 40 || ph < 40) return;
+          cs = Math.max(5, Math.min(14, Math.floor(Math.sqrt((pw * ph) / 1100))));
+          W = Math.floor(pw / cs); H = Math.floor(ph / cs);
+          if (kind === 1) { W -= 1 - (W % 2); H -= 1 - (H % 2); }
+          grid = new Uint8Array(W * H);
+          if (kind === 0) {
+            const m = new ROT.Map.Cellular(W, H);
+            m.randomize(0.5);
+            for (let i = 0; i < 3; i++) m.create();
+            m.connect((x, y, val) => { grid[x + y * W] = val === 1 && x > 0 && y > 0 && x < W - 1 && y < H - 1 ? 1 : 0; }, 1);
+          } else {
+            new ROT.Map.DividedMaze(W, H).create((x, y, val) => { grid[x + y * W] = val ? 0 : 1; });
+          }
+          for (const p of panes) {
+            p.cv.width = W * cs * DPR; p.cv.height = H * cs * DPR;
+            p.cv.style.width = W * cs + "px"; p.cv.style.height = H * cs + "px";
+          }
+          pickEnds(true);
+          solve(true);
+        }
+        function pickEnds(both) {
+          const far = (a, b) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y) > (W + H) / 3;
+          if (both || !start) start = randomFloor(grid, W);
+          let tries = 0;
+          do { goal = randomFloor(grid, W); } while (!far(start, goal) && ++tries < 60);
+        }
+        function solve(animate) {
+          runs = ALGOS.map((a) => {
+            const seenAt = new Int32Array(W * H).fill(-1), order = [];
+            let calls = 0;
+            const spy = (x, y) => {
+              calls++;
+              if (!inb(x, y)) return false;
+              const i = x + y * W;
+              if (seenAt[i] < 0) { seenAt[i] = order.length; order.push(i); }
+              return grid[i] === 1;
+            };
+            const path = [];
+            new a.C(goal.x, goal.y, spy, { topology: topo }).compute(start.x, start.y, (x, y) => path.push(x + y * W));
+            // time without the recording wrapper
+            const t0 = performance.now();
+            let rep = 0;
+            do { new a.C(goal.x, goal.y, plain, { topology: topo }).compute(start.x, start.y, () => {}); rep++; } while (performance.now() - t0 < 10 && rep < 200);
+            return { seenAt, order, calls, path, ms: (performance.now() - t0) / rep };
+          });
+          const [A, D] = runs;
+          panes.forEach((p, k) => {
+            const r = runs[k];
+            const save = k === 0 && D.order.length ? `・少查 ${Math.round((1 - A.order.length / D.order.length) * 100)}%` : "";
+            const len = r.path.length ? `路徑 ${r.path.length - 1} 步` : "無路可走";
+            p.set(ALGOS[k].fn, `查詢 ${fmt(r.order.length)} 格・${len}・${r.ms.toFixed(2)} ms${save}`);
+          });
+          anim0 = performance.now() - (animate ? 0 : 1e6);
+          animating = true;
+        }
+        function draw(now) {
+          if (!animating || !grid) return;
+          const maxN = Math.max(...runs.map((r) => r.order.length));
+          const t = (now - anim0) / 1100;
+          const shown = Math.min(1, t) * maxN;
+          panes.forEach((p, k) => {
+            const r = runs[k], g = p.cv.getContext("2d"), s = cs * DPR;
+            g.fillStyle = "#151821";
+            g.fillRect(0, 0, p.cv.width, p.cv.height);
+            for (let i = 0; i < W * H; i++) {
+              const q = r.seenAt[i];
+              if (grid[i] === 1) g.fillStyle = q >= 0 && q < shown ? HEAT[Math.min(31, Math.floor((q / maxN) * 32))] : "#2a2e38";
+              else if (q >= 0 && q < shown) g.fillStyle = "#3a2433";
+              else continue;
+              g.fillRect((i % W) * s, ((i / W) | 0) * s, s, s);
+            }
+            if (t >= 1 && r.path.length) {
+              const upto = Math.min(r.path.length, Math.ceil(((t - 1) / 0.35) * r.path.length));
+              g.fillStyle = "#f7df1e";
+              for (let j = 0; j < upto; j++) { const i = r.path[j]; g.fillRect((i % W) * s + s * 0.2, ((i / W) | 0) * s + s * 0.2, s * 0.6, s * 0.6); }
+            }
+            const dot = (c, col, label) => {
+              const cx = (c.x + 0.5) * s, cy = (c.y + 0.5) * s, rad = Math.max(s * 0.9, 7 * DPR);
+              g.fillStyle = col; g.beginPath(); g.arc(cx, cy, rad, 0, Math.PI * 2); g.fill();
+              g.fillStyle = "#111"; g.font = `700 ${Math.round(rad * 1.1)}px ${CJK}`; g.textAlign = "center"; g.textBaseline = "middle";
+              g.fillText(label, cx, cy + rad * 0.05);
+            };
+            dot(start, "#7bd389", "起");
+            dot(goal, "#f72585", "終");
+          });
+          if (t >= 1.4) animating = false;
+        }
+        ctx.group(["洞穴", "迷宮"], 0, (i) => { kind = i; build(); });
+        ctx.group(["4 方向", "8 方向"], 1, (i) => { topo = i ? 8 : 4; solve(true); });
+        ctx.button("換起點", () => { pickEnds(true); solve(true); }, { primary: true });
+        ctx.interval(() => { if (grid && performance.now() > idleUntil) { pickEnds(ROT.RNG.getUniform() < 0.3); solve(true); } }, 3600);
+        ctx.raf((t) => draw(performance.now()));
+        watch(ctx, panes[0].view, () => { if (!grid || Math.abs(panes[0].view.clientWidth - W * cs) > cs * 2 || Math.abs(panes[0].view.clientHeight - H * cs) > cs * 2) build(); });
+        ctx.frame(2).then(() => ctx.active && build());
+      },
+    },
 
-function endTurn() {
-  computeFov();
-  monstersAct();
-  render();
-  hud();
-  if (mode === "play" && hp <= 0) {
-    mode = "over";
-    overAt = performance.now();
-    walkQueue = [];
-    log("你倒下了……");
-    overlay("你倒下了", `抵達第 ${depth} 層，帶著 ${gold} 枚金幣`, "按任意鍵或點擊重新開始");
-    render();
-    hud();
-  }
-}
+    // ---------- 6. scheduler + engine ----------
+    {
+      id: "sched", title: "回合排程",
+      api: "Scheduler.Simple／Speed／Action・ROT.Engine・StringGenerator・Display.drawText",
+      desc: "五個角色交給排程器決定誰先行動。Simple 單純輪流；Speed 依 getSpeed() 決定頻率，速度 200 的角色行動次數是速度 50 的 4 倍；Action 依每個動作的時長排隊，施法（4）要等很久，休息（0.5）馬上又輪到。ROT.Engine 每次等 act() 回傳的 Promise 完成才叫下一位。角色名是 StringGenerator 學台灣鄉鎮名後拼出來的，右邊紀錄用 drawText 的 %c{顏色} 上色。",
+      hint: "切換三種排程器比較時間軸；「重新命名」會用 StringGenerator 產生新名字",
+      mount(ctx) {
+        ctx.html(`<div class="board rot-sched"><div class="rot-legend"></div><div class="rot-sgrid"></div></div>`);
+        const legend = ctx.$(".rot-legend"), sgrid = ctx.$(".rot-sgrid");
+        const TL = pane(sgrid), LG = pane(sgrid);
+        const cv = h("canvas");
+        TL.view.append(cv);
+        const d = makeDisplay(ctx, LG.view, { forceSquareRatio: true, fontStyle: "" });
+        const SPEEDS = [50, 80, 100, 140, 200], COLORS = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42"];
+        const DUR = { 移動: 1, 攻擊: 2, 施法: 4, 休息: 0.5 }, WEIGHTS = { 移動: 5, 攻擊: 3, 施法: 1, 休息: 2 };
+        const MODES = [
+          { fn: "Scheduler.Simple", span: 30, note: "不管速度，大家輪流" },
+          { fn: "Scheduler.Speed", span: 6, note: "時間軸單位 = 100 ÷ 速度" },
+          { fn: "Scheduler.Action", span: 10, note: "setDuration() 決定下次輪到的時間" },
+        ];
+        const known = new Set(PLACES);
+        const sg = new ROT.StringGenerator({ order: 1, prior: 0.002 });
+        PLACES.forEach((w) => sg.observe(w));
+        let mode = 1, gen = 0, events = [], lines = [], turn = 0, now = 0, actors = [], LW = 20, LH = 10;
+        function rename() {
+          const taken = new Set();
+          actors = SPEEDS.map((speed, k) => {
+            let name = "";
+            for (let i = 0; i < 80 && !name; i++) {
+              const s = sg.generate();
+              if (s.length >= 2 && s.length <= 3 && !known.has(s) && !taken.has(s)) name = s;
+            }
+            name = name || `角色${k + 1}`;
+            taken.add(name);
+            return { name, speed, color: COLORS[k] };
+          });
+        }
+        function drawLegend() {
+          legend.innerHTML = actors.map((a) => `<span><i style="background:${a.color}"></i>${a.name}${mode === 1 ? ` <em>速度 ${a.speed}</em>` : ""}</span>`).join("")
+            + (mode === 2 ? `<span><em>動作時長：移動 1・攻擊 2・施法 4・休息 0.5</em></span>` : "");
+        }
+        const fmtT = (t) => (mode === 0 ? String(t) : t.toFixed(1));
+        function restart() {
+          const my = ++gen;
+          events = []; lines = []; turn = 0; now = 0;
+          const S = mode === 0 ? new ROT.Scheduler.Simple() : mode === 1 ? new ROT.Scheduler.Speed() : new ROT.Scheduler.Action();
+          actors.forEach((a, k) => {
+            const item = { getSpeed: () => a.speed, act: () => act(k, S, my) };
+            if (mode === 2) S.add(item, true, k * 0.25); else S.add(item, true);
+          });
+          drawLegend();
+          drawTimeline();
+          drawLog();
+          new ROT.Engine(S).start();
+        }
+        function act(k, S, my) {
+          // a stale engine gets a promise that never settles, so it stays locked and is dropped
+          if (my !== gen || !ctx.active) return new Promise(() => {});
+          const a = actors[k], what = ROT.RNG.getWeightedValue(WEIGHTS);
+          let t, dur;
+          if (mode === 0) { t = turn; dur = 1; }
+          else if (mode === 1) { t = S.getTime() * 100; dur = 100 / a.speed; }
+          else { t = S.getTime(); dur = DUR[what]; S.setDuration(dur); }
+          turn++;
+          now = t;
+          events.push({ k, t, dur, what });
+          if (events.length > 240) events.shift();
+          lines.push(`%c{${a.color}}${a.name}%c{} ${what} %c{#8b897f}t=${fmtT(t)}`);
+          if (lines.length > 60) lines.shift();
+          drawTimeline();
+          drawLog();
+          return new Promise((res) => ctx.timeout(res, 260));
+        }
+        function drawTimeline() {
+          const { g, w, h: hh } = sizeCanvas(cv, TL.view);
+          g.clearRect(0, 0, w, hh);
+          const M = MODES[mode], labelW = 62, span = M.span;
+          const t1 = Math.max(span * 0.85, now + span * 0.15), t0 = t1 - span;
+          const px = (t) => labelW + ((t - t0) / span) * (w - labelW - 6);
+          const rowH = Math.min(36, (hh - 24) / actors.length);
+          const step = span >= 20 ? 5 : span >= 8 ? 2 : 1;
+          g.font = `10px ${MONO}`;
+          g.textBaseline = "alphabetic";
+          for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+            const x = px(t);
+            g.fillStyle = "rgba(255,255,255,0.07)";
+            g.fillRect(x, 4, 1, hh - 22);
+            g.fillStyle = "#77756d";
+            g.fillText(String(t), x + 2, hh - 6);
+          }
+          actors.forEach((a, k) => {
+            const y = 6 + k * rowH;
+            g.fillStyle = a.color;
+            g.font = `600 12px ${CJK}`;
+            g.textBaseline = "middle";
+            g.fillText(a.name, 8, y + rowH / 2);
+          });
+          g.font = `600 10px ${CJK}`;
+          for (const e of events) {
+            const xa = Math.max(labelW, px(e.t)), xb = px(e.t + e.dur);
+            if (xb < labelW || xa > w) continue;
+            const y = 6 + e.k * rowH;
+            g.fillStyle = actors[e.k].color;
+            g.globalAlpha = 0.82;
+            g.fillRect(xa + 1, y + 3, Math.max(2, xb - xa - 2), rowH - 6);
+            g.globalAlpha = 1;
+            if (mode === 2 && xb - xa > 16) { g.fillStyle = "#111"; g.fillText(e.what[0], xa + 4, y + rowH / 2); }
+          }
+          const xn = px(now);
+          g.fillStyle = "#ffffff";
+          g.fillRect(xn, 2, 1.5, hh - 20);
+          TL.set(M.fn, `${M.note}・已排程 ${turn} 次`);
+        }
+        function fitLog() {
+          LW = Math.max(8, Math.floor(LG.view.clientWidth / 14));
+          LH = Math.max(4, Math.floor(LG.view.clientHeight / 14));
+          d.setOptions({ width: LW, height: LH, fontSize: Math.round(14 * DPR) });
+          const c = d.getContainer();
+          c.style.width = c.width / DPR + "px"; c.style.height = c.height / DPR + "px";
+        }
+        function drawLog() {
+          d.clear();
+          let y = LH;
+          for (let i = lines.length - 1; i >= 0; i--) {
+            y -= ROT.Text.measure(lines[i], LW).height;
+            if (y < 0) break;
+            d.drawText(0, y, lines[i], LW);
+          }
+          LG.set("Display.drawText(x, y, \"%c{色}…\")", `ROT.Engine 等 act() 的 Promise 完成才換下一位`);
+        }
+        ctx.group(["Simple 輪流", "Speed 速度", "Action 時長"], mode, (i) => { mode = i; restart(); });
+        ctx.button("重新命名", () => { rename(); restart(); }, { primary: true });
+        watch(ctx, sgrid, () => { fitLog(); drawLog(); drawTimeline(); });
+        rename();
+        ctx.frame(2).then(() => { if (ctx.active) { fitLog(); restart(); } });
+      },
+    },
 
-// returns "moved", "acted" (door or attack), or false when blocked
-function tryMove(dx, dy) {
-  const nx = player.x + dx, ny = player.y + dy;
-  if (!inb(nx, ny)) return false;
-  const i = nx + ny * W, t = map[i];
-  if (t === WALL) return false;
-  const m = monsterAt(nx, ny);
-  if (m) {
-    m.hp--;
-    const name = MONSTERS[m.type].name;
-    if (m.hp <= 0) {
-      monsters.splice(monsters.indexOf(m), 1);
-      kills++;
-      log(`擊倒了${name}`);
-    } else log(`砍中${name}，牠還站著`);
-    endTurn();
-    return "acted";
-  }
-  if (t === DOOR) {
-    map[i] = OPEN;
-    log("推開了一扇門");
-    endTurn();
-    return "acted";
-  }
-  player.x = nx; player.y = ny;
-  pickup(i);
-  if (t === STAIRS) { descend(); return "moved"; }
-  endTurn();
-  return "moved";
-}
+    // ---------- 7. noise + display layouts ----------
+    {
+      id: "layouts", title: "雜訊與版面",
+      api: "Noise.Simplex・Display layout rect／hex／tile・tileColorize",
+      desc: "同一片 Noise.Simplex 地形用 Display 的三種版面畫出來：rect 用字元（≈ ~ . \" ♣ ▲），hex 是六角格（只有 x + y 為偶數的座標才有格子），tile 用一張執行時產生的 8 × 8 白色圖塊表，靠 tileColorize 把同一組圖塊染成不同地形色。右下是雜訊原始值（-1 到 1）。地圖持續往右捲動，每一格都是即時取樣。",
+      hint: "調整比例尺放大縮小地形；「換種子」會用 RNG.setSeed 產生另一片世界",
+      mount(ctx) {
+        ctx.html(`<div class="board rot-quad"></div>`);
+        const board = ctx.$(".board");
+        const T = [
+          { ch: "≈", fg: "#5f8fe8", bg: "#10204a" },
+          { ch: "~", fg: "#8fc0f5", bg: "#1d3c70" },
+          { ch: ".", fg: "#efdca4", bg: "#7a6838" },
+          { ch: '"', fg: "#9be070", bg: "#2c5626" },
+          { ch: "♣", fg: "#5ccb7a", bg: "#173a20" },
+          { ch: "▲", fg: "#f0f0f6", bg: "#5a5a66" },
+        ];
+        const PAT = [
+          ["........", ".##..##.", "#..##..#", "........", "........", ".##..##.", "#..##..#", "........"],
+          ["........", "........", "..##....", ".#..#..#", "......#.", "........", "........", "........"],
+          ["........", ".#...#..", "........", "...#...#", "........", "#...#...", "........", "..#...#."],
+          ["........", "........", ".#..#...", ".#..#.#.", "#.##.#.#", "........", "...#..#.", "..#.##.#"],
+          ["...##...", "..####..", ".######.", "..####..", ".######.", "########", "...##...", "...##..."],
+          ["........", "...#....", "..###...", "..####..", ".######.", ".#######", "########", "........"],
+        ];
+        // Build an 8 x 8 white tileset at runtime; tileColorize tints it per draw call.
+        const tileSet = h("canvas");
+        tileSet.width = 8 * PAT.length; tileSet.height = 8;
+        const tg = tileSet.getContext("2d");
+        tg.fillStyle = "#fff";
+        const tileMap = {};
+        PAT.forEach((rows, k) => {
+          rows.forEach((row, y) => [...row].forEach((c, x) => { if (c === "#") tg.fillRect(k * 8 + x, y, 1, 1); }));
+          tileMap[T[k].ch] = [k * 8, 0];
+        });
+        const pR = pane(board), pH = pane(board), pT = pane(board, "tile"), pN = pane(board);
+        const dR = makeDisplay(ctx, pR.view, { forceSquareRatio: true });
+        const dH = makeDisplay(ctx, pH.view, { layout: "hex", spacing: 1 });
+        const dT = makeDisplay(ctx, pT.view, { layout: "tile", bg: "transparent", tileWidth: 8, tileHeight: 8, tileSet, tileMap, tileColorize: true });
+        const rawCv = h("canvas");
+        pN.view.append(rawCv);
+        let seed = 2024, noise, scale = 0.07, ox = 0, scroll = true;
+        const dims = { r: [10, 10, 12], hx: [10, 10, 7, 11], t: [10, 10] };
+        function reseed() { ROT.RNG.setSeed(seed); noise = new ROT.Noise.Simplex(); }
+        // world sample at a CSS pixel position; every pane maps pixels the same way
+        const k10 = () => scale / 10;
+        const height = (px, py) => {
+          const x = (px + ox) * k10(), y = py * k10();
+          return noise.get(x, y) * 0.7 + noise.get(x * 2.3 + 5.2, y * 2.3 + 1.3) * 0.3;
+        };
+        const kindOf = (v) => (v < -0.3 ? 0 : v < -0.02 ? 1 : v < 0.08 ? 2 : v < 0.36 ? 3 : v < 0.6 ? 4 : 5);
+        function fit() {
+          const r = pR.view, cs = 12;
+          const rw = Math.max(6, Math.floor(r.clientWidth / cs)), rh = Math.max(4, Math.floor(r.clientHeight / cs));
+          dims.r = [rw, rh, fitSquare(dR, rw, rh, r.clientWidth, r.clientHeight)];
+          const hv = pH.view, hw = Math.max(6, Math.floor(hv.clientWidth / 7)), hh = Math.max(4, Math.floor(hv.clientHeight / 11));
+          dH.setOptions({ width: hw, height: hh });
+          dH.setOptions({ fontSize: Math.max(4, dH.computeFontSize(hv.clientWidth * DPR, hv.clientHeight * DPR)) });
+          const hc = dH.getContainer();
+          hc.style.width = hc.width / DPR + "px"; hc.style.height = hc.height / DPR + "px";
+          dims.hx = [hw, hh, hc.width / DPR / (hw + 1), hc.height / DPR / hh];
+          const tv = pT.view, tw = Math.max(4, Math.floor(tv.clientWidth / 16)), th = Math.max(3, Math.floor(tv.clientHeight / 16));
+          dT.setOptions({ width: tw, height: th });
+          const tc = dT.getContainer();
+          tc.style.width = tw * 16 + "px"; tc.style.height = th * 16 + "px";
+          dims.t = [tw, th];
+          paint();
+        }
+        function paint() {
+          const [rw, rh, rc] = dims.r;
+          for (let y = 0; y < rh; y++) for (let x = 0; x < rw; x++) {
+            const t = T[kindOf(height((x + 0.5) * rc, (y + 0.5) * rc))];
+            dR.draw(x, y, t.ch, t.fg, t.bg);
+          }
+          const [hw, hh, sx, sy] = dims.hx;
+          for (let y = 0; y < hh; y++) for (let x = y % 2; x < hw; x += 2) {
+            const t = T[kindOf(height((x + 1) * sx, (y + 0.5) * sy))];
+            dH.draw(x, y, t.ch, t.fg, t.bg);
+          }
+          const [tw, th] = dims.t;
+          for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) {
+            const t = T[kindOf(height((x + 0.5) * 16, (y + 0.5) * 16))];
+            dT.draw(x, y, t.ch, t.fg, t.bg);
+          }
+          const { g, w, h: hh2 } = sizeCanvas(rawCv, pN.view);
+          const B = 3, nx = Math.ceil(w / B), ny = Math.ceil(hh2 / B);
+          let lo = 1, hi = -1;
+          for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) {
+            const v = noise.get((x * B + ox) * k10(), y * B * k10());
+            lo = Math.min(lo, v); hi = Math.max(hi, v);
+            const c = Math.round((v * 0.5 + 0.5) * 255);
+            g.fillStyle = `rgb(${c},${c},${c})`;
+            g.fillRect(x * B, y * B, B, B);
+          }
+          pR.set('layout: "rect"', `${rw} × ${rh} 格・字元 ≈ ~ . " ♣ ▲`);
+          pH.set('layout: "hex"', `${hw} × ${hh}・(x + y) 為偶數才有格子`);
+          pT.set('layout: "tile" + tileColorize', `${tw} × ${th} 圖塊・8 × 8 白色圖塊即時著色`);
+          pN.set("Noise.Simplex().get(x, y)", `種子 ${seed}・本畫面 ${lo.toFixed(2)} 到 ${hi.toFixed(2)}`);
+        }
+        ctx.toggle("捲動", true, (v) => (scroll = v));
+        ctx.slider("比例尺", { min: 0.03, max: 0.16, step: 0.01, value: scale }, (v) => { scale = v; paint(); });
+        ctx.button("換種子", () => { seed = newSeed(); reseed(); paint(); }, { primary: true });
+        let lastT = performance.now();
+        ctx.interval(() => {
+          const t = performance.now();
+          if (scroll) { ox += (t - lastT) * 0.02; paint(); }
+          lastT = t;
+        }, 110);
+        reseed();
+        watch(ctx, pR.view, fit);
+        ctx.frame(2).then(() => ctx.active && fit());
+      },
+    },
 
-function walkTo(tx, ty) {
-  const ti = tx + ty * W;
-  if (!inb(tx, ty) || map[ti] === WALL) return;
-  if (!explored[ti] && !reveal) { log("那裡還沒探索過"); return; }
-  const astar = new ROT.Path.AStar(tx, ty,
-    (x, y) => inb(x, y) && passable(map[x + y * W]) && (explored[x + y * W] || reveal), { topology: 8 });
-  const path = [];
-  astar.compute(player.x, player.y, (x, y) => path.push([x, y]));
-  walkQueue = path.slice(1);
-}
-
-function seenMonsters() {
-  return monsters.filter((m) => visible.has(m.x + m.y * W)).length;
-}
-
-function walkStep() {
-  if (mode !== "play" || !walkQueue.length) return;
-  const before = seenMonsters();
-  const [x, y] = walkQueue[0];
-  const wasDoor = map[x + y * W] === DOOR;
-  const res = tryMove(x - player.x, y - player.y);
-  if (res === "moved") walkQueue.shift();
-  else if (!(res === "acted" && wasDoor)) walkQueue = []; // keep walking through a door we just opened
-  // stop auto-walking when something new shows up
-  if (seenMonsters() > before) walkQueue = [];
-}
-
-// demo autopilot: chase visible monsters and items, otherwise explore the nearest frontier, then take the stairs
-function autoStep() {
-  const start = player.x + player.y * W;
-  const isTarget = (n) => {
-    const x = n % W, y = (n / W) | 0;
-    if (visible.has(n) && (monsterAt(x, y) || items.has(n))) return true;
-    for (const [dx, dy] of DIRS8) if (inb(x + dx, y + dy) && !explored[x + dx + (y + dy) * W]) return true;
-    return false;
-  };
-  const prev = new Int32Array(W * H).fill(-1), queue = [start];
-  prev[start] = start;
-  let goal = -1;
-  for (let q = 0; q < queue.length && goal < 0; q++) {
-    const c = queue[q], cx = c % W, cy = (c / W) | 0;
-    for (const [dx, dy] of DIRS8) {
-      const nx = cx + dx, ny = cy + dy, n = nx + ny * W;
-      if (!inb(nx, ny) || prev[n] >= 0 || map[n] === WALL || !explored[n]) continue;
-      prev[n] = c;
-      queue.push(n);
-      if (isTarget(n)) { goal = n; break; }
-    }
-  }
-  if (goal < 0) goal = queue.find((n) => map[n] === STAIRS) ?? -1;
-  if (goal < 0) { generate(); return; }
-  let step = goal;
-  while (prev[step] !== start) step = prev[step];
-  tryMove(step % W - player.x, ((step / W) | 0) - player.y);
-}
-
-function overlay(title, sub, go) {
-  $("ov-title").textContent = title;
-  $("ov-sub").textContent = sub;
-  $("ov-go").textContent = go;
-  $("overlay").classList.remove("hide");
-}
-
-function startGame() {
-  if (mode === "over" && performance.now() - overAt < 800) return; // let the death screen register
-  mode = "play";
-  depth = 1; hp = MAX_HP; gold = 0; kills = 0;
-  $("overlay").classList.add("hide");
-  logs = [];
-  log("你踏進地城，找到藍色的 &gt; 往下走");
-  generate();
-  hud();
-}
-
-const KEYS = {
-  ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
-  KeyW: [0, -1], KeyS: [0, 1], KeyA: [-1, 0], KeyD: [1, 0],
-  Numpad8: [0, -1], Numpad2: [0, 1], Numpad4: [-1, 0], Numpad6: [1, 0],
-  Numpad7: [-1, -1], Numpad9: [1, -1], Numpad1: [-1, 1], Numpad3: [1, 1],
-};
-addEventListener("keydown", (e) => {
-  if (e.target.tagName === "BUTTON" && (e.key === " " || e.key === "Enter")) return;
-  if (mode !== "play") { if (!e.repeat) startGame(); e.preventDefault(); return; }
-  const d = KEYS[e.code];
-  if (d) { e.preventDefault(); walkQueue = []; tryMove(d[0], d[1]); }
-  else if (e.code === "Space" || e.code === "Period" || e.code === "Numpad5") { e.preventDefault(); log("原地等待"); endTurn(); }
+    // ---------- 8. stress ----------
+    {
+      id: "stress", title: "極限測試", kind: "stress",
+      api: "ctx.bench・Map.Digger／Cellular／EllerMaze + FOV.PreciseShadowcasting",
+      desc: "每一輪產生一張指定格數的地圖，再從起點算一次全圖半徑的 PreciseShadowcasting 視野，格數從 4K 每次加倍到 1M。右側是最新一輪的地圖縮圖（黃色是看得到的格子）與每輪「產生地圖」和「全圖視野」的耗時拆解。",
+      hint: "選一種產生器，按「開始測試」",
+      mount(ctx) {
+        ctx.html(`<div class="rot-bv"><div class="rot-bvin"><canvas></canvas></div><div class="rot-bvtag"></div></div>`);
+        const box = ctx.$(".rot-bvin"), cv = ctx.$(".rot-bv canvas"), tag = ctx.$(".rot-bvtag");
+        const nearCenter = (g, W, H) => {
+          const c = (H >> 1) * W + (W >> 1);
+          for (let k = 0; k < g.length; k++) {
+            const i = c + (k % 2 ? (k + 1) / 2 : -k / 2);
+            if (i >= 0 && i < g.length && g[i]) return [i % W, (i / W) | 0];
+          }
+          return [1, 1];
+        };
+        const GEN = [
+          {
+            label: "Digger", fn: "Map.Digger", make(W, H, g) {
+              const m = new ROT.Map.Digger(W, H, { dugPercentage: 0.3, timeLimit: 60000 });
+              m.create((x, y, v) => { if (!v) g[x + y * W] = 1; });
+              const r = m.getRooms()[0];
+              return r ? r.getCenter() : nearCenter(g, W, H);
+            },
+          },
+          {
+            label: "Cellular", fn: "Map.Cellular + connect()", make(W, H, g) {
+              const m = new ROT.Map.Cellular(W, H);
+              m.randomize(0.5);
+              for (let i = 0; i < 3; i++) m.create();
+              m.connect((x, y, v) => { if (v) g[x + y * W] = 1; }, 1);
+              return nearCenter(g, W, H);
+            },
+          },
+          {
+            label: "EllerMaze", fn: "Map.EllerMaze", make(W, H, g) {
+              new ROT.Map.EllerMaze(W, H).create((x, y, v) => { if (!v) g[x + y * W] = 1; });
+              return [(W >> 1) | 1, (H >> 1) | 1];
+            },
+          },
+        ];
+        let which = 0, hist = [], last = null;
+        function paint() {
+          const { g, w: fullW, h: hh } = sizeCanvas(cv, box);
+          g.clearRect(0, 0, fullW, hh);
+          // on mid-size stages the bench panel overlaps the left side; draw in the uncovered part
+          const lab = ctx.$(".sc-lab");
+          let ox = 0;
+          if (lab && !lab.classList.contains("min")) {
+            const cover = lab.getBoundingClientRect().right - box.getBoundingClientRect().left + 8;
+            if (cover > 0 && fullW - cover >= 240) ox = cover;
+          }
+          g.translate(ox, 0);
+          const w = fullW - ox;
+          const chartH = Math.min(hh * 0.42, 40 + 9 * 20);
+          const mapH = hh - chartH - 16;
+          if (last) {
+            const { W, H, grid, vis, sx, sy } = last;
+            const s = Math.min((w - 20) / W, (mapH - 34) / H);
+            const dw = Math.max(1, Math.floor(W * s)), dh = Math.max(1, Math.floor(H * s));
+            const iw = Math.min(W, Math.round(dw * DPR)), ih = Math.min(H, Math.round(dh * DPR));
+            const img = new ImageData(iw, ih);
+            for (let y = 0; y < ih; y++) for (let x = 0; x < iw; x++) {
+              const i = Math.floor((x * W) / iw) + Math.floor((y * H) / ih) * W, o = (x + y * iw) * 4;
+              const c = !grid[i] ? [20, 22, 30] : vis[i] ? [232, 200, 60] : [78, 84, 98];
+              img.data[o] = c[0]; img.data[o + 1] = c[1]; img.data[o + 2] = c[2]; img.data[o + 3] = 255;
+            }
+            const tmp = h("canvas");
+            tmp.width = iw; tmp.height = ih;
+            tmp.getContext("2d").putImageData(img, 0, 0);
+            const x0 = (w - dw) / 2, y0 = 40;
+            g.imageSmoothingEnabled = iw < dw;
+            g.drawImage(tmp, x0, y0, dw, dh);
+            g.fillStyle = "#f72585";
+            g.beginPath(); g.arc(x0 + (sx + 0.5) * s, y0 + (sy + 0.5) * s, 4, 0, Math.PI * 2); g.fill();
+          } else {
+            g.fillStyle = "#77756d";
+            g.font = `13px ${CJK}`;
+            g.textAlign = "center";
+            g.fillText("按「開始測試」後顯示地圖與視野", w / 2, mapH / 2 + 20);
+            g.textAlign = "left";
+          }
+          // stacked bars: generation + FOV per round
+          const top = hh - chartH, maxT = Math.max(1, ...hist.map((r) => r.gen + r.fov));
+          g.font = `12px ${CJK}`;
+          g.textBaseline = "middle";
+          g.fillStyle = "#4cc9f0"; g.fillRect(12, top + 6, 10, 10);
+          g.fillStyle = "#d8d6cf"; g.fillText("產生地圖", 26, top + 11);
+          g.fillStyle = "#f7df1e"; g.fillRect(96, top + 6, 10, 10);
+          g.fillStyle = "#d8d6cf"; g.fillText("全圖視野", 110, top + 11);
+          const rowH = Math.min(20, (chartH - 26) / 9), bx = 64, bw = Math.max(40, w - bx - 120);
+          hist.forEach((r, k) => {
+            const y = top + 24 + k * rowH;
+            g.font = `11px ${MONO}`;
+            g.fillStyle = "#9b998f"; g.fillText(fmtCompact(r.n), 12, y + rowH / 2);
+            const a = (r.gen / maxT) * bw, b = (r.fov / maxT) * bw;
+            g.fillStyle = "#4cc9f0"; g.fillRect(bx, y + 3, Math.max(1, a), rowH - 6);
+            g.fillStyle = "#f7df1e"; g.fillRect(bx + a, y + 3, Math.max(1, b), rowH - 6);
+            g.fillStyle = "#d8d6cf";
+            g.fillText(`${fmtMs(r.gen)} + ${fmtMs(r.fov)}`, bx + a + b + 6, y + rowH / 2);
+          });
+          g.textBaseline = "alphabetic";
+          tag.textContent = last ? `${last.fn}・${fmt(last.W)} × ${fmt(last.H)}・地板 ${last.floorPct}%・可見 ${fmt(last.nv)} 格` : `${GEN[which].fn} + FOV.PreciseShadowcasting`;
+        }
+        const fmtMs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${ms < 10 ? ms.toFixed(1) : Math.round(ms)} ms`);
+        ctx.controls.classList.add("bottom");
+        ctx.group(GEN.map((x) => x.label), 0, (i) => { which = i; hist = []; last = null; paint(); });
+        ctx.bench({
+          label: "地圖格數", unit: "格",
+          sizes: [4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576],
+          target: 1000, budget: 2000,
+          run(n) {
+            if (hist.length && n <= hist[hist.length - 1].n) hist = [];
+            const G = GEN[which];
+            const W = Math.round(Math.sqrt(n * 1.6)) | 1, H = Math.round(n / W) | 1;
+            const grid = new Uint8Array(W * H);
+            const t0 = performance.now();
+            const [sx, sy] = G.make(W, H, grid);
+            const t1 = performance.now();
+            const pass = (x, y) => x >= 0 && y >= 0 && x < W && y < H && grid[x + y * W] === 1;
+            const vis = new Uint8Array(W * H);
+            let nv = 0;
+            new ROT.FOV.PreciseShadowcasting(pass).compute(sx, sy, Math.max(W, H), (x, y) => {
+              if (x < 0 || y < 0 || x >= W || y >= H) return;
+              const i = x + y * W;
+              if (!vis[i]) { vis[i] = 1; nv++; }
+            });
+            const t2 = performance.now();
+            let fl = 0;
+            for (let i = 0; i < grid.length; i++) fl += grid[i];
+            last = { W, H, grid, vis, sx, sy, nv, fn: G.fn, floorPct: Math.round((fl * 100) / grid.length) };
+            hist.push({ n, gen: t1 - t0, fov: t2 - t1 });
+            ctx.timeout(paint, 0); // the per-phase split is drawn in the chart; the row column is too narrow for it
+          },
+          note: "Digger 會反覆嘗試挖房間直到達成 dugPercentage，成本隨格數超線性成長；這裡把 timeLimit 從預設 1 秒放寬到 60 秒，否則大地圖會被提早截斷。Cellular 的 connect() 要找出所有孤立洞穴再挖隧道，同樣超線性。EllerMaze 一次只處理一列，接近線性。視野成本取決於從起點看得到多大的開放區域。單輪超過 2 秒就停止加碼。",
+        });
+        watch(ctx, box, paint);
+        const lab = ctx.$(".sc-lab");
+        if (lab) watch(ctx, lab, paint);
+        paint();
+      },
+    },
+  ],
 });
-canvas.addEventListener("pointerdown", (e) => {
-  e.preventDefault();
-  if (mode !== "play") { startGame(); return; }
-  const [x, y] = display.eventToPosition(e);
-  if (x >= 0) walkTo(x, y);
-});
-$("overlay").addEventListener("pointerdown", () => { if (mode !== "play") startGame(); });
-document.addEventListener("pointerdown", (e) => {
-  if (mode !== "play" && !e.target.closest("button") && e.target !== canvas) startGame();
-});
-
-function setKind(k) {
-  kind = k;
-  $("b-dungeon").setAttribute("aria-pressed", k === "dungeon");
-  $("b-cave").setAttribute("aria-pressed", k === "cave");
-  generate();
-  log(k === "dungeon" ? "改用房間走廊產生器（Digger）" : "改用細胞自動機產生洞穴（Cellular）");
-}
-$("b-dungeon").onclick = () => setKind("dungeon");
-$("b-cave").onclick = () => setKind("cave");
-$("b-regen").onclick = () => { generate(); log("重新產生這一層"); };
-$("b-reveal").onclick = (e) => {
-  reveal = !reveal;
-  e.currentTarget.setAttribute("aria-pressed", reveal);
-  render();
-};
-
-let rz = 0;
-addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(fit, 80); });
-setInterval(() => { if (mode === "demo") autoStep(); }, 130);
-setInterval(walkStep, 75);
-setInterval(render, 120); // torch flicker
-
-hud();
-log("展示模式：自動探索中");
-generate();
 </script>
 </body>
 </html>

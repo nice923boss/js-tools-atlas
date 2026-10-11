@@ -3,231 +3,748 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Dexie.js 示範：離線待辦資料庫</title>
+<title>Dexie.js 示範：八個場景看懂 IndexedDB 包裝與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","note":"資料存在瀏覽器的 IndexedDB，重新整理後仍在"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["待辦清單","版本升級","索引查詢","交易與回滾","即時查詢","批次與中介層","鏈式分頁","極限測試"],"note":"資料存在瀏覽器的 IndexedDB；除了待辦清單，離開場景就會刪除自己建立的資料庫"}</script>
 <style>
-  .app { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); }
-  .todo { display: grid; grid-template-rows: auto auto auto minmax(0, 1fr) auto; gap: 10px; padding: 14px 16px 50px; min-height: 0; }
-  .head { display: flex; align-items: baseline; gap: 10px; }
-  .head h1 { font-size: 17px; margin: 0; }
-  .head .visits { margin-left: auto; font-size: 12px; color: var(--muted); }
-  .head .visits b { color: var(--c6); font-family: var(--mono); }
-  .add { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; }
-  .field { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg-2); outline: none; font-size: 14px; min-width: 0; }
-  .field:focus { border-color: var(--c6); }
-  select.field { padding: 8px 6px; }
-  .filters { display: flex; gap: 6px; align-items: center; }
-  .filters button { border: 1px solid var(--line); background: var(--bg-2); border-radius: 999px; padding: 4px 12px; font: 12px var(--font); cursor: pointer; color: var(--fg); }
-  .filters button[aria-pressed="true"] { background: var(--c6); color: #fff; border-color: var(--c6); }
-  .filters input { margin-left: auto; width: 130px; padding: 4px 10px; font-size: 12px; border-radius: 999px; }
-  .list { overflow-y: auto; display: grid; align-content: start; gap: 6px; }
-  .item { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto 24px; align-items: center; gap: 8px; padding: 9px 10px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; animation: in .25s; }
-  @keyframes in { from { opacity: 0; transform: translateY(-4px); } }
-  .item input { accent-color: var(--c6); width: 16px; height: 16px; margin: 0; }
-  .item .t { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .item.done .t { text-decoration: line-through; color: var(--muted); }
-  .tag { font-size: 11px; padding: 1px 8px; border-radius: 999px; }
-  .tag.工作 { background: rgba(31, 143, 184, .14); color: var(--c2); }
-  .tag.學習 { background: rgba(106, 90, 224, .14); color: var(--c6); }
-  .tag.生活 { background: rgba(224, 106, 27, .14); color: var(--c5); }
-  .del { border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 16px; padding: 0; }
-  .del:hover { color: var(--c3); }
-  .empty { color: var(--muted); font-size: 13px; padding: 10px 2px; }
-  .query { font: 12px/1.5 var(--mono); padding: 8px 10px; border-radius: 8px; background: #1c1d21; color: #e6e4dc; white-space: pre-wrap; word-break: break-all; }
-  .query .c { color: #7f848e; } .query .f { color: #82aaff; } .query .s { color: #c3e88d; }
-  .db { border-left: 1px solid var(--line); background: #17181c; color: #e6e4dc; display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto minmax(0, 30%); min-height: 0; padding-bottom: 46px; }
-  .db h2 { font-size: 13px; margin: 0; padding: 12px 14px 6px; display: flex; gap: 8px; align-items: center; color: #b9b7ae; font-weight: 600; }
-  .db h2 .live { font: 11px var(--mono); color: #7bd389; }
-  .db h2 .live::before { content: "● "; animation: pulse 1.4s infinite; }
-  @keyframes pulse { 50% { opacity: .3; } }
-  .db h2 .sp { margin-left: auto; display: flex; gap: 6px; }
-  .db .btn { white-space: nowrap; padding: 5px 9px; font-size: 12px; background: #24262c; color: #e6e4dc; border-color: #34363d; }
-  .schema { margin: 0 14px 8px; font: 12px var(--mono); color: #c3e88d; background: #101114; border-radius: 8px; padding: 6px 10px; white-space: pre-wrap; }
-  .rows { overflow: auto; margin: 0 14px; border: 1px solid #2b2d33; border-radius: 8px; }
-  .rows table { border-collapse: collapse; width: 100%; font: 12px var(--mono); }
-  .rows th { position: sticky; top: 0; background: #22242a; color: #9b998f; font-weight: 500; text-align: left; }
-  .rows th, .rows td { padding: 5px 8px; border-bottom: 1px solid #26282e; white-space: nowrap; }
-  .rows td.t { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
-  .rows tr.flash td { animation: rowflash 1.2s; }
-  @keyframes rowflash { from { background: rgba(123, 211, 137, .28); } }
-  .log { overflow-y: auto; margin: 0 14px; font: 11.5px/1.5 var(--mono); }
-  .log div { padding: 3px 0; border-bottom: 1px dashed #2b2d33; display: grid; grid-template-columns: 1fr auto; gap: 8px; }
-  .log span { word-break: break-all; }
-  .log small { color: #7f848e; }
-  .log .w { color: #f7df1e; }
+  .dx-board { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); display: grid; gap: 10px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+  .dx-board.wide-left { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
+  .dx-panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-2); overflow: hidden; }
+  .dx-panel > header { display: flex; align-items: center; gap: 8px; min-width: 0; flex: none; }
+  .dx-panel h3 { margin: 0; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dx-panel h3 small { font-weight: 400; color: var(--muted); margin-left: 6px; }
+  .dx-scroll { flex: 1; min-height: 0; overflow: auto; }
+  .dx-chip { flex: none; margin-left: auto; font: 11.5px/1.4 var(--font); padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .dx-chip b { color: var(--accent); font-family: var(--mono); }
+  .dx-code { margin: 0; flex: none; font: 11.5px/1.55 var(--mono); background: #0a0b0d; color: #d7d5cc; border-radius: 8px; padding: 8px 10px; white-space: pre-wrap; word-break: break-all; }
+  .dx-code .k { color: #82aaff; } .dx-code .s { color: #c3e88d; } .dx-code .c { color: #7f848e; }
+  .dx-t { border-collapse: collapse; width: 100%; font-size: 12px; }
+  .dx-t th { position: sticky; top: 0; background: #22252b; color: var(--muted); font-weight: 500; text-align: left; z-index: 1; }
+  .dx-t th, .dx-t td { padding: 4px 8px; border-bottom: 1px solid rgba(255,255,255,.06); white-space: nowrap; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+  .dx-t td.n, .dx-t th.n { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .dx-t tr.flash td { animation: dx-flash 1.2s; }
+  @keyframes dx-flash { from { background: rgba(123, 211, 137, .28); } }
+  .dx-log { flex: 1; min-height: 0; overflow-y: auto; font-size: 12px; line-height: 1.45; }
+  .dx-log > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; padding: 3px 0; border-bottom: 1px dashed rgba(255,255,255,.08); }
+  .dx-log span { word-break: break-all; }
+  .dx-log small { font-family: var(--mono); color: var(--muted); }
+  .dx-log .ok span { color: var(--c4); } .dx-log .err span { color: var(--c3); } .dx-log .info span { color: var(--c2); }
+  .dx-usage { flex: none; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dx-empty { color: var(--muted); font-size: 12.5px; padding: 8px 2px; }
+  .dx-field { min-width: 0; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font: 13px var(--font); outline: none; }
+  .dx-field:focus { border-color: var(--accent); }
+  .dx-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; flex: none; }
+  .dx-row .btn { padding: 6px 10px; font-size: 12.5px; }
+  .dx-bars { display: flex; flex-direction: column; gap: 5px; font-size: 12px; }
+  .dx-bars > div:not(.dx-empty) { display: grid; grid-template-columns: 8.5em minmax(0, 1fr) 6.5em; gap: 8px; align-items: center; }
+  .dx-bars i { display: block; height: 10px; border-radius: 5px; background: var(--c2); min-width: 2px; transition: width .3s; }
+  .dx-bars i.hot { background: var(--c3); } .dx-bars i.ok { background: var(--c4); }
+  .dx-bars span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dx-bars small { text-align: right; font-family: var(--mono); color: var(--muted); }
+  /* 1. todo */
+  .dx-add { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; flex: none; }
+  .dx-filters { display: flex; gap: 6px; align-items: center; flex: none; }
+  .dx-filters button { border: 1px solid var(--line); background: transparent; border-radius: 999px; padding: 3px 11px; font: 12px var(--font); cursor: pointer; color: var(--fg); }
+  .dx-filters button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .dx-filters input { margin-left: auto; width: 110px; padding: 3px 10px; font-size: 12px; border-radius: 999px; }
+  .dx-list { display: grid; align-content: start; gap: 5px; }
+  .dx-item { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto 20px; align-items: center; gap: 8px; padding: 7px 9px; background: var(--bg); border: 1px solid var(--line); border-radius: 9px; }
+  .dx-item input { accent-color: var(--c4); width: 15px; height: 15px; margin: 0; }
+  .dx-item .t { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dx-item.done .t { text-decoration: line-through; color: var(--muted); }
+  .dx-tag { font-size: 11px; padding: 1px 8px; border-radius: 999px; background: rgba(76, 201, 240, .14); color: var(--c2); }
+  .dx-tag.學習 { background: rgba(157, 140, 255, .16); color: var(--c6); } .dx-tag.生活 { background: rgba(255, 140, 66, .16); color: var(--c5); }
+  .dx-del { border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 16px; padding: 0; }
+  .dx-del:hover { color: var(--c3); }
+  .dx-side { display: grid; grid-template-rows: auto minmax(0, 1.2fr) auto minmax(0, 1fr) auto; }
+  /* 2. versions */
+  .dx-vers { display: flex; flex-direction: column; gap: 8px; }
+  .dx-ver { border: 1px solid var(--line); border-radius: 10px; padding: 7px 9px; opacity: .55; }
+  .dx-ver.done { opacity: .85; } .dx-ver.cur { opacity: 1; border-color: var(--accent); }
+  .dx-ver header { display: flex; gap: 8px; align-items: center; font-size: 12.5px; margin-bottom: 5px; }
+  .dx-ver header b { font-family: var(--mono); }
+  .dx-ver header span { margin-left: auto; font-size: 11px; color: var(--muted); }
+  .dx-ver.cur header span { color: var(--accent); }
+  .dx-idx { display: flex; gap: 5px; flex-wrap: wrap; flex: none; }
+  .dx-idx code { font: 11px var(--mono); padding: 1px 7px; border-radius: 6px; background: rgba(76, 201, 240, .14); color: var(--c2); }
+  /* 4. transaction */
+  .dx-acc { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 10px; align-items: center; flex: none; }
+  .dx-acc > div { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--bg); text-align: center; }
+  .dx-acc small { display: block; color: var(--muted); font-size: 12px; }
+  .dx-acc b { display: block; font: 700 24px/1.3 var(--mono); }
+  .dx-acc .arrow { font-size: 22px; color: var(--accent); border: 0; background: none; padding: 0; }
+  .dx-acc .bump b { animation: dx-bump .6s; }
+  @keyframes dx-bump { 40% { color: var(--accent); transform: scale(1.08); } }
+  .dx-total { flex: none; font-size: 12.5px; padding: 6px 10px; border-radius: 8px; background: rgba(123, 211, 137, .12); color: var(--c4); }
+  .dx-total.bad { background: rgba(247, 37, 133, .14); color: var(--c3); }
+  /* 5. live */
+  .dx-live3 { grid-template-columns: minmax(0, .9fr) minmax(0, 1fr) minmax(0, 1fr); }
+  .dx-runs { margin-left: auto; font: 11px var(--mono); padding: 1px 8px; border-radius: 999px; background: rgba(127, 127, 127, .16); }
+  .dx-runs.ping { animation: dx-ping .8s; }
+  @keyframes dx-ping { from { background: var(--c4); color: #0e1013; } }
+  .dx-orders { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+  .dx-orders div { display: flex; justify-content: space-between; gap: 8px; padding: 4px 8px; border-radius: 7px; background: var(--bg); }
+  .dx-orders b { font-family: var(--mono); font-weight: 500; }
+  .dx-big { font: 700 26px/1.2 var(--mono); }
+  /* 7. paging */
+  .dx-pager { display: flex; gap: 8px; align-items: center; flex: none; font-size: 12px; color: var(--muted); }
+  .dx-pager .btn { padding: 4px 10px; font-size: 12px; }
+  /* 8. stress */
+  .dx-stress { position: absolute; inset: 8px 8px 8px 350px; padding-bottom: calc(var(--sc-ctl-b, 0px) + 2px); display: flex; }
+  .dx-stress > .dx-panel { flex: 1; }
+  @media (max-width: 760px) { .dx-stress { display: none; } }
   @media (max-width: 640px) {
-    .app { grid-template-columns: 1fr; grid-template-rows: minmax(0, 52%) minmax(0, 48%); }
-    .todo { padding: 10px 12px 8px; gap: 7px; }
-    .query { display: none; }
-    .db { border-left: 0; grid-template-rows: auto minmax(0, 1fr) auto minmax(0, 24%); padding-bottom: 42px; }
-    .db h2 { white-space: nowrap; padding: 8px 12px 6px; }
-    .db h2 .live { display: none; }
-    .rows, .log { margin: 0 12px; }
-    .schema, .rows .c-created { display: none; }
-    .filters input { width: 96px; }
+    .dx-board, .dx-board.wide-left, .dx-live3 { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1.15fr) minmax(0, 1fr); }
+    .dx-live3 { grid-template-rows: auto minmax(0, 1fr) minmax(0, 1fr); }
+    .dx-live3 .dx-writer .dx-log { display: none; }
+    .dx-hide-narrow { display: none !important; }
+    .dx-side { grid-template-rows: auto minmax(0, 1fr) auto; }
+    .dx-side .dx-logh, .dx-side .dx-log { display: none; }
+    .dx-panel { padding: 8px 10px; gap: 6px; }
+    .dx-acc b { font-size: 19px; }
+    .dx-bars > div:not(.dx-empty) { grid-template-columns: 6.5em minmax(0, 1fr) 5.5em; }
   }
 </style>
 </head>
-<body class="paper">
-<div class="app">
-  <section class="todo">
-    <div class="head"><h1>待辦清單</h1><span class="visits" id="visits"></span></div>
-    <form class="add" id="add">
-      <input class="field" id="title" placeholder="新增待辦，按 Enter" autocomplete="off" aria-label="待辦內容">
-      <select class="field" id="tag" aria-label="標籤"><option>工作</option><option>學習</option><option>生活</option></select>
-      <button class="btn primary">新增</button>
-    </form>
-    <div class="filters" id="filters">
-      <button data-f="all">全部</button><button data-f="open">未完成</button><button data-f="done">已完成</button>
-      <input class="field" id="q" placeholder="標題開頭搜尋" aria-label="標題開頭搜尋">
-    </div>
-    <div class="list" id="list"></div>
-    <div class="query" id="query"></div>
-  </section>
-  <aside class="db">
-    <h2>IndexedDB：todos 資料表 <span class="live">liveQuery</span>
-      <span class="sp"><button class="btn" id="reload">重新整理頁面</button><button class="btn" id="reset">重設</button></span></h2>
-    <div class="schema" id="schema"></div>
-    <div class="rows" id="rows"></div>
-    <h2>操作紀錄</h2>
-    <div class="log" id="log"></div>
-  </aside>
-</div>
-<div class="hint">新增或勾選後按「重新整理頁面」，資料還在</div>
-
+<body>
 <script src="https://cdn.jsdelivr.net/npm/dexie@4.4.6/dist/dexie.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
-const SCHEMA = { todos: "++id, title, done, tag, createdAt", meta: "key" };
-const SEED = [
-  ["整理 Q3 課程回饋", "工作", 1], ["讀完 IndexedDB 文件", "學習", 0], ["預約牙醫", "生活", 0],
-  ["準備 Dexie 分享簡報", "學習", 0], ["回覆合作邀約信", "工作", 1],
-];
+// Dexie.js showcase: an offline todo app, schema upgrades, index queries, transactions, liveQuery,
+// bulk writes with DBCore middleware, collection paging and a bulkAdd / index-query throughput benchmark.
+const PREFIX = "atlas-dexiejs-";
+const { fmt, fmtMs, fmtCompact } = Showcase;
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const since = (t0) => performance.now() - t0;
+const day = (t) => new Date(t).toISOString().slice(0, 10);
+const mb = (b) => (b >= 1073741824 ? `${(b / 1073741824).toFixed(1)} GB` : `${(b / 1048576).toFixed(b < 10485760 ? 2 : 1)} MB`);
 
-let db;
-function openDb() {
-  db = new Dexie("atlas-dexie-demo");
-  db.version(1).stores(SCHEMA);
-  // populate runs only once, when the database is created for the first time
-  db.on("populate", (tx) => {
-    const now = Date.now();
-    tx.todos.bulkAdd(SEED.map(([title, tag, done], i) => ({ title, tag, done, createdAt: now - (SEED.length - i) * 3600e3 })));
-    log("populate：首次建立資料庫，寫入 5 筆示意資料", 0, true);
-  });
-}
-
-function log(text, ms, warn) {
-  const row = document.createElement("div");
-  row.innerHTML = `<span class="${warn ? "w" : ""}">${esc(text)}</span><small>${ms ? ms.toFixed(1) + " ms" : ""}</small>`;
-  $("log").prepend(row);
-  while ($("log").children.length > 30) $("log").lastChild.remove();
-}
-async function op(label, fn) {
-  const t0 = performance.now();
-  const r = await fn();
-  log(typeof label === "function" ? label(r) : label, performance.now() - t0);
-  return r;
-}
-
-// ---- Filtered list (liveQuery re-runs whenever the touched rows change) ----
-let filter = "all", listSub;
-function querySpec() {
-  const q = $("q").value.trim();
-  const doneVal = filter === "open" ? 0 : filter === "done" ? 1 : null;
-  if (q) {
-    return {
-      code: `db.todos.<span class="f">where</span>(<span class="s">"title"</span>).<span class="f">startsWithIgnoreCase</span>(<span class="s">"${esc(q)}"</span>)${doneVal === null ? "" : `\n  .<span class="f">filter</span>(t =&gt; t.done === ${doneVal})`}.<span class="f">toArray</span>()`,
-      run: () => { let c = db.todos.where("title").startsWithIgnoreCase(q); if (doneVal !== null) c = c.filter((t) => t.done === doneVal); return c.toArray(); },
-    };
-  }
-  if (doneVal === null) {
-    return { code: `db.todos.<span class="f">orderBy</span>(<span class="s">"createdAt"</span>).<span class="f">reverse</span>().<span class="f">toArray</span>()`, run: () => db.todos.orderBy("createdAt").reverse().toArray() };
-  }
-  return {
-    code: `db.todos.<span class="f">where</span>(<span class="s">"done"</span>).<span class="f">equals</span>(${doneVal})\n  .<span class="f">reverse</span>().<span class="f">sortBy</span>(<span class="s">"createdAt"</span>)`,
-    run: () => db.todos.where("done").equals(doneVal).reverse().sortBy("createdAt"),
+// Seeded PRNG (mulberry32) so every visit gets the same sample data
+function rng(seed) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-function subscribeList() {
-  listSub?.unsubscribe();
-  const spec = querySpec();
-  $("query").innerHTML = `<span class="c">// 目前清單用的查詢</span>\n${spec.code}`;
-  document.querySelectorAll("#filters button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.f === filter));
-  listSub = Dexie.liveQuery(spec.run).subscribe({
-    next: (items) => {
-      $("list").innerHTML = items.length ? items.map((t) => `<div class="item${t.done ? " done" : ""}" data-id="${t.id}">
-        <input type="checkbox" ${t.done ? "checked" : ""} aria-label="完成">
-        <span class="t">${esc(t.title)}</span><span class="tag ${esc(t.tag)}">${esc(t.tag)}</span>
-        <button class="del" aria-label="刪除">×</button></div>`).join("") : '<div class="empty">沒有符合的項目</div>';
+const SUR = "陳林黃張李王吳劉蔡楊許鄭謝郭洪曾邱廖賴周".split("");
+const GIV = ["怡君", "志明", "淑芬", "家豪", "雅婷", "俊傑", "美玲", "建宏", "宜蓁", "冠宇", "佳穎", "承恩", "詩涵", "柏翰", "心怡", "宇軒"];
+const CITIES = ["臺北市", "新北市", "桃園市", "臺中市", "臺南市", "高雄市", "新竹市", "基隆市", "宜蘭縣", "花蓮縣"];
+const TAGS = ["Python", "JavaScript", "設計", "行銷", "資料分析", "AI", "攝影", "英文"];
+function people(n, seed = 1) {
+  const r = rng(seed);
+  const pick = (a) => a[Math.floor(r() * a.length)];
+  return Array.from({ length: n }, () => ({
+    name: pick(SUR) + pick(GIV), city: pick(CITIES), age: 18 + Math.floor(r() * 50),
+    tags: [...new Set([pick(TAGS), pick(TAGS), pick(TAGS)].slice(0, 1 + Math.floor(r() * 3)))],
+    joined: Date.UTC(2023, 0, 1) + Math.floor(r() * 1000) * 864e5,
+  }));
+}
+
+// A scene-owned database: deleted first (fresh start) and closed + deleted when the scene unmounts.
+async function freshDb(ctx, suffix, setup) {
+  const name = PREFIX + suffix;
+  await Dexie.delete(name);
+  const db = new Dexie(name);
+  setup(db);
+  ctx.onCleanup(() => { db.close(); Dexie.delete(name).catch((e) => console.warn("Dexie.delete failed", e)); });
+  await db.open();
+  return db;
+}
+// liveQuery subscription that ends with the scene
+function live(ctx, query, next) {
+  const sub = Dexie.liveQuery(query).subscribe({ next, error: (e) => console.error(e) });
+  ctx.onCleanup(() => sub.unsubscribe());
+  return sub;
+}
+function makeLog(el, max = 40) {
+  return (text, { t, cls = "" } = {}) => {
+    const row = document.createElement("div");
+    row.className = cls;
+    row.innerHTML = `<span>${esc(text)}</span><small>${t != null ? fmtMs(t) : ""}</small>`;
+    el.prepend(row);
+    while (el.children.length > max) el.lastChild.remove();
+  };
+}
+// cols: [key, label, kind] where kind "n" right-aligns numbers and "d" formats epoch ms as a date
+function tableHtml(rows, cols, { max = 120, flash } = {}) {
+  if (!rows.length) return '<div class="dx-empty">沒有符合的資料</div>';
+  const cell = (v, kind) => (v == null ? "" : kind === "d" ? day(v) : kind === "n" ? fmt(v) : Array.isArray(v) ? v.join("、") : v);
+  return `<table class="dx-t"><thead><tr>${cols.map(([, l, k]) => `<th class="${k === "n" ? "n" : ""}">${esc(l)}</th>`).join("")}</tr></thead><tbody>${rows.slice(0, max).map((r) =>
+    `<tr${flash && flash(r) ? ' class="flash"' : ""}>${cols.map(([key, , k]) => `<td class="${k === "n" ? "n" : ""}">${esc(cell(r[key], k))}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+}
+const autoCols = (rows) => [...new Set(rows.flatMap((r) => Object.keys(r)))].map((k) => [k, k, k === "id" ? "n" : ""]);
+function bars(el, items) {
+  const max = Math.max(...items.map((x) => x.v), 1e-6);
+  el.innerHTML = items.map((x) => `<div><span>${esc(x.label)}</span><i class="${x.cls || ""}" style="width:${Math.max(1, (x.v / max) * 100).toFixed(1)}%"></i><small>${esc(x.text)}</small></div>`).join("");
+}
+// navigator.storage.estimate() line, refreshed every few seconds
+async function usageText() {
+  if (!navigator.storage || !navigator.storage.estimate) return "此瀏覽器不提供 navigator.storage.estimate()";
+  const { usage = 0, quota = 0 } = await navigator.storage.estimate();
+  return `本網域儲存用量約 ${mb(usage)}／配額約 ${mb(quota)}（storage.estimate）`;
+}
+function usage(ctx, el) {
+  const paint = async () => { const t = await usageText(); if (ctx.active) el.textContent = t; };
+  paint();
+  ctx.interval(paint, 3000);
+  return paint;
+}
+// Every database this demo ever created (plus the name used by the previous version of this page)
+async function clearDemoData() {
+  const names = new Set(["atlas-dexie-demo"]);
+  if (indexedDB.databases) for (const d of await indexedDB.databases()) if (d.name && d.name.startsWith(PREFIX)) names.add(d.name);
+  for (const n of names) await Dexie.delete(n);
+  return names.size;
+}
+const hl = (code) => esc(code).replace(/(&quot;.*?&quot;)/g, '<span class="s">$1</span>').replace(/\.(\w+)\(/g, '.<span class="k">$1</span>(');
+
+Showcase.run({ scenes: [
+  {
+    id: "todo", title: "待辦清單",
+    api: "Dexie.liveQuery(() => db.todos.where(…).toArray())",
+    desc: "原本的離線待辦：清單和右側資料表都是 liveQuery，新增、勾選、刪除後畫面自動更新；資料存在 IndexedDB，重新整理後還在。",
+    hint: "新增或勾選後按「重新整理頁面」，資料還在",
+    async mount(ctx) {
+      ctx.html(`<div class="dx-board">
+        <section class="dx-panel">
+          <header><h3>待辦清單</h3><span class="dx-chip" data-visits></span></header>
+          <form class="dx-add"><input class="dx-field" name="t" placeholder="新增待辦，按 Enter" autocomplete="off" aria-label="待辦內容">
+            <select class="dx-field" name="tag" aria-label="標籤"><option>工作</option><option>學習</option><option>生活</option></select><button class="btn primary">新增</button></form>
+          <div class="dx-filters"><button type="button" data-f="all">全部</button><button type="button" data-f="open">未完成</button><button type="button" data-f="done">已完成</button>
+            <input class="dx-field" data-q placeholder="標題開頭" aria-label="標題開頭搜尋"></div>
+          <div class="dx-scroll"><div class="dx-list"></div></div>
+          <pre class="dx-code dx-hide-narrow" data-code></pre>
+        </section>
+        <section class="dx-panel dx-side">
+          <header><h3>IndexedDB：todos<small>liveQuery 自動更新</small></h3></header>
+          <div class="dx-scroll" data-rows></div>
+          <header class="dx-logh"><h3>操作紀錄</h3></header>
+          <div class="dx-log"></div>
+          <div class="dx-usage"></div>
+        </section></div>`);
+      const SCHEMA = { todos: "++id, title, done, tag, createdAt", meta: "key" };
+      const SEED = [["整理 Q3 課程回饋", "工作", 1], ["讀完 IndexedDB 文件", "學習", 0], ["預約牙醫", "生活", 0], ["準備 Dexie 分享簡報", "學習", 0], ["回覆合作邀約信", "工作", 1]];
+      const log = makeLog(ctx.$(".dx-log"));
+      const paintUsage = usage(ctx, ctx.$(".dx-usage"));
+      const list = ctx.$(".dx-list"), q = ctx.$("[data-q]");
+      let db, listSub, rowSub, filter = "all", prevIds = new Set();
+      ctx.onCleanup(() => { listSub?.unsubscribe(); rowSub?.unsubscribe(); db?.close(); });
+
+      function spec() {
+        const s = q.value.trim(), done = filter === "open" ? 0 : filter === "done" ? 1 : null;
+        if (s) return {
+          code: `db.todos.where("title").startsWithIgnoreCase("${s}")${done === null ? "" : `\n  .filter(t => t.done === ${done})`}.toArray()`,
+          run: () => { let c = db.todos.where("title").startsWithIgnoreCase(s); if (done !== null) c = c.filter((t) => t.done === done); return c.toArray(); },
+        };
+        if (done === null) return { code: 'db.todos.orderBy("createdAt").reverse().toArray()', run: () => db.todos.orderBy("createdAt").reverse().toArray() };
+        return { code: `db.todos.where("done").equals(${done})\n  .reverse().sortBy("createdAt")`, run: () => db.todos.where("done").equals(done).reverse().sortBy("createdAt") };
+      }
+      function subscribeList() {
+        listSub?.unsubscribe();
+        const sp = spec();
+        ctx.$("[data-code]").innerHTML = `<span class="c">// 目前清單用的查詢</span>\n${hl(sp.code)}`;
+        ctx.$$(".dx-filters button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.f === filter)));
+        listSub = Dexie.liveQuery(sp.run).subscribe({
+          next: (items) => {
+            list.innerHTML = items.length ? items.map((t) => `<div class="dx-item${t.done ? " done" : ""}" data-id="${t.id}"><input type="checkbox" ${t.done ? "checked" : ""} aria-label="完成">
+              <span class="t">${esc(t.title)}</span><span class="dx-tag ${esc(t.tag)}">${esc(t.tag)}</span><button class="dx-del" type="button" aria-label="刪除">×</button></div>`).join("") : '<div class="dx-empty">沒有符合的項目</div>';
+          },
+          error: (e) => { list.innerHTML = `<div class="dx-empty">查詢失敗：${esc(e.message)}</div>`; },
+        });
+      }
+      function subscribeRows() {
+        rowSub?.unsubscribe();
+        rowSub = Dexie.liveQuery(() => db.todos.toArray()).subscribe({
+          next: (rows) => {
+            const fresh = new Set(rows.filter((r) => prevIds.size && !prevIds.has(r.id)).map((r) => r.id));
+            prevIds = new Set(rows.map((r) => r.id));
+            ctx.$("[data-rows]").innerHTML = tableHtml(rows, [["id", "id", "n"], ["title", "title"], ["done", "done", "n"], ["tag", "tag"], ["createdAt", "createdAt", "d"]], { flash: (r) => fresh.has(r.id) });
+            paintUsage();
+          },
+        });
+      }
+      async function start() {
+        db = new Dexie(PREFIX + "todo");
+        db.version(1).stores(SCHEMA);
+        db.on("populate", (tx) => {
+          const now = Date.now();
+          tx.table("todos").bulkAdd(SEED.map(([title, tag, done], i) => ({ title, tag, done, createdAt: now - (SEED.length - i) * 3600e3 })));
+          log("populate：第一次建立資料庫，寫入 5 筆示意資料", { cls: "info" });
+        });
+        const visits = ((await db.meta.get("visits"))?.value || 0) + 1;
+        await db.meta.put({ key: "visits", value: visits });
+        ctx.$("[data-visits]").innerHTML = `本頁第 <b>${visits}</b> 次載入`;
+        log(`開啟 ${db.name}，目前 ${await db.todos.count()} 筆`);
+        subscribeList();
+        subscribeRows();
+      }
+      const op = async (label, fn) => { const t0 = performance.now(); const r = await fn(); log(typeof label === "function" ? label(r) : label, { t: since(t0), cls: "ok" }); };
+      ctx.on(ctx.$(".dx-add"), "submit", async (e) => {
+        e.preventDefault();
+        const f = e.target, title = f.t.value.trim(), tag = f.tag.value;
+        if (!title) return;
+        await op((id) => `db.todos.add({ title: "${title}", tag: "${tag}" }) → id ${id}`, () => db.todos.add({ title, tag, done: 0, createdAt: Date.now() }));
+        f.t.value = "";
+      });
+      ctx.on(list, "click", async (e) => {
+        const item = e.target.closest(".dx-item");
+        if (!item) return;
+        const id = +item.dataset.id;
+        if (e.target.matches("input")) { const done = e.target.checked ? 1 : 0; await op(`db.todos.update(${id}, { done: ${done} })`, () => db.todos.update(id, { done })); }
+        else if (e.target.matches(".dx-del")) await op(`db.todos.delete(${id})`, () => db.todos.delete(id));
+      });
+      ctx.on(ctx.$(".dx-filters"), "click", (e) => { const b = e.target.closest("button"); if (b) { filter = b.dataset.f; subscribeList(); } });
+      ctx.on(q, "input", subscribeList);
+      ctx.button("重新整理頁面", () => location.reload());
+      ctx.button("清除示範資料", async () => {
+        listSub?.unsubscribe(); rowSub?.unsubscribe();
+        db.close();
+        const n = await clearDemoData();
+        prevIds = new Set();
+        ctx.$(".dx-log").innerHTML = "";
+        log(`Dexie.delete()：刪除 ${n} 個本示範的資料庫，重新建立`, { cls: "info" });
+        await start();
+      });
+      await start();
     },
-    error: (err) => { $("list").innerHTML = `<div class="empty">查詢失敗：${esc(err.message)}</div>`; },
-  });
-}
-
-// ---- Raw table inspector ----
-let rowSub, prevIds = new Set();
-function subscribeRows() {
-  rowSub?.unsubscribe();
-  rowSub = Dexie.liveQuery(() => db.todos.toArray()).subscribe({
-    next: (rows) => {
-      const fresh = rows.filter((r) => !prevIds.has(r.id) && prevIds.size).map((r) => r.id);
-      prevIds = new Set(rows.map((r) => r.id));
-      $("rows").innerHTML = `<table><thead><tr><th>id</th><th>title</th><th>done</th><th>tag</th><th class="c-created">createdAt</th></tr></thead><tbody>${rows.map((r) =>
-        `<tr${fresh.includes(r.id) ? ' class="flash"' : ""}><td>${r.id}</td><td class="t">${esc(r.title)}</td><td>${r.done}</td><td>${esc(r.tag)}</td><td class="c-created">${new Date(r.createdAt).toLocaleString("zh-TW", { hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</td></tr>`).join("")}</tbody></table>`;
+  },
+  {
+    id: "upgrade", title: "版本升級",
+    api: "db.version(2).stores({…}).upgrade(tx => …modify())",
+    desc: "從 v1 開始，每按一次就宣告下一版 schema 重新開啟：Dexie 自動新增或移除索引，並執行 upgrade() 把舊資料轉成新結構；升級後才能用新索引查詢。",
+    hint: "按「升級一版」看資料欄位與索引怎麼變",
+    async mount(ctx) {
+      ctx.html(`<div class="dx-board">
+        <section class="dx-panel"><header><h3>版本宣告</h3><span class="dx-chip">目前 verno <b data-ver>1</b></span></header>
+          <div class="dx-scroll dx-vers"></div></section>
+        <section class="dx-panel"><header><h3>contacts 資料</h3></header>
+          <div class="dx-idx"></div><div class="dx-scroll" data-rows></div>
+          <pre class="dx-code" data-q></pre><div class="dx-log dx-hide-narrow" style="flex:none;max-height:72px"></div></section></div>`);
+      const NAME = PREFIX + "upgrade";
+      const log = makeLog(ctx.$(".dx-log"), 6);
+      const AREA = { "02": "臺北市", "03": "新竹市", "04": "臺中市", "06": "臺南市", "07": "高雄市" };
+      const SEED = [["王小明", "02-2311-0001", "同事、羽球"], ["陳美玲", "04-2220-1234", "大學同學"], ["林志豪", "07-3311-5566", "客戶、高爾夫"],
+        ["張雅婷", "02-8786-2200", "鄰居"], ["黃建宏", "03-5712-3456", "客戶、攝影"], ["李宜蓁", "06-2758-9900", "同事"], ["王大同", "02-2720-8889", "客戶"]];
+      const VERS = [
+        { v: 1, stores: { contacts: "++id, name" }, code: 'db.version(1).stores({\n  contacts: "++id, name"\n})' },
+        { v: 2, stores: { contacts: "++id, name, lastName, *tags" },
+          code: 'db.version(2).stores({\n  contacts: "++id, name, lastName, *tags"\n}).upgrade(tx => tx.table("contacts")\n  .toCollection().modify(c => {\n    c.lastName = c.name[0];\n    c.firstName = c.name.slice(1);\n    c.tags = c.note.split("、");\n    delete c.note;\n  }))',
+          upgrade: async (tx) => { const n = await tx.table("contacts").toCollection().modify((c) => { c.lastName = c.name[0]; c.firstName = c.name.slice(1); c.tags = c.note.split("、"); delete c.note; }); log(`v2 upgrade()：modify 改寫 ${n} 筆`, { cls: "info" }); } },
+        { v: 3, stores: { contacts: "++id, lastName, *tags, city, [city+lastName]" },
+          code: 'db.version(3).stores({\n  contacts: "++id, lastName, *tags, city, [city+lastName]"\n}).upgrade(tx => tx.table("contacts")\n  .toCollection().modify(c => {\n    c.city = AREA[c.phone.slice(0, 2)];\n  }))\n// 少了 name：索引被移除，欄位仍保留',
+          upgrade: async (tx) => { const n = await tx.table("contacts").toCollection().modify((c) => { c.city = AREA[c.phone.slice(0, 2)] || "其他"; }); log(`v3 upgrade()：補上 city 欄位 ${n} 筆`, { cls: "info" }); } },
+      ];
+      const QUERY = [
+        ['db.contacts.where("name").startsWith("王")', (db) => db.contacts.where("name").startsWith("王").toArray()],
+        ['db.contacts.where("tags").equals("客戶")', (db) => db.contacts.where("tags").equals("客戶").toArray()],
+        ['db.contacts.where("[city+lastName]")\n  .equals(["臺北市", "王"])', (db) => db.contacts.where("[city+lastName]").equals(["臺北市", "王"]).toArray()],
+      ];
+      let db, cur = 0;
+      ctx.onCleanup(() => { db?.close(); Dexie.delete(NAME).catch((e) => console.warn(e)); });
+      async function openAt(target) {
+        db?.close();
+        db = new Dexie(NAME);
+        for (const s of VERS.slice(0, target)) { const v = db.version(s.v).stores(s.stores); if (s.upgrade) v.upgrade(s.upgrade); }
+        const t0 = performance.now();
+        await db.open();
+        cur = target;
+        log(`db.open()，宣告到 v${target}，verno = ${db.verno}`, { t: since(t0), cls: "ok" });
+        await render();
+      }
+      async function render() {
+        ctx.$("[data-ver]").textContent = db.verno;
+        ctx.$(".dx-vers").innerHTML = VERS.map((s) => `<div class="dx-ver ${s.v === cur ? "cur" : s.v < cur ? "done" : ""}"><header><b>v${s.v}</b><span>${s.v === cur ? "目前版本" : s.v < cur ? "已套用" : "尚未升級"}</span></header><pre class="dx-code">${hl(s.code)}</pre></div>`).join("");
+        const schema = db.contacts.schema;
+        ctx.$(".dx-idx").innerHTML = [`<code>${esc(schema.primKey.src)}</code>`, ...schema.indexes.map((i) => `<code>${esc(i.src)}</code>`)].join("");
+        const rows = await db.contacts.toArray();
+        ctx.$("[data-rows]").innerHTML = tableHtml(rows, autoCols(rows));
+        const [code, run] = QUERY[cur - 1];
+        const t0 = performance.now();
+        const hits = await run(db);
+        ctx.$("[data-q]").innerHTML = `<span class="c">// v${cur} 才能用的索引查詢（${fmtMs(since(t0))}）</span>\n${hl(code)}\n<span class="c">// → ${esc(hits.map((h) => h.name).join("、") || "無")}</span>`;
+      }
+      async function reset() {
+        db?.close();
+        await Dexie.delete(NAME);
+        await openAt(1);
+        await db.contacts.bulkAdd(SEED.map(([name, phone, note]) => ({ name, phone, note })));
+        log(`bulkAdd ${SEED.length} 筆 v1 格式資料（只有 name、phone、note）`);
+        await render();
+      }
+      ctx.button("重設 v1", reset);
+      const up = ctx.button("升級一版", async () => {
+        if (cur >= VERS.length) { log("已經是最新的 v3", { cls: "err" }); return; }
+        up.disabled = true;
+        try { await openAt(cur + 1); } finally { up.disabled = false; }
+      }, { primary: true });
+      await reset();
     },
-  });
-}
-
-async function start() {
-  openDb();
-  $("schema").textContent = `db.version(1).stores(${JSON.stringify(SCHEMA).replace(/,"/g, ', "').replace(/":/g, '": ')})`;
-  const visits = ((await db.meta.get("visits"))?.value || 0) + 1;
-  await db.meta.put({ key: "visits", value: visits });
-  const count = await db.todos.count();
-  $("visits").innerHTML = `本頁第 <b>${visits}</b> 次載入`;
-  log(`開啟資料庫 atlas-dexie-demo，目前 ${count} 筆`, 0);
-  subscribeList();
-  subscribeRows();
-}
-
-$("add").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const title = $("title").value.trim();
-  if (!title) return;
-  const tag = $("tag").value;
-  await op((id) => `db.todos.add({ title: "${title}", tag: "${tag}", done: 0 }) → id ${id}`, () => db.todos.add({ title, tag, done: 0, createdAt: Date.now() }));
-  $("title").value = "";
-});
-$("list").addEventListener("click", async (e) => {
-  const item = e.target.closest(".item"); if (!item) return;
-  const id = +item.dataset.id;
-  if (e.target.matches("input")) {
-    const done = e.target.checked ? 1 : 0;
-    await op(`db.todos.update(${id}, { done: ${done} })`, () => db.todos.update(id, { done }));
-  } else if (e.target.matches(".del")) {
-    await op(`db.todos.delete(${id})`, () => db.todos.delete(id));
-  }
-});
-$("filters").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { filter = b.dataset.f; subscribeList(); } });
-$("q").addEventListener("input", subscribeList);
-$("reload").addEventListener("click", () => location.reload());
-$("reset").addEventListener("click", async () => {
-  listSub?.unsubscribe(); rowSub?.unsubscribe();
-  db.close();
-  await Dexie.delete("atlas-dexie-demo");
-  prevIds = new Set();
-  $("log").innerHTML = "";
-  log("Dexie.delete(\"atlas-dexie-demo\")：資料庫已刪除", 0, true);
-  start();
-});
-
-start().catch((err) => {
-  $("list").innerHTML = `<div class="empty">無法開啟 IndexedDB：${esc(err.message)}（無痕模式或瀏覽器設定可能封鎖儲存）</div>`;
-  console.error(err);
-});
+  },
+  {
+    id: "index", title: "索引查詢",
+    api: "where(idx).between / anyOf / startsWith / [a+b] / *multiEntry",
+    desc: "5,000 筆學員資料（示意）建了一般、複合 [city+age] 與 multiEntry *tags 索引；同樣的條件用 filter() 全表掃描做對照，看索引快多少。",
+    hint: "切換查詢・按「全部比較」看耗時長條",
+    async mount(ctx) {
+      ctx.html(`<div class="dx-board wide-left">
+        <section class="dx-panel"><header><h3>查詢結果</h3><span class="dx-chip" data-stat>…</span></header>
+          <pre class="dx-code" data-code></pre><div class="dx-scroll" data-rows></div></section>
+        <section class="dx-panel dx-hide-narrow"><header><h3>耗時比較<small>各跑 5 次取平均</small></h3></header>
+          <div class="dx-bars" data-bars><div class="dx-empty">按右上角「全部比較」</div></div>
+          <div class="dx-empty" style="margin-top:auto">schema：<code>++id, name, city, age, joined, *tags, [city+age]</code></div>
+          <div class="dx-usage"></div></section></div>`);
+      const s = ctx.status("bulkAdd 5,000 筆示意資料…");
+      const db = await freshDb(ctx, "index", (d) => d.version(1).stores({ people: "++id, name, city, age, joined, *tags, [city+age]" }));
+      await db.people.bulkAdd(people(5000, 11));
+      s.done();
+      usage(ctx, ctx.$(".dx-usage"));
+      const QS = [
+        { label: "between 年齡 25 到 35", code: 'db.people.where("age").between(25, 35, true, true)', run: () => db.people.where("age").between(25, 35, true, true) },
+        { label: "anyOf 雙北", code: 'db.people.where("city").anyOf("臺北市", "新北市")', run: () => db.people.where("city").anyOf("臺北市", "新北市") },
+        { label: "startsWith 姓陳", code: 'db.people.where("name").startsWith("陳")', run: () => db.people.where("name").startsWith("陳") },
+        { label: "複合索引 臺中 20 多歲", code: 'db.people.where("[city+age]")\n  .between(["臺中市", 20], ["臺中市", 29], true, true)', run: () => db.people.where("[city+age]").between(["臺中市", 20], ["臺中市", 29], true, true) },
+        { label: "multiEntry 標籤 AI", code: 'db.people.where("tags").equals("AI")', run: () => db.people.where("tags").equals("AI") },
+        { label: "multiEntry 多標籤去重", code: 'db.people.where("tags").anyOf("AI", "Python").distinct()', run: () => db.people.where("tags").anyOf("AI", "Python").distinct() },
+        { label: "對照：filter 全表掃描", code: 'db.people.filter(p => p.age >= 25 && p.age <= 35)', run: () => db.people.filter((p) => p.age >= 25 && p.age <= 35), scan: true },
+      ];
+      const COLS = [["id", "id", "n"], ["name", "姓名"], ["city", "縣市"], ["age", "年齡", "n"], ["tags", "標籤"], ["joined", "加入", "d"]];
+      async function show(i) {
+        const q = QS[i];
+        const t0 = performance.now();
+        const rows = await q.run().toArray();
+        const t = since(t0);
+        ctx.$("[data-code]").innerHTML = hl(q.code) + ".toArray()";
+        ctx.$("[data-stat]").innerHTML = `<b>${fmt(rows.length)}</b> 筆・${fmtMs(t)}`;
+        ctx.$("[data-rows]").innerHTML = tableHtml(rows, COLS, { max: 80 });
+      }
+      ctx.select("", QS.map((q, i) => ({ value: i, label: q.label })), 0, (v) => show(+v));
+      ctx.button("全部比較", async () => {
+        const out = [];
+        for (const q of QS) {
+          let total = 0, n = 0;
+          for (let k = 0; k < 5; k++) { const t0 = performance.now(); n = await q.run().count(); total += since(t0); }
+          out.push({ label: q.label.replace(/^對照：/, ""), v: total / 5, text: `${fmtMs(total / 5)}・${fmt(n)} 筆`, cls: q.scan ? "hot" : "" });
+          bars(ctx.$("[data-bars]"), out);
+          await ctx.frame();
+        }
+      }, { primary: true });
+      await show(0);
+    },
+  },
+  {
+    id: "tx", title: "交易與回滾",
+    api: 'db.transaction("rw", db.accounts, db.ledger, async () => {…})',
+    desc: "轉帳分兩步：A 扣款、B 入帳。包在 transaction 裡，任何一步丟出錯誤整筆回滾，總額不變；不用交易時，第一步已寫入、第二步失敗，錢就憑空消失。",
+    hint: "開「第二步失敗」後分別用「交易」與「不用交易」轉帳",
+    async mount(ctx) {
+      ctx.html(`<div class="dx-board">
+        <section class="dx-panel" style="overflow-y:auto"><header><h3>帳戶餘額<small>liveQuery</small></h3></header>
+          <div class="dx-acc"><div data-a><small>A 王小明</small><b>…</b></div><span class="arrow">→</span><div data-b><small>B 陳美玲</small><b>…</b></div></div>
+          <div class="dx-total" data-total></div>
+          <div class="dx-row"><button class="btn primary" type="button" data-go>轉帳 1,000 元</button><button class="btn" type="button" data-reset>重設帳戶</button></div>
+          <header><h3>ledger 交易紀錄</h3></header><div class="dx-scroll" data-ledger style="min-height:90px"></div></section>
+        <section class="dx-panel"><header><h3>執行過程</h3></header><pre class="dx-code" data-code></pre><div class="dx-log"></div></section></div>`);
+      const db = await freshDb(ctx, "tx", (d) => d.version(1).stores({ accounts: "id", ledger: "++id, at" }));
+      const log = makeLog(ctx.$(".dx-log"));
+      let useTx = true, fail = false, last = {};
+      const code = () => (useTx
+        ? 'await db.transaction("rw", db.accounts, db.ledger, async () => {\n  await db.accounts.update("A", { balance: a - 1000 });\n' + (fail ? '  throw new Error("第二步前失敗");  // 整筆回滾\n' : "") + '  await db.accounts.update("B", { balance: b + 1000 });\n  await db.ledger.add({ from: "A", to: "B", amount: 1000 });\n});'
+        : '// 沒有交易：每個呼叫各自提交\nawait db.accounts.update("A", { balance: a - 1000 });\n' + (fail ? 'throw new Error("第二步前失敗");  // A 已經扣款\n' : "") + 'await db.accounts.update("B", { balance: b + 1000 });');
+      const paintCode = () => (ctx.$("[data-code]").innerHTML = hl(code()));
+      async function reset() {
+        await db.transaction("rw", db.accounts, db.ledger, async () => {
+          await db.accounts.bulkPut([{ id: "A", name: "王小明", balance: 5000 }, { id: "B", name: "陳美玲", balance: 3000 }]);
+          await db.ledger.clear();
+        });
+        log("重設：A 5,000、B 3,000，總額 8,000", { cls: "info" });
+      }
+      live(ctx, () => db.accounts.toArray(), (rows) => {
+        const by = Object.fromEntries(rows.map((r) => [r.id, r.balance]));
+        for (const k of ["A", "B"]) {
+          const el = ctx.$(`[data-${k.toLowerCase()}]`);
+          el.querySelector("b").textContent = fmt(by[k] ?? 0);
+          if (last[k] !== undefined && last[k] !== by[k]) { el.classList.remove("bump"); void el.offsetWidth; el.classList.add("bump"); }
+        }
+        last = by;
+        const total = (by.A || 0) + (by.B || 0);
+        const t = ctx.$("[data-total]");
+        t.className = `dx-total${total === 8000 ? "" : " bad"}`;
+        t.textContent = total === 8000 ? "總額 8,000：帳目一致" : `總額 ${fmt(total)}：少了 ${fmt(8000 - total)} 元，資料已不一致`;
+      });
+      live(ctx, () => db.ledger.orderBy("at").reverse().toArray(), (rows) => {
+        ctx.$("[data-ledger]").innerHTML = tableHtml(rows, [["id", "#", "n"], ["from", "從"], ["to", "到"], ["amount", "金額", "n"], ["at", "時間"]].map((c) => c), { max: 30 })
+          .replace(/<td class="">(\d{13})<\/td>/g, (m, t) => `<td>${new Date(+t).toLocaleTimeString("zh-TW", { hour12: false })}</td>`);
+      });
+      async function transfer() {
+        const amount = 1000;
+        const steps = async () => {
+          const a = await db.accounts.get("A");
+          if (a.balance < amount) throw new Error(`A 餘額不足（剩 ${fmt(a.balance)}）`);
+          await db.accounts.update("A", { balance: a.balance - amount });
+          log(`① A 扣款 ${fmt(amount)}，此刻讀到 A = ${fmt((await db.accounts.get("A")).balance)}`);
+          if (fail) throw new Error("模擬：入帳前發生錯誤");
+          const b = await db.accounts.get("B");
+          await db.accounts.update("B", { balance: b.balance + amount });
+          await db.ledger.add({ from: "A", to: "B", amount, at: Date.now() });
+          log(`② B 入帳 ${fmt(amount)}，寫入 ledger`);
+        };
+        const t0 = performance.now();
+        try {
+          if (useTx) await db.transaction("rw", db.accounts, db.ledger, steps);
+          else await steps();
+          log(useTx ? "交易提交（commit）" : "完成（兩次各自提交）", { t: since(t0), cls: "ok" });
+        } catch (e) {
+          log(`${e.message}，${useTx ? "整筆交易回滾，① 的扣款被撤銷" : "沒有交易，① 已寫入無法撤銷"}`, { t: since(t0), cls: "err" });
+        }
+      }
+      ctx.group(["交易", "不用交易"], 0, (i) => { useTx = i === 0; paintCode(); });
+      ctx.toggle("第二步失敗", false, (v) => { fail = v; paintCode(); });
+      ctx.on(ctx.$("[data-go]"), "click", transfer);
+      ctx.on(ctx.$("[data-reset]"), "click", reset);
+      paintCode();
+      await reset();
+    },
+  },
+  {
+    id: "live", title: "即時查詢",
+    api: "Dexie.liveQuery(querier).subscribe(next)",
+    desc: "三個 liveQuery 各自訂閱不同範圍：寫入南部訂單時，只有「南部」與「全部」重新執行，北部的查詢不受影響。換到另一個分頁開同一頁，寫入也會跨分頁同步。",
+    hint: "按新增訂單或開「自動寫入」，看右上角重新執行次數",
+    async mount(ctx) {
+      ctx.html(`<div class="dx-board dx-live3">
+        <section class="dx-panel dx-writer"><header><h3>寫入端</h3></header>
+          <div class="dx-row"><button class="btn" type="button" data-add="北部">＋北部訂單</button><button class="btn" type="button" data-add="南部">＋南部訂單</button></div>
+          <div class="dx-panel" style="background:var(--bg);flex:none"><header><h3>全部訂單</h3><span class="dx-runs" data-runs="all">0 次</span></header>
+            <div class="dx-big" data-sum>…</div><small class="dx-empty" data-cnt></small></div>
+          <div class="dx-log"></div></section>
+        <section class="dx-panel"><header><h3>北部最新</h3><span class="dx-runs" data-runs="北部">0 次</span></header>
+          <pre class="dx-code dx-hide-narrow">where("region").equals("北部")</pre><div class="dx-scroll dx-orders" data-list="北部"></div></section>
+        <section class="dx-panel"><header><h3>南部最新</h3><span class="dx-runs" data-runs="南部">0 次</span></header>
+          <pre class="dx-code dx-hide-narrow">where("region").equals("南部")</pre><div class="dx-scroll dx-orders" data-list="南部"></div></section></div>`);
+      const db = await freshDb(ctx, "live", (d) => d.version(1).stores({ orders: "++id, region, at" }));
+      const log = makeLog(ctx.$(".dx-log"), 12);
+      const STORES = { 北部: ["信義店", "板橋店", "中壢店", "新竹店"], 南部: ["台南店", "高雄店", "屏東店", "嘉義店"] };
+      const r = rng(5);
+      const order = (region) => ({ region, store: STORES[region][Math.floor(r() * 4)], amount: 200 + Math.round(r() * 30) * 50, at: Date.now() });
+      await db.orders.bulkAdd([order("北部"), order("南部"), order("北部"), order("南部")]);
+      const runs = { all: 0, 北部: 0, 南部: 0 };
+      const ping = (k) => { runs[k]++; const el = ctx.$(`[data-runs="${k}"]`); el.textContent = `${runs[k]} 次`; el.classList.remove("ping"); void el.offsetWidth; el.classList.add("ping"); };
+      for (const region of ["北部", "南部"]) {
+        live(ctx, () => db.orders.where("region").equals(region).reverse().limit(12).toArray(), (rows) => {
+          ping(region);
+          ctx.$(`[data-list="${region}"]`).innerHTML = rows.map((o) => `<div><span>#${o.id} ${esc(o.store)}</span><b>${fmt(o.amount)}</b></div>`).join("");
+        });
+      }
+      live(ctx, async () => { let sum = 0, n = 0; await db.orders.each((o) => { sum += o.amount; n++; }); return { sum, n }; }, ({ sum, n }) => {
+        ping("all");
+        ctx.$("[data-sum]").textContent = `$${fmt(sum)}`;
+        ctx.$("[data-cnt]").textContent = `${fmt(n)} 筆訂單（db.orders.each 加總）`;
+      });
+      const add = async (region) => { const o = order(region); const id = await db.orders.add(o); log(`add ${region} #${id} ${o.store} ${fmt(o.amount)}`, { cls: "ok" }); };
+      ctx.on(ctx.$(".dx-writer"), "click", (e) => { const b = e.target.closest("[data-add]"); if (b) add(b.dataset.add); });
+      let auto = null;
+      ctx.toggle("自動寫入", false, (v) => { if (auto) { clearInterval(auto); auto = null; } if (v) auto = setInterval(() => add(r() < 0.5 ? "北部" : "南部"), 900); });
+      ctx.onCleanup(() => auto && clearInterval(auto));
+    },
+  },
+  {
+    id: "bulk", title: "批次與中介層",
+    api: 'db.use({ stack: "dbcore", create(down) {…} }) + bulkAdd / bulkPut',
+    desc: "兩個 DBCore 中介層：一個計算底層 mutate 呼叫次數，一個在寫入前自動加上 savedAt。逐筆 add 會呼叫 N 次 mutate，bulkAdd 只要 1 次，速度差距一目了然。",
+    hint: "選筆數，依序按四個操作比較",
+    async mount(ctx) {
+      ctx.html(`<div class="dx-board">
+        <section class="dx-panel"><header><h3>操作</h3><span class="dx-chip" data-count>…</span></header>
+          <div class="dx-row"><button class="btn" type="button" data-op="loop">逐筆 add</button><button class="btn primary" type="button" data-op="bulkAdd">bulkAdd</button>
+            <button class="btn" type="button" data-op="bulkPut">bulkPut 改年齡</button><button class="btn" type="button" data-op="bulkDelete">bulkDelete</button></div>
+          <div class="dx-bars" data-bars><div class="dx-empty">按上方按鈕開始，結果會列在這裡</div></div>
+          <pre class="dx-code dx-hide-narrow" data-mw></pre><div class="dx-usage"></div></section>
+        <section class="dx-panel"><header><h3>最新 8 筆<small>savedAt 由中介層寫入</small></h3></header><div class="dx-scroll" data-rows></div><div class="dx-log dx-hide-narrow" style="flex:none;max-height:90px"></div></section></div>`);
+      const calls = { mutate: 0, rows: 0, read: 0 };
+      const db = await freshDb(ctx, "bulk", (d) => {
+        d.version(1).stores({ people: "++id, city, age" });
+        d.use({ stack: "dbcore", name: "atlasCounter", create: (down) => ({ ...down, table(n) {
+          const t = down.table(n);
+          return { ...t,
+            mutate(req) { calls.mutate++; calls.rows += req.values ? req.values.length : req.keys ? req.keys.length : 0; return t.mutate(req); },
+            query(req) { calls.read++; return t.query(req); },
+            getMany(req) { calls.read++; return t.getMany(req); } };
+        } }) });
+        d.use({ stack: "dbcore", name: "atlasStamp", create: (down) => ({ ...down, table(n) {
+          const t = down.table(n);
+          return { ...t, mutate(req) {
+            if (req.type === "add" || req.type === "put") req = { ...req, values: req.values.map((v) => ({ ...v, savedAt: new Date().toLocaleTimeString("zh-TW", { hour12: false }) })) };
+            return t.mutate(req);
+          } };
+        } }) });
+      });
+      ctx.$("[data-mw]").innerHTML = hl('db.use({ stack: "dbcore", name: "atlasCounter",\n  create: down => ({ ...down, table(n) {\n    const t = down.table(n);\n    return { ...t, mutate(req) {\n      calls.mutate++;  // add/put/delete 都經過這裡\n      return t.mutate(req);\n    } };\n  } })\n});');
+      const log = makeLog(ctx.$(".dx-log"), 8);
+      const paintUsage = usage(ctx, ctx.$(".dx-usage"));
+      let N = 1000;
+      const results = [];
+      live(ctx, () => Promise.all([db.people.count(), db.people.orderBy("id").reverse().limit(8).toArray()]), ([n, rows]) => {
+        ctx.$("[data-count]").innerHTML = `資料表 <b>${fmt(n)}</b> 筆`;
+        ctx.$("[data-rows]").innerHTML = tableHtml(rows, [["id", "id", "n"], ["name", "姓名"], ["city", "縣市"], ["age", "年齡", "n"], ["savedAt", "savedAt"]]);
+      });
+      const OPS = {
+        loop: ["逐筆 await add", async (items) => { for (const p of items) await db.people.add(p); }],
+        bulkAdd: ["bulkAdd(items)", (items) => db.people.bulkAdd(items)],
+        bulkPut: ["bulkPut 改年齡", async () => { const all = await db.people.orderBy("id").limit(N).toArray(); await db.people.bulkPut(all.map((p) => ({ ...p, age: p.age + 1 }))); }],
+        bulkDelete: ["bulkDelete(keys)", async () => { const keys = await db.people.orderBy("id").limit(N).primaryKeys(); await db.people.bulkDelete(keys); }],
+      };
+      let busy = false;
+      ctx.on(ctx.$(".dx-row"), "click", async (e) => {
+        const b = e.target.closest("[data-op]");
+        if (!b || busy) return;
+        busy = true;
+        const [label, fn] = OPS[b.dataset.op];
+        const items = people(N, Date.now() % 1000);
+        const c0 = { ...calls };
+        const t0 = performance.now();
+        try { await fn(items); } catch (err) { log(err.message, { cls: "err" }); }
+        const t = since(t0);
+        const m = calls.mutate - c0.mutate;
+        results.push({ label: `${label}`, v: t, text: `${fmtMs(t)}・mutate ${fmt(m)}`, cls: m > 1 ? "hot" : "ok" });
+        if (results.length > 6) results.shift();
+        bars(ctx.$("[data-bars]"), results);
+        log(`${label}：${fmt(N)} 筆，DBCore mutate 呼叫 ${fmt(m)} 次、影響 ${fmt(calls.rows - c0.rows)} 列`, { t, cls: "ok" });
+        paintUsage();
+        busy = false;
+      });
+      ctx.select("筆數", [500, 1000, 2000, 5000].map((n) => ({ value: n, label: fmt(n) })), N, (v) => (N = +v));
+    },
+  },
+  {
+    id: "paging", title: "鏈式分頁",
+    api: "orderBy(i).reverse().filter(fn).offset(n).limit(20)",
+    desc: "Collection 可以一路串接：沿索引排序、反向、JS 篩選、offset／limit 分頁；指定分類時改用複合索引 [category+price] 保持排序。modify() 一次改寫整個查詢範圍。",
+    hint: "切換分類、排序與「只看有庫存」，翻頁看產生的查詢",
+    async mount(ctx) {
+      ctx.html(`<div class="dx-board wide-left">
+        <section class="dx-panel"><header><h3>商品列表<small>示意資料</small></h3><span class="dx-chip" data-stat>…</span></header>
+          <div class="dx-scroll" data-rows></div>
+          <div class="dx-pager"><button class="btn" type="button" data-p="-1">上一頁</button><span data-page></span><button class="btn" type="button" data-p="1">下一頁</button>
+            <button class="btn" type="button" data-raise style="margin-left:auto">此範圍漲價 5%</button></div></section>
+        <section class="dx-panel"><header><h3>產生的查詢</h3></header><pre class="dx-code" data-code></pre><div class="dx-log"></div></section></div>`);
+      const CATS = ["筆電", "手機", "耳機", "螢幕", "鍵盤"];
+      const BRANDS = ["曜石", "青松", "北辰", "藍鯨", "光點"];
+      const BASE = { 筆電: 32000, 手機: 18000, 耳機: 3500, 螢幕: 7000, 鍵盤: 2200 };
+      const db = await freshDb(ctx, "paging", (d) => d.version(1).stores({ products: "++id, category, price, date, [category+price]" }));
+      const r = rng(21);
+      await db.products.bulkAdd(Array.from({ length: 600 }, (_, i) => {
+        const category = CATS[i % 5];
+        return { name: `${BRANDS[Math.floor(r() * 5)]} ${category} ${String.fromCharCode(65 + Math.floor(r() * 26))}${Math.floor(r() * 90 + 10)}`,
+          category, price: Math.round((BASE[category] * (0.5 + r() * 1.2)) / 10) * 10, stock: r() < 0.25 ? 0 : Math.floor(r() * 80), date: Date.UTC(2025, 0, 1) + Math.floor(r() * 640) * 864e5 };
+      }));
+      const log = makeLog(ctx.$(".dx-log"), 10);
+      const PER = 20;
+      let cat = "全部", sort = 0, inStock = false, page = 0;
+      // Returns { coll, code, sortBy } describing the current query
+      function build() {
+        const field = sort === 2 ? "date" : "price", desc = sort !== 0;
+        let coll, code, sortBy = null;
+        if (cat === "全部") { coll = db.products.orderBy(field); code = `db.products.orderBy("${field}")`; }
+        else if (field === "price") { coll = db.products.where("[category+price]").between([cat, Dexie.minKey], [cat, Dexie.maxKey]); code = `db.products.where("[category+price]")\n  .between(["${cat}", Dexie.minKey], ["${cat}", Dexie.maxKey])`; }
+        else { coll = db.products.where("category").equals(cat); code = `db.products.where("category").equals("${cat}")`; sortBy = field; }
+        if (desc) { coll = coll.reverse(); code += ".reverse()"; }
+        if (inStock) { coll = coll.filter((p) => p.stock > 0); code += "\n  .filter(p => p.stock > 0)"; }
+        return { coll, code, sortBy };
+      }
+      async function render() {
+        const { coll, code, sortBy } = build();
+        const t0 = performance.now();
+        const total = await coll.clone().count();
+        page = Math.max(0, Math.min(page, Math.ceil(total / PER) - 1));
+        let rows, full;
+        if (sortBy) { rows = (await coll.clone().sortBy(sortBy)).slice(page * PER, page * PER + PER); full = `${code}\n  .sortBy("${sortBy}")  // 先全部讀進記憶體排序\n  → .slice(${page * PER}, ${page * PER + PER})`; }
+        else { rows = await coll.clone().offset(page * PER).limit(PER).toArray(); full = `${code}\n  .offset(${page * PER}).limit(${PER}).toArray()`; }
+        const t = since(t0);
+        ctx.$("[data-code]").innerHTML = `${hl(full)}\n<span class="c">// count() + 取一頁：${fmtMs(t)}</span>`;
+        ctx.$("[data-stat]").innerHTML = `<b>${fmt(total)}</b> 件`;
+        ctx.$("[data-page]").textContent = `第 ${page + 1}／${Math.max(1, Math.ceil(total / PER))} 頁`;
+        ctx.$("[data-rows]").innerHTML = tableHtml(rows, [["id", "id", "n"], ["name", "品名"], ["category", "分類"], ["price", "價格", "n"], ["stock", "庫存", "n"], ["date", "上架", "d"]]);
+      }
+      ctx.on(ctx.$(".dx-pager"), "click", async (e) => {
+        const b = e.target.closest("[data-p]");
+        if (b) { page += +b.dataset.p; render(); return; }
+        if (e.target.closest("[data-raise]")) {
+          const t0 = performance.now();
+          const n = await build().coll.modify((p) => { p.price = Math.round((p.price * 1.05) / 10) * 10; });
+          log(`modify()：${cat} ${inStock ? "有庫存" : ""}共 ${fmt(n)} 件漲價 5%`, { t: since(t0), cls: "ok" });
+          render();
+        }
+      });
+      ctx.select("", ["全部", ...CATS], cat, (v) => { cat = v; page = 0; render(); });
+      ctx.select("", [{ value: 0, label: "價格低到高" }, { value: 1, label: "價格高到低" }, { value: 2, label: "最新上架" }], 0, (v) => { sort = +v; page = 0; render(); });
+      ctx.toggle("只看有庫存", false, (v) => { inStock = v; page = 0; render(); });
+      await render();
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: 'bulkAdd(rows) + where("age").between() + where("[city+age]")',
+    desc: "逐級加大筆數：清空資料表、bulkAdd 寫入，接著跑兩個索引查詢，量寫入與查詢吞吐。測完自動清空；上限 20 萬筆，約佔數十 MB。",
+    hint: "按「開始測試」；切換索引數量後再測一次比較",
+    async mount(ctx) {
+      ctx.html(`<div class="dx-stress"><section class="dx-panel"><header><h3>每級結果<small>寫入與查詢分開計時</small></h3></header>
+        <div class="dx-scroll" data-rows><div class="dx-empty">尚未開始</div></div><div class="dx-usage"></div></section></div>`);
+      ctx.controls.classList.add("bottom");
+      const NAME = PREFIX + "stress";
+      let rich = true, db = null, pending = Promise.resolve();
+      const results = [];
+      const paintUsage = usage(ctx, ctx.$(".dx-usage"));
+      async function ensure() {
+        if (db) return db;
+        await Dexie.delete(NAME);
+        db = new Dexie(NAME);
+        db.version(1).stores({ people: rich ? "++id, name, city, age, joined, *tags, [city+age]" : "++id, age" });
+        await db.open();
+        return db;
+      }
+      ctx.onCleanup(() => { db?.close(); Dexie.delete(NAME).catch((e) => console.warn(e)); });
+      const paint = () => {
+        ctx.$("[data-rows]").innerHTML = tableHtml(results, [["n", "筆數", "n"], ["idx", "索引"], ["w", "寫入"], ["wr", "寫入 筆/秒"], ["q", "兩個查詢"], ["peak", "峰值用量"]]);
+      };
+      ctx.group(["7 個索引", "只有 age"], 0, async (i) => {
+        rich = i === 0;
+        await pending;
+        db?.close();
+        db = null;
+      });
+      ctx.button("清除示範資料", async () => { await pending; db?.close(); db = null; await clearDemoData(); results.length = 0; paint(); paintUsage(); });
+      ctx.bench({
+        label: "筆數", unit: "筆", sizes: [1000, 5000, 10000, 25000, 50000, 100000, 200000], budget: 6000, target: 1500,
+        async prepare(n) { await pending; await ensure(); return people(n, n); },
+        async run(n, rows) {
+          const t0 = performance.now();
+          await db.people.bulkAdd(rows);
+          const w = since(t0);
+          const t1 = performance.now();
+          const a = await db.people.where("age").between(30, 40, true, true).count();
+          const b = rich ? (await db.people.where("[city+age]").between(["臺中市", 20], ["臺中市", 29], true, true).toArray()).length : (await db.people.where("age").equals(25).toArray()).length;
+          const q = since(t1);
+          const row = { n, idx: rich ? "7 個" : "1 個", w: fmtMs(w), wr: fmtCompact(n / (w / 1000)), q: fmtMs(q), peak: "…" };
+          results.push(row);
+          paint();
+          // Measure peak usage and clear the table after the timed part, before the next step starts
+          pending = (async () => {
+            if (navigator.storage?.estimate) row.peak = mb((await navigator.storage.estimate()).usage || 0);
+            await db.people.clear();
+            if (ctx.active) { paint(); paintUsage(); }
+          })();
+          return `寫 ${fmtMs(w)}・查 ${fmtMs(q)}（${fmt(a + b)} 筆）`;
+        },
+        note: "計時包含 bulkAdd 寫入（含維護索引）與兩個索引查詢。索引越多寫入越慢；multiEntry *tags 每筆會產生多個索引鍵。實際速度受磁碟、瀏覽器與 IndexedDB 後端影響，同一台機器第二次跑通常比較快。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

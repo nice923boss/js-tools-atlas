@@ -3,93 +3,432 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WebGL Fluid Simulation 示範：用滑鼠攪動流體</title>
+<title>WebGL Fluid Simulation 示範：八個場景看懂即時流體與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","note":"原作 PavelDoGreat/WebGL-Fluid-Simulation 未發佈到 npm，此頁使用其 MIT 授權的 npm 封裝 webgl-fluid-enhanced"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["招牌互動","消散與黏滯","渦度與壓力","後製效果","程式化注入","暫停與文字","透明與截圖","極限測試"],"note":"原作 PavelDoGreat/WebGL-Fluid-Simulation 未發佈到 npm，此頁使用其 MIT 授權的 npm 封裝 webgl-fluid-enhanced"}</script>
 <style>
-  #fluid { width: 100vw; height: 100vh; }
-  .title { position: fixed; left: 0; right: 0; top: 50%; transform: translateY(-50%); text-align: center; pointer-events: none; mix-blend-mode: difference; }
-  .title h1 { margin: 0; font-size: clamp(26px, 7vw, 64px); font-weight: 800; letter-spacing: .12em; color: #fff; }
+  .fl-host { position: absolute; inset: 0; background: #000; overflow: hidden; }
+  .fl-box { width: 100%; height: 100%; }
+  .fl-box canvas { display: block; touch-action: none; }
+  .board { position: absolute; inset: 0; display: grid; gap: 8px; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); }
+  .board.c3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .board.c2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .board.g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+  @media (max-width: 620px) and (orientation: portrait) {
+    .board.c3 { grid-template-columns: 1fr; grid-template-rows: repeat(3, minmax(0, 1fr)); }
+    .board.c2 { grid-template-columns: 1fr; grid-template-rows: repeat(2, minmax(0, 1fr)); }
+  }
+  .cell { position: relative; min-height: 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background: #000; }
+  .cell.photo .fl-host { background: #000 url("_shared/img/photo-5.jpg") center / cover no-repeat; }
+  .lab {
+    position: absolute; left: 8px; top: 8px; z-index: 3; pointer-events: none; max-width: calc(100% - 16px);
+    padding: 4px 8px; border-radius: 7px; background: rgba(14, 16, 19, .74); color: var(--fg);
+    font: 600 12.5px/1.35 var(--font);
+  }
+  .lab code { display: block; font: 500 11px/1.35 var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .title { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); z-index: 2; text-align: center; pointer-events: none; mix-blend-mode: difference; }
+  .title h1 { margin: 0; font: 800 clamp(26px, 7vw, 64px)/1.2 var(--font); letter-spacing: .12em; color: #fff; }
   .title p { margin: 6px 0 0; font-size: 13px; color: #fff; opacity: .7; }
-  .fx { position: fixed; left: 12px; top: 12px; z-index: 50; display: flex; gap: 6px; flex-wrap: wrap; max-width: 46%; }
-  @media (max-width: 600px) { .title { top: 46%; } .fx { top: auto; bottom: 48px; max-width: none; } }
+  .stress-area { position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px); border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  @media (min-width: 761px) { .stress-area { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 350px; } }
 </style>
 </head>
 <body>
-<div id="fluid"></div>
-<div class="title"><h1>流體模擬</h1><p>即時求解 Navier-Stokes 方程</p></div>
-<div class="controls" id="palettes">
-  <button class="btn" data-p="rainbow" aria-pressed="true">彩虹</button>
-  <button class="btn" data-p="lava">熔岩</button>
-  <button class="btn" data-p="ocean">深海</button>
-  <button class="btn" data-p="ink">水墨</button>
-</div>
-<div class="fx">
-  <button class="btn" id="bloom" aria-pressed="true">光暈</button>
-  <button class="btn" id="sunrays" aria-pressed="true">光束</button>
-  <button class="btn" id="splash">潑灑</button>
-</div>
-<div class="hint">滑過畫面攪動流體・點右上切換配色</div>
-
 <script src="https://cdn.jsdelivr.net/npm/webgl-fluid-enhanced@0.8.0/dist/index.umd.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// webgl-fluid-enhanced wraps Pavel Dobryakov's WebGL fluid solver (advection, curl, pressure passes).
-const container = document.getElementById("fluid");
-const fluid = new WebGLFluidEnhanced.default(container);
+// webgl-fluid-enhanced showcase: Pavel Dobryakov's GPU Navier-Stokes solver, scene by scene.
+const COLORS = ["#f72585", "#ffb703", "#4cc9f0", "#7bd389", "#9d8cff", "#ff7b54"];
+const FONT = getComputedStyle(document.documentElement).getPropertyValue("--font").trim() || "sans-serif";
+const rnd = (lo, hi) => lo + Math.random() * (hi - lo);
 const PALETTES = {
-  rainbow: { colorful: true, colorPalette: [], backgroundColor: "#000000", inverted: false, brightness: 0.5 },
-  lava: { colorful: false, colorPalette: ["#ff3d00", "#ff9100", "#ffd600", "#d50000"], backgroundColor: "#000000", inverted: false, brightness: 0.55 },
-  ocean: { colorful: false, colorPalette: ["#00b4d8", "#0077b6", "#48cae4", "#90e0ef", "#7bd389"], backgroundColor: "#000000", inverted: false, brightness: 0.55 },
-  ink: { colorful: false, colorPalette: ["#1d3557", "#2b2d42", "#6d597a", "#14213d"], backgroundColor: "#f4efe6", inverted: false, brightness: 0.8 },
+  rainbow: { colorful: true, colorPalette: [], backgroundColor: "#000000", brightness: 0.5 },
+  lava: { colorful: false, colorPalette: ["#ff3d00", "#ff9100", "#ffd600", "#d50000"], backgroundColor: "#000000", brightness: 0.55 },
+  ocean: { colorful: false, colorPalette: ["#00b4d8", "#0077b6", "#48cae4", "#90e0ef", "#7bd389"], backgroundColor: "#000000", brightness: 0.55 },
+  ink: { colorful: false, colorPalette: ["#1d3557", "#2b2d42", "#6d597a", "#14213d"], backgroundColor: "#f4efe6", brightness: 0.8 },
 };
-fluid.setConfig({
-  hover: true,
-  simResolution: 128,
-  dyeResolution: 1024,
-  densityDissipation: 0.9,
-  velocityDissipation: 0.3,
-  curl: 28,
-  splatRadius: 0.22,
-  splatForce: 6000,
-  bloom: true,
-  sunrays: true,
-  ...PALETTES.rainbow,
-});
-fluid.start();
-fluid.multipleSplats(6);
+// Lighter defaults for scenes that run several simulations side by side.
+const SMALL = { simResolution: 128, dyeResolution: 512, bloom: false, sunrays: false, splatRadius: 0.3 };
 
-let palette = "rainbow";
-document.getElementById("palettes").addEventListener("click", (e) => {
-  const b = e.target.closest("[data-p]");
-  if (!b) return;
-  palette = b.dataset.p;
-  // Ink on paper looks muddy with bloom/sunrays, so turn them off for that palette.
-  const soft = palette === "ink";
-  fluid.setConfig({ ...PALETTES[palette], bloom: soft ? false : pressed("bloom"), sunrays: soft ? false : pressed("sunrays") });
-  document.querySelectorAll("#palettes .btn").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
-  fluid.multipleSplats(5);
-});
-
-const pressed = (id) => document.getElementById(id).getAttribute("aria-pressed") === "true";
-for (const id of ["bloom", "sunrays"]) {
-  document.getElementById(id).addEventListener("click", (e) => {
-    const on = !pressed(id);
-    e.currentTarget.setAttribute("aria-pressed", String(on));
-    fluid.setConfig({ [id]: on });
+// One simulation inside `host` (an absolutely positioned box). The library styles its container
+// as a flex box, so it gets its own inner div. Cleanup stops the loop and releases the WebGL context.
+function fluid(ctx, host, config = {}) {
+  const box = Showcase.h("div", { class: "fl-box" });
+  host.append(box);
+  const sim = new WebGLFluidEnhanced.default(box);
+  const canvas = box.querySelector("canvas");
+  let palette = config.colorPalette || [];
+  let force = config.splatForce ?? 6000;
+  sim.setConfig(config);
+  sim.start();
+  ctx.onCleanup(() => {
+    sim.stop();
+    const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
+    if (gl) gl.getExtension("WEBGL_lose_context")?.loseContext();
+    canvas.remove();
   });
+  const f = {
+    sim, canvas,
+    set(cfg) {
+      if (cfg.colorPalette) palette = cfg.colorPalette;
+      if (cfg.splatForce != null) force = cfg.splatForce;
+      sim.setConfig(cfg);
+    },
+    // fx, fy: fractions from the top-left corner; dx, dy: velocity (+dy is up).
+    // In 0.8.0 the HEXColor argument skips normalisation and blows out to white, so a one-colour
+    // palette is swapped in for the call instead.
+    splat(fx, fy, dx, dy, hex) {
+      if (hex) sim.setConfig({ colorPalette: [hex] });
+      sim.splatAtLocation(fx * canvas.width, fy * canvas.clientHeight, dx, dy);
+      if (hex) sim.setConfig({ colorPalette: palette });
+    },
+    get aspect() { return canvas.clientWidth / Math.max(1, canvas.clientHeight); },
+    // Cells the solver allocates for a resolution: the short side equals res (library rule).
+    cells(res) {
+      const w = canvas.width, h = canvas.height, a = Math.max(w, h) / Math.max(1, Math.min(w, h));
+      return Math.round(res) * Math.round(res * a);
+    },
+  };
+  // The library maps touches with pageX/pageY, which is wrong once the canvas is not at the page
+  // origin, so touches are intercepted on the wrapper and turned into splats here.
+  let last = null;
+  const touch = (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const t = e.touches[0];
+    if (!t) { last = null; return; }
+    const r = canvas.getBoundingClientRect();
+    const x = (t.clientX - r.left) / r.width, y = (t.clientY - r.top) / r.height;
+    if (last && e.type === "touchmove") {
+      const a = r.width / r.height;
+      let dx = x - last.x, dy = last.y - y;
+      if (a < 1) dx *= a; else dy /= a;
+      f.splat(x, y, dx * force, dy * force);
+    }
+    last = { x, y };
+  };
+  for (const type of ["touchstart", "touchmove", "touchend"]) ctx.on(box, type, touch, { capture: true, passive: false });
+  return f;
 }
-document.getElementById("splash").addEventListener("click", () => fluid.multipleSplats(8));
 
-// Idle swirl: a slow orbiting splat keeps the fluid moving in previews without a pointer.
-let t = 0;
-setInterval(() => {
-  t += 0.9;
-  const r = Math.min(innerWidth, innerHeight) * 0.28;
-  const x = innerWidth / 2 + Math.cos(t) * r;
-  const y = innerHeight / 2 + Math.sin(t) * r;
-  fluid.splatAtLocation(x, y, -Math.sin(t) * 900, Math.cos(t) * 900);
-}, 700);
+// Grid of labelled panels; returns { hosts, labs }.
+function panels(ctx, cls, n, extra = "") {
+  ctx.html(`<div class="board ${cls}">${Array.from({ length: n }, () => `<div class="cell ${extra}"><div class="fl-host"></div><div class="lab"></div></div>`).join("")}</div>`);
+  return { hosts: ctx.$$(".fl-host"), labs: ctx.$$(".lab") };
+}
+const label = (el, name, code) => { el.innerHTML = `${name}<code>${code}</code>`; };
+
+// Rasterise a word and return sample points (fractions of the canvas) on a coarse grid.
+function textPoints(word, aspect, cols = 120) {
+  const W = cols, H = Math.max(20, Math.round(cols / aspect));
+  const c = Showcase.h("canvas", { width: W, height: H });
+  const g = c.getContext("2d", { willReadFrequently: true });
+  let size = H * 0.62;
+  g.font = `900 ${size}px ${FONT}`;
+  const w = g.measureText(word).width;
+  if (w > W * 0.82) size *= (W * 0.82) / w;
+  g.font = `900 ${size}px ${FONT}`;
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.fillStyle = "#fff";
+  g.fillText(word, W / 2, H * 0.52);
+  const data = g.getImageData(0, 0, W, H).data, pts = [];
+  for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) if (data[(y * W + x) * 4 + 3] > 140) pts.push({ x: x / W, y: y / H });
+  return pts;
+}
+
+Showcase.run({ scenes: [
+  {
+    id: "signature", title: "招牌互動",
+    api: "new WebGLFluidEnhanced(el)・setConfig({ colorPalette, bloom, sunrays })・start()",
+    desc: "滑鼠滑過就把速度與染料注入流體，GPU 每格解一次 Navier-Stokes（平流、渦度、壓力投影），再疊上光暈與光束後製。配色只是換 colorPalette。",
+    hint: "滑過畫面攪動流體・閒置時自動繞圈示範",
+    mount(ctx) {
+      ctx.html(`<div class="fl-host"></div><div class="title"><h1>流體模擬</h1><p>即時求解 Navier-Stokes 方程</p></div>`);
+      const f = fluid(ctx, ctx.$(".fl-host"), {
+        hover: true, simResolution: 128, dyeResolution: 1024, densityDissipation: 0.9, velocityDissipation: 0.3,
+        curl: 28, splatRadius: 0.22, splatForce: 6000, bloom: true, sunrays: true, ...PALETTES.rainbow,
+      });
+      let bloomBtn, raysBtn;
+      ctx.group(["彩虹", "熔岩", "深海", "水墨"], 0, (i) => {
+        const key = ["rainbow", "lava", "ocean", "ink"][i], light = key === "ink";
+        f.set({ ...PALETTES[key], bloom: !light, sunrays: !light });
+        bloomBtn.setAttribute("aria-pressed", String(!light));
+        raysBtn.setAttribute("aria-pressed", String(!light));
+        f.sim.multipleSplats(5);
+      });
+      bloomBtn = ctx.toggle("光暈", true, (v) => f.set({ bloom: v }));
+      raysBtn = ctx.toggle("光束", true, (v) => f.set({ sunrays: v }));
+      ctx.button("潑灑", () => f.sim.multipleSplats(8), { primary: true });
+      f.sim.multipleSplats(6);
+      // Idle preview: splats travel around an orbit until the real pointer moves.
+      let lastReal = -Infinity, t = 0;
+      ctx.on(ctx.el, "pointermove", () => { lastReal = performance.now(); });
+      ctx.interval(() => {
+        if (performance.now() - lastReal < 2500) return;
+        t += 0.7;
+        const r = 0.28, a = f.aspect;
+        const fx = 0.5 + (Math.cos(t) * r) / Math.max(a, 1), fy = 0.5 - Math.sin(t) * r * Math.min(a, 1);
+        f.splat(fx, fy, -Math.sin(t) * 900, Math.cos(t) * 900);
+      }, 450);
+    },
+  },
+  {
+    id: "dissipation", title: "消散與黏滯",
+    api: "setConfig({ densityDissipation, velocityDissipation })",
+    desc: "三格同時注入同一道噴流，只差一個參數：densityDissipation 決定顏色多快淡掉，velocityDissipation 決定流動多快停下（像水還是像糖漿）。",
+    hint: "切換要比較的參數・按「同步注入」再噴一次",
+    mount(ctx) {
+      const { hosts, labs } = panels(ctx, "c3", 3);
+      const SETS = [
+        { key: "densityDissipation", base: { velocityDissipation: 0.2 }, vals: [2.5, 1, 0.1], names: ["很快淡出", "預設值", "幾乎不散"] },
+        { key: "velocityDissipation", base: { densityDissipation: 0.3 }, vals: [0, 0.8, 5], names: ["一路滑行", "適中", "像糖漿停住"] },
+      ];
+      const sims = hosts.map((h) => fluid(ctx, h, SMALL));
+      let mode = 0, k = 0;
+      const apply = () => {
+        const s = SETS[mode];
+        sims.forEach((f, i) => {
+          f.set({ ...s.base, [s.key]: s.vals[i] });
+          label(labs[i], s.names[i], `${s.key} ${s.vals[i]}`);
+        });
+      };
+      const jet = () => {
+        const a = COLORS[k++ % COLORS.length], b = COLORS[(k + 2) % COLORS.length];
+        sims.forEach((f) => {
+          f.splat(0.08, 0.6, 1000, 140, a);
+          f.splat(0.08, 0.4, 1000, -140, b);
+        });
+      };
+      ctx.group(["染料消散", "速度消散"], 0, (i) => { mode = i; apply(); jet(); });
+      ctx.button("同步注入", jet, { primary: true });
+      apply();
+      jet();
+      ctx.interval(jet, 2600);
+    },
+  },
+  {
+    id: "curl", title: "渦度與壓力",
+    api: "setConfig({ curl })・setConfig({ pressureIterations })",
+    desc: "兩道噴流對撞。curl 是渦度補強，越大越容易捲出細碎漩渦；pressureIterations 是壓力投影的迭代次數，太少時流體會被「壓縮」，噴流變得鬆散不成形。",
+    hint: "切換 curl 與壓力迭代・滑過任一格加入擾動",
+    mount(ctx) {
+      const { hosts, labs } = panels(ctx, "c3", 3);
+      const SETS = [
+        { key: "curl", vals: [0, 30, 90], names: ["不補強", "預設值", "強烈捲曲"], reset: { pressureIterations: 20 } },
+        { key: "pressureIterations", vals: [1, 6, 60], names: ["幾乎不投影", "少量迭代", "高精度"], reset: { curl: 30 } },
+      ];
+      const sims = hosts.map((h) => fluid(ctx, h, { ...SMALL, densityDissipation: 0.6, velocityDissipation: 0.4, splatRadius: 0.22 }));
+      let mode = 0, k = 0;
+      const apply = () => {
+        const s = SETS[mode];
+        sims.forEach((f, i) => {
+          f.set({ ...s.reset, [s.key]: s.vals[i] });
+          label(labs[i], s.names[i], `${s.key} ${s.vals[i]}`);
+        });
+      };
+      const collide = () => {
+        const a = COLORS[k++ % COLORS.length], b = COLORS[(k + 1) % COLORS.length];
+        sims.forEach((f) => {
+          f.splat(0.06, 0.46, 1100, 0, a);
+          f.splat(0.94, 0.54, -1100, 0, b);
+        });
+      };
+      ctx.group(["渦度 curl", "壓力迭代"], 0, (i) => { mode = i; apply(); collide(); });
+      ctx.button("再撞一次", collide, { primary: true });
+      apply();
+      collide();
+      ctx.interval(collide, 2400);
+    },
+  },
+  {
+    id: "post", title: "後製效果",
+    api: "setConfig({ shading, bloom, bloomIntensity, bloomThreshold, sunrays, sunraysWeight })",
+    desc: "同一組注入，四格各開一種後製：shading 用染料梯度算出立體陰影，bloom 讓亮部外溢發光，sunrays 從亮部往外拉出體積光。滑桿即時調整強度與門檻。",
+    hint: "拖曳滑桿調整光暈與光束・滑過任一格攪動",
+    mount(ctx) {
+      const { hosts, labs } = panels(ctx, "g4", 4);
+      const MODES = [
+        ["無後製", "全部 false", { shading: false, bloom: false, sunrays: false }],
+        ["立體陰影", "shading: true", { shading: true, bloom: false, sunrays: false }],
+        ["光暈", "bloom: true", { shading: false, bloom: true, sunrays: false }],
+        ["光束", "sunrays: true", { shading: false, bloom: false, sunrays: true }],
+      ];
+      const sims = hosts.map((h, i) => {
+        label(labs[i], MODES[i][0], MODES[i][1]);
+        return fluid(ctx, h, { ...SMALL, densityDissipation: 0.5, splatRadius: 0.25, ...MODES[i][2] });
+      });
+      const all = (cfg) => sims.forEach((f) => f.set(cfg));
+      ctx.slider("光暈強度", { min: 0, max: 2, step: 0.05, value: 0.8, format: (v) => v.toFixed(2) }, (v) => all({ bloomIntensity: v }));
+      ctx.slider("光暈門檻", { min: 0, max: 1, step: 0.05, value: 0.6, format: (v) => v.toFixed(2) }, (v) => all({ bloomThreshold: v }));
+      ctx.slider("光束權重", { min: 0, max: 2, step: 0.05, value: 1, format: (v) => v.toFixed(2) }, (v) => all({ sunraysWeight: v }));
+      let k = 0;
+      const burst = () => {
+        // Same random splats in every panel, so only the post effect differs.
+        const list = Array.from({ length: 3 }, () => [rnd(0.2, 0.8), rnd(0.25, 0.75), rnd(-700, 700), rnd(-700, 700), COLORS[k++ % COLORS.length]]);
+        sims.forEach((f) => list.forEach((s) => f.splat(...s)));
+      };
+      burst();
+      ctx.interval(burst, 1700);
+    },
+  },
+  {
+    id: "choreo", title: "程式化注入",
+    api: "splatAtLocation(x, y, dx, dy)・setConfig({ splatRadius, colorPalette })",
+    desc: "不靠滑鼠，用程式在指定位置注入速度與顏色就能編排動態：旋渦、對撞、噴泉、煙火。0.8.0 的 HEXColor 參數會讓顏色過曝成白色，此頁改用單色 colorPalette 指定顏色。",
+    hint: "切換四種編排・也可以用滑鼠一起攪動",
+    mount(ctx) {
+      ctx.html(`<div class="board"><div class="cell"><div class="fl-host"></div><div class="lab"></div></div></div>`);
+      const f = fluid(ctx, ctx.$(".fl-host"), { simResolution: 128, dyeResolution: 1024, densityDissipation: 0.8, velocityDissipation: 0.25, bloom: true, sunrays: false, colorful: false, colorPalette: COLORS });
+      const lab = ctx.$(".lab");
+      let mode = 0, tick = 0;
+      const PATTERNS = [
+        { name: "旋渦", radius: 0.18, every: 12, code: "6 道切線方向噴流繞圈", run(n) {
+          const a0 = n * 0.04, r = 0.26, asp = f.aspect;
+          for (let i = 0; i < 6; i++) {
+            const a = a0 + (i * Math.PI) / 3;
+            f.splat(0.5 + (Math.cos(a) * r) / Math.max(asp, 1), 0.5 - Math.sin(a) * r * Math.min(asp, 1), -Math.sin(a) * 700, Math.cos(a) * 700, COLORS[i]);
+          }
+        } },
+        { name: "對撞", radius: 0.35, every: 18, code: "左右兩道 ±900 的噴流", run(n) {
+          const c = (n / 18) | 0;
+          f.splat(0.04, 0.5 + rnd(-0.06, 0.06), 900, 0, COLORS[c % 6]);
+          f.splat(0.96, 0.5 + rnd(-0.06, 0.06), -900, 0, COLORS[(c + 3) % 6]);
+        } },
+        { name: "噴泉", radius: 0.1, every: 1, code: "底部每 0.1 秒向上注入", run(n) {
+          f.splat(0.5 + rnd(-0.02, 0.02), 0.98, rnd(-220, 220), rnd(700, 1000), COLORS[((n / 25) | 0) % 6]);
+        } },
+        { name: "煙火", radius: 0.06, every: 9, code: "同一點 12 道放射狀噴流", run() {
+          const x = rnd(0.2, 0.8), y = rnd(0.2, 0.6), c = COLORS[(Math.random() * 6) | 0];
+          for (let i = 0; i < 12; i++) {
+            const a = (i * Math.PI) / 6;
+            f.splat(x + Math.cos(a) * 0.01, y - Math.sin(a) * 0.01, Math.cos(a) * 600, Math.sin(a) * 600, c);
+          }
+        } },
+      ];
+      const use = (i) => {
+        mode = i;
+        tick = 0;
+        const p = PATTERNS[i];
+        f.set({ splatRadius: p.radius });
+        label(lab, p.name, `${p.code}・splatRadius ${p.radius}`);
+      };
+      ctx.group(PATTERNS.map((p) => p.name), 0, use);
+      use(0);
+      ctx.interval(() => {
+        const p = PATTERNS[mode];
+        if (tick % p.every === 0) p.run(tick);
+        tick++;
+      }, 100);
+    },
+  },
+  {
+    id: "pause", title: "暫停與文字",
+    api: "togglePause(drawWhilePaused)・splatAtLocation(…, 0, 0)",
+    desc: "把文字點陣化後逐點注入零速度的染料；togglePause 暫停時模擬停住、畫面照常繪製，所以字會清楚定格；恢復後從底部吹一陣風，字就被捲走。",
+    hint: "切換文字・按「定格」可以停住慢慢看，開「暫停時可作畫」後滑過畫面作畫",
+    mount(ctx) {
+      ctx.html(`<div class="board"><div class="cell"><div class="fl-host"></div><div class="lab"></div></div></div>`);
+      const f = fluid(ctx, ctx.$(".fl-host"), { simResolution: 128, dyeResolution: 512, densityDissipation: 0.35, velocityDissipation: 0.3, curl: 35, splatRadius: 0.25, brightness: 0.35, bloom: false, sunrays: false });
+      const lab = ctx.$(".lab");
+      const WORDS = [["台灣", ["#4cc9f0", "#7bd389"]], ["珍奶", ["#ffb703", "#ff7b54"]], ["JS", ["#f7df1e", "#ffb703"]]];
+      let word = 0, paused = false, drawWhilePaused = true, hold = false, wake = null;
+      const setPaused = (v) => {
+        if (paused !== v) paused = f.sim.togglePause(drawWhilePaused);
+        label(lab, paused ? "暫停中" : "播放中", paused ? `togglePause(${drawWhilePaused})：只停模擬、照常繪製` : "模擬中：平流、渦度、壓力投影");
+      };
+      ctx.group(WORDS.map((w) => w[0]), 0, (i) => { word = i; if (wake) wake(); });
+      ctx.toggle("定格", false, (v) => { hold = v; if (v) setPaused(true); });
+      ctx.toggle("暫停時可作畫", true, (v) => {
+        drawWhilePaused = v;
+        if (paused) { f.sim.togglePause(); paused = f.sim.togglePause(v); setPaused(true); }
+      });
+      ctx.toggle("滑過即攪動", true, (v) => f.set({ hover: v }));
+
+      async function stamp() {
+        const [text, colors] = WORDS[word];
+        setPaused(true);
+        f.set({ splatRadius: 0.045 });
+        const pts = textPoints(text, f.aspect);
+        for (let i = 0; i < pts.length; i += 80) {
+          if (!ctx.active) return;
+          for (const p of pts.slice(i, i + 80)) f.splat(p.x, p.y, 0, 0, colors[p.x < 0.5 ? 0 : 1]);
+          await ctx.frame();
+        }
+        f.set({ splatRadius: 0.25 });
+        await ctx.sleep(2200);
+        while (hold) await ctx.sleep(150);
+        setPaused(false);
+        await ctx.sleep(400);
+        for (const x of [0.3, 0.5, 0.7]) f.splat(x, 0.99, rnd(-120, 120), 650);
+      }
+      (async () => {
+        while (ctx.active) {
+          await stamp();
+          await new Promise((r) => { wake = r; ctx.timeout(r, 4200); });
+          wake = null;
+        }
+      })().catch((e) => { if (e.name !== "AbortError") console.error(e); });
+    },
+  },
+  {
+    id: "transparent", title: "透明與截圖",
+    api: "setConfig({ transparent, inverted, brightness })・downloadScreenshot()",
+    desc: "transparent 讓畫布不畫底色，流體直接疊在網頁背景圖上；inverted 用 CSS 濾鏡反相成白底水墨。downloadScreenshot 以 captureResolution 重新算一張 PNG 下載，透明模式會得到去背圖。",
+    hint: "滑過兩格攪動・按「下載 PNG」存左格畫面",
+    mount(ctx) {
+      const { hosts, labs } = panels(ctx, "c2", 2);
+      hosts[0].parentElement.classList.add("photo");
+      label(labs[0], "疊在背景圖上", "transparent: true");
+      label(labs[1], "反相成水墨", "inverted: true");
+      const base = { ...SMALL, densityDissipation: 0.5, splatRadius: 0.22, brightness: 0.6 };
+      const sims = [fluid(ctx, hosts[0], { ...base, transparent: true }), fluid(ctx, hosts[1], { ...base, inverted: true, colorful: false, colorPalette: ["#1d3557", "#6d597a", "#e63946"] })];
+      ctx.slider("亮度", { min: 0.1, max: 1, step: 0.05, value: 0.6, format: (v) => v.toFixed(2) }, (v) => sims.forEach((f) => f.set({ brightness: v })));
+      ctx.button("下載 PNG", () => sims[0].sim.downloadScreenshot(), { primary: true });
+      let t = 0;
+      const swirl = () => {
+        t += 0.9;
+        sims.forEach((f) => f.splat(0.5 + Math.cos(t) * 0.28, 0.5 + Math.sin(t) * 0.25, -Math.sin(t) * 800, -Math.cos(t) * 800));
+      };
+      for (let i = 0; i < 4; i++) swirl();
+      ctx.interval(swirl, 500);
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "setConfig({ simResolution, dyeResolution, pressureIterations })",
+    desc: "逐級提高模擬網格（短邊格數），染料網格同步放大為 4 倍並以 2048 為上限，每格都會重建 framebuffer；壓力迭代與後製可另外切換，看 GPU 負載怎麼變。",
+    hint: "按「自動加壓」開始・切換壓力迭代或後製再測一次",
+    mount(ctx) {
+      ctx.html(`<div class="stress-area"><div class="fl-host"></div></div>`);
+      ctx.controls.classList.add("bottom");
+      let iters = 20, post = true, sim = 64;
+      const f = fluid(ctx, ctx.$(".fl-host"), { simResolution: sim, dyeResolution: 256, densityDissipation: 0.7, curl: 30, bloom: true, sunrays: true, pressureIterations: iters });
+      ctx.group(["壓力 20 次", "60 次", "150 次"], 0, (i) => { iters = [20, 60, 150][i]; f.set({ pressureIterations: iters }); });
+      ctx.toggle("光暈＋光束", true, (v) => { post = v; f.set({ bloom: v, sunrays: v }); });
+      const dyeOf = (n) => Math.min(n * 4, 2048);
+      const cellsText = (n) => (n < 1e4 ? `${n} 格` : `${(n / 1e4).toFixed(n < 1e5 ? 1 : 0)} 萬格`);
+      let t = 0;
+      ctx.interval(() => {
+        t += 0.55;
+        f.splat(0.5 + Math.cos(t) * 0.3, 0.5 + Math.sin(t * 1.3) * 0.3, -Math.sin(t) * 900, Math.cos(t * 1.3) * 900);
+      }, 160);
+      ctx.ramp({
+        label: "模擬網格", unit: "格", steps: [64, 128, 256, 384, 512, 768, 1024], minFps: 30,
+        apply(n) { sim = n; f.set({ simResolution: n, dyeResolution: dyeOf(n) }); },
+        metrics: () => ({
+          速度場: cellsText(f.cells(sim)),
+          染料: cellsText(f.cells(dyeOf(sim))),
+          壓力迭代: `${iters} 次`,
+          後製: post ? "開" : "關",
+        }),
+        note: "每幀成本約為「速度場格數 ×（壓力迭代 + 約 6 個 pass）」加上染料格數的平流與繪製，全部在 GPU shader 裡跑，瓶頸是顯示卡填充率與記憶體頻寬，不是 JavaScript。內顯與手機會比獨立顯卡早很多跌破 30 FPS。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

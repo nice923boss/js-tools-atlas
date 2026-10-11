@@ -3,171 +3,769 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenSheetMusicDisplay 示範：MusicXML 樂譜與游標播放</title>
+<title>OpenSheetMusicDisplay 示範：8 個場景看懂 MusicXML 的渲染、游標、排版與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"]}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"],"scenes":["游標跟奏","縮放與頁面格式","顯示選項與緊湊模式","音符上色","移調","頁內產生 MusicXML","單行橫向譜","極限測試"],"note":"按播放或「下一步」才會建立 AudioContext 並發聲；聲音由 Web Audio 振盪器即時合成，音高與時值取自 OSMD 游標底下的音符"}</script>
 <style>
-  .app {
-    position: fixed; inset: 0; display: grid; grid-template-rows: auto minmax(0, 1fr);
-    gap: 10px; padding: 12px 14px 46px;
+  .os-board { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 10px; min-height: 0; }
+  .os-card { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 4px; background: #fff; color: #1e1d1a; border-radius: 10px; border: 1px solid var(--line); padding: 8px 10px; overflow: hidden; }
+  .os-cap { flex: none; display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 12px; color: #6f6a5c; white-space: nowrap; overflow: hidden; }
+  .os-cap b { color: #1e1d1a; font-weight: 600; font-size: 13px; }
+  .os-cap span { overflow: hidden; text-overflow: ellipsis; }
+  .os-cap .os-r { margin-left: auto; flex: none; color: #b0175c; font-weight: 600; }
+  .os-scroll { position: relative; flex: 1; min-height: 0; min-width: 0; overflow: auto; scrollbar-width: thin; }
+  .os-host { position: relative; min-width: 0; }
+  .os-host svg { display: block; }
+  .os-meter { position: relative; flex: none; height: 26px; border-radius: 6px; background: #f1eee5; overflow: hidden; }
+  .os-meter > canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; }
+  .os-legend { flex: none; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: #6f6a5c; }
+  .os-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; box-shadow: 0 0 0 1px rgba(128, 128, 128, 0.6); }
+
+  /* 2. pages */
+  .os-pages { background: #d9d5ca; }
+  .os-pages .os-host { margin: 0 auto; padding: 4px 0 2px; }
+  .os-pages .os-host > div { margin: 0 0 14px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28); }
+
+  /* 4. dark mode card */
+  .os-card.os-dark { background: #000; color: #eee; }
+  .os-card.os-dark .os-cap b { color: #fff; }
+  .os-card.os-dark .os-cap, .os-card.os-dark .os-legend { color: #aaa; }
+
+  /* 5. transpose: two stacked cards */
+  .os-tr { grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
+
+  /* 6. MusicXML editor */
+  .os-gen { grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); }
+  .os-col { display: flex; flex-direction: column; gap: 6px; min-width: 0; min-height: 0; }
+  .os-lbl { flex: none; display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; }
+  .os-lbl b { color: var(--fg); font-weight: 600; }
+  .os-m { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .os-ta { flex: 1; min-height: 0; width: 100%; resize: none; border-radius: 10px; border: 1px solid var(--line); background: #0b0d11; color: var(--fg); padding: 9px 11px; font: 11.5px/1.5 var(--mono); outline: none; white-space: pre; overflow: auto; scrollbar-width: thin; }
+  .os-ta:focus { border-color: var(--accent); }
+  .os-warn { flex: none; min-height: 18px; font-size: 12px; color: var(--c4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .os-warn.bad { color: var(--c5); }
+  @media (max-width: 640px) {
+    .os-gen { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 8px; }
   }
-  .top { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  .meta { font-size: 13px; color: var(--muted); display: flex; gap: 6px; align-items: baseline; min-width: 0; }
-  .meta b { font-size: 16px; color: var(--fg); }
-  .meta code { font: 11px var(--mono); padding: 1px 6px; border-radius: 5px; background: rgba(0, 0, 0, 0.06); }
-  .spacer { flex: 1; }
-  .zoom { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
-  .zoom .btn { padding: 6px 10px; }
-  .zoom span { min-width: 40px; text-align: center; font-family: var(--mono); color: var(--fg); }
-  #play { min-width: 92px; }
-  .pos { font: 12px var(--mono); color: var(--muted); min-width: 72px; text-align: right; }
-  .sheet {
-    position: relative; min-height: 0; background: #fff; border-radius: 12px; border: 1px solid var(--line);
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.06); overflow-x: hidden; overflow-y: auto;
-    scrollbar-width: thin; scroll-behavior: smooth;
-  }
-  #osmd { min-height: 100%; }
-  .sheet .status { position: absolute; }
-  @media (max-width: 620px) {
-    .app { padding: 10px 10px 46px; gap: 8px; }
-    .meta code, .pos { display: none; }
-    .spacer { flex-basis: 100%; height: 0; }
-  }
+
+  /* 7. single horizontal staffline */
+  .os-hz .os-scroll { overflow-x: auto; overflow-y: hidden; }
+
+  /* 8. stress */
+  .os-stress { position: absolute; inset: 8px 8px 8px 350px; }
+  @media (max-width: 760px) { .os-stress { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px); opacity: .9; } }
 </style>
 </head>
-<body class="paper">
-<div class="app">
-  <div class="top">
-    <div class="meta"><b>快樂頌</b><code>ode-to-joy.musicxml</code></div>
-    <div class="spacer"></div>
-    <div class="zoom">
-      <button class="btn" id="zout" aria-label="縮小">−</button><span id="zv">100%</span>
-      <button class="btn" id="zin" aria-label="放大">＋</button>
-    </div>
-    <span class="pos" id="pos">第 1 小節</span>
-    <button class="btn" id="stepBtn">逐拍 ›</button>
-    <button class="btn primary" id="play">▶ 播放</button>
-  </div>
-  <div class="sheet" id="sheet">
-    <div id="osmd"></div>
-    <div class="status" id="status">載入 MusicXML 中…</div>
-  </div>
-</div>
-<div class="hint">游標會跟著音樂前進，鋼琴雙譜表與歌詞都來自 MusicXML</div>
-
+<body>
 <script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@2.2.0/build/opensheetmusicdisplay.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// OSMD: load a MusicXML file, engrave it with VexFlow, then walk its cursor and sound each note with Web Audio.
-const sheet = document.getElementById("sheet");
-const statusEl = document.getElementById("status");
-const playBtn = document.getElementById("play");
-const BPM = 108;
-const osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay("osmd", {
-  autoResize: true,
-  backend: "svg",
-  drawTitle: true,
-  drawComposer: true,
-  drawLyricist: true,
-  drawPartNames: false,
-  drawMeasureNumbers: true,
-  followCursor: true,
-  cursorsOptions: [{ type: 0, color: "#d61f69", alpha: 0.35, follow: true }],
-});
-let zoom = innerWidth < 620 ? 0.6 : 0.85;
+"use strict";
+const O = window.opensheetmusicdisplay;
+const XML_URL = "assets/opensheetmusicdisplay/ode-to-joy.musicxml";
+const INK = "#000000", HL = "#f72585";
+const COLOR_OPTS = { applyToNoteheads: true, applyToStem: true, applyToFlag: true, applyToBeams: false, applyToLedgerLines: false };
+const SHARP_NAMES = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
+const FLAT_NAMES = ["C", "D♭", "D", "E♭", "E", "F", "G♭", "G", "A♭", "A", "B♭", "B"];
+const KEY_NAMES = { "-7": "C♭", "-6": "G♭", "-5": "D♭", "-4": "A♭", "-3": "E♭", "-2": "B♭", "-1": "F", 0: "C", 1: "G", 2: "D", 3: "A", 4: "E", 5: "B", 6: "F♯", 7: "C♯" };
+const keyName = (f) => `${KEY_NAMES[f]} 大調`;
+const noteName = (m, flat) => `${(flat ? FLAT_NAMES : SHARP_NAMES)[m % 12]}${Math.floor(m / 12) - 1}`;
+const hz = (m) => 440 * Math.pow(2, (m - 69) / 12);
+const zoomFor = (w) => Math.max(0.5, Math.min(1, w / 820));
+const ms = (t) => Showcase.fmtMs(t);
 
-// Piano-like tone: two detuned partials with a fast decay
-let ac = null;
-function tone(freq, sec) {
-  const t = ac.currentTime;
-  const g = ac.createGain();
-  g.gain.setValueAtTime(0.0001, t);
-  g.gain.exponentialRampToValueAtTime(0.22, t + 0.01);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + Math.max(0.35, sec * 1.4));
-  g.connect(ac.destination);
-  [[1, "triangle", 1], [2, "sine", 0.35], [3, "sine", 0.12]].forEach(([mul, type, amp]) => {
-    const o = ac.createOscillator(), og = ac.createGain();
-    o.type = type; o.frequency.value = freq * mul; og.gain.value = amp;
-    o.connect(og); og.connect(g);
-    o.start(t); o.stop(t + Math.max(0.4, sec * 1.5));
+// ---------- score helpers ----------
+let odeP = null;
+const ode = () => (odeP ||= fetch(XML_URL).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); }));
+// Keep only the first n measures of the single-part ode (string cut at a measure boundary).
+function trimXML(xml, n) {
+  const i = xml.indexOf(`<measure number="${n + 1}"`);
+  return i < 0 ? xml : `${xml.slice(0, i)}</part>\n</score-partwise>`;
+}
+// One OSMD instance per scene; autoResize off (we re-render from our own ResizeObserver) and no window scrolling.
+function make(ctx, host, opts = {}) {
+  const osmd = new O.OpenSheetMusicDisplay(host, { autoResize: false, backend: "svg", followCursor: false, drawPartNames: false, ...opts });
+  ctx.onCleanup(() => { try { osmd.clear(); } catch (e) { /* already cleared */ } host.textContent = ""; });
+  return osmd;
+}
+function watch(ctx, el, fn, both = false) {
+  let w = el.clientWidth, hh = el.clientHeight;
+  const ro = new ResizeObserver(() => {
+    const nw = el.clientWidth, nh = el.clientHeight;
+    if (Math.abs(nw - w) > 3 || (both && Math.abs(nh - hh) > 3)) { w = nw; hh = nh; if (ctx.active) fn(); }
+  });
+  ro.observe(el);
+  ctx.onCleanup(() => ro.disconnect());
+}
+function timed(fn) { const t = performance.now(); fn(); return performance.now() - t; }
+// Walk every graphical note of the rendered sheet.
+function eachGNote(osmd, fn) {
+  for (const row of osmd.GraphicSheet.MeasureList) for (const gm of row) {
+    if (!gm) continue;
+    for (const se of gm.staffEntries) for (const gve of se.graphicalVoiceEntries) for (const gn of gve.notes) fn(gn);
+  }
+}
+function svgCount(host) { return host.querySelectorAll("svg *").length; }
+function systemsOf(osmd) { return osmd.GraphicSheet.MusicPages.reduce((s, p) => s + p.MusicSystems.length, 0); }
+// Turn the cursor walk into a playable timeline: one step per cursor position, start time in whole notes.
+function timeline(osmd) {
+  const c = osmd.cursor, steps = [];
+  c.reset(); // reset() replaces c.iterator, so read it only afterwards
+  const it = c.iterator;
+  for (let guard = 0; !it.EndReached && guard < 20000; guard++) {
+    const notes = [];
+    for (const ve of it.CurrentVoiceEntries) for (const n of ve.Notes) {
+      if (n.isRest() || !n.Pitch) continue;
+      if (n.NoteTie && n.NoteTie.StartNote !== n) continue; // tied continuation: no new attack
+      notes.push({ midi: n.halfTone + 12, len: n.Length.RealValue });
+    }
+    steps.push({ t: it.currentTimeStamp.RealValue, m: it.CurrentMeasureIndex, notes });
+    c.next();
+  }
+  c.reset();
+  return steps;
+}
+
+// ---------- audio ----------
+let AC = null;
+function audio() {
+  if (!AC) {
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    const out = ac.createGain(); out.gain.value = 0.9;
+    const an = ac.createAnalyser(); an.fftSize = 2048; an.smoothingTimeConstant = 0.7;
+    out.connect(an); an.connect(ac.destination);
+    AC = { ac, out, an, fq: new Uint8Array(1024) };
+  }
+  if (AC.ac.state === "suspended") AC.ac.resume();
+  return AC;
+}
+// Soft piano-like tone: triangle + octave sine through a closing lowpass.
+function tone(midi, when, dur, gain = 0.15) {
+  const { ac, out } = AC, f = hz(midi);
+  const o = ac.createOscillator(), o2 = ac.createOscillator(), g2 = ac.createGain(), lp = ac.createBiquadFilter(), g = ac.createGain();
+  o.type = "triangle"; o2.type = "sine"; o.frequency.value = f; o2.frequency.value = 2 * f; g2.gain.value = 0.25;
+  lp.type = "lowpass";
+  lp.frequency.setValueAtTime(Math.min(14000, f * 8), when);
+  lp.frequency.exponentialRampToValueAtTime(Math.min(10000, f * 2), when + 0.6);
+  g.gain.setValueAtTime(0.0001, when);
+  g.gain.exponentialRampToValueAtTime(gain, when + 0.01);
+  g.gain.setTargetAtTime(gain * 0.45, when + 0.03, 0.35);
+  g.gain.setTargetAtTime(0.0001, when + dur, 0.06);
+  o.connect(lp); o2.connect(g2); g2.connect(lp); lp.connect(g); g.connect(out);
+  [o, o2].forEach((x) => { x.start(when); x.stop(when + dur + 0.4); });
+  return [o, o2, g2, lp, g];
+}
+function canvasIn(ctx, host) {
+  const cv = document.createElement("canvas");
+  host.append(cv);
+  const v = { g: cv.getContext("2d"), w: 1, h: 1 };
+  const fit = () => {
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    v.w = Math.max(1, host.clientWidth); v.h = Math.max(1, host.clientHeight);
+    cv.width = Math.round(v.w * dpr); cv.height = Math.round(v.h * dpr);
+    v.g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  };
+  fit(); watch(ctx, host, fit, true);
+  return v;
+}
+function meter(ctx, host) {
+  const v = canvasIn(ctx, host), font = getComputedStyle(document.documentElement).getPropertyValue("--font").trim() || "sans-serif";
+  ctx.raf(() => {
+    const { g, w, h } = v;
+    g.clearRect(0, 0, w, h);
+    if (!AC) {
+      g.fillStyle = "#8a8577"; g.font = `11px ${font}`; g.textBaseline = "middle";
+      g.fillText("按播放後顯示 AnalyserNode 即時頻譜", 8, h / 2);
+      return;
+    }
+    AC.an.getByteFrequencyData(AC.fq);
+    const n = Math.min(96, Math.floor(w / 5)), bw = w / n;
+    for (let i = 0; i < n; i++) {
+      const a = Math.floor(2 * Math.pow(220, i / n)), b = Math.max(a + 1, Math.floor(2 * Math.pow(220, (i + 1) / n)));
+      let m = 0;
+      for (let j = a; j < b; j++) m = Math.max(m, AC.fq[j]);
+      const bh = (m / 255) * h;
+      if (bh < 0.5) continue;
+      g.fillStyle = `hsl(${330 - (i / n) * 140} 80% 52%)`;
+      g.fillRect(i * bw + 0.5, h - bh, Math.max(1, bw - 1), bh);
+    }
   });
 }
-
-const wholeSec = (4 * 60) / BPM;
-function sounding() {
-  // Notes under the cursor across both staves
-  const out = [];
-  for (const ve of osmd.cursor.iterator.CurrentVoiceEntries || []) {
-    for (const n of ve.Notes) if (!n.isRest() && n.Pitch) out.push(n);
+// Plays a cursor timeline: schedules every note up front, then moves the OSMD cursor in step with
+// AudioContext time, colors the notes under it with GraphicalNote.setColor() and scrolls them into view.
+function player(ctx, { get, scroller, axis = "y", onState, onStep }) {
+  let nodes = [], stopRaf = null, cur = -1, lit = [], bpm = 108;
+  const unlight = () => { lit.forEach((g) => g.setColor(INK, COLOR_OPTS)); lit = []; };
+  function follow(osmd) {
+    const ce = osmd.cursor.cursorElement;
+    if (!ce || !scroller) return;
+    const a = ce.getBoundingClientRect(), b = scroller.getBoundingClientRect();
+    if (axis === "y") {
+      if (a.top < b.top + 4 || a.bottom > b.bottom - 4) scroller.scrollTo({ top: Math.max(0, a.top - b.top + scroller.scrollTop - 24), behavior: "smooth" });
+    } else if (a.left < b.left + 20 || a.right > b.right - 60) {
+      scroller.scrollTo({ left: Math.max(0, a.left - b.left + scroller.scrollLeft - b.width * 0.25), behavior: "smooth" });
+    }
   }
-  return out;
+  function mark(osmd, steps) {
+    unlight();
+    lit = osmd.cursor.GNotesUnderCursor().filter((g) => !g.sourceNote.isRest());
+    lit.forEach((g) => g.setColor(HL, COLOR_OPTS));
+    follow(osmd);
+    if (onStep && steps[cur]) onStep(steps[cur], cur, steps.length);
+  }
+  function release() {
+    nodes.forEach((n) => { try { if (n.stop) n.stop(); } catch (e) { /* already stopped */ } n.disconnect(); });
+    nodes = [];
+  }
+  function stop() {
+    release();
+    if (stopRaf) { stopRaf(); stopRaf = null; if (onState) onState(false); }
+  }
+  function start() {
+    const { osmd, steps } = get();
+    if (!osmd || !steps.length) return;
+    stop();
+    const a = audio(), W = 240 / bpm, t0 = a.ac.currentTime + 0.08;
+    let end = 0;
+    for (const s of steps) for (const n of s.notes) {
+      nodes.push(...tone(n.midi, t0 + s.t * W, Math.max(0.1, n.len * W * 0.92)));
+      end = Math.max(end, (s.t + n.len) * W);
+    }
+    osmd.cursor.reset(); osmd.cursor.show(); cur = 0; mark(osmd, steps);
+    if (onState) onState(true);
+    stopRaf = ctx.raf(() => {
+      const now = a.ac.currentTime - t0;
+      let k = cur;
+      while (k + 1 < steps.length && steps[k + 1].t * W <= now) k++;
+      if (k > cur) { while (cur < k) { osmd.cursor.next(); cur++; } mark(osmd, steps); }
+      if (now > end + 0.3) stop();
+    });
+  }
+  function step() {
+    const { osmd, steps } = get();
+    if (!osmd || !steps.length) return;
+    stop();
+    const a = audio(), W = 240 / bpm;
+    if (cur < 0 || cur >= steps.length - 1) { osmd.cursor.reset(); osmd.cursor.show(); cur = 0; } else { osmd.cursor.next(); cur++; }
+    mark(osmd, steps);
+    const t0 = a.ac.currentTime + 0.03;
+    for (const n of steps[cur].notes) nodes.push(...tone(n.midi, t0, Math.max(0.15, n.len * W * 0.92)));
+  }
+  ctx.onCleanup(stop);
+  return {
+    start, stop, step,
+    toggle() { if (stopRaf) stop(); else start(); },
+    rewind() { stop(); lit = []; cur = -1; }, // after a re-render the old SVG (and its colors) is gone
+    set bpm(v) { bpm = v; },
+  };
 }
-function updatePos() {
-  const it = osmd.cursor.iterator;
-  document.getElementById("pos").textContent = it.EndReached ? "結束" : `第 ${it.CurrentMeasureIndex + 1} 小節`;
+const playLabel = (b) => (on) => (b.textContent = on ? "■ 停止" : "▶ 播放");
+const fail = (ctx, what) => (e) => {
+  console.error(`[osmd] ${what}`, e);
+  if (ctx.active) ctx.status("").error(`${what}失敗：${e && e.message ? e.message : e}`);
+};
+const CARD = (extra = "", meterOn = false) => `<div class="os-board"><div class="os-card ${extra}"><div class="os-cap"><b class="os-t"></b><span class="os-s"></span><span class="os-r"></span></div><div class="os-scroll"><div class="os-host"></div></div>${meterOn ? '<div class="os-meter"></div>' : ""}</div></div>`;
+function caption(ctx) {
+  const t = ctx.$(".os-t"), s = ctx.$(".os-s"), r = ctx.$(".os-r");
+  return (a, b, c) => { if (a != null) t.textContent = a; if (b != null) s.textContent = b; if (c != null) r.textContent = c; };
 }
 
-// Play the notes at the cursor, then advance; returns seconds until the next onset.
-function stepOnce() {
-  const it = osmd.cursor.iterator;
-  if (it.EndReached) { osmd.cursor.reset(); }
-  const t0 = it.currentTimeStamp.RealValue;
-  const ns = sounding();
-  ns.forEach((n) => tone(n.Pitch.Frequency, n.Length.RealValue * wholeSec));
-  const shortest = ns.length ? Math.min(...ns.map((n) => n.Length.RealValue)) : 0.25;
-  osmd.cursor.next();
-  const t1 = it.EndReached ? t0 + shortest : it.currentTimeStamp.RealValue;
-  updatePos();
-  return (t1 - t0) * wholeSec;
+// ---------- MusicXML generator ----------
+function rng(seed) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), s | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const LET = "CDEFGAB", NAT = [0, 2, 4, 5, 7, 9, 11];
+const mod7 = (x) => ((x % 7) + 7) % 7;
+const alterOf = (L, f) => (f > 0 ? ("FCGDAEB".indexOf(L) < f ? 1 : 0) : f < 0 ? ("BEADGCF".indexOf(L) < -f ? -1 : 0) : 0);
+// Scale degree (0 = tonic in octave 4) -> spelled pitch in the major key with `f` fifths.
+function degPitch(deg, f) {
+  const li = mod7(f * 4) + deg, L = LET[mod7(li)], oct = 4 + Math.floor(li / 7), alter = alterOf(L, f);
+  return { L, oct, alter, midi: 12 * (oct + 1) + NAT[mod7(li)] + alter };
+}
+const DUR = { 16: ["whole", 0], 12: ["half", 1], 8: ["half", 0], 6: ["quarter", 1], 4: ["quarter", 0], 3: ["eighth", 1], 2: ["eighth", 0], 1: ["16th", 0] };
+const METERS = [
+  { label: "4/4", beats: 4, bt: 4, units: 16, strong: [0, 8], mel: [[4, 4, 4, 4], [2, 2, 4, 2, 2, 4], [6, 2, 4, 4], [4, 2, 2, 8], [2, 2, 2, 2, 4, 4], [8, 4, 4], [3, 1, 4, 4, 4]], acc: [[8, 8], [4, 4, 4, 4], [16], [12, 4]] },
+  { label: "3/4", beats: 3, bt: 4, units: 12, strong: [0], mel: [[4, 4, 4], [2, 2, 4, 4], [6, 2, 4], [8, 4], [4, 2, 2, 4]], acc: [[12], [4, 4, 4], [8, 4]] },
+  { label: "6/8", beats: 6, bt: 8, units: 12, strong: [0, 6], mel: [[4, 2, 4, 2], [6, 6], [2, 2, 2, 6], [4, 2, 2, 2, 2], [6, 4, 2]], acc: [[6, 6], [12], [4, 2, 6]] },
+];
+const ENSEMBLES = [
+  { label: "鋼琴", parts: [{ name: "鋼琴", abbr: "鋼", staves: [["G", 2, 60, 81], ["F", 4, 40, 59]] }] },
+  { label: "長笛＋大提琴", parts: [{ name: "長笛", abbr: "長", staves: [["G", 2, 62, 88]] }, { name: "大提琴", abbr: "大提", staves: [["F", 4, 36, 57]] }] },
+  { label: "弦樂四重奏", group: true, parts: [
+    { name: "第一小提琴", abbr: "小一", staves: [["G", 2, 64, 86]] }, { name: "第二小提琴", abbr: "小二", staves: [["G", 2, 57, 76]] },
+    { name: "中提琴", abbr: "中提", staves: [["C", 3, 50, 69]] }, { name: "大提琴", abbr: "大提", staves: [["F", 4, 36, 57]] }] },
+];
+const PROG = [0, 5, 3, 4, 0, 3, 1, 4]; // I vi IV V I IV ii V, last bar back to I
+// Builds a complete score-partwise document: melody on the first staff, chord tones in the
+// inner staves, chord roots in the lowest staff. Beams are left to OSMD's autoBeam option.
+function genXML({ ens, meter, fifths, measures, seed, title }) {
+  const r = rng(seed), M = meter, staves = ens.parts.flatMap((p) => p.staves), last = staves.length - 1;
+  const inRange = (st, deg) => { const m = degPitch(deg, fifths).midi; return m >= st[2] && m <= st[3]; };
+  const nearest = (st, prev, tones) => {
+    let best = null, bd = Infinity;
+    for (let d = -28; d <= 28; d++) {
+      if (!tones.includes(mod7(d)) || !inRange(st, d)) continue;
+      const dist = Math.abs(d - prev) + r() * 0.9;
+      if (dist < bd) { bd = dist; best = d; }
+    }
+    return best == null ? prev : best;
+  };
+  const prev = staves.map((st) => { let d = 0; while (degPitch(d, fifths).midi < (st[2] + st[3]) / 2) d++; while (degPitch(d, fifths).midi > (st[2] + st[3]) / 2) d--; return d; });
+  const noteXml = (p, d, voice, staff) => {
+    const [type, dot] = DUR[d];
+    const pitch = p ? `<pitch><step>${p.L}</step>${p.alter ? `<alter>${p.alter}</alter>` : ""}<octave>${p.oct}</octave></pitch>` : "<rest/>";
+    return `    <note>${pitch}<duration>${d}</duration><voice>${voice}</voice><type>${type}</type>${dot ? "<dot/>" : ""}${staff ? `<staff>${staff}</staff>` : ""}</note>`;
+  };
+  const bars = staves.map(() => []);
+  for (let m = 0; m < measures; m++) {
+    const end = m === measures - 1, root = end ? 0 : PROG[m % PROG.length], tones = [root, mod7(root + 2), mod7(root + 4)];
+    staves.forEach((st, si) => {
+      const pat = end ? [M.units] : si === 0 ? M.mel[Math.floor(r() * M.mel.length)] : M.acc[Math.floor(r() * M.acc.length)];
+      const out = [];
+      let pos = 0;
+      for (const d of pat) {
+        let deg;
+        if (si === last && si > 0) deg = nearest(st, prev[si], [root]);
+        else if (si > 0 || end || M.strong.includes(pos)) deg = nearest(st, prev[si], tones);
+        else {
+          deg = prev[si] + (r() < 0.5 ? -1 : 1) * (r() < 0.75 ? 1 : 2);
+          if (!inRange(st, deg)) deg = prev[si] - (deg - prev[si]);
+        }
+        const rest = si === 0 && !end && pos > 0 && d <= 4 && r() < 0.07;
+        out.push([rest ? null : degPitch(deg, fifths), d]);
+        if (!rest) prev[si] = deg;
+        pos += d;
+      }
+      bars[si].push(out);
+    });
+  }
+  const tempo = M.bt === 8 ? '<beat-unit>quarter</beat-unit><beat-unit-dot/><per-minute>66</per-minute></metronome></direction-type><sound tempo="99"/>' : '<beat-unit>quarter</beat-unit><per-minute>96</per-minute></metronome></direction-type><sound tempo="96"/>';
+  let si0 = 0;
+  const parts = ens.parts.map((p, pi) => {
+    const base = si0; si0 += p.staves.length;
+    const lines = [`<part id="P${pi + 1}">`];
+    for (let m = 0; m < measures; m++) {
+      lines.push(`  <measure number="${m + 1}">`);
+      if (m === 0) {
+        const n = p.staves.length;
+        const clefs = p.staves.map((st, k) => `<clef${n > 1 ? ` number="${k + 1}"` : ""}><sign>${st[0]}</sign><line>${st[1]}</line></clef>`).join("");
+        lines.push(`    <attributes><divisions>4</divisions><key><fifths>${fifths}</fifths></key><time><beats>${M.beats}</beats><beat-type>${M.bt}</beat-type></time>${n > 1 ? `<staves>${n}</staves>` : ""}${clefs}</attributes>`);
+        if (pi === 0) lines.push(`    <direction placement="above"><direction-type><metronome>${tempo}</direction>`);
+      }
+      p.staves.forEach((st, k) => {
+        if (k > 0) lines.push(`    <backup><duration>${M.units}</duration></backup>`);
+        for (const [pitch, d] of bars[base + k][m]) lines.push(noteXml(pitch, d, k * 4 + 1, p.staves.length > 1 ? k + 1 : 0));
+      });
+      if (m === measures - 1) lines.push('    <barline location="right"><bar-style>light-heavy</bar-style></barline>');
+      lines.push("  </measure>");
+    }
+    lines.push("</part>");
+    return lines.join("\n");
+  });
+  const list = ens.parts.map((p, pi) => `  <score-part id="P${pi + 1}"><part-name>${p.name}</part-name><part-abbreviation>${p.abbr}</part-abbreviation></score-part>`);
+  if (ens.group) { list.unshift('  <part-group type="start" number="1"><group-symbol>bracket</group-symbol></part-group>'); list.push('  <part-group type="stop" number="1"/>'); }
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="4.0">
+<work><work-title>${title}</work-title></work>
+<identification><creator type="composer">程式產生（種子 ${seed}）</creator></identification>
+<part-list>
+${list.join("\n")}
+</part-list>
+${parts.join("\n")}
+</score-partwise>
+`;
 }
 
-let timer = null;
-function stop(reset) {
-  clearTimeout(timer); timer = null;
-  playBtn.textContent = "▶ 播放";
-  if (reset) { osmd.cursor.reset(); sheet.scrollTop = 0; updatePos(); }
-}
-function loop() {
-  if (osmd.cursor.iterator.EndReached) { stop(true); return; }
-  const wait = stepOnce();
-  timer = setTimeout(loop, wait * 1000);
-}
-
-async function ensureAudio() {
-  ac = ac || new AudioContext();
-  await ac.resume();
-}
-playBtn.addEventListener("click", async () => {
-  if (timer) { stop(false); return; }
-  await ensureAudio();
-  if (osmd.cursor.iterator.EndReached) osmd.cursor.reset();
-  playBtn.textContent = "❚❚ 暫停";
-  loop();
-});
-document.getElementById("stepBtn").addEventListener("click", async () => {
-  if (timer) stop(false);
-  await ensureAudio();
-  stepOnce();
-});
-
-function setZoom(z) {
-  zoom = Math.min(1.6, Math.max(0.4, Math.round(z * 100) / 100));
-  document.getElementById("zv").textContent = `${Math.round(zoom * 100)}%`;
-  osmd.zoom = zoom;
-  osmd.render();
-  osmd.cursor.update();
-}
-document.getElementById("zin").addEventListener("click", () => setZoom(zoom + 0.1));
-document.getElementById("zout").addEventListener("click", () => setZoom(zoom - 0.1));
-
-osmd.load("assets/opensheetmusicdisplay/ode-to-joy.musicxml").then(() => {
-  statusEl.hidden = true;
-  setZoom(zoom);
-  osmd.cursor.show();
-  updatePos();
-}).catch((err) => {
-  statusEl.textContent = `樂譜載入失敗：${err.message}`;
-  console.error(err);
+Showcase.run({
+  scenes: [
+    {
+      id: "cursor", title: "游標跟奏",
+      api: "osmd.load(url)・osmd.render()・cursor.next() / reset()・cursor.iterator.CurrentVoiceEntries・cursor.GNotesUnderCursor()・GraphicalNote.setColor()",
+      desc: "載入 MusicXML 檔《快樂頌》鋼琴雙譜表。播放時游標依 AudioContext 時間逐拍前進，游標底下的音符用 setColor 即時染色；音高與時值都從游標迭代器取出。",
+      hint: "按播放聽全曲；「下一步」一次走一個游標位置並發出該拍的音；可切換三種游標樣式與速度。",
+      async mount(ctx) {
+        ctx.html(CARD("", true));
+        const host = ctx.$(".os-host"), scroller = ctx.$(".os-scroll"), cap = caption(ctx);
+        let osmd = null, steps = [];
+        const pl = player(ctx, {
+          get: () => ({ osmd, steps }), scroller,
+          onState: (on) => playLabel(playBtn)(on),
+          onStep: (s, i, n) => cap(null, null, `第 ${s.m + 1} 小節・${i + 1}/${n}・${s.notes.map((x) => noteName(x.midi)).join(" ") || "休止"}`),
+        });
+        const playBtn = ctx.button("▶ 播放", () => pl.toggle(), { primary: true });
+        ctx.button("下一步", () => pl.step());
+        const CURSORS = [{ type: 0, color: "#f72585", alpha: 0.35, follow: false }, { type: 1, color: "#f72585", alpha: 1, follow: false }, { type: 3, color: "#4cc9f0", alpha: 0.28, follow: false }];
+        ctx.group(["標準", "細線", "整小節"], 0, (i) => { if (!osmd) return; osmd.cursor.CursorOptions = { ...CURSORS[i] }; osmd.cursor.update(); });
+        ctx.slider("速度", { min: 60, max: 180, step: 4, value: 108, format: (v) => `${v} BPM` }, (v) => { pl.bpm = v; if (osmd && pl.stop) { /* tempo applies on next play */ } });
+        meter(ctx, ctx.$(".os-meter"));
+        const s = ctx.status("載入 MusicXML…");
+        const xml = await ode();
+        if (!ctx.active) return;
+        osmd = make(ctx, host, { drawTitle: true, cursorsOptions: [CURSORS[0]] });
+        let tl = performance.now();
+        await osmd.load(xml);
+        if (!ctx.active) return;
+        tl = performance.now() - tl;
+        const draw = () => {
+          pl.rewind();
+          osmd.zoom = zoomFor(host.clientWidth);
+          const tr = timed(() => osmd.render());
+          osmd.cursor.show();
+          steps = timeline(osmd);
+          cap(osmd.Sheet.TitleString, `${osmd.Sheet.ComposerString}・鋼琴雙譜表・${osmd.Sheet.SourceMeasures.length} 小節・${steps.length} 個游標位置・載入 ${ms(tl)}・繪製 ${ms(tr)}`, "按播放開始");
+        };
+        draw();
+        s.done();
+        watch(ctx, host, draw);
+      },
+    },
+    {
+      id: "layout", title: "縮放與頁面格式",
+      api: "osmd.zoom = z・osmd.setPageFormat(\"A4_P\")・setOptions({ pageBackgroundColor })・GraphicSheet.MusicPages",
+      desc: "同一份樂譜切換紙張格式，OSMD 依紙張長寬比重新分頁、分行（頁寬跟著容器，所以 A3、A4、A5 同比例的排法相同）；zoom 改變的是音符大小，縮小時每頁塞得下更多行。",
+      hint: "拖「縮放」看每頁行數與頁數變化；切換直式、橫式與比例略寬的 Letter；「無限長」是網頁預設的不分頁模式。",
+      async mount(ctx) {
+        ctx.html(CARD("os-pages"));
+        const host = ctx.$(".os-host"), scroller = ctx.$(".os-scroll"), cap = caption(ctx);
+        const FORMATS = [{ value: "A4_P", label: "A4 直式" }, { value: "A4_L", label: "A4 橫式" }, { value: "Letter_P", label: "Letter 直式" }, { value: "Endless", label: "無限長（不分頁）" }];
+        let osmd = null, fmt = "A4_P", zoom = 0.7;
+        ctx.slider("縮放", { min: 0.4, max: 1.4, step: 0.05, value: zoom, format: (v) => `${Math.round(v * 100)}%` }, (v) => { zoom = v; draw(); });
+        ctx.select("紙張", FORMATS, fmt, (v) => { fmt = v; draw(); });
+        const s = ctx.status("載入 MusicXML…");
+        const xml = await ode();
+        if (!ctx.active) return;
+        osmd = make(ctx, host, { drawingParameters: "compact", pageBackgroundColor: "#FFFFFF", drawCredits: true, drawTitle: true, drawComposer: true });
+        await osmd.load(xml);
+        if (!ctx.active) return;
+        function draw() {
+          if (!osmd) return;
+          host.style.width = `${Math.max(240, Math.min(640, scroller.clientWidth - 24))}px`;
+          osmd.setPageFormat(fmt);
+          osmd.zoom = zoom;
+          const tr = timed(() => osmd.render());
+          const pages = osmd.GraphicSheet.MusicPages, per = pages.map((p) => p.MusicSystems.length);
+          const lo = Math.min(...per), hi = Math.max(...per);
+          cap(FORMATS.find((f) => f.value === fmt).label, `縮放 ${Math.round(zoom * 100)}%・繪製 ${ms(tr)}`, fmt === "Endless" ? `不分頁・共 ${per[0]} 行` : `${pages.length} 頁・每頁 ${lo === hi ? lo : `${lo}～${hi}`} 行`);
+          scroller.scrollTop = 0;
+        }
+        draw();
+        s.done();
+        watch(ctx, scroller, draw);
+      },
+    },
+    {
+      id: "display", title: "顯示選項與緊湊模式",
+      api: "osmd.setOptions({ drawingParameters, drawTitle, drawLyrics, drawMeasureNumbers, drawPartNames, drawFromMeasureNumber, drawUpToMeasureNumber })",
+      desc: "drawingParameters 一次套用一組排版預設：compact 拿掉頁首並縮小間距，compacttight 再壓縮譜表與系統間距。其他選項逐項開關標題、歌詞、小節號、聲部名稱，或只畫某段小節。",
+      hint: "切換三種預設看高度與行數變化；開關各元素；用「範圍」只畫其中一段。右上角是本次 render 的耗時。",
+      async mount(ctx) {
+        ctx.html(CARD());
+        const host = ctx.$(".os-host"), cap = caption(ctx);
+        const PRESETS = ["default", "compact", "compacttight"];
+        const RANGES = [{ value: "1-99", label: "全曲" }, { value: "1-4", label: "第 1～4 小節" }, { value: "5-8", label: "第 5～8 小節" }, { value: "9-16", label: "第 9～16 小節" }];
+        const st = { preset: 0, title: true, lyrics: true, numbers: true, names: false, range: "1-99" };
+        let osmd = null;
+        ctx.group(PRESETS, 0, (i) => { st.preset = i; draw(); });
+        ctx.toggle("標題", st.title, (v) => { st.title = v; draw(); });
+        ctx.toggle("歌詞", st.lyrics, (v) => { st.lyrics = v; draw(); });
+        ctx.toggle("小節號", st.numbers, (v) => { st.numbers = v; draw(); });
+        ctx.toggle("聲部名稱", st.names, (v) => { st.names = v; draw(); });
+        ctx.select("範圍", RANGES, st.range, (v) => { st.range = v; draw(); });
+        const s = ctx.status("載入 MusicXML…");
+        const xml = await ode();
+        if (!ctx.active) return;
+        osmd = make(ctx, host);
+        await osmd.load(xml);
+        if (!ctx.active) return;
+        function draw() {
+          if (!osmd) return;
+          const [from, to] = st.range.split("-").map(Number);
+          osmd.setOptions({
+            drawingParameters: PRESETS[st.preset],
+            drawTitle: st.title, drawSubtitle: st.title, drawComposer: st.title, drawLyricist: st.title,
+            drawLyrics: st.lyrics, drawMeasureNumbers: st.numbers, drawPartNames: st.names,
+            drawFromMeasureNumber: from, drawUpToMeasureNumber: to,
+          });
+          osmd.zoom = zoomFor(host.clientWidth);
+          const tr = timed(() => osmd.render());
+          const svg = host.querySelector("svg");
+          cap(PRESETS[st.preset], `${systemsOf(osmd)} 行・樂譜高 ${Math.round(svg ? +svg.getAttribute("height") : 0)} px・${Showcase.fmt(svgCount(host))} 個 SVG 元素`, `繪製 ${ms(tr)}`);
+        }
+        draw();
+        s.done();
+        watch(ctx, host, draw);
+      },
+    },
+    {
+      id: "color", title: "音符上色",
+      api: "new OpenSheetMusicDisplay(el, { coloringMode, coloringSetCustom, colorStemsLikeNoteheads, darkMode })・VexFlowGraphicalNote.setColor()",
+      desc: "coloringMode 在排版時依音名替符頭上色：Boomwhacker 是音樂教室常見的打擊音管配色，也可以傳入自訂 8 色。「標出音名」改用 setColor 直接改已繪出的 SVG，不必重新排版。",
+      hint: "切換三種配色、符桿同色與深色模式；從「標出音名」選一個音，所有同名音變色、其他音變淡，右上角顯示改色耗時。",
+      async mount(ctx) {
+        ctx.html(CARD().replace('<div class="os-scroll">', '<div class="os-legend"></div><div class="os-scroll">'));
+        const card = ctx.$(".os-card"), legend = ctx.$(".os-legend"), cap = caption(ctx);
+        const CUSTOM = ["#e63946", "#f4a261", "#d4a72c", "#2a9d8f", "#1d7fd1", "#7b2cbf", "#d62da8", "#888888"];
+        const AUTO = ["C", "D", "E", "F", "G", "A", "B", "Rest"].map((k) => O.AutoColorSet[k]);
+        const MODES = ["樂譜原色", "Boomwhacker", "自訂色組"];
+        const PCS = [{ value: "", label: "不標示" }, ...["C", "D", "E", "F", "G", "A", "B"].map((l, i) => ({ value: String(NAT[i]), label: `${l}（${["Do", "Re", "Mi", "Fa", "Sol", "La", "Si"][i]}）` }))];
+        const st = { mode: 1, stems: true, dark: false, pc: "" };
+        let osmd = null, xml = "", token = 0;
+        ctx.group(MODES, st.mode, (i) => { st.mode = i; build(); });
+        ctx.toggle("符桿同色", st.stems, (v) => { st.stems = v; build(); });
+        ctx.toggle("深色模式", st.dark, (v) => { st.dark = v; build(); });
+        const pcSel = ctx.select("標出音名", PCS, st.pc, (v) => { st.pc = v; if (v) mark(); else build(); });
+        // Coloring options are read at load/render time, so each change builds a fresh instance on a fresh host.
+        async function build() {
+          const my = ++token;
+          const old = ctx.$(".os-host"), host = document.createElement("div");
+          host.className = "os-host";
+          card.classList.toggle("os-dark", st.dark);
+          const next = new O.OpenSheetMusicDisplay(host, {
+            autoResize: false, followCursor: false, drawPartNames: false, drawTitle: false, drawComposer: false, drawLyricist: false, drawCredits: false,
+            coloringMode: st.mode === 2 ? O.ColoringModes.CustomColorSet : st.mode === 1 ? O.ColoringModes.AutoColoring : O.ColoringModes.XML,
+            coloringSetCustom: CUSTOM, coloringEnabled: st.mode > 0, colorStemsLikeNoteheads: st.stems, darkMode: st.dark,
+          });
+          let tl = performance.now();
+          await next.load(xml);
+          if (!ctx.active || my !== token) return;
+          tl = performance.now() - tl;
+          old.replaceWith(host);
+          if (osmd) osmd.clear();
+          osmd = next;
+          osmd.zoom = zoomFor(host.clientWidth);
+          const tr = timed(() => osmd.render());
+          const set = st.mode === 2 ? CUSTOM : st.mode === 1 ? AUTO : null;
+          legend.innerHTML = set ? ["C", "D", "E", "F", "G", "A", "B", "休止"].map((l, i) => `<span><i style="background:${set[i]}"></i>${l}</span>`).join("") : "<span>依 MusicXML 內的顏色（本曲未指定，全部黑色）</span>";
+          cap(MODES[st.mode], `${st.dark ? "深色模式・" : ""}${st.stems ? "符桿同色・" : ""}重建實例：載入 ${ms(tl)}・繪製 ${ms(tr)}`, "");
+          if (st.pc) mark();
+        }
+        function mark() {
+          if (!osmd) return;
+          const pc = Number(st.pc), dim = st.dark ? "#555555" : "#cfc9bb";
+          let hit = 0, n = 0;
+          const t = timed(() => eachGNote(osmd, (gn) => {
+            const p = gn.sourceNote.Pitch;
+            if (!p) return;
+            n++;
+            const on = ((p.FundamentalNote % 12) + 12) % 12 === pc;
+            if (on) hit++;
+            gn.setColor(on ? HL : dim, { ...COLOR_OPTS, applyToBeams: true, applyToLedgerLines: true });
+          }));
+          cap(null, `${pcSel.selectedOptions[0].textContent}：${n} 個音中有 ${hit} 個`, `setColor ${ms(t)}`);
+        }
+        ctx.onCleanup(() => { token++; if (osmd) osmd.clear(); });
+        const s = ctx.status("載入 MusicXML…");
+        xml = await ode();
+        if (!ctx.active) return;
+        await build();
+        s.done();
+        watch(ctx, card, () => build());
+      },
+    },
+    {
+      id: "transpose", title: "移調",
+      api: "osmd.TransposeCalculator = new IntervalTransposeCalculator()・osmd.Sheet.Transpose = n・osmd.updateGraphic()",
+      desc: "上面是原調，下面是同一份 MusicXML 移調後重新排版的結果。IntervalTransposeCalculator 依新調號重新拼寫音名與臨時記號，調號跟著換；播放的音高也來自移調後的音符。",
+      hint: "拖「半音」移調，看調號與臨時記號如何改變；按播放聽移調後的版本。",
+      async mount(ctx) {
+        ctx.html(`<div class="os-board os-tr">
+          <div class="os-card os-a"><div class="os-cap"><b class="os-t"></b><span class="os-s"></span></div><div class="os-scroll"><div class="os-host"></div></div></div>
+          <div class="os-card os-b"><div class="os-cap"><b class="os-t"></b><span class="os-s"></span><span class="os-r"></span></div><div class="os-scroll"><div class="os-host"></div></div><div class="os-meter"></div></div>
+        </div>`);
+        const A = ctx.$(".os-a .os-host"), B = ctx.$(".os-b .os-host"), capA = ctx.$(".os-a .os-t"), subA = ctx.$(".os-a .os-s");
+        const capB = ctx.$(".os-b .os-t"), subB = ctx.$(".os-b .os-s"), rB = ctx.$(".os-b .os-r");
+        let oa = null, ob = null, steps = [], semis = 3, flat = false;
+        const pl = player(ctx, {
+          get: () => ({ osmd: ob, steps }), scroller: ctx.$(".os-b .os-scroll"),
+          onState: (on) => playLabel(playBtn)(on),
+          onStep: (s) => (rB.textContent = s.notes.map((x) => noteName(x.midi, flat)).join(" ")),
+        });
+        const playBtn = ctx.button("▶ 播放", () => pl.toggle(), { primary: true });
+        ctx.slider("半音", { min: -6, max: 6, step: 1, value: semis, format: (v) => (v > 0 ? `+${v}` : `${v}`) }, (v) => { semis = v; transpose(); });
+        meter(ctx, ctx.$(".os-meter"));
+        const s = ctx.status("載入 MusicXML…");
+        const xml = trimXML(await ode(), 8);
+        if (!ctx.active) return;
+        const opts = { drawTitle: false, drawComposer: false, drawLyricist: false, drawCredits: false, drawLyrics: false, cursorsOptions: [{ type: 0, color: "#f72585", alpha: 0.35, follow: false }] };
+        oa = make(ctx, A, { ...opts, disableCursor: true });
+        ob = make(ctx, B, opts);
+        await Promise.all([oa.load(xml), ob.load(xml)]);
+        if (!ctx.active) return;
+        ob.TransposeCalculator = new O.IntervalTransposeCalculator();
+        const keyOf = (o) => {
+          const ki = o.Sheet.SourceMeasures[0].FirstInstructionsStaffEntries[0].Instructions.find((i) => "keyTypeOriginal" in i);
+          return ki ? ki.Key : 0;
+        };
+        const k0 = keyOf(oa);
+        capA.textContent = `原調：${keyName(k0)}`;
+        subA.textContent = "《快樂頌》第 1～8 小節";
+        function drawA() { oa.zoom = zoomFor(A.clientWidth); oa.render(); }
+        function transpose() {
+          pl.rewind();
+          ob.Sheet.Transpose = semis;
+          ob.zoom = zoomFor(B.clientWidth);
+          const t = timed(() => { ob.updateGraphic(); ob.render(); });
+          ob.cursor.show();
+          steps = timeline(ob);
+          const k = keyOf(ob);
+          flat = k < 0;
+          capB.textContent = `移調後：${keyName(k)}`;
+          subB.textContent = `${semis > 0 ? "+" : ""}${semis} 半音・調號 ${k0 > 0 ? `${k0} 個升記號` : k0 < 0 ? `${-k0} 個降記號` : "無升降"} → ${k > 0 ? `${k} 個升記號` : k < 0 ? `${-k} 個降記號` : "無升降"}・重新排版 ${ms(t)}`;
+          rB.textContent = "";
+        }
+        drawA(); transpose();
+        s.done();
+        watch(ctx, A, () => { drawA(); transpose(); });
+      },
+    },
+    {
+      id: "gen", title: "頁內產生 MusicXML",
+      api: "osmd.load(new DOMParser().parseFromString(xml, \"application/xml\"))・setOptions({ autoBeam: true, drawPartNames: true })",
+      desc: "左邊的 MusicXML 由頁內程式依編制、拍號與亂數種子即時產生（不讀任何檔案），右邊交給 OSMD 排版；符槓由 autoBeam 依拍號自動分組，多聲部總譜自動加上聲部名稱與括弧。",
+      hint: "切換編制與拍號、按「換一段」重新產生；也可以直接改左邊的 XML，0.5 秒後重新排版，語法錯誤會保留上一次的結果。",
+      async mount(ctx) {
+        ctx.html(`<div class="os-board os-gen">
+          <div class="os-col"><div class="os-lbl"><b>MusicXML</b><span class="os-m os-bytes"></span></div><textarea class="os-ta" spellcheck="false" aria-label="MusicXML 原始碼"></textarea><div class="os-warn"></div></div>
+          <div class="os-card"><div class="os-cap"><b class="os-t"></b><span class="os-s"></span><span class="os-r"></span></div><div class="os-scroll"><div class="os-host"></div></div></div>
+        </div>`);
+        const ta = ctx.$(".os-ta"), warn = ctx.$(".os-warn"), bytes = ctx.$(".os-bytes"), host = ctx.$(".os-host"), cap = caption(ctx);
+        const KEYS = [0, 1, -1, 2, -2, 3, -3];
+        const st = { ens: 2, meter: 0, measures: 8, seed: 7 };
+        const osmd = make(ctx, host, { autoBeam: true, drawPartNames: true, drawPartAbbreviations: true, drawTitle: true, drawComposer: true, drawCredits: true });
+        let tid = 0, busy = Promise.resolve();
+        ctx.onCleanup(() => clearTimeout(tid));
+        ctx.group(ENSEMBLES.map((e) => e.label), st.ens, (i) => { st.ens = i; regen(); });
+        ctx.group(METERS.map((m) => m.label), st.meter, (i) => { st.meter = i; regen(); });
+        ctx.slider("小節", { min: 4, max: 24, step: 1, value: st.measures }, (v) => { st.measures = v; regen(); });
+        ctx.button("換一段", () => { st.seed = 1 + Math.floor(Math.random() * 9999); regen(); });
+        function regen() {
+          const fifths = KEYS[st.seed % KEYS.length];
+          ta.value = genXML({ ens: ENSEMBLES[st.ens], meter: METERS[st.meter], fifths, measures: st.measures, seed: st.seed, title: `練習曲 第 ${st.seed} 號` });
+          show(`產生 ${keyName(fifths)}、${METERS[st.meter].label}、${ENSEMBLES[st.ens].label}`);
+        }
+        function show(what) { busy = busy.then(() => engrave(what)); }
+        async function engrave(what) {
+          const text = ta.value;
+          bytes.textContent = `${Showcase.fmt(new Blob([text]).size)} bytes`;
+          const doc = new DOMParser().parseFromString(text, "application/xml");
+          const err = doc.querySelector("parsererror");
+          // OSMD logs its own console error for a well-formed but empty score, so check the essentials first.
+          const why = err ? `XML 語法錯誤：${(err.querySelector("div") || err).textContent.replace(/\s+/g, " ").trim().slice(0, 100)}`
+            : !doc.querySelector("score-partwise > part-list > score-part") ? "缺少 <part-list> 裡的 <score-part>"
+            : !doc.querySelector("score-partwise > part > measure") ? "缺少 <part> 裡的 <measure>" : "";
+          if (why) {
+            warn.className = "os-warn bad";
+            warn.textContent = `${why}（保留上一次的結果）`;
+            return;
+          }
+          let tl = performance.now();
+          try {
+            await osmd.load(doc);
+          } catch (e) {
+            if (!ctx.active) return;
+            warn.className = "os-warn bad";
+            warn.textContent = `OSMD 無法讀取：${e && e.message ? e.message : e}（保留上一次的結果）`;
+            return;
+          }
+          if (!ctx.active) return;
+          tl = performance.now() - tl;
+          osmd.zoom = zoomFor(host.clientWidth) * 0.9;
+          const tr = timed(() => osmd.render());
+          const sh = osmd.Sheet;
+          cap(sh.TitleString || "（無標題）", `${sh.Instruments.length} 個聲部・${sh.SourceMeasures.length} 小節・${systemsOf(osmd)} 行`, `載入 ${ms(tl)}・繪製 ${ms(tr)}`);
+          warn.className = "os-warn";
+          warn.textContent = `${what}：解析成功`;
+        }
+        ctx.on(ta, "input", () => { clearTimeout(tid); tid = setTimeout(() => ctx.active && show("手動編輯"), 500); });
+        regen();
+        watch(ctx, host, () => show("重新排版"));
+      },
+    },
+    {
+      id: "horiz", title: "單行橫向譜",
+      api: "new OpenSheetMusicDisplay(el, { renderSingleHorizontalStaffline: true })・cursor.cursorElement",
+      desc: "renderSingleHorizontalStaffline 把整首曲子排成不換行的一條長譜，適合跟著播放捲動的練習介面。播放時游標前進，容器自動橫向捲動讓目前的音保持在左側三分之一。",
+      hint: "按播放看橫向自動捲動；關掉「跟隨游標」可以自己用滑鼠滾輪或拖曳捲軸瀏覽。",
+      async mount(ctx) {
+        ctx.html(CARD("os-hz", true));
+        const host = ctx.$(".os-host"), scroller = ctx.$(".os-scroll"), cap = caption(ctx);
+        let osmd = null, steps = [], followOn = true;
+        const pl = player(ctx, {
+          get: () => ({ osmd, steps }), scroller: { getBoundingClientRect: () => scroller.getBoundingClientRect(), scrollTo: (o) => followOn && scroller.scrollTo(o), get scrollLeft() { return scroller.scrollLeft; } },
+          axis: "x",
+          onState: (on) => playLabel(playBtn)(on),
+          onStep: (s) => cap(null, null, `第 ${s.m + 1} 小節・${s.notes.map((x) => noteName(x.midi)).join(" ")}`),
+        });
+        const playBtn = ctx.button("▶ 播放", () => pl.toggle(), { primary: true });
+        ctx.toggle("跟隨游標", followOn, (v) => (followOn = v));
+        ctx.slider("速度", { min: 60, max: 180, step: 4, value: 120, format: (v) => `${v} BPM` }, (v) => (pl.bpm = v));
+        pl.bpm = 120;
+        meter(ctx, ctx.$(".os-meter"));
+        // Vertical wheel scrolls the long staffline sideways.
+        ctx.on(scroller, "wheel", (e) => { if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { scroller.scrollLeft += e.deltaY; e.preventDefault(); } }, { passive: false });
+        const s = ctx.status("載入 MusicXML…");
+        const xml = await ode();
+        if (!ctx.active) return;
+        osmd = make(ctx, host, { renderSingleHorizontalStaffline: true, drawTitle: false, drawComposer: false, drawLyricist: false, drawCredits: false, cursorsOptions: [{ type: 0, color: "#f72585", alpha: 0.35, follow: false }] });
+        await osmd.load(xml);
+        if (!ctx.active) return;
+        const draw = () => {
+          pl.rewind();
+          osmd.zoom = Math.max(0.55, Math.min(1.1, (scroller.clientHeight - 10) / 250));
+          const tr = timed(() => osmd.render());
+          osmd.cursor.show();
+          steps = timeline(osmd);
+          const svg = host.querySelector("svg");
+          cap(osmd.Sheet.TitleString, `一行 ${osmd.Sheet.SourceMeasures.length} 小節・寬 ${Showcase.fmt(Math.round(svg ? +svg.getAttribute("width") : 0))} px・縮放 ${Math.round(osmd.zoom * 100)}%・繪製 ${ms(tr)}`, "按播放開始");
+          scroller.scrollLeft = 0;
+        };
+        draw();
+        s.done();
+        watch(ctx, scroller, draw, true);
+      },
+    },
+    {
+      id: "stress", title: "極限測試", kind: "stress",
+      api: "osmd.load(N 小節的 MusicXML 字串)・osmd.render()",
+      desc: "程式產生 N 小節的 MusicXML，計時 OSMD 從解析 XML、建立樂譜模型、計算排版到寫出 SVG 的完整流程。右側顯示最後一次的結果。",
+      hint: "按「開始測試」逐級加大小節數；右下可切換鋼琴雙譜表或弦樂四重奏（四個譜表，每小節的排版工作約加倍）。",
+      mount(ctx) {
+        ctx.html(`<div class="os-stress os-card"><div class="os-cap"><b class="os-t">尚未測試</b><span class="os-s"></span></div><div class="os-scroll"><div class="os-host"></div></div></div>`);
+        ctx.controls.classList.add("bottom");
+        const host = ctx.$(".os-host"), cap = caption(ctx);
+        let ens = 0;
+        ctx.group(["鋼琴雙譜表", "弦樂四重奏"], 0, (i) => (ens = i));
+        let osmd = null;
+        ctx.onCleanup(() => { if (osmd) osmd.clear(); });
+        ctx.bench({
+          label: "小節數", unit: "小節", sizes: [16, 64, 256, 512, 1024, 2048, 4096],
+          prepare: (n) => genXML({ ens: ENSEMBLES[ens === 0 ? 0 : 2], meter: METERS[0], fifths: 2, measures: n, seed: 2024, title: `${n} 小節壓力測試` }),
+          async run(n, xml) {
+            if (osmd) osmd.clear();
+            host.textContent = "";
+            osmd = new O.OpenSheetMusicDisplay(host, { autoResize: false, autoBeam: true, drawPartNames: ens === 1, drawTitle: true, drawComposer: false });
+            osmd.zoom = 0.6;
+            let tl = performance.now();
+            await osmd.load(xml);
+            tl = performance.now() - tl;
+            const tr = timed(() => osmd.render());
+            const sys = systemsOf(osmd);
+            cap(`${n} 小節・${sys} 行`, `${ens ? "四個譜表" : "兩個譜表"}・XML ${Showcase.fmtCompact(xml.length)} 字元・${Showcase.fmtCompact(svgCount(host))} 個 SVG 元素`);
+            return `載入 ${ms(tl)}・繪製 ${ms(tr)}`;
+          },
+          note: "載入包含 XML 解析與建立樂譜模型；繪製包含 VexFlow 音符格式化、自動符槓、天際線碰撞計算與換行，通常是主要瓶頸，大致隨小節數與譜表數線性成長。超過 2 秒的級距之後略過。",
+        });
+      },
+    },
+  ],
 });
 </script>
 </body>

@@ -3,26 +3,29 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>troika-three-text 示範：3D 中文字標題</title>
+<title>troika-three-text 示範：八個場景看懂 SDF 3D 文字與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","note":"中文字型會依需要自動下載字形子集"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"漢字由 troika 依字元自動從 jsDelivr 下載 Noto Sans TC 子集；全形標點改用 Noto Sans JP 標點子集，避開自動補字的標點錯位","scenes":["招牌標題","排版參數","描邊與陰影","曲面文字","SDF 銳利度","選取與游標","字型與多語言","極限測試"]}</script>
 <style>
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
-  #edit { position: fixed; left: 12px; top: 12px; z-index: 40; display: flex; gap: 6px; align-items: center; }
-  #edit input { width: 170px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); outline: none; }
-  #edit input:focus { border-color: var(--accent); }
-  .controls { top: 12px; }
-  .btn { padding: 7px 10px; font-size: 12px; }
-  @media (max-width: 560px) { .controls { top: 56px; } }
+  .sc-scene canvas.gl { position: absolute; left: 0; top: 0; display: block; touch-action: none; }
+  .sc-field input[type="text"] { width: 118px; min-width: 0; background: transparent; border: 0; outline: none; color: var(--fg); font: 500 13px/1 var(--font); }
+  .chip { position: absolute; left: 10px; top: calc(var(--sc-ctl-h, 0px) + 10px); z-index: 105; max-width: min(440px, calc(100% - 20px));
+    padding: 6px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(6px);
+    font: 500 12px/1.5 var(--font); color: var(--fg); pointer-events: none; }
+  .chip b { color: var(--accent); font: 600 12px/1.5 var(--mono); }
+  .split { position: absolute; top: 0; bottom: 0; left: 50%; width: 2px; margin-left: -1px; z-index: 104; pointer-events: none;
+    background: rgba(255, 255, 255, 0.45); }
+  .split span { position: absolute; top: 10px; padding: 3px 8px; border-radius: 6px; background: var(--panel); border: 1px solid var(--line);
+    font: 600 11px/1.4 var(--font); font-variant-numeric: tabular-nums; color: var(--fg); white-space: nowrap; }
+  .split span:first-child { right: 10px; } .split span:last-child { left: 10px; color: var(--accent); }
+  .split.h { top: 50%; bottom: auto; left: 0; right: 0; width: auto; height: 2px; margin: -1px 0 0; }
+  .split.h span:first-child { right: auto; left: 10px; top: auto; bottom: 8px; }
+  .split.h span:last-child { top: 8px; }
+  .stress-view { position: absolute; inset: 8px; border-radius: 10px; overflow: hidden; background: #07080b; }
+  @media (min-width: 761px) { .stress-view { inset: 8px 8px 8px 350px; } }
 </style>
-</head>
-<body>
-<canvas id="c"></canvas>
-<div id="edit"><input id="title" value="JS 工具圖鑑" maxlength="16" aria-label="標題文字"></div>
-<div class="controls" id="opts"></div>
-<div class="hint">輸入文字即時更新・拖曳旋轉・滾輪放大看 SDF 字邊依然銳利</div>
-
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
@@ -33,137 +36,699 @@
   "bidi-js": "https://cdn.jsdelivr.net/npm/bidi-js@1.1.0/dist/bidi.mjs"
 } }
 </script>
+</head>
+<body>
+<script src="_shared/showcase.js"></script>
 <script type="module">
+// troika-three-text showcase: SDF text in three.js, from the original hero title to a text-count stress ramp.
+// Every scene owns its WebGLRenderer and releases the GL context on unmount (dispose + forceContextLoss).
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { Text } from "https://cdn.jsdelivr.net/npm/troika-three-text@0.52.5/dist/troika-three-text.esm.js";
+import { Text, BatchedText, getCaretAtPoint, getSelectionRects } from "https://cdn.jsdelivr.net/npm/troika-three-text@0.52.5/dist/troika-three-text.esm.js";
 
-const canvas = document.getElementById("c");
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0b0c10);
-scene.fog = new THREE.Fog(0x0b0c10, 14, 40);
-const camera = new THREE.PerspectiveCamera(45, 1, 0.05, 100);
-camera.position.set(0, 0.4, 6.2);
-const controls = new OrbitControls(camera, canvas);
-controls.enableDamping = true;
-controls.minDistance = 1.2;
-controls.maxDistance = 12;
-scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-const light = new THREE.DirectionalLight(0xffffff, 2.2);
-light.position.set(2, 3, 4);
-scene.add(light);
-
-// Title: lit material, per-character colors, outline glow
-const title = new Text();
-title.text = "JS 工具圖鑑";
-title.fontSize = 0.95;
-title.fontWeight = "bold";
-title.anchorX = "center";
-title.anchorY = "middle";
-title.letterSpacing = 0.04;
-title.material = new THREE.MeshStandardMaterial({ roughness: 0.35, metalness: 0.2 });
-title.color = 0xf7df1e;
-title.outlineWidth = "4%";
-title.outlineColor = 0xf72585;
-title.outlineBlur = "18%";
-title.outlineOpacity = 0.75;
-title.position.y = 0.55;
-scene.add(title);
-
-// Subtitle with wrapping and centered alignment
-const sub = new Text();
-// NBSP keeps the CJK/Latin spacing without creating early line-break opportunities
-sub.text = "SDF 字形在 GPU 上渲染，任何縮放倍率都保持清晰；支援自動換行、對齊、曲面排版、外框與描邊，中文與英文 English 混排也沒問題。".replace(/ /g, "\u00a0");
-sub.fontSize = 0.16;
-sub.maxWidth = 4.2;
-sub.lineHeight = 1.55;
-sub.textAlign = "center";
-sub.overflowWrap = "break-word"; // CJK has no spaces, allow breaks anywhere
-sub.anchorX = "center";
-sub.anchorY = "top";
-sub.color = 0xcfd3dc;
-sub.position.y = -0.25;
-scene.add(sub);
-
-// Ring of tool names on the inside of a cylinder behind the title (concave curve, front half culled)
-const ring = new THREE.Group();
-scene.add(ring);
-const NAMES = "Three.js・Babylon.js・A-Frame・OGL・regl・TWGL・model-viewer・Shader Park・glslCanvas・curtains.js・GPU.js・three-vrm・postprocessing・lil-gui・Tweakpane・stats.js・";
-const ringText = new Text();
-ringText.text = NAMES.repeat(2);
-ringText.fontSize = 0.22;
-const RING_R = 9;
-ringText.curveRadius = RING_R; // positive radius puts the cylinder axis in front of the text (concave wrap)
-ringText.material = new THREE.MeshBasicMaterial({ side: THREE.FrontSide, transparent: true });
-ringText.anchorX = "center";
-ringText.anchorY = "middle";
-ringText.color = 0x4cc9f0;
-ringText.fillOpacity = 0.9;
-ringText.position.z = -RING_R; // so the cylinder axis sits on the group origin
-ring.add(ringText);
-ring.position.y = 3.1;
-
-// Toggle options to show the main Text properties
-const OPTS = [
-  ["glow", "外框發光", true, (on) => { title.outlineWidth = on ? "4%" : 0; title.outlineBlur = on ? "18%" : 0; }],
-  ["stroke", "描邊", false, (on) => { title.strokeWidth = on ? "2.5%" : 0; title.strokeColor = 0xffffff; title.fillOpacity = on ? 0.15 : 1; }],
-  ["curve", "曲面", false, (on) => { title.curveRadius = on ? 2.4 : 0; }],
-  ["rainbow", "逐字上色", true, (on) => { applyColors(on); }],
+const { h, fmt } = Showcase;
+const PALETTE = [0xf7df1e, 0x4cc9f0, 0xf72585, 0x7bd389, 0xff8c42, 0x9d8cff];
+const FS = "https://cdn.jsdelivr.net/npm/@fontsource";
+const FONTS = [
+  { value: "", label: "Noto Sans（預設）" },
+  { value: `${FS}/lobster@5.3.0/files/lobster-latin-400-normal.woff`, label: "Lobster" },
+  { value: `${FS}/jetbrains-mono@5.3.0/files/jetbrains-mono-latin-400-normal.woff`, label: "JetBrains Mono" },
+  { value: `${FS}/noto-serif@5.3.0/files/noto-serif-latin-400-normal.woff`, label: "Noto Serif" },
+  { value: `${FS}/press-start-2p@5.3.0/files/press-start-2p-latin-400-normal.woff`, label: "Press Start 2P" },
 ];
-let rainbow = true;
-function applyColors(on) {
-  rainbow = on;
-  if (!on) { title.colorRanges = null; title.sync(); return; }
-  const palette = [0xf7df1e, 0x4cc9f0, 0xf72585, 0x7bd389, 0xff8c42, 0x9d8cff];
-  const ranges = {};
-  [...title.text].forEach((ch, i) => { ranges[i] = palette[i % palette.length]; });
-  title.colorRanges = ranges;
-  title.sync();
+const MONO = FONTS[2].value;
+
+// CJK punctuation fix: troika's automatic fallback draws 、 and 。 misplaced (its data picks Mongolian/Yi
+// glyphs for them), and Noto Sans TC centers its punctuation through GPOS, which troika's parser skips.
+// Noto Sans JP slice 119 holds 、。，and kana with self-positioned glyphs but no Han characters, so using it
+// as the primary font fixes punctuation while Han and Latin still fall back to Noto Sans TC / Noto Sans via lang.
+// Its katakana middle dot (U+30FB) is misplaced the same way, so 3D strings separate items with U+00B7 instead.
+const PUNCT = (w) => `${FS}/noto-sans-jp@5.3.0/files/noto-sans-jp-119-${w}-normal.woff`;
+
+// Every CJK string here is Traditional Chinese. Without lang, troika's Unicode fallback picks Simplified glyph forms.
+// An unsynced Text has an empty bounding sphere, so frustum culling can skip it (and its first sync) when it sits
+// near the view edge; syncing once after the caller's property assignments avoids that.
+function makeText(props = {}) {
+  const t = new Text();
+  t.lang = "zh-Hant";
+  t.anchorX = "center";
+  t.anchorY = "middle";
+  Object.assign(t, props);
+  if (!("font" in props)) t.font = PUNCT(t.fontWeight === "bold" ? 700 : 400);
+  queueMicrotask(() => t.sync());
+  return t;
 }
-const opts = document.getElementById("opts");
-for (const [, label, initial, fn] of OPTS) {
-  const b = document.createElement("button");
-  b.className = "btn";
-  b.textContent = label;
-  let on = initial;
-  b.setAttribute("aria-pressed", String(on));
-  b.addEventListener("click", () => { on = !on; b.setAttribute("aria-pressed", String(on)); fn(on); title.sync(); });
-  opts.append(b);
+// Only valid for a Text with pending changes: sync(cb) skips the callback when nothing needs syncing.
+const synced = (t) => new Promise((resolve) => t.sync(resolve));
+const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+
+// Free geometries, materials and textures under root. Text.dispose() frees its glyph geometry;
+// troika derives its shader from the base material, so custom base materials are passed in `extra`.
+function disposeAll(root, extra) {
+  const seen = new Set();
+  const free = (x) => { if (x && !seen.has(x) && typeof x.dispose === "function") { seen.add(x); x.dispose(); } };
+  const freeMat = (m) => { if (!m) return; for (const v of Object.values(m)) if (v && v.isTexture) free(v); free(m); };
+  root.traverse((o) => {
+    if (o instanceof Text) { free(o); return; }
+    free(o.geometry);
+    [].concat(o.material || []).forEach(freeMat);
+  });
+  for (const x of extra) (x && x.isMaterial ? freeMat : free)(x);
 }
 
-document.getElementById("title").addEventListener("input", (e) => {
-  title.text = e.target.value || " ";
-  applyColors(rainbow);
-});
-applyColors(true);
-sub.sync();
-// Scale the ring font so the text wraps exactly once around the cylinder
-ringText.sync(() => {
-  const [x0, , x1] = ringText.textRenderInfo.blockBounds;
-  ringText.fontSize *= (Math.PI * 2 * RING_R) / (x1 - x0);
-  ringText.sync();
-});
-
-function resize() {
-  renderer.setSize(innerWidth, innerHeight, false);
-  camera.aspect = innerWidth / innerHeight;
-  camera.position.setLength(innerWidth < innerHeight ? 10.5 : 6.4);
-  camera.updateProjectionMatrix();
+// One renderer + scene + camera per showcase scene. The camera view is shifted so the
+// subject stays centred in the area not covered by the control cluster.
+function stage(ctx, o = {}) {
+  const host = o.host || ctx.el;
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  const canvas = renderer.domElement;
+  canvas.className = "gl";
+  host.append(canvas);
+  const scene = new THREE.Scene();
+  const bg = o.bg ?? 0x0e1013;
+  scene.background = new THREE.Color(bg);
+  if (o.fog) scene.fog = new THREE.Fog(bg, o.fog[0], o.fog[1]);
+  const fov = o.fov ?? 45;
+  const camera = new THREE.PerspectiveCamera(fov, 1, o.near ?? 0.05, o.far ?? 200);
+  camera.position.set(...(o.pos || [0, 0, 6]));
+  let controls = null;
+  if (o.orbit !== false) {
+    controls = new OrbitControls(camera, canvas);
+    controls.target.set(...(o.target || [0, 0, 0]));
+    controls.enableDamping = true;
+    controls.enablePan = false;
+    Object.assign(controls, o.orbit || {});
+  } else {
+    camera.lookAt(...(o.target || [0, 0, 0]));
+  }
+  const frameFns = [], sizeFns = [], extra = [];
+  const S = {
+    renderer, scene, camera, controls, canvas, host, width: 1, height: 1, availH: 1, full: 1,
+    render: () => renderer.render(scene, camera),
+    onFrame(fn) { frameFns.push(fn); },
+    onSize(fn) { sizeFns.push(fn); fn(S.width, S.height); },
+    own(...xs) { extra.push(...xs); return xs[0]; },
+  };
+  let lastKey = "";
+  const fit = () => {
+    const w = Math.max(1, host.clientWidth), hh = Math.max(1, host.clientHeight);
+    const top = parseFloat(ctx.el.style.getPropertyValue("--sc-ctl-h")) || 0;
+    const bot = parseFloat(ctx.el.style.getPropertyValue("--sc-ctl-b")) || 0;
+    const key = `${w}x${hh}:${top}:${bot}`;
+    if (key === lastKey) return;
+    lastKey = key;
+    const d = Math.max(-hh * 0.4, Math.min(hh * 0.4, top - bot));
+    S.width = w; S.height = hh; S.full = hh + Math.abs(d); S.availH = hh - Math.abs(d);
+    renderer.setSize(w, hh);
+    camera.aspect = w / S.full;
+    if (d) camera.setViewOffset(w, S.full, 0, d < 0 ? -d : 0, w, hh); else camera.clearViewOffset();
+    camera.updateProjectionMatrix();
+    for (const fn of sizeFns) fn(w, hh);
+  };
+  fit();
+  const timer = new THREE.Timer();
+  ctx.raf((t) => {
+    fit();
+    timer.update(t);
+    const dt = Math.max(0, Math.min(timer.getDelta(), 0.1)), time = timer.getElapsed();
+    for (const fn of frameFns) fn(dt, time);
+    if (controls) controls.update(dt);
+    S.render();
+  });
+  ctx.onCleanup(() => {
+    if (controls) controls.dispose();
+    timer.dispose();
+    disposeAll(scene, extra);
+    renderer.dispose();
+    renderer.forceContextLoss();
+    canvas.remove();
+  });
+  return S;
 }
-addEventListener("resize", resize);
-resize();
 
-const clock = new THREE.Clock();
-renderer.setAnimationLoop(() => {
-  const t = clock.getElapsedTime();
-  ringText.parent.rotation.y = t * 0.25;
-  title.position.y = 0.55 + Math.sin(t * 1.2) * 0.04;
-  light.position.x = Math.sin(t * 0.6) * 4;
-  controls.update();
-  renderer.render(scene, camera);
-});
+// Camera distance that fits a halfW x halfH box into the visible (uncovered) part of the view.
+function fitDistance(S, halfW, halfH, margin = 1.12) {
+  const tanV = Math.tan(THREE.MathUtils.degToRad(S.camera.fov) / 2);
+  const dv = (halfH * S.full) / (S.availH * tanV);
+  const dh = halfW / (tanV * S.camera.aspect);
+  return Math.max(dv, dh) * margin;
+}
+function chip(ctx, html) {
+  const el = h("div", { class: "chip" });
+  el.innerHTML = html;
+  ctx.el.append(el);
+  let last = html;
+  return (next) => { if (next !== last) { last = next; el.innerHTML = next; } };
+}
+// Keep a camera at `dist` from `target`, easing both so layout changes do not jump.
+function easeView(S, target, dist, k = 0.12) {
+  const c = S.controls, off = new THREE.Vector3();
+  const step = off.copy(target).sub(c.target).multiplyScalar(k);
+  c.target.add(step);
+  S.camera.position.add(step);
+  off.copy(S.camera.position).sub(c.target);
+  const len = off.length();
+  off.setLength(len + (dist - len) * k);
+  S.camera.position.copy(c.target).add(off);
+}
+
+const NAMES = ["Three.js", "Babylon.js", "A-Frame", "OGL", "regl", "TWGL", "model-viewer", "Shader Park", "glslCanvas", "curtains.js", "GPU.js", "three-vrm", "postprocessing", "lil-gui", "Tweakpane", "stats.js"].map((n) => n + " · ").join("");
+
+Showcase.run({ scenes: [
+  {
+    id: "hero", title: "招牌標題",
+    api: "new Text()・outlineBlur・colorRanges・curveRadius",
+    desc: "原示範移植：標題套用 MeshStandardMaterial 受光照影響，outlineBlur 做出霓虹光暈，colorRanges 逐字上色；後方一圈工具名稱用 curveRadius 貼在圓柱內側，並依 blockBounds 調整字級剛好繞一圈。",
+    hint: "輸入文字即時更新・拖曳旋轉・滾輪放大看 SDF 字邊依然銳利",
+    mount(ctx) {
+      const input = h("input", { type: "text", value: "JS 工具圖鑑", maxlength: "16", "aria-label": "標題文字" });
+      ctx.controls.append(h("label", { class: "sc-field" }, "標題", input));
+      const S = stage(ctx, { bg: 0x0b0c10, fog: [14, 40], pos: [0, 0.4, 6.2], orbit: { minDistance: 1.2, maxDistance: 14 } });
+      const { scene, camera } = S;
+      scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+      const light = new THREE.DirectionalLight(0xffffff, 2.2);
+      light.position.set(2, 3, 4);
+      scene.add(light);
+
+      const title = makeText({
+        text: "JS 工具圖鑑", fontSize: 0.95, fontWeight: "bold", letterSpacing: 0.04,
+        material: S.own(new THREE.MeshStandardMaterial({ roughness: 0.35, metalness: 0.2 })),
+        color: 0xf7df1e, outlineWidth: "4%", outlineColor: 0xf72585, outlineBlur: "18%", outlineOpacity: 0.75,
+      });
+      // No NBSP here: troika caches break flags per glyph, and Noto Sans maps NBSP and space to one glyph,
+      // so a single NBSP would make every later space in that font unbreakable for all Text objects.
+      const sub = makeText({
+        text: "SDF 字形在 GPU 上渲染，任何縮放倍率都保持清晰。\n自動換行、對齊、曲面排版與描邊，中英混排都沒問題。",
+        fontSize: 0.16, maxWidth: 4.2, lineHeight: 1.55, textAlign: "center", overflowWrap: "break-word", anchorY: "top", color: 0xcfd3dc,
+      });
+      sub.position.y = -0.25;
+      // Ring of tool names on the inside of a cylinder (positive radius = axis in front of the text).
+      const RING_R = 9;
+      const ring = new THREE.Group();
+      ring.position.y = 3.1;
+      const ringText = makeText({
+        text: NAMES.repeat(2), fontSize: 0.22, curveRadius: RING_R, color: 0x4cc9f0, fillOpacity: 0.9,
+        material: S.own(new THREE.MeshBasicMaterial({ side: THREE.FrontSide, transparent: true })),
+      });
+      ringText.position.z = -RING_R;
+      ring.add(ringText);
+      scene.add(title, sub, ring);
+      ringText.sync(() => {
+        const [x0, , x1] = ringText.textRenderInfo.blockBounds;
+        ringText.fontSize *= (Math.PI * 2 * RING_R) / (x1 - x0);
+      });
+
+      let rainbow = true;
+      const applyColors = () => {
+        title.colorRanges = rainbow ? Object.fromEntries([...title.text].map((_, i) => [i, PALETTE[i % PALETTE.length]])) : null;
+      };
+      ctx.toggle("外框發光", true, (on) => { title.outlineWidth = on ? "4%" : 0; title.outlineBlur = on ? "18%" : 0; });
+      ctx.toggle("描邊", false, (on) => { title.strokeWidth = on ? "2.5%" : 0; title.strokeColor = 0xffffff; title.fillOpacity = on ? 0.15 : 1; });
+      ctx.toggle("曲面", false, (on) => { title.curveRadius = on ? 2.4 : 0; });
+      ctx.toggle("逐字上色", true, (on) => { rainbow = on; applyColors(); });
+      ctx.on(input, "input", () => { title.text = input.value || " "; applyColors(); });
+      applyColors();
+
+      S.onSize(() => {
+        const d = fitDistance(S, 2.6, 1.15);
+        camera.position.setLength(d);
+        S.controls.maxDistance = Math.max(14, d * 1.6);
+      });
+      S.onFrame((dt, t) => {
+        ring.rotation.y = t * 0.25;
+        title.position.y = 0.55 + Math.sin(t * 1.2) * 0.04;
+        light.position.x = Math.sin(t * 0.6) * 4;
+      });
+    },
+  },
+  {
+    id: "layout", title: "排版參數",
+    api: "maxWidth・textAlign・lineHeight・letterSpacing・overflowWrap",
+    desc: "排版在 Web Worker 完成，換行、對齊、行高、字距都只是屬性。黃色虛線是 maxWidth，青色框是 textRenderInfo.blockBounds 回報的實際範圍。中文沒有空白，需設 overflowWrap: \"break-word\" 才能在字與字之間換行；justify 只拉寬空白，切到英文段落才看得出效果。",
+    hint: "切換對齊與中英文，拖曳滑桿看段落即時重新排版",
+    mount(ctx) {
+      const TEXTS = [
+        "troika 把每個字形轉成 SDF 距離場，排版在 Web Worker 完成。換行時優先在空白處斷開，所以中英混排的行尾會參差；中文字之間沒有空白，要把 overflowWrap 設為 break-word，過長的一串中文才會在任意字之間換行。",
+        "SDF glyphs stay crisp at any scale, and layout runs in a web worker. Wrapping, alignment, line height and letter spacing are plain properties. Justify only stretches the spaces between words, so it shows best on Latin text like this paragraph.",
+      ];
+      const S = stage(ctx, { pos: [0, 0, 6], orbit: { enableZoom: false, minPolarAngle: 0.9, maxPolarAngle: 2.2 } });
+      const para = makeText({
+        text: TEXTS[0], fontSize: 0.2, maxWidth: 3.6, lineHeight: 1.5, letterSpacing: 0, textAlign: "left",
+        overflowWrap: "break-word", anchorX: "left", anchorY: "top", color: 0xecebe6,
+      });
+      para.position.x = -1.8;
+      const boxGeo = S.own(new THREE.BufferGeometry());
+      boxGeo.setAttribute("position", new THREE.Float32BufferAttribute(new Float32Array(12), 3));
+      const box = new THREE.LineLoop(boxGeo, S.own(new THREE.LineBasicMaterial({ color: 0x4cc9f0 })));
+      box.position.z = 0.002;
+      const boxLabel = makeText({ text: "blockBounds", font: MONO, fontSize: 0.1, color: 0x4cc9f0, anchorX: "left", anchorY: "top" });
+      para.add(box, boxLabel);
+      const guideMat = S.own(new THREE.LineDashedMaterial({ color: 0xf7df1e, dashSize: 0.07, gapSize: 0.05 }));
+      let guide = null;
+      const mwLabel = makeText({ font: MONO, fontSize: 0.1, color: 0xf7df1e, anchorX: "right", anchorY: "bottom" });
+      S.scene.add(para, mwLabel);
+
+      let blockH = 1;
+      const view = { c: new THREE.Vector3(), d: 6 };
+      const setChip = chip(ctx, "排版中…");
+      const guides = () => {
+        const m = para.maxWidth / 2, bottom = -blockH - 0.25;
+        if (guide) { S.scene.remove(guide); guide.geometry.dispose(); }
+        const g = new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(-m, 0.25, 0), new THREE.Vector3(-m, bottom, 0), new THREE.Vector3(m, 0.25, 0), new THREE.Vector3(m, bottom, 0),
+        ]);
+        guide = new THREE.LineSegments(g, guideMat);
+        guide.computeLineDistances();
+        S.scene.add(guide);
+        mwLabel.text = `maxWidth ${para.maxWidth.toFixed(1)}`;
+        mwLabel.position.set(m, 0.29, 0);
+      };
+      const refit = () => {
+        view.c.set(0, -blockH / 2, 0);
+        view.d = fitDistance(S, para.maxWidth / 2 + 0.2, blockH / 2 + 0.38);
+      };
+      ctx.on(para, "synccomplete", () => {
+        const info = para.textRenderInfo;
+        const [x0, y0, x1, y1] = info.blockBounds;
+        boxGeo.attributes.position.array.set([x0, y0, 0, x1, y0, 0, x1, y1, 0, x0, y1, 0]);
+        boxGeo.attributes.position.needsUpdate = true;
+        boxGeo.computeBoundingSphere();
+        boxLabel.position.set(x0, y0 - 0.05, 0);
+        blockH = y1 - y0;
+        const lines = Math.round(blockH / (para.fontSize * para.lineHeight));
+        setChip(`實際寬度 <b>${(x1 - x0).toFixed(2)}</b>／maxWidth <b>${para.maxWidth.toFixed(2)}</b>・<b>${lines}</b> 行・排版 <b>${info.timings.typesetting.toFixed(1)}</b> ms`);
+        guides();
+        refit();
+      });
+      guides();
+      S.onSize(refit);
+      S.onFrame(() => easeView(S, view.c, view.d));
+
+      ctx.group(["左", "中", "右", "齊行"], 0, (i) => { para.textAlign = ["left", "center", "right", "justify"][i]; });
+      ctx.group(["中文", "EN"], 0, (i) => { para.text = TEXTS[i]; });
+      ctx.slider("寬度", { min: 1.6, max: 5, step: 0.1, value: 3.6, format: (v) => v.toFixed(1) }, (v) => { para.maxWidth = v; para.position.x = -v / 2; guides(); });
+      ctx.slider("行高", { min: 1, max: 2.4, step: 0.05, value: 1.5, format: (v) => v.toFixed(2) }, (v) => { para.lineHeight = v; });
+      ctx.slider("字距", { min: -0.05, max: 0.3, step: 0.01, value: 0, format: (v) => v.toFixed(2) }, (v) => { para.letterSpacing = v; });
+    },
+  },
+  {
+    id: "outline", title: "描邊與陰影",
+    api: "outlineWidth・outlineBlur・outlineOffsetX/Y・strokeWidth・fillOpacity",
+    desc: "外框、發光、投影都是同一組 outline 參數：outlineWidth 往外擴、outlineBlur 柔化、outlineOffsetX/Y 位移成投影；strokeWidth 則是沿字形邊緣描線，搭配 fillOpacity: 0 就成了鏤空字。這些都在著色器計算，調整時不必重新排版。",
+    hint: "拖曳滑桿調整寬度、模糊、偏移，四格同步更新",
+    mount(ctx) {
+      const S = stage(ctx, { bg: 0x252a33, pos: [0, 0, 6], orbit: { minDistance: 2, maxDistance: 20 } });
+      const p = { w: 6, b: 30, o: 8 };
+      const CELLS = [
+        { word: "外框", color: 0xffffff, cap: () => `outlineWidth: "${p.w}%"`,
+          set: (t) => Object.assign(t, { outlineWidth: `${p.w}%`, outlineBlur: 0, outlineColor: 0xf72585 }) },
+        { word: "發光", color: 0xffffff, cap: () => `outlineBlur: "${p.b}%"`,
+          set: (t) => Object.assign(t, { outlineWidth: `${p.w / 2}%`, outlineBlur: `${p.b}%`, outlineColor: 0x4cc9f0 }) },
+        { word: "投影", color: 0xf7df1e, cap: () => `outlineOffsetX/Y: ±${p.o}%`,
+          set: (t) => Object.assign(t, { outlineOffsetX: `${p.o}%`, outlineOffsetY: `-${p.o}%`, outlineBlur: `${p.b / 3}%`, outlineColor: 0x000000, outlineOpacity: 0.8 }) },
+        { word: "鏤空", color: 0xffffff, cap: () => `strokeWidth: "${p.w / 2}%"`,
+          set: (t) => Object.assign(t, { strokeWidth: `${p.w / 2}%`, strokeColor: 0xf7df1e, fillOpacity: 0 }) },
+      ];
+      const board = new THREE.Group();
+      S.scene.add(board);
+      const cardGeo = S.own(new THREE.PlaneGeometry(2.3, 1.42));
+      const cardMat = S.own(new THREE.MeshBasicMaterial({ color: 0x323946 }));
+      const cells = CELLS.map((c) => {
+        const g = new THREE.Group();
+        const card = new THREE.Mesh(cardGeo, cardMat);
+        card.position.z = -0.01;
+        const word = makeText({ text: c.word, fontSize: 0.62, fontWeight: "bold", color: c.color });
+        word.position.y = 0.12;
+        const label = makeText({ font: MONO, fontSize: 0.11, color: 0xc9c7be });
+        label.position.y = -0.5;
+        g.add(card, word, label);
+        board.add(g);
+        return { ...c, g, word, label };
+      });
+      const apply = () => cells.forEach((c) => { c.set(c.word); c.label.text = c.cap(); });
+      apply();
+      S.onSize((w, hh) => {
+        const cols = w >= hh * 0.9 ? 2 : 1;
+        cells.forEach((c, i) => {
+          if (cols === 2) c.g.position.set((i % 2 - 0.5) * 2.5, (0.5 - Math.floor(i / 2)) * 1.6, 0);
+          else c.g.position.set(0, (1.5 - i) * 1.6, 0);
+        });
+        S.camera.position.setLength(cols === 2 ? fitDistance(S, 2.45, 1.95) : fitDistance(S, 1.2, 3.5));
+      });
+      let swing = true;
+      S.onFrame((dt, t) => { if (swing) board.rotation.y = Math.sin(t * 0.5) * 0.35; });
+      ctx.slider("寬度", { min: 0, max: 20, step: 1, value: p.w, format: (v) => `${v}%` }, (v) => { p.w = v; apply(); });
+      ctx.slider("模糊", { min: 0, max: 60, step: 2, value: p.b, format: (v) => `${v}%` }, (v) => { p.b = v; apply(); });
+      ctx.slider("偏移", { min: 0, max: 20, step: 1, value: p.o, format: (v) => `${v}%` }, (v) => { p.o = v; apply(); });
+      ctx.toggle("擺動", true, (v) => { swing = v; });
+    },
+  },
+  {
+    id: "curve", title: "曲面文字",
+    api: "curveRadius・glyphGeometryDetail",
+    desc: "curveRadius 把文字平面彎成圓柱：正值軸心在文字前方（凹面），負值在後方（凸面），線框就是那個圓柱。它只是著色器 uniform，拖動曲率時排版次數不會增加；glyphGeometryDetail 提高每個字形的頂點數，讓字彎得更平順。",
+    hint: "拖曳曲率滑桿接手控制，正負號切換凹凸面",
+    mount(ctx) {
+      const S = stage(ctx, { pos: [0, 2.4, 6.4], target: [0, 0, 0.3], orbit: { minDistance: 2, maxDistance: 18 } });
+      const txt = makeText({
+        text: "曲面文字 curveRadius · 沿著圓柱表面排版 · ", fontSize: 0.42, glyphGeometryDetail: 6,
+        colorRanges: { 0: 0xf7df1e, 5: 0x4cc9f0, 16: 0xf7df1e },
+        material: S.own(new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true })),
+      });
+      const cyl = new THREE.Mesh(S.own(new THREE.CylinderGeometry(1, 1, 1, 72, 1, true)),
+        S.own(new THREE.MeshBasicMaterial({ color: 0x4cc9f0, wireframe: true, transparent: true, opacity: 0.14 })));
+      const axis = new THREE.Line(S.own(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, -0.6, 0), new THREE.Vector3(0, 0.6, 0)])),
+        S.own(new THREE.LineBasicMaterial({ color: 0xf72585 })));
+      cyl.add(axis);
+      const grid = new THREE.GridHelper(12, 24, 0x333a46, 0x222831);
+      grid.position.y = -0.75;
+      S.scene.add(txt, cyl, grid);
+      let syncs = 0, auto = true, k = 0.4;
+      ctx.on(txt, "synccomplete", () => { syncs++; });
+      const setChip = chip(ctx, "");
+      const apply = () => {
+        const r = Math.abs(k) < 0.01 ? 0 : 1 / k;
+        txt.curveRadius = r;
+        cyl.visible = r !== 0;
+        if (r) { cyl.scale.set(Math.abs(r), 1.2, Math.abs(r)); cyl.position.set(0, 0, r); }
+        const kind = r === 0 ? "平面" : r > 0 ? "軸心在文字前方，凹面" : "軸心在文字後方，凸面";
+        setChip(`curveRadius <b>${r.toFixed(2)}</b>：${kind}・重新排版 <b>${syncs}</b> 次`);
+      };
+      const kIn = ctx.slider("曲率 1/r", { min: -0.6, max: 0.6, step: 0.01, value: k, format: (v) => v.toFixed(2) }, (v) => {
+        k = v; auto = false; autoBtn.setAttribute("aria-pressed", "false"); apply();
+      });
+      const autoBtn = ctx.toggle("自動擺動", true, (v) => { auto = v; });
+      // Concave curves bring the text ends toward the camera, so fit a wider box than the flat text.
+      S.onSize(() => { S.camera.position.setLength(fitDistance(S, 5, 1.5)); });
+      S.onFrame((dt, t) => {
+        if (auto) {
+          k = Math.round(0.55 * Math.sin(t * 0.7) * 100) / 100;
+          kIn.value = k;
+          kIn.nextElementSibling.textContent = k.toFixed(2);
+        }
+        apply();
+      });
+    },
+  },
+  {
+    id: "sdf", title: "SDF 銳利度",
+    api: "sdfGlyphSize",
+    desc: "左邊（直向螢幕為上方）是同尺寸的 Canvas 點陣貼圖，右邊是 troika 的 SDF 字形，兩邊共用一台相機一起推近。點陣貼圖放大後邊緣變糊，SDF 在片段著色器即時計算邊緣，近看依然銳利；sdfGlyphSize 決定距離場解析度，太小時尖角會被磨圓。",
+    hint: "拖曳畫面改為手動檢視，切換 sdfGlyphSize 比較尖角",
+    mount(ctx) {
+      ctx.html(`<div class="split"><span>Canvas 點陣 256×128</span><span>troika SDF</span></div>`);
+      const split = ctx.$(".split");
+      ctx.controls.classList.add("bottom");
+      const S = stage(ctx, { fov: 40, pos: [0, 0, 3], orbit: { minDistance: 0.2, maxDistance: 8 } });
+      const sceneB = new THREE.Scene();
+      sceneB.background = S.scene.background;
+      ctx.onCleanup(() => disposeAll(sceneB, []));
+
+      const cv = document.createElement("canvas");
+      cv.width = 256; cv.height = 128;
+      const g = cv.getContext("2d");
+      g.fillStyle = "#fff";
+      g.font = "bold 84px 'Noto Sans TC', 'Microsoft JhengHei', 'PingFang TC', sans-serif";
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.fillText("永 Ag", 128, 68);
+      const tex = new THREE.CanvasTexture(cv);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const bitmap = new THREE.Mesh(new THREE.PlaneGeometry(2.2, 1.1), new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
+      S.scene.add(bitmap);
+      // 84px em on a 128px-tall plane of height 1.1 gives the same em size in world units.
+      const sdf = makeText({ text: "永 Ag", fontSize: (84 / 128) * 1.1, fontWeight: "bold", color: 0xffffff, sdfGlyphSize: 64 });
+      sceneB.add(sdf);
+
+      let auto = true, size = 64;
+      const label = split.lastElementChild;
+      const paintLabel = () => { label.textContent = `troika SDF・${size}px`; };
+      paintLabel();
+      ctx.group(["16", "32", "64", "128"], 2, (i) => { size = [16, 32, 64, 128][i]; sdf.sdfGlyphSize = size; paintLabel(); });
+      const autoBtn = ctx.toggle("自動推近", true, (v) => { auto = v; });
+      ctx.on(S.controls, "start", () => { auto = false; autoBtn.setAttribute("aria-pressed", "false"); });
+
+      const portrait = () => S.width < S.height;
+      S.onSize(() => split.classList.toggle("h", portrait()));
+      const tanV = Math.tan(THREE.MathUtils.degToRad(20));
+      S.onFrame((dt, t) => {
+        if (!auto) return;
+        const aspect = portrait() ? S.width / (S.height / 2) : S.width / 2 / S.height;
+        const far = Math.max(0.62 / tanV, 1.2 / (tanV * aspect)) * 1.05;
+        const d = 0.28 + (far - 0.28) * (0.5 + 0.5 * Math.cos(t * 0.5));
+        S.controls.target.set(0, 0, 0);
+        S.camera.position.set(0, 0, d);
+        bitmap.rotation.y = sdf.rotation.y = Math.sin(t * 0.45) * 0.5;
+      });
+      S.render = () => {
+        const { renderer, camera } = S, w = S.width, hh = S.height;
+        const half = portrait() ? Math.floor(hh / 2) : Math.floor(w / 2);
+        const a = portrait() ? [0, hh - half, w, half] : [0, 0, half, hh];
+        const b = portrait() ? [0, 0, w, hh - half] : [half, 0, w - half, hh];
+        camera.aspect = a[2] / a[3];
+        camera.clearViewOffset();
+        camera.updateProjectionMatrix();
+        renderer.setScissorTest(true);
+        renderer.setViewport(...a); renderer.setScissor(...a); renderer.render(S.scene, camera);
+        renderer.setViewport(...b); renderer.setScissor(...b); renderer.render(sceneB, camera);
+        renderer.setScissorTest(false);
+      };
+    },
+  },
+  {
+    id: "select", title: "選取與游標",
+    api: "textRenderInfo・getCaretAtPoint()・getSelectionRects()",
+    desc: "textRenderInfo.caretPositions 記錄每個字元的游標位置。拖曳時先用射線求出文字平面上的交點，換回文字的區域座標後交給 getCaretAtPoint 找最近的游標，再用 getSelectionRects 把選取範圍轉成逐行矩形，所以斜放的 3D 文字也能選字。",
+    hint: "在文字上拖曳選取，或按「全選」「換段落」",
+    mount(ctx) {
+      const PARAS = [
+        "拖曳選取這段文字：troika 的 textRenderInfo 提供每個字元的游標位置，再由 getSelectionRects 把選取範圍換成矩形，3D 文字也能做出選字效果。",
+        "Drag to select. getCaretAtPoint maps a local point to the nearest caret, and getSelectionRects turns a character range into rectangles, even across wrapped lines.",
+        "混合 English 與中文、數字 12345 和符號 (){}[]，選取框會跟著每一行的實際寬度走，換行處自動拆成兩個矩形。",
+      ];
+      let pi = 0, touched = false, dragging = false;
+      const S = stage(ctx, { pos: [0, 0, 6], orbit: false });
+      S.canvas.style.cursor = "text";
+      const tilt = new THREE.Group();
+      tilt.rotation.set(0.06, -0.24, 0);
+      const para = makeText({ text: PARAS[0], fontSize: 0.24, maxWidth: 3.6, lineHeight: 1.5, overflowWrap: "break-word", color: 0xecebe6 });
+      tilt.add(para);
+      S.scene.add(tilt);
+      const unit = S.own(new THREE.PlaneGeometry(1, 1));
+      const selMat = S.own(new THREE.MeshBasicMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0.35, depthWrite: false }));
+      const caret = new THREE.Mesh(unit, S.own(new THREE.MeshBasicMaterial({ color: 0xf7df1e })));
+      para.add(caret);
+      const rects = [];
+      const sel = { a: 0, b: 0 };
+      const setChip = chip(ctx, "排版中…");
+
+      const drawSel = () => {
+        const info = para.textRenderInfo;
+        if (!info) return;
+        const cp = info.caretPositions, n = cp.length / 4;
+        sel.a = Math.min(sel.a, n); sel.b = Math.min(sel.b, n);
+        const lo = Math.min(sel.a, sel.b), hi = Math.max(sel.a, sel.b);
+        const list = hi > lo ? getSelectionRects(info, lo, hi) || [] : [];
+        list.forEach((r, i) => {
+          let m = rects[i];
+          if (!m) { m = new THREE.Mesh(unit, selMat); m.renderOrder = -1; para.add(m); rects.push(m); }
+          m.visible = true;
+          m.position.set((r.left + r.right) / 2, (r.top + r.bottom) / 2, -0.002);
+          m.scale.set(Math.max(1e-4, r.right - r.left), Math.max(1e-4, r.top - r.bottom), 1);
+        });
+        for (let i = list.length; i < rects.length; i++) rects[i].visible = false;
+        const at = Math.min(sel.b, n - 1);
+        const x = sel.b < n ? cp[sel.b * 4] : cp[at * 4 + 1], bottom = cp[at * 4 + 2], top = cp[at * 4 + 3];
+        caret.visible = Number.isFinite(x) && Number.isFinite(top);
+        if (caret.visible) { caret.position.set(x, (top + bottom) / 2, 0.001); caret.scale.set(para.fontSize * 0.07, top - bottom, 1); }
+        const picked = para.text.slice(lo, hi);
+        setChip(hi > lo
+          ? `選取 <b>${lo}～${hi}</b>・<b>${list.length}</b> 個矩形・「${esc(picked.length > 14 ? picked.slice(0, 14) + "…" : picked)}」`
+          : `游標在第 <b>${sel.b}</b> 字・拖曳即可選取`);
+      };
+      ctx.on(para, "synccomplete", () => {
+        drawSel();
+        const [x0, y0, x1, y1] = para.textRenderInfo.blockBounds;
+        S.camera.position.set(0, 0, fitDistance(S, (x1 - x0) / 2 + 0.2, (y1 - y0) / 2 + 0.3));
+      });
+      S.onSize(() => {
+        const info = para.textRenderInfo;
+        if (!info) return;
+        const [x0, y0, x1, y1] = info.blockBounds;
+        S.camera.position.set(0, 0, fitDistance(S, (x1 - x0) / 2 + 0.2, (y1 - y0) / 2 + 0.3));
+      });
+
+      // Pointer -> ray -> text plane -> local coordinates -> nearest caret.
+      const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), plane = new THREE.Plane();
+      const hit = new THREE.Vector3(), nrm = new THREE.Vector3();
+      const caretAt = (e) => {
+        const info = para.textRenderInfo;
+        if (!info) return null;
+        const r = S.canvas.getBoundingClientRect();
+        ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+        ray.setFromCamera(ndc, S.camera);
+        para.updateWorldMatrix(true, false);
+        nrm.set(0, 0, 1).transformDirection(para.matrixWorld);
+        plane.setFromNormalAndCoplanarPoint(nrm, hit.setFromMatrixPosition(para.matrixWorld));
+        if (!ray.ray.intersectPlane(plane, hit)) return null;
+        para.worldToLocal(hit);
+        const c = getCaretAtPoint(info, hit.x, hit.y);
+        return c ? c.charIndex : null;
+      };
+      ctx.on(S.canvas, "pointerdown", (e) => {
+        const i = caretAt(e);
+        if (i == null) return;
+        touched = dragging = true;
+        S.canvas.setPointerCapture(e.pointerId);
+        sel.a = sel.b = i;
+        drawSel();
+      });
+      ctx.on(S.canvas, "pointermove", (e) => {
+        if (!dragging) return;
+        const i = caretAt(e);
+        if (i != null && i !== sel.b) { sel.b = i; drawSel(); }
+      });
+      ctx.on(S.canvas, "pointerup", () => { dragging = false; });
+      ctx.on(S.canvas, "pointercancel", () => { dragging = false; });
+
+      // Until the user drags, step through phrases so the effect is visible right away.
+      let phrase = -1;
+      const phrases = () => {
+        const out = [], re = /[^，。、：；,.\s(){}[\]]{2,}/g;
+        let m;
+        while ((m = re.exec(para.text))) out.push([m.index, m.index + m[0].length]);
+        return out;
+      };
+      ctx.interval(() => {
+        if (touched || !para.textRenderInfo) return;
+        const list = phrases();
+        if (!list.length) return;
+        phrase = (phrase + 1) % list.length;
+        [sel.a, sel.b] = list[phrase];
+        drawSel();
+      }, 1100);
+
+      ctx.button("全選", () => { touched = true; sel.a = 0; sel.b = para.text.length; drawSel(); });
+      ctx.button("換段落", () => { pi = (pi + 1) % PARAS.length; para.text = PARAS[pi]; sel.a = sel.b = 0; phrase = -1; });
+      ctx.slider("字級", { min: 0.16, max: 0.34, step: 0.01, value: 0.24, format: (v) => v.toFixed(2) }, (v) => { para.fontSize = v; });
+      S.onFrame((dt, t) => { caret.material.color.setHex(Math.floor(t * 2) % 2 ? 0xf7df1e : 0x7a6f10); });
+    },
+  },
+  {
+    id: "fonts", title: "字型與多語言",
+    api: "font・lang・direction",
+    desc: "font 可指定 .ttf／.otf／.woff 網址（不支援 woff2）；不指定時預設 Noto Sans，缺字由 troika 依 Unicode 範圍自動從 jsDelivr 補 Noto 字型。lang 決定自動補字的漢字字形：同一組字在繁中、簡中、日文下寫法不同。direction: \"auto\" 交給 bidi-js 處理希伯來文與阿拉伯文的右到左排版。自動補字會把「、」「。」配到位置不對的字形，所以本頁其他文字的 font 指定只含標點與假名的 Noto Sans JP 子集，漢字仍依 lang 補繁中字形。",
+    hint: "切換字型與 lang，觀察漢字字形差異",
+    mount(ctx) {
+      const S = stage(ctx, { pos: [0, 0, 7], orbit: { minDistance: 2, maxDistance: 24 } });
+      const board = new THREE.Group();
+      S.scene.add(board);
+      const row = (y, text, cap, props) => {
+        const t = makeText({ text, maxWidth: 5.6, textAlign: "center", overflowWrap: "break-word", ...props });
+        t.position.y = y;
+        const c = makeText({ text: cap, font: MONO, fontSize: 0.12, color: 0x9b998f });
+        c.position.y = y - 0.4;
+        board.add(t, c);
+        return { t, c };
+      };
+      // font: null hands glyph selection back to troika's resolver, so the default font and lang-specific Han forms show.
+      const latin = row(1.55, "Hello, troika! 0123", `font: "Noto Sans"（預設）`, { font: null, fontSize: 0.46, color: 0xf7df1e });
+      const han = row(0.5, "骨 直 次 令 角 化 海", `lang: "zh-Hant"`, { font: null, fontSize: 0.46, color: 0xecebe6 });
+      row(-0.55, "日本語かな · 한국어 · Ελληνικά · Русский", "缺字自動補：unicode-font-resolver", { fontSize: 0.27, color: 0x4cc9f0 });
+      row(-1.55, "שלום עולם · مرحبا بالعالم", `direction: "auto"・bidi-js`, { fontSize: 0.38, color: 0xff8c42, direction: "auto" });
+      const setChip = chip(ctx, "字型載入中…");
+      ctx.on(latin.t, "synccomplete", () => {
+        const { timings } = latin.t.textRenderInfo;
+        setChip(`第 1 列：字型載入 <b>${timings.fontLoad.toFixed(0)}</b> ms・排版 <b>${timings.typesetting.toFixed(1)}</b> ms`);
+      });
+      ctx.select("字型", FONTS, "", (v) => {
+        latin.t.font = v || null;
+        latin.c.text = `font: "${FONTS.find((f) => f.value === v).label.replace("（預設）", "")}"${v ? "（woff）" : "（預設）"}`;
+      });
+      const LANGS = ["zh-Hant", "zh-Hans", "ja"];
+      ctx.group(["繁中", "簡中", "日文"], 0, (i) => { han.t.lang = LANGS[i]; han.c.text = `lang: "${LANGS[i]}"`; });
+      // Extra vertical room keeps the timing chip and the hint clear of the first and last rows.
+      S.onSize(() => { S.camera.position.setLength(fitDistance(S, 2.9, 2.35)); });
+      S.onFrame((dt, t) => { board.rotation.y = Math.sin(t * 0.35) * 0.16; });
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "new Text() × n・BatchedText.addText(text)",
+    desc: "球面上撒滿文字標籤，逐級增加同時存在的 Text 物件。獨立模式每個 Text 各一次 draw call；BatchedText（實驗性 API）把所有成員併成一次 draw call，但每格仍要逐一把成員矩陣與參數寫進資料貼圖。",
+    hint: "按「自動加壓」開始，可切換獨立 Text 與 BatchedText",
+    mount(ctx) {
+      ctx.html(`<div class="stress-view"></div>`);
+      const host = ctx.$(".stress-view");
+      ctx.controls.classList.add("bottom");
+      const S = stage(ctx, { host, fov: 50, pos: [0, 2.5, 11.5], bg: 0x07080b,
+        orbit: { autoRotate: true, autoRotateSpeed: 0.8, minDistance: 3, maxDistance: 30 } });
+      const { renderer } = S;
+      const WORDS = ["troika", "SDF", "WebGL", "文字", "排版", "字形", "three.js", "銳利", "GPU", "曲面", "描邊", "Worker", "距離場", "繁體中文", "glyph", "atlas"];
+      const mat = S.own(new THREE.MeshBasicMaterial({ side: THREE.FrontSide, transparent: true }));
+      const world = new THREE.Group(), solo = new THREE.Group();
+      const batch = new BatchedText();
+      batch.material = mat;
+      world.add(solo);
+      S.scene.add(world);
+      const pool = [];
+      let count = 0, mode = 0, members = 0, glyphs = 0, lastSync = "…";
+      let seed = 20241010;
+      const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+      ctx.onCleanup(() => { pool.forEach((t) => t.dispose()); batch.dispose(); });
+
+      const grow = async (n) => {
+        if (pool.length >= n) return;
+        const t0 = performance.now(), fresh = [];
+        for (let i = pool.length; i < n; i++) {
+          const u = rnd() * 2 - 1, th = rnd() * Math.PI * 2, r = 4.2 + (rnd() - 0.5) * 0.8, k = Math.sqrt(1 - u * u);
+          const t = makeText({ text: WORDS[i % WORDS.length], fontSize: 0.3, color: PALETTE[i % PALETTE.length], material: mat });
+          t.position.set(Math.cos(th) * k * r, u * r, Math.sin(th) * k * r);
+          t.lookAt(t.position.x * 2, t.position.y * 2, t.position.z * 2); // face outward (no parent yet)
+          t.visible = false;
+          solo.add(t);
+          pool.push(t);
+          fresh.push(t);
+        }
+        await Promise.all(fresh.map(synced));
+        lastSync = `${fresh.length} 個 ${(performance.now() - t0).toFixed(0)} ms`;
+      };
+      const place = () => {
+        const s = Math.min(1.2, Math.max(0.3, Math.sqrt(500 / Math.max(1, count))));
+        glyphs = 0;
+        for (let i = 0; i < pool.length; i++) {
+          const t = pool[i], on = i < count;
+          t.visible = on && mode === 0;
+          if (on) { t.scale.setScalar(s); glyphs += t.textRenderInfo ? t.textRenderInfo.glyphAtlasIndices.length : 0; }
+        }
+        if (mode === 1) {
+          while (members < count && members < pool.length) batch.addText(pool[members++]);
+          while (members > count) batch.removeText(pool[--members]);
+        }
+        batch.visible = mode === 1 && members > 0;
+      };
+      ctx.group(["獨立 Text", "BatchedText"], 0, (i) => {
+        mode = i;
+        if (mode === 1) { world.remove(solo); world.add(batch); }
+        else { while (members > 0) batch.removeText(pool[--members]); world.remove(batch); world.add(solo); }
+        place();
+      });
+      ctx.ramp({
+        label: "Text 物件", unit: "個",
+        steps: [100, 300, 1000, 2000, 4000, 8000, 16000],
+        minFps: 30,
+        async apply(n) {
+          count = n;
+          await grow(n);
+          if (ctx.active) place();
+        },
+        metrics: () => ({ "Draw calls": renderer.info.render.calls, 字形數: glyphs, 新增排版: lastSync }),
+        note: "獨立模式下每個 Text 都是一個 Mesh，draw call 隨數量線性增加；BatchedText 只有一次 draw call，但每格仍逐一更新成員矩陣與 uniform，CPU 成本同樣隨成員數成長。新增文字的排版在 Worker 進行，等全部完成才開始量測 FPS。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

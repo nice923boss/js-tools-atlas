@@ -3,176 +3,889 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Matter.js 示範：會掉下來的招牌字</title>
+<title>Matter.js 示範：八個場景看懂 2D 物理引擎與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["招牌字","材質參數","約束與鏈條","複合物件","碰撞與感應器","重力與時間","除錯渲染","極限測試"]}</script>
 <style>
-  body { background: linear-gradient(#141826 0%, #0e1013 75%); }
-  #stage { position: fixed; inset: 0; touch-action: none; cursor: grab; }
-  #stage canvas { display: block; width: 100%; height: 100%; }
-  .heading { position: fixed; left: 16px; top: 14px; z-index: 40; pointer-events: none; }
-  .heading h1 { margin: 0; font-size: clamp(18px, 4vw, 26px); letter-spacing: .06em; }
-  .heading p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
-  .stats { position: fixed; right: 12px; bottom: 12px; z-index: 40; padding: 5px 10px; border-radius: 999px; font-size: 12px; pointer-events: none; }
-  @media (max-width: 600px) { .heading { top: 60px; } }
+  .sc-scene canvas.world { position: absolute; left: 0; top: 0; touch-action: none; cursor: grab; }
+  .sc-scene.night { background: linear-gradient(#141826 0%, #0e1013 75%); }
 </style>
 </head>
 <body>
-<div id="stage"><canvas id="cv"></canvas></div>
-<div class="heading"><h1>歡迎光臨</h1><p>每個字都是剛體：抓起來、甩出去</p></div>
-<div class="controls">
-  <button class="btn primary" id="drop">重新掉落</button>
-  <button class="btn" id="boba">珍珠雨</button>
-  <button class="btn" id="quake">地震</button>
-</div>
-<div class="panel stats mono" id="stats">剛體 0 個</div>
-<div class="hint">拖曳文字方塊丟出去・點空白處加一顆珍珠</div>
-
 <script src="https://cdn.jsdelivr.net/npm/matter-js@0.20.0/build/matter.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Matter.js handles the physics; drawing is a plain 2D canvas loop so the blocks can carry text.
-const { Engine, Runner, Bodies, Body, Composite, Mouse, MouseConstraint, Events } = Matter;
-const WORD = ["歡", "迎", "光", "臨"];
+// Matter.js showcase: eight scenes from the original falling-sign demo to a body-count stress ramp.
+const { Engine, Render, Runner, Bodies, Body, Composite, Composites, Constraint, Mouse, MouseConstraint, Events, Sleeping, Vector } = Matter;
 const COLORS = ["#f72585", "#ffb703", "#4cc9f0", "#7bd389", "#9d8cff", "#ff7b54"];
-const stage = document.getElementById("stage");
-const canvas = document.getElementById("cv");
-const ctx = canvas.getContext("2d");
-const engine = Engine.create({ gravity: { y: 1.1 } });
-const world = engine.world;
-let W = innerWidth;
-let H = innerHeight;
+const MUTED = "#9b998f";
+const STEEL = "#4a5262";
+const rootCss = getComputedStyle(document.documentElement);
+const FONT = rootCss.getPropertyValue("--font").trim() || "system-ui, sans-serif";
+const MONO = rootCss.getPropertyValue("--mono").trim() || "ui-monospace, monospace";
+const font = (weight, px, mono) => `${weight} ${px}px ${mono ? MONO : FONT}`;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const rnd = (lo, hi) => lo + Math.random() * (hi - lo);
+const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+// Body render style shorthand: { ...look("#f72585") }
+const look = (fillStyle, extra) => ({ render: { fillStyle, strokeStyle: "rgba(0,0,0,.35)", lineWidth: 1, ...extra } });
+// Y just below the top-right control cluster, so scene content starts under the buttons.
+const belowControls = (ctx) => ctx.controls.offsetHeight + 20;
 
-// Static walls: a wide floor plus two side walls, repositioned on resize.
-const wallOpts = { isStatic: true, render: { visible: false } };
-const FLOOR_GAP = 48;
-const floor = Bodies.rectangle(W / 2, H - FLOOR_GAP + 50, 6000, 100, wallOpts);
-const left = Bodies.rectangle(-50, H / 2, 100, 6000, wallOpts);
-const right = Bodies.rectangle(W + 50, H / 2, 100, 6000, wallOpts);
-Composite.add(world, [floor, left, right]);
+// Small rounded caption drawn on the canvas (CSS pixels). fit = canvas width to keep it on screen.
+function tag(g, text, x, y, { color = "#e8e6df", size = 11, align = "center", mono = true, fit = 0 } = {}) {
+  g.font = font(600, size, mono);
+  const w = g.measureText(text).width + 10, hh = size + 8;
+  let left = align === "center" ? x - w / 2 : align === "right" ? x - w : x;
+  if (fit) left = clamp(left, 4, fit - w - 4);
+  g.fillStyle = "rgba(14,16,19,.78)";
+  g.beginPath();
+  g.roundRect(left, y - hh / 2, w, hh, 5);
+  g.fill();
+  g.fillStyle = color;
+  g.textAlign = "left";
+  g.textBaseline = "middle";
+  g.fillText(text, left + 5, y + 0.5);
+}
+function dashed(g, x1, y1, x2, y2, color = "rgba(255,255,255,.25)") {
+  g.save();
+  g.setLineDash([5, 5]);
+  g.strokeStyle = color;
+  g.lineWidth = 1;
+  g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+  g.restore();
+}
+// Fading motion trail for bodies created with plugin: { trail: [] }
+function trails(g, bodies) {
+  for (const b of bodies) {
+    const t = b.plugin && b.plugin.trail;
+    if (!t) continue;
+    t.push(b.position.x, b.position.y);
+    if (t.length > 160) t.splice(0, 2);
+    g.strokeStyle = b.render.fillStyle;
+    g.globalAlpha = 0.35;
+    g.lineWidth = 2;
+    g.beginPath();
+    for (let i = 0; i < t.length; i += 2) (i ? g.lineTo(t[i], t[i + 1]) : g.moveTo(t[i], t[i + 1]));
+    g.stroke();
+    g.globalAlpha = 1;
+  }
+}
 
-const blockSize = () => Math.round(Math.max(56, Math.min(W / 5.4, H / 4.6, 140)));
-
-function dropWord() {
-  Composite.allBodies(world).filter((b) => b.label === "char" || b.label === "pearl").forEach((b) => Composite.remove(world, b));
-  const s = blockSize();
-  WORD.forEach((ch, i) => {
-    const x = W / 2 + (i - 1.5) * s * 1.15;
-    const b = Bodies.rectangle(x, -s * (1 + i * 0.9), s, s, {
-      chamfer: { radius: s * 0.16 }, restitution: 0.35, friction: 0.5, density: 0.002, label: "char",
-    });
-    b.plugin = { ch, color: COLORS[i % COLORS.length], size: s };
-    Body.setAngle(b, (Math.random() - 0.5) * 0.6);
-    Composite.add(world, b);
+// One Matter.js world bound to a scene: engine, Render canvas, mouse dragging and screen-edge walls.
+// Everything is torn down through ctx.onCleanup when the scene unmounts.
+function physics(ctx, { gravity = 1, floor = 0, ceiling = false, options = {}, run = true } = {}) {
+  const engine = Engine.create({ gravity: { x: 0, y: gravity } });
+  const world = engine.world;
+  const pr = Math.min(window.devicePixelRatio || 1, 2);
+  let { width: W, height: H } = ctx.size();
+  const gap = () => (typeof floor === "function" ? floor(W, H) : floor);
+  const render = Render.create({
+    element: ctx.el, engine,
+    options: { width: W, height: H, pixelRatio: pr, wireframes: false, background: "transparent", wireframeBackground: "transparent", ...options },
   });
-}
+  const canvas = render.canvas;
+  canvas.classList.add("world");
 
-function addPearl(x, y) {
-  const r = Math.max(9, blockSize() * 0.11);
-  const b = Bodies.circle(x, y, r, { restitution: 0.55, friction: 0.05, density: 0.004, label: "pearl" });
-  b.plugin = { r };
-  Composite.add(world, b);
-}
+  // Mouse.create rounds the pixel ratio down (wrong on 1.25x / 1.5x screens) and blocks page scrolling on wheel.
+  const mouse = Mouse.create(canvas);
+  mouse.pixelRatio = pr;
+  canvas.removeEventListener("wheel", mouse.mousewheel);
+  const grab = MouseConstraint.create(engine, { mouse, constraint: { stiffness: 0.2, damping: 0.1, render: { visible: false } } });
+  render.mouse = mouse;
+  ctx.on(window, "mouseup", () => { mouse.button = -1; }); // release drags that end outside the canvas
+  Events.on(grab, "startdrag", () => { canvas.style.cursor = "grabbing"; });
+  Events.on(grab, "enddrag", () => { canvas.style.cursor = ""; });
 
-// Mouse is attached to the wrapper div so its coordinates stay in CSS pixels on HiDPI screens.
-const mouse = Mouse.create(stage);
-const grab = MouseConstraint.create(engine, { mouse, constraint: { stiffness: 0.2, damping: 0.1 } });
-Composite.add(world, grab);
-let pressAt = null;
-Events.on(grab, "mousedown", () => { pressAt = { ...mouse.position, body: grab.body }; });
-Events.on(grab, "startdrag", () => stage.style.cursor = "grabbing");
-Events.on(grab, "enddrag", () => stage.style.cursor = "grab");
-Events.on(grab, "mouseup", () => {
-  // A click (no drag, nothing grabbed) on empty space drops a pearl there.
-  if (pressAt && !pressAt.body && Math.hypot(mouse.position.x - pressAt.x, mouse.position.y - pressAt.y) < 6) addPearl(mouse.position.x, mouse.position.y);
-  pressAt = null;
-});
+  const T = 400, solid = { isStatic: true, label: "wall", render: { visible: false } };
+  const walls = {
+    floor: Bodies.rectangle(W / 2, H - gap() + T / 2, 20000, T, solid),
+    left: Bodies.rectangle(-T / 2, 0, T, 20000, solid),
+    right: Bodies.rectangle(W + T / 2, 0, T, 20000, solid),
+  };
+  if (ceiling) walls.top = Bodies.rectangle(W / 2, -T / 2, 20000, T, solid);
+  const keep = () => [...Object.values(walls), grab];
+  Composite.add(world, keep());
 
-document.getElementById("drop").addEventListener("click", dropWord);
-document.getElementById("boba").addEventListener("click", () => {
-  for (let i = 0; i < 40; i++) setTimeout(() => addPearl(W * (0.15 + Math.random() * 0.7), -20 - Math.random() * 60), i * 35);
-});
-document.getElementById("quake").addEventListener("click", () => {
-  for (const b of Composite.allBodies(world)) {
-    if (b.isStatic) continue;
-    Body.setVelocity(b, { x: (Math.random() - 0.5) * 18, y: -8 - Math.random() * 14 });
-    Body.setAngularVelocity(b, (Math.random() - 0.5) * 0.4);
+  let runner = null;
+  if (run) {
+    runner = Runner.create();
+    Render.run(render);
+    Runner.run(runner, engine);
   }
-});
 
-function resize() {
-  W = innerWidth;
-  H = innerHeight;
-  const dpr = Math.min(devicePixelRatio || 1, 2);
-  canvas.width = W * dpr;
-  canvas.height = H * dpr;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  Body.setPosition(floor, { x: W / 2, y: H - FLOOR_GAP + 50 });
-  Body.setPosition(right, { x: W + 50, y: H / 2 });
+  const resizers = [];
+  ctx.onResize(({ width, height }) => {
+    W = width; H = height;
+    Render.setSize(render, W, H);
+    Body.setPosition(walls.floor, { x: W / 2, y: H - gap() + T / 2 });
+    Body.setPosition(walls.right, { x: W + T / 2, y: 0 });
+    if (walls.top) Body.setPosition(walls.top, { x: W / 2, y: -T / 2 });
+    resizers.forEach((fn) => fn(W, H));
+  });
+  ctx.onCleanup(() => {
+    Render.stop(render);
+    if (runner) Runner.stop(runner);
+    Events.off(render); Events.off(engine); Events.off(grab);
+    Composite.clear(world, false, true);
+    Engine.clear(engine);
+    canvas.remove();
+  });
+
+  const p = {
+    engine, world, render, mouse, grab, walls,
+    get W() { return W; },
+    get H() { return H; },
+    get floorY() { return H - gap(); },
+    add: (...items) => Composite.add(world, items.flat()),
+    remove: (item) => Composite.remove(world, item),
+    bodies: () => Composite.allBodies(world).filter((b) => !b.isStatic),
+    onResize: (fn) => resizers.push(fn),
+    // Draw on top of Matter's own rendering, in CSS pixels.
+    draw: (fn) => Events.on(render, "afterRender", () => fn(render.context)),
+    // Empty the world (walls and dragging stay), then run build(W, H); repeated after every resize.
+    build(fn) {
+      const go = () => {
+        Composite.clear(world, false, true);
+        Engine.clear(engine);
+        grab.body = null;
+        grab.constraint.bodyB = null;
+        Composite.add(world, keep());
+        fn(W, H);
+      };
+      go();
+      resizers.push(go);
+      return go;
+    },
+    // Click or tap that did not grab a body and barely moved.
+    onTap(fn) {
+      let at = null;
+      Events.on(grab, "mousedown", () => { at = { x: mouse.position.x, y: mouse.position.y, body: grab.body }; });
+      Events.on(grab, "mouseup", () => {
+        if (at && !at.body && Math.hypot(mouse.position.x - at.x, mouse.position.y - at.y) < 6) fn(mouse.position.x, mouse.position.y);
+        at = null;
+      });
+    },
+  };
+  return p;
 }
 
-function pathOf(b) {
-  ctx.beginPath();
-  b.vertices.forEach((v, i) => (i ? ctx.lineTo(v.x, v.y) : ctx.moveTo(v.x, v.y)));
-  ctx.closePath();
+// Car built from the official car example (Composites.car is deprecated in 0.20).
+function makeCar(x, y, width, height, wheelSize) {
+  const group = Body.nextGroup(true);
+  const base = width * 0.14, ax = -width * 0.5 + base, bx = width * 0.5 - base;
+  const body = Bodies.rectangle(x, y, width, height, { collisionFilter: { group }, chamfer: { radius: height * 0.5 }, density: 0.0002, ...look(COLORS[1]) });
+  const wheel = (dx) => Bodies.circle(x + dx, y, wheelSize, { collisionFilter: { group }, friction: 0.8, ...look("#23262e", { strokeStyle: "#9aa3b5", lineWidth: 2 }) });
+  const wheelA = wheel(ax), wheelB = wheel(bx);
+  const axle = (w, dx) => Constraint.create({ bodyB: body, pointB: { x: dx, y: 0 }, bodyA: w, stiffness: 1, length: 0, render: { visible: false } });
+  const composite = Composite.create({ label: "Car" });
+  Composite.add(composite, [body, wheelA, wheelB, axle(wheelA, ax), axle(wheelB, bx)]);
+  return { composite, body, wheels: [wheelA, wheelB] };
 }
 
-function draw() {
-  ctx.clearRect(0, 0, W, H);
-  // Shop counter the blocks land on.
-  ctx.fillStyle = "#2a1d14";
-  ctx.fillRect(0, H - FLOOR_GAP, W, FLOOR_GAP);
-  ctx.fillStyle = "#5c3d26";
-  ctx.fillRect(0, H - FLOOR_GAP, W, 5);
-  let count = 0;
-  for (const b of Composite.allBodies(world)) {
-    if (b.label === "char") {
-      count++;
-      const { ch, color, size } = b.plugin;
-      ctx.save();
-      ctx.shadowColor = "rgba(0,0,0,.45)";
-      ctx.shadowBlur = 16;
-      ctx.shadowOffsetY = 6;
-      pathOf(b);
-      ctx.fillStyle = color;
-      ctx.fill();
-      ctx.restore();
-      ctx.save();
-      ctx.translate(b.position.x, b.position.y);
-      ctx.rotate(b.angle);
-      ctx.fillStyle = "#0e1013";
-      ctx.font = "800 " + Math.round(size * 0.62) + "px " + getComputedStyle(document.body).fontFamily;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(ch, 0, size * 0.04);
-      ctx.restore();
-    } else if (b.label === "pearl") {
-      count++;
-      const r = b.plugin.r;
-      const g = ctx.createRadialGradient(b.position.x - r * 0.35, b.position.y - r * 0.35, r * 0.1, b.position.x, b.position.y, r);
-      g.addColorStop(0, "#8a5a3b");
-      g.addColorStop(1, "#2b160c");
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.arc(b.position.x, b.position.y, r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-  document.getElementById("stats").textContent = "剛體 " + count + " 個";
-  requestAnimationFrame(draw);
-}
+Showcase.run({ scenes: [
+  {
+    id: "sign", title: "招牌字",
+    api: "Bodies.rectangle(x, y, w, h, { chamfer }) + MouseConstraint",
+    desc: "每個字都是倒圓角的剛體，Matter.js 負責碰撞、堆疊與拖曳（MouseConstraint），字與珍珠在 afterRender 事件裡自己畫。",
+    hint: "拖曳文字方塊丟出去・點空白處加一顆珍珠",
+    mount(ctx) {
+      ctx.el.classList.add("night");
+      const WORD = ["歡", "迎", "光", "臨"];
+      const hidden = { visible: false };
+      const p = physics(ctx, { gravity: 1.1, floor: (W, H) => Math.min(48, H * 0.1) });
+      const blockSize = () => Math.round(clamp(Math.min(p.W / 5.4, p.H / 4.6), 44, 140));
 
-addEventListener("resize", resize);
-resize();
-dropWord();
-Runner.run(Runner.create(), engine);
-requestAnimationFrame(draw);
+      function dropWord() {
+        p.bodies().filter((b) => b.label === "char" || b.label === "pearl").forEach((b) => p.remove(b));
+        const s = blockSize();
+        WORD.forEach((ch, i) => {
+          const b = Bodies.rectangle(p.W / 2 + (i - 1.5) * s * 1.15, -s * (1 + i * 0.9), s, s, {
+            chamfer: { radius: s * 0.16 }, restitution: 0.35, friction: 0.5, density: 0.002, label: "char",
+            render: hidden, plugin: { ch, color: COLORS[i % COLORS.length], size: s },
+          });
+          Body.setAngle(b, rnd(-0.3, 0.3));
+          p.add(b);
+        });
+      }
+      function addPearl(x, y) {
+        const r = Math.max(9, blockSize() * 0.11);
+        p.add(Bodies.circle(x, y, r, { restitution: 0.55, friction: 0.05, density: 0.004, label: "pearl", render: hidden, plugin: { r } }));
+      }
+      p.onTap(addPearl);
 
-// Idle previews: a few pearls drizzle in every couple of seconds until there are plenty.
-setInterval(() => {
-  const pearls = Composite.allBodies(world).filter((b) => b.label === "pearl").length;
-  if (pearls < 60) for (let i = 0; i < 3; i++) addPearl(W * (0.2 + Math.random() * 0.6), -20);
-}, 1800);
+      let count = 0;
+      p.draw((g) => {
+        const fy = p.floorY;
+        // Shop counter the blocks land on.
+        g.fillStyle = "#2a1d14";
+        g.fillRect(0, fy, p.W, p.H - fy);
+        g.fillStyle = "#5c3d26";
+        g.fillRect(0, fy, p.W, 5);
+        count = 0;
+        for (const b of Composite.allBodies(p.world)) {
+          if (b.label === "char") {
+            count++;
+            const { ch, color, size } = b.plugin;
+            g.save();
+            g.shadowColor = "rgba(0,0,0,.45)";
+            g.shadowBlur = 16;
+            g.shadowOffsetY = 6;
+            g.beginPath();
+            b.vertices.forEach((v, i) => (i ? g.lineTo(v.x, v.y) : g.moveTo(v.x, v.y)));
+            g.closePath();
+            g.fillStyle = color;
+            g.fill();
+            g.restore();
+            g.save();
+            g.translate(b.position.x, b.position.y);
+            g.rotate(b.angle);
+            g.fillStyle = "#0e1013";
+            g.font = font(800, Math.round(size * 0.62));
+            g.textAlign = "center";
+            g.textBaseline = "middle";
+            g.fillText(ch, 0, size * 0.04);
+            g.restore();
+          } else if (b.label === "pearl") {
+            count++;
+            const r = b.plugin.r, { x, y } = b.position;
+            const grad = g.createRadialGradient(x - r * 0.35, y - r * 0.35, r * 0.1, x, y, r);
+            grad.addColorStop(0, "#8a5a3b");
+            grad.addColorStop(1, "#2b160c");
+            g.fillStyle = grad;
+            g.beginPath();
+            g.arc(x, y, r, 0, Math.PI * 2);
+            g.fill();
+          }
+        }
+      });
+
+      ctx.button("重新掉落", dropWord, { primary: true });
+      ctx.button("珍珠雨", () => {
+        for (let i = 0; i < 40; i++) ctx.timeout(() => addPearl(p.W * rnd(0.15, 0.85), -20 - Math.random() * 60), i * 35);
+      });
+      ctx.button("地震", () => {
+        for (const b of p.bodies()) {
+          Body.setVelocity(b, { x: rnd(-9, 9), y: rnd(-22, -8) });
+          Body.setAngularVelocity(b, rnd(-0.2, 0.2));
+        }
+      });
+      ctx.fps({ position: "right bottom", extra: () => ({ 剛體: count }) });
+      dropWord();
+      // Idle preview: a few pearls drizzle in until there are plenty.
+      ctx.interval(() => {
+        const pearls = p.bodies().filter((b) => b.label === "pearl").length;
+        if (pearls < 60) for (let i = 0; i < 3; i++) addPearl(p.W * rnd(0.2, 0.8), -20);
+      }, 1800);
+    },
+  },
+  {
+    id: "material", title: "材質參數",
+    api: "restitution・friction・frictionAir・density",
+    desc: "同一個世界只改一個參數：彈性決定反彈高度，摩擦決定滑多遠，空氣阻力決定終端速度，密度乘上面積就是質量，蹺蹺板看誰比較重。",
+    hint: "切換四個實驗・按「重放」再看一次",
+    mount(ctx) {
+      let mode = 0, builtAt = 0, overlay = null;
+      ctx.group(["彈性", "摩擦", "空氣阻力", "密度"], 0, (i) => { mode = i; rebuild(); });
+      ctx.button("重放", () => rebuild(), { primary: true });
+      const p = physics(ctx, { floor: 36 });
+      const narrow = () => p.W < 560;
+
+      // Five balls dropped from the same height; only restitution differs.
+      function bounce(W, top, fy) {
+        const vals = [0, 0.3, 0.6, 0.8, 0.95];
+        const r = clamp(W / 28, 9, 20), y0 = top + r + 8;
+        const xs = vals.map((_, i) => (W * (i + 0.5)) / vals.length);
+        vals.forEach((v, i) => p.add(Bodies.circle(xs[i], y0, r, {
+          restitution: v, friction: 0, frictionAir: 0, ...look(COLORS[i]), plugin: { trail: [] },
+        })));
+        return (g) => {
+          dashed(g, 0, y0, W, y0);
+          vals.forEach((v, i) => tag(g, narrow() ? `${v}` : `restitution ${v}`, xs[i], fy + 18, { color: COLORS[i] }));
+        };
+      }
+      // Four boxes launched at the same speed along shelves; only friction differs.
+      function slide(W, top, fy) {
+        const vals = [0, 0.02, 0.05, 0.2];
+        const rowH = (fy - top) / vals.length;
+        const s = clamp(rowH * 0.38, 12, 30);
+        const x0 = 12, x1 = W - 12;
+        // Stopping distance is about 275 px * (v0 / 6)^2 at friction 0.02, so the 0.02 box covers ~75% of the shelf.
+        const v0 = 6 * Math.sqrt((0.75 * (x1 - x0 - 2 * s)) / 275);
+        const shelf = { isStatic: true, friction: 1, ...look(STEEL, { lineWidth: 0 }) };
+        const boxes = vals.map((v, i) => {
+          const y = top + rowH * (i + 1) - 4;
+          p.add([
+            Bodies.rectangle((x0 + x1) / 2, y + 4, x1 - x0, 8, shelf),
+            Bodies.rectangle(x1 - 4, y - s, 8, s * 2, shelf),
+          ]);
+          const b = Bodies.rectangle(x0 + s, y - s / 2, s, s, { friction: v, frictionAir: 0, ...look(COLORS[i]), plugin: { start: x0 + s } });
+          p.add(b);
+          return b;
+        });
+        ctx.timeout(() => boxes.forEach((b) => Body.setVelocity(b, { x: v0, y: 0 })), 350);
+        return (g) => boxes.forEach((b, i) => {
+          const d = Math.round(b.position.x - b.plugin.start);
+          tag(g, `${narrow() ? "" : "friction "}${vals[i]}・${d} px`, b.position.x, b.bounds.min.y - 12, { color: COLORS[i], fit: W });
+        });
+      }
+      // Four boxes falling; frictionAir caps the speed they can reach.
+      function air(W, top, fy) {
+        const vals = [0, 0.02, 0.05, 0.1];
+        const s = clamp(W / 18, 14, 30);
+        const xs = vals.map((_, i) => (W * (i + 0.5)) / vals.length);
+        const boxes = vals.map((v, i) => {
+          const b = Bodies.rectangle(xs[i], top + s, s, s, { frictionAir: v, restitution: 0.1, ...look(COLORS[i]), plugin: { trail: [] } });
+          p.add(b);
+          return b;
+        });
+        return (g) => boxes.forEach((b, i) => {
+          tag(g, narrow() ? `${vals[i]}` : `frictionAir ${vals[i]}`, xs[i], fy + 18, { color: COLORS[i] });
+          tag(g, `v ${b.speed.toFixed(1)}`, b.position.x, b.bounds.min.y - 12, { color: COLORS[i], fit: W });
+        });
+      }
+      // Seesaw: a big light box against a small dense one.
+      function density(W, top, fy) {
+        const L = clamp(W * 0.72, 220, 560), cx = W / 2, py = fy - L * 0.2;
+        const plank = Bodies.rectangle(cx, py, L, 12, { friction: 0.9, ...look(STEEL) });
+        p.add([plank, Constraint.create({ pointA: { x: cx, y: py }, bodyB: plank, length: 0, stiffness: 1, render: { visible: false } })]);
+        const s = clamp(L / 14, 16, 34);
+        const big = Bodies.rectangle(cx - L * 0.36, top + s, s * 2, s * 2, { density: 0.0005, friction: 0.9, ...look(COLORS[2]) });
+        const small = Bodies.rectangle(cx + L * 0.36, top + s, s, s, { density: 0.01, friction: 0.9, ...look(COLORS[0]) });
+        p.add([big, small]);
+        return (g) => {
+          g.fillStyle = "#596173";
+          g.beginPath(); g.moveTo(cx, py + 6); g.lineTo(cx - 18, fy); g.lineTo(cx + 18, fy); g.closePath(); g.fill();
+          for (const b of [big, small]) {
+            tag(g, `density ${b.density}・質量 ${b.mass.toFixed(2)}`, b.position.x, b.bounds.min.y - 12, { color: b.render.fillStyle, fit: W });
+          }
+        };
+      }
+
+      const EXP = [bounce, slide, air, density];
+      const rebuild = p.build((W) => {
+        builtAt = performance.now();
+        overlay = EXP[mode](W, belowControls(ctx), p.floorY);
+      });
+      p.draw((g) => {
+        trails(g, p.bodies());
+        if (overlay) overlay(g);
+      });
+      // The air-drag race is short, so it replays by itself.
+      ctx.interval(() => { if (mode === 2 && performance.now() - builtAt > 4500) rebuild(); }, 500);
+    },
+  },
+  {
+    id: "constraint", title: "約束與鏈條",
+    api: "Constraint.create({ length, stiffness, damping }) + Composites.chain",
+    desc: "牛頓擺是五條長度固定的約束，彈簧是低剛性的約束，繩索與吊橋用 Composites.chain 把剛體頭尾相連，箱子會不斷掉在吊橋上。",
+    hint: "拖曳擺錘、繩索或吊橋・拉滑桿改彈簧剛性",
+    mount(ctx) {
+      const kOf = (v) => 10 ** (-2.7 + (2.7 * v) / 100); // slider 0..100 -> stiffness 0.002..1
+      let k = kOf(15), spring = null, cradle = [], pullTo = null, boxes = [], overlay = null;
+      ctx.slider("彈簧剛性", { min: 0, max: 100, step: 1, value: 15, format: (v) => kOf(v).toFixed(3) }, (v) => {
+        k = kOf(v);
+        if (spring) spring.stiffness = k;
+      });
+      ctx.button("拉起擺錘", () => pull(), { primary: true });
+      const p = physics(ctx);
+
+      function pull() {
+        if (!pullTo) return;
+        cradle.forEach((b) => Body.setVelocity(b, { x: 0, y: 0 }));
+        Body.setPosition(cradle[0], pullTo);
+        Body.setVelocity(cradle[0], { x: 0, y: 0 });
+      }
+
+      p.build((W) => {
+        boxes = [];
+        const top = belowControls(ctx), fy = p.floorY;
+        const h1 = (fy - top) * 0.56, h2 = fy - top - h1;
+        const wide = W >= 640;
+        const ink = { strokeStyle: "#8b93a7", lineWidth: 1 };
+
+        // Newton's cradle (from the official example; Composites.newtonsCradle is deprecated).
+        const cw = wide ? W * 0.42 : W * 0.6;
+        const r = clamp(Math.min(cw / 11.5, h1 * 0.11), 7, 24);
+        const L = h1 - r - 14, sep = 1.9 * r, n = 5, ay = top + 4;
+        const cx0 = cw / 2 - ((n - 1) * sep) / 2;
+        cradle = [];
+        for (let i = 0; i < n; i++) {
+          const x = cx0 + i * sep;
+          const ball = Bodies.circle(x, ay + L, r, { inertia: Infinity, restitution: 1, friction: 0, frictionAir: 0, slop: r * 0.02, ...look(COLORS[i]) });
+          p.add([ball, Constraint.create({ pointA: { x, y: ay }, bodyB: ball, render: ink })]);
+          cradle.push(ball);
+        }
+        const theta = Math.min(0.9, Math.asin(clamp((cx0 - r - 6) / L, 0, 1)));
+        pullTo = { x: cx0 - L * Math.sin(theta), y: ay + L * Math.cos(theta) };
+        pull();
+
+        // Spring: a box hanging from a soft constraint.
+        const sx = wide ? cw + W * 0.12 : cw + (W - cw) / 2;
+        const bs = clamp(W / 26, 14, 28);
+        const sbox = Bodies.rectangle(sx, ay + h1 * 0.4 + 40, bs, bs, look(COLORS[1]));
+        spring = Constraint.create({ pointA: { x: sx, y: ay }, bodyB: sbox, length: h1 * 0.4, stiffness: k, damping: 0.01, render: { type: "spring", strokeStyle: COLORS[1], lineWidth: 1.5 } });
+        p.add([sbox, spring]);
+
+        // Rope: a horizontal chain pinned at one end, it swings down on start.
+        let rope = null;
+        if (wide) {
+          const rx = cw + W * 0.27, rw = W - rx - 16;
+          const links = 9, lw = Math.min(rw / links, (h1 - 10) / links);
+          const group = Body.nextGroup(true);
+          rope = Composites.stack(rx, ay, links, 1, 0, 0, (x, y) => Bodies.rectangle(x, y, lw, 8, { collisionFilter: { group }, chamfer: { radius: 4 }, ...look(COLORS[4]) }));
+          Composites.chain(rope, 0.4, 0, -0.4, 0, { stiffness: 0.9, length: 0, render: { visible: false } });
+          Composite.add(rope, Constraint.create({ pointA: { x: rx, y: ay + 4 }, bodyB: rope.bodies[0], pointB: { x: -lw * 0.4, y: 0 }, stiffness: 0.9, length: 0, render: ink }));
+          p.add(rope);
+        }
+
+        // Bridge: planks chained end to end, slightly longer than the gap so it sags.
+        // Catenary sag is about span * sqrt(3 * slack / 8); aim for 40% of the room below the deck.
+        const by = top + h1 + h2 * 0.38;
+        const slack = clamp((8 / 3) * ((0.4 * (fy - by)) / (W - 20)) ** 2, 0.004, 0.05);
+        const m = clamp(Math.round((W - 20) / 44), 7, 18), pw = ((W - 20) * (1 + slack)) / m;
+        const group = Body.nextGroup(true);
+        const bridge = Composites.stack(10, by - 6, m, 1, 0, 0, (x, y) => Bodies.rectangle(x, y, pw, 12, {
+          collisionFilter: { group }, chamfer: { radius: 3 }, density: 0.005, frictionAir: 0.05, ...look("#6b7487"),
+        }));
+        Composites.chain(bridge, 0.5, 0, -0.5, 0, { stiffness: 0.99, length: 0, render: { visible: false } });
+        Composite.add(bridge, [
+          Constraint.create({ pointA: { x: 10, y: by }, bodyB: bridge.bodies[0], pointB: { x: -pw / 2, y: 0 }, length: 0, stiffness: 0.9, render: ink }),
+          Constraint.create({ pointA: { x: W - 10, y: by }, bodyB: bridge.bodies[m - 1], pointB: { x: pw / 2, y: 0 }, length: 0, stiffness: 0.9, render: ink }),
+        ]);
+        p.add(bridge);
+        const dropY = top + h1 + 4;
+        const dropBox = () => {
+          const s = clamp(W / 30, 12, 26);
+          const b = Bodies.rectangle(rnd(W * 0.2, W * 0.8), dropY, s * rnd(0.8, 1.4), s, { chamfer: { radius: 2 }, ...look(pick(COLORS)) });
+          p.add(b);
+          boxes.push(b);
+          if (boxes.length > 7) p.remove(boxes.shift());
+        };
+        dropBox();
+
+        overlay = { dropBox, draw(g) {
+          g.strokeStyle = "#8b93a7"; g.lineWidth = 3;
+          g.beginPath(); g.moveTo(cx0 - r, ay); g.lineTo(cx0 + (n - 1) * sep + r, ay); g.stroke();
+          g.fillStyle = "#2a2f3a";
+          g.fillRect(4, by, 12, fy - by);
+          g.fillRect(W - 16, by, 12, fy - by);
+          tag(g, wide ? "牛頓擺：5 條 Constraint" : "牛頓擺", cw / 2, ay + h1 - 6, { color: MUTED, fit: W });
+          tag(g, `stiffness ${spring.stiffness.toFixed(3)}`, sbox.position.x, sbox.bounds.max.y + 14, { color: COLORS[1], fit: W });
+          if (rope) tag(g, "Composites.chain", rope.bodies[0].position.x + 50, ay + 14, { color: COLORS[4], fit: W });
+          tag(g, wide ? "吊橋：Composites.chain + 兩端錨點" : "吊橋", W / 2, Math.min(fy - 14, by + h2 * 0.4), { color: MUTED, fit: W });
+        } };
+      });
+      p.draw((g) => overlay && overlay.draw(g));
+      ctx.interval(() => overlay && overlay.dropBox(), 1700);
+    },
+  },
+  {
+    id: "composite", title: "複合物件",
+    api: "Composite・Body.create({ parts })・Composites.mesh・Composites.pyramid",
+    desc: "車子是車身加兩個輪子與兩條軸心約束的 Composite；果凍是網格約束串起的粒子；啞鈴是三個零件合成的單一剛體；金字塔一行產生。",
+    hint: "按住 ◀ ▶ 或方向鍵開車（先點一下畫面）・發射砲彈撞金字塔",
+    mount(ctx) {
+      let drive = 0, car = null, pyr = null, shots = [], parts = null;
+      const hold = (label, dir) => {
+        const b = ctx.button(label, () => {});
+        const stop = () => { drive = 0; };
+        ctx.on(b, "pointerdown", () => { drive = dir; });
+        ["pointerup", "pointerleave", "pointercancel"].forEach((t) => ctx.on(b, t, stop));
+      };
+      hold("◀ 後退", -1);
+      hold("前進 ▶", 1);
+      ctx.button("發射砲彈", () => fire(), { primary: true });
+      ctx.button("重置", () => rebuild());
+      ctx.on(window, "keydown", (e) => {
+        if (e.target.closest && e.target.closest(".sc-tabs")) return;
+        if (e.key === "ArrowLeft") drive = -1;
+        else if (e.key === "ArrowRight") drive = 1;
+        else return;
+        e.preventDefault();
+      });
+      ctx.on(window, "keyup", (e) => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") drive = 0; });
+      const p = physics(ctx);
+      Events.on(p.engine, "beforeUpdate", () => {
+        if (car && drive) car.wheels.forEach((w) => Body.setAngularVelocity(w, drive * 0.32));
+      });
+
+      function fire() {
+        if (!pyr) return;
+        const r = clamp(p.W / 55, 8, 16), x = r + 8, y = p.floorY - pyr.h - 50;
+        const ball = Bodies.circle(x, y, r, { density: 0.04, frictionAir: 0, restitution: 0.2, ...look("#e8e6df") });
+        // Ballistic aim at the pyramid's middle: gravity adds 0.278 px per step^2 at the default 60 Hz step.
+        const g = p.engine.gravity.y * p.engine.gravity.scale * (1000 / 60) ** 2;
+        const tx = pyr.cx - x, ty = p.floorY - pyr.h * 0.5 - y;
+        const vx = clamp(p.W / 40, 10, 24), t = tx / vx;
+        p.add(ball);
+        Body.setVelocity(ball, { x: vx, y: (ty - 0.5 * g * t * t) / t });
+        shots.push(ball);
+        if (shots.length > 6) p.remove(shots.shift());
+      }
+
+      const rebuild = p.build((W) => {
+        shots = [];
+        const top = belowControls(ctx), fy = p.floorY;
+        const cwid = clamp(W * 0.17, 90, 160);
+        car = makeCar(24 + cwid / 2, fy - cwid * 0.2 - 6, cwid, cwid * 0.2, cwid * 0.2);
+        p.add(car.composite);
+
+        // Soft body: particles + a cross-braced mesh of constraints (official softBody example).
+        const cols = 5, rows = 4, pr = clamp(W / 80, 6, 11);
+        const soft = Composites.stack(W * 0.4 - cols * pr, top + 10, cols, rows, 0, 0, (x, y) => Bodies.circle(x, y, pr, {
+          inertia: Infinity, friction: 0.05, frictionStatic: 0.1, ...look(COLORS[3], { lineWidth: 0 }),
+        }));
+        Composites.mesh(soft, cols, rows, true, { stiffness: 0.2, render: { type: "line", anchors: false, strokeStyle: "rgba(123,211,137,.6)", lineWidth: 1 } });
+        p.add(soft);
+
+        // Compound body: one rigid body made of three parts.
+        const bl = clamp(W / 9, 50, 110), px = W * 0.62, py = top + 30;
+        const barbell = Body.create({ parts: [
+          Bodies.rectangle(px, py, bl, 8, look("#c9ced8")),
+          Bodies.circle(px - bl / 2, py, bl * 0.2, look(COLORS[4])),
+          Bodies.circle(px + bl / 2, py, bl * 0.2, look(COLORS[4])),
+        ], friction: 0.5 });
+        Body.setAngle(barbell, 0.5);
+        p.add(barbell);
+
+        const pc = W < 560 ? 5 : 9, s = clamp(W / 60, 10, 22), prow = Math.ceil(pc / 2);
+        const pyramid = Composites.pyramid(W - pc * s - 12, fy - prow * s - 1, pc, pc, 0, 0, (x, y) => Bodies.rectangle(x, y, s, s, look(pick(COLORS))));
+        p.add(pyramid);
+        pyr = { cx: W - (pc * s) / 2 - 12, h: prow * s };
+        parts = { soft, barbell, pyramid, wide: W >= 600 };
+      });
+
+      p.draw((g) => {
+        if (!car) return;
+        for (const w of car.wheels) {
+          const r = w.circleRadius;
+          g.strokeStyle = "#9aa3b5"; g.lineWidth = 2;
+          g.beginPath();
+          g.moveTo(w.position.x - Math.cos(w.angle) * r, w.position.y - Math.sin(w.angle) * r);
+          g.lineTo(w.position.x + Math.cos(w.angle) * r, w.position.y + Math.sin(w.angle) * r);
+          g.stroke();
+        }
+        const W = p.W, wide = parts.wide;
+        tag(g, wide ? "Composite：車身＋兩輪＋兩條軸" : "Composite", car.body.position.x, car.body.bounds.min.y - 14, { color: COLORS[1], fit: W });
+        const sb = Composite.bounds(parts.soft);
+        tag(g, wide ? "Composites.mesh 果凍" : "mesh", (sb.min.x + sb.max.x) / 2, sb.min.y - 12, { color: COLORS[3], fit: W });
+        tag(g, wide ? "Body.create({ parts })" : "parts", parts.barbell.position.x, parts.barbell.bounds.min.y - 12, { color: COLORS[4], fit: W });
+        const pb = Composite.bounds(parts.pyramid);
+        if (pb.min.y < p.floorY) tag(g, wide ? "Composites.pyramid" : "pyramid", pyr.cx, pb.min.y - 12, { color: MUTED, fit: W });
+      });
+    },
+  },
+  {
+    id: "collision", title: "碰撞與感應器",
+    api: "Events.on(engine, 'collisionStart')・isSensor・collisionFilter",
+    desc: "高爾頓板：釘子被撞到時由 collisionStart 事件點亮；底部是 isSensor 感應器，只偵測不阻擋，用來計數；落點會逼近二項分布（虛線）。",
+    hint: "切換「球彼此穿透」看 collisionFilter.group 的差別",
+    mount(ctx) {
+      let auto = true, ghost = false, counts = [], balls = [], geo = null;
+      const gone = [];
+      ctx.button("投 1 顆", () => drop(), { primary: true });
+      ctx.toggle("連續投放", auto, (v) => { auto = v; });
+      ctx.toggle("球彼此穿透", ghost, (v) => {
+        ghost = v;
+        for (const b of balls) b.collisionFilter.group = v ? -1 : 0;
+      });
+      ctx.button("歸零", () => counts.fill(0));
+      const p = physics(ctx);
+
+      const seg = (x1, y1, x2, y2) => Bodies.rectangle((x1 + x2) / 2, (y1 + y2) / 2, Math.hypot(x2 - x1, y2 - y1), 4, {
+        isStatic: true, angle: Math.atan2(y2 - y1, x2 - x1), label: "guide", render: { fillStyle: STEEL },
+      });
+      p.build((W) => {
+        balls = [];
+        const top = belowControls(ctx), bottom = p.floorY - 8;
+        const R = W < 520 ? 8 : 11;
+        const binH = (bottom - top) * 0.3;
+        const pegTop = top + 24, pegBottom = bottom - binH - 6;
+        const dy = (pegBottom - pegTop) / (R - 1);
+        const dx = Math.min((W - 30) / (R + 2), dy * 1.25);
+        const cx = W / 2, pegR = clamp(dx * 0.09, 2.5, 5), ballR = clamp(dx * 0.2, 3.5, 9);
+        const pegs = [];
+        for (let i = 0; i < R; i++) {
+          for (let j = 0; j <= i; j++) {
+            pegs.push(Bodies.circle(cx + (j - i / 2) * dx, pegTop + i * dy, pegR, { isStatic: true, label: "peg", restitution: 0.4, render: { fillStyle: "#5b6478" }, plugin: { glow: 0 } }));
+          }
+        }
+        p.add(pegs);
+        const edge = (R / 2 + 0.25) * dx;
+        p.add([seg(cx - 0.75 * dx, pegTop - dy * 0.5, cx - edge, pegBottom), seg(cx + 0.75 * dx, pegTop - dy * 0.5, cx + edge, pegBottom)]);
+        const binTop = pegBottom + dy * 0.35;
+        for (let m = 0; m <= R + 1; m++) {
+          p.add(Bodies.rectangle(cx + (m - R / 2 - 0.5) * dx, (binTop + bottom) / 2, 3, bottom - binTop, { isStatic: true, label: "divider", render: { fillStyle: STEEL } }));
+        }
+        for (let k = 0; k <= R; k++) {
+          p.add(Bodies.rectangle(cx + (k - R / 2) * dx, bottom - 6, dx - 4, 12, { isStatic: true, isSensor: true, label: "bin", plugin: { k }, render: { fillStyle: "rgba(76,201,240,.18)" } }));
+        }
+        counts = new Array(R + 1).fill(0);
+        // Binomial expectation C(R, k) / 2^R for the dashed curve.
+        const choose = (n, k) => { let c = 1; for (let i = 1; i <= k; i++) c = (c * (n - i + 1)) / i; return c; };
+        const expect = counts.map((_, k) => choose(R, k) / 2 ** R);
+        geo = { top, bottom, binTop, cx, dx, R, ballR, pegs, expect };
+      });
+
+      function drop() {
+        if (!geo || balls.length > 150) return;
+        const b = Bodies.circle(geo.cx + rnd(-0.5, 0.5), geo.top + 6, geo.ballR, {
+          label: "ball", restitution: 0.35, friction: 0.02, collisionFilter: { group: ghost ? -1 : 0 }, render: { fillStyle: pick(COLORS) }, plugin: {},
+        });
+        balls.push(b);
+        p.add(b);
+      }
+      Events.on(p.engine, "collisionStart", (e) => {
+        for (const pair of e.pairs) {
+          for (const [a, b] of [[pair.bodyA, pair.bodyB], [pair.bodyB, pair.bodyA]]) {
+            if (a.label === "peg") a.plugin.glow = 1;
+            else if (a.label === "bin" && b.label === "ball" && !b.plugin.done) {
+              b.plugin.done = true;
+              counts[a.plugin.k]++;
+              gone.push(b);
+            }
+          }
+        }
+      });
+      // Remove counted balls after the step, never inside the collision callback.
+      Events.on(p.engine, "afterUpdate", () => {
+        if (!gone.length) return;
+        gone.forEach((b) => p.remove(b));
+        gone.length = 0;
+        balls = balls.filter((b) => !b.plugin.done);
+      });
+      p.draw((g) => {
+        if (!geo) return;
+        const { cx, dx, R, bottom, binTop, expect, pegs, top } = geo;
+        for (const peg of pegs) {
+          peg.plugin.glow *= 0.9;
+          peg.render.fillStyle = peg.plugin.glow > 0.05 ? `rgba(255,183,3,${(0.35 + peg.plugin.glow * 0.65).toFixed(2)})` : "#5b6478";
+        }
+        const total = counts.reduce((a, b) => a + b, 0);
+        const maxC = Math.max(1, ...counts, ...expect.map((e) => e * total));
+        const hMax = bottom - binTop - 16;
+        g.fillStyle = "rgba(76,201,240,.45)";
+        counts.forEach((c, k) => {
+          const h = (c / maxC) * hMax, x = cx + (k - R / 2) * dx;
+          g.fillRect(x - dx / 2 + 3, bottom - 12 - h, dx - 6, h);
+        });
+        if (total > 0) {
+          g.save();
+          g.setLineDash([4, 4]); g.strokeStyle = "#ffb703"; g.lineWidth = 1.5;
+          g.beginPath();
+          expect.forEach((e, k) => {
+            const x = cx + (k - R / 2) * dx, y = bottom - 12 - ((e * total) / maxC) * hMax;
+            k ? g.lineTo(x, y) : g.moveTo(x, y);
+          });
+          g.stroke();
+          g.restore();
+        }
+        g.font = font(600, 12, true);
+        g.fillStyle = MUTED;
+        g.textAlign = "left";
+        g.textBaseline = "top";
+        g.fillText(`已落袋 ${total}`, 10, top - 6);
+        g.fillText(`場上 ${balls.length} 顆`, 10, top + 12);
+        g.fillText(ghost ? "球：group -1 互穿" : "球：group 0 互撞", 10, top + 30);
+      });
+      ctx.interval(() => auto && drop(), 110);
+    },
+  },
+  {
+    id: "gravity", title: "重力與時間",
+    api: "engine.gravity・engine.timing.timeScale・Body.setVelocity",
+    desc: "重力是一個隨時可改的向量，可以朝任何方向甚至歸零；timeScale 把整個世界放慢做子彈時間；點空白處或按「爆炸」給周圍物體徑向速度。",
+    hint: "點畫面空白處引爆・拉「時間」滑桿進入慢動作",
+    mount(ctx) {
+      const DIRS = [[0, 1], [-1, 0], [0, -1], [1, 0], [0, 0]];
+      const rings = [];
+      ctx.group(["↓", "←", "↑", "→", "失重"], 0, (i) => {
+        [p.engine.gravity.x, p.engine.gravity.y] = DIRS[i];
+        p.bodies().forEach((b) => Sleeping.set(b, false));
+      });
+      ctx.slider("時間", { min: 0.05, max: 2, step: 0.05, value: 1, format: (v) => `${v.toFixed(2)}×` }, (v) => { p.engine.timing.timeScale = v; });
+      ctx.button("爆炸", () => blast(p.W / 2, p.H * 0.6), { primary: true });
+      const p = physics(ctx, { ceiling: true });
+
+      function blast(x, y) {
+        for (const b of p.bodies()) {
+          const d = Vector.sub(b.position, { x, y }), dist = Math.max(Vector.magnitude(d), 1);
+          const kick = 18 * Math.min(1, 120 / dist);
+          Body.setVelocity(b, Vector.add(b.velocity, Vector.mult(Vector.normalise(d), kick)));
+          Body.setAngularVelocity(b, b.angularVelocity + rnd(-0.15, 0.15));
+        }
+        rings.push({ x, y, t: performance.now() });
+      }
+      p.onTap(blast);
+
+      p.build((W, H) => {
+        const top = belowControls(ctx);
+        const n = Math.round(clamp((W * H) / 7000, 24, 70));
+        const s = clamp(Math.sqrt(W * H) / 24, 10, 28), gap = s * 1.5;
+        const cols = Math.max(1, Math.floor((W - 20) / gap));
+        for (let i = 0; i < n; i++) {
+          const x = 10 + gap / 2 + (i % cols) * gap + rnd(-2, 2), y = top + gap / 2 + Math.floor(i / cols) * gap;
+          const size = s * rnd(0.6, 1), opts = { restitution: 0.45, friction: 0.1, ...look(COLORS[i % 6]) };
+          const kind = i % 3;
+          p.add(kind === 0 ? Bodies.circle(x, y, size * 0.55, opts)
+            : kind === 1 ? Bodies.rectangle(x, y, size, size * rnd(0.6, 1), { ...opts, chamfer: { radius: 3 } })
+            : Bodies.polygon(x, y, 3 + (i % 4), size * 0.6, opts));
+        }
+      });
+
+      p.draw((g) => {
+        const now = performance.now();
+        for (let i = rings.length - 1; i >= 0; i--) {
+          const r = rings[i], a = (now - r.t) / 450;
+          if (a >= 1) { rings.splice(i, 1); continue; }
+          g.strokeStyle = `rgba(255,183,3,${(1 - a).toFixed(2)})`;
+          g.lineWidth = 3;
+          g.beginPath(); g.arc(r.x, r.y, 20 + a * 120, 0, Math.PI * 2); g.stroke();
+        }
+        // Gravity compass, bottom-left.
+        const { x: gx, y: gy } = p.engine.gravity, cx = 38, cy = p.H - 38;
+        g.fillStyle = "rgba(14,16,19,.7)";
+        g.beginPath(); g.arc(cx, cy, 26, 0, Math.PI * 2); g.fill();
+        g.strokeStyle = "rgba(255,255,255,.2)"; g.lineWidth = 1; g.stroke();
+        if (gx || gy) {
+          const ex = cx + gx * 18, ey = cy + gy * 18, ang = Math.atan2(gy, gx);
+          g.strokeStyle = COLORS[1]; g.fillStyle = COLORS[1]; g.lineWidth = 3;
+          g.beginPath(); g.moveTo(cx - gx * 12, cy - gy * 12); g.lineTo(ex, ey); g.stroke();
+          g.beginPath();
+          g.moveTo(ex + Math.cos(ang) * 6, ey + Math.sin(ang) * 6);
+          g.lineTo(ex + Math.cos(ang + 2.3) * 8, ey + Math.sin(ang + 2.3) * 8);
+          g.lineTo(ex + Math.cos(ang - 2.3) * 8, ey + Math.sin(ang - 2.3) * 8);
+          g.closePath(); g.fill();
+        } else {
+          g.fillStyle = COLORS[1];
+          g.font = font(700, 11);
+          g.textAlign = "center"; g.textBaseline = "middle";
+          g.fillText("0 g", cx, cy);
+        }
+        tag(g, `gravity (${gx}, ${gy})・timeScale ${p.engine.timing.timeScale.toFixed(2)}`, cx + 34, cy, { align: "left", color: "#e8e6df", fit: p.W });
+      });
+    },
+  },
+  {
+    id: "debug", title: "除錯渲染",
+    api: "Render.create({ options: { wireframes, showVelocity, showCollisions, … } })",
+    desc: "內建渲染器附帶除錯視圖：線框、速度向量、碰撞點、角度指示、包圍盒、休眠狀態與效能面板；開啟休眠後靜止的物體停止計算並變半透明。",
+    hint: "開關下方選項・等堆疊靜止後看休眠效果",
+    mount(ctx) {
+      ctx.controls.classList.add("bottom");
+      const opt = (label, key, on) => ctx.toggle(label, on, (v) => { p.render.options[key] = v; });
+      opt("線框", "wireframes", true);
+      opt("速度", "showVelocity", false);
+      opt("碰撞點", "showCollisions", true);
+      opt("角度", "showAngleIndicator", true);
+      opt("包圍盒", "showBounds", false);
+      ctx.toggle("休眠", true, (v) => {
+        p.engine.enableSleeping = v;
+        if (!v) p.bodies().forEach((b) => Sleeping.set(b, false));
+      });
+      opt("效能", "showPerformance", false);
+      ctx.button("重建", () => rebuild(), { primary: true });
+      const p = physics(ctx, {
+        floor: () => ctx.controls.offsetHeight + 20,
+        options: { wireframes: true, showAngleIndicator: true, showCollisions: true, showSleeping: true },
+      });
+      p.engine.enableSleeping = true;
+
+      const rebuild = p.build((W) => {
+        const top = 14, fy = p.floorY;
+        const s = clamp(W / 26, 14, 32), cols = 5, rows = 5;
+        p.add(Composites.stack(16, fy - rows * s, cols, rows, 0, 0, (x, y) => Bodies.rectangle(x, y, s, s, look(pick(COLORS)))));
+        // Wrecking ball: hangs just right of the stack with its lowest point at mid-stack height,
+        // pulled up to the right so it swings down into the stack's side.
+        const r = s * 0.9, ax = 16 + cols * s + r + 1, L = fy - (rows * s) / 2 - top;
+        const th = Math.asin(clamp((W - 24 - r - ax) / L, 0.2, Math.sin(1.2)));
+        const ball = Bodies.circle(ax + L * Math.sin(th), top + L * Math.cos(th), r, {
+          density: 0.04, frictionAir: 0.002, sleepThreshold: Infinity, ...look("#c9ced8"),
+        });
+        p.add([ball, Constraint.create({ pointA: { x: ax, y: top }, bodyB: ball, length: L, stiffness: 1, render: { strokeStyle: "#8b93a7", lineWidth: 1 } })]);
+        for (let i = 0; i < 8; i++) {
+          p.add(Bodies.polygon(rnd(W * 0.62, W - 30), top + 20 + i * s * 0.8, 3 + (i % 5), s * rnd(0.5, 0.8), { restitution: 0.3, ...look(COLORS[i % 6]) }));
+        }
+      });
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "Engine.update(engine, delta) + Render.world(render)",
+    desc: "不用 Runner，每格手動呼叫 Engine.update 與 Render.world 並分別計時；逐級增加剛體數量直到掉到 30 FPS 以下。中間的槳持續攪動，可切換線框與休眠比較成本。",
+    hint: "按「自動加壓」開始・切換線框或休眠後再測一次",
+    mount(ctx) {
+      ctx.controls.classList.add("bottom");
+      let wire = false, sleep = false;
+      ctx.toggle("線框", wire, (v) => { wire = v; p.render.options.wireframes = v; });
+      ctx.toggle("休眠", sleep, (v) => {
+        sleep = v;
+        p.engine.enableSleeping = v;
+        if (!v) p.bodies().forEach((b) => Sleeping.set(b, false));
+      });
+      const p = physics(ctx, { run: false, options: { showSleeping: true } });
+      let box = null, paddle = null, angle = 0, count = 0, phys = 0, paint = 0;
+
+      // Fill the container with n bodies on a grid sized so they always fit.
+      function spawn(n) {
+        count = n;
+        for (const b of p.bodies()) Composite.remove(p.world, b, true);
+        Engine.clear(p.engine);
+        const { x0, y0, cw, ch } = box;
+        const s = clamp(Math.sqrt((cw * ch * 0.55) / n) * 0.8, 3, 26), gap = s * 1.3;
+        const cols = Math.max(1, Math.floor((cw - 10) / gap));
+        const list = [];
+        for (let i = 0; i < n; i++) {
+          const x = x0 + 5 + gap / 2 + (i % cols) * gap, y = y0 + gap / 2 + Math.floor(i / cols) * gap;
+          const o = { restitution: 0.1, friction: 0.05, render: { fillStyle: COLORS[i % 6], lineWidth: 0 } };
+          list.push(i % 2 ? Bodies.circle(x, y, s / 2, o) : Bodies.rectangle(x, y, s * 0.9, s * 0.9, o));
+        }
+        p.add(list);
+      }
+      p.build((W, H) => {
+        const x0 = W >= 760 ? 350 : 10, x1 = W - 10, y0 = 10, y1 = H - ctx.controls.offsetHeight - 20;
+        box = { x0, x1, y0, y1, cw: x1 - x0, ch: y1 - y0 };
+        const t = 12, wall = { isStatic: true, label: "box", render: { fillStyle: "#2a2f3a" } };
+        p.add([
+          Bodies.rectangle((x0 + x1) / 2, y1 + t / 2, box.cw + 2 * t, t, wall),
+          Bodies.rectangle(x0 - t / 2, y1 - 1000, t, 2000, wall),
+          Bodies.rectangle(x1 + t / 2, y1 - 1000, t, 2000, wall),
+        ]);
+        paddle = Bodies.rectangle((x0 + x1) / 2, y1 - box.ch * 0.3, box.cw * 0.36, 10, { isStatic: true, label: "paddle", render: { fillStyle: COLORS[1] } });
+        p.add(paddle);
+        if (count) spawn(count);
+      });
+
+      ctx.raf(() => {
+        if (!paddle) return;
+        angle += 0.03;
+        Body.setAngle(paddle, angle, true);
+        const t0 = performance.now();
+        Engine.update(p.engine, 1000 / 60);
+        const t1 = performance.now();
+        Render.world(p.render);
+        const t2 = performance.now();
+        phys += (t1 - t0 - phys) * 0.1;
+        paint += (t2 - t1 - paint) * 0.1;
+      });
+
+      ctx.ramp({
+        label: "剛體", unit: "個", steps: [100, 250, 500, 1000, 1500, 2000, 3000, 4000, 6000], minFps: 30,
+        apply(n) { spawn(n); },
+        metrics: () => ({
+          碰撞對: p.engine.pairs.list.length,
+          物理: `${phys.toFixed(1)} ms`,
+          繪圖: `${paint.toFixed(1)} ms`,
+          模式: `${wire ? "線框" : "填色"}${sleep ? "＋休眠" : ""}`,
+        }),
+        note: "每格先跑 Engine.update（碰撞偵測與求解）再跑 Render.world（Canvas 2D 繪圖），兩段分開計時。開「休眠」後遠離槳、已靜止的物體停算；開「線框」省下填色成本。手機與內顯的上限通常是桌機的三分之一到一半。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

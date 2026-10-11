@@ -3,212 +3,971 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Konva.js 示範：可拖曳縮放的拼貼圖層編輯器</title>
+<title>Konva.js 示範：8 個場景看懂 Canvas 場景圖與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["靈感板","圖形種類","圖層與拖曳","變形控制器","快取與濾鏡","動畫與補間","匯出與還原","極限測試"]}</script>
 <style>
-  body {
+  .kv { position: absolute; inset: 0; overflow: hidden; }
+  .sc-scene.cork {
     background:
       radial-gradient(circle at 1px 1px, rgba(255,255,255,0.06) 1px, transparent 1.5px) 0 0 / 18px 18px,
       linear-gradient(160deg, #1d2230, #12141a 60%);
   }
-  #board { position: fixed; inset: 0; }
-  .controls .sep { width: 1px; background: var(--line); margin: 0 2px; }
   .btn[disabled] { opacity: .4; cursor: default; }
-  .layers {
-    position: fixed; right: 12px; bottom: 12px; z-index: 50; width: 168px;
-    padding: 8px; font-size: 12px;
-  }
+  .layers { position: absolute; right: 10px; bottom: 10px; z-index: 20; width: 168px; padding: 8px; font-size: 12px; }
   .layers h3 { margin: 0 4px 6px; font-size: 11px; color: var(--muted); font-weight: 500; letter-spacing: .05em; }
   .layers ol { list-style: none; margin: 0; padding: 0; }
-  .layers li {
-    display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; cursor: pointer;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
+  .layers li { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .layers li:hover { background: rgba(255,255,255,0.06); }
   .layers li.on { background: rgba(247,223,30,0.16); color: var(--accent); }
   .layers li i { width: 10px; height: 10px; border-radius: 3px; flex: none; }
-  @media (max-width: 560px) { .layers { display: none; } }
+  @media (max-width: 760px), (max-height: 560px) { .layers { display: none; } }
+  .readout {
+    position: absolute; left: 10px; bottom: 10px; z-index: 20; max-width: calc(100% - 20px); padding: 6px 10px; border-radius: 8px;
+    background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(6px); pointer-events: none;
+    font: 500 11.5px/1.45 var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .readout b { color: var(--accent); font-weight: 600; }
+  .plan canvas { transition: transform .6s ease, background-color .3s; }
+  .export { position: absolute; left: 10px; right: 10px; bottom: 10px; top: 60px; display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 10px; }
+  .export .pad { position: relative; min-height: 0; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); cursor: crosshair; touch-action: none; }
+  .export .side { display: grid; grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; min-height: 0; }
+  .export .out { display: flex; flex-direction: column; gap: 6px; min-height: 0; min-width: 0; padding: 9px 11px; }
+  .export .out h4 { margin: 0; font: 600 12px/1.3 var(--mono); color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .export .view {
+    flex: 1; min-height: 0; position: relative; display: grid; place-items: center; overflow: hidden; border-radius: 8px;
+    background: repeating-conic-gradient(rgba(255,255,255,.06) 0 25%, transparent 0 50%) 0 0 / 14px 14px;
+  }
+  .export .view img { max-width: 100%; max-height: 100%; display: block; box-shadow: 0 4px 14px rgba(0,0,0,.35); }
+  .export .out small { font: 500 11px/1.3 var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  @media (max-width: 620px) {
+    .export { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1.4fr) minmax(0, 1fr); }
+    .export .side { grid-template-rows: minmax(0, 1fr); grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  }
+  .stress-box {
+    position: absolute; top: 8px; right: 8px; bottom: calc(var(--sc-ctl-b, 0px) + 8px); left: 350px;
+    border-radius: 12px; border: 1px solid var(--line); background: rgba(255,255,255,.02); overflow: hidden;
+  }
+  @media (max-width: 760px) { .stress-box { left: 8px; } }
 </style>
 </head>
 <body>
-<div id="board"></div>
-<div class="controls">
-  <button class="btn" data-filter="none">原圖</button>
-  <button class="btn" data-filter="gray">黑白</button>
-  <button class="btn" data-filter="sepia">復古</button>
-  <button class="btn" data-filter="pixel">像素</button>
-  <span class="sep"></span>
-  <button class="btn" id="up">上移一層</button>
-  <button class="btn" id="down">下移一層</button>
-</div>
-<div class="panel layers"><h3>圖層（上到下）</h3><ol id="list"></ol></div>
-<div class="hint">拖曳移動・拉角落把手縮放旋轉・選照片套濾鏡</div>
-
-<script src="_shared/gate.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/konva@10.7.0/konva.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Moodboard editor: every item is a Konva node on one layer. A Transformer gives resize/rotate handles,
-// z-order buttons call moveUp()/moveDown(), and photo filters use node.cache() + filters().
-const W0 = innerWidth, H0 = innerHeight;
-const stage = new Konva.Stage({ container: "board", width: W0, height: H0 });
-const layer = new Konva.Layer();
-stage.add(layer);
-const tr = new Konva.Transformer({
-  keepRatio: true, padding: 6, rotateAnchorOffset: 26, anchorSize: 10, anchorCornerRadius: 3,
-  anchorFill: "#f7df1e", anchorStroke: "#1a1a14", borderStroke: "#f7df1e", borderDash: [4, 4],
-  enabledAnchors: ["top-left", "top-right", "bottom-left", "bottom-right"],
-});
-layer.add(tr);
-const listEl = document.getElementById("list");
-let selected = null;
-
-const u = Math.max(96, Math.min(W0 / 3.4, H0 / 2.7));
-
-function loadImage(src) {
-  return new Promise((res, rej) => {
-    const img = new Image();
-    img.onload = () => res(img);
-    img.onerror = () => rej(new Error("圖片載入失敗：" + src));
-    img.src = src;
-  });
-}
-
-function photo(img, caption, fx, fy, rot, swatch) {
-  const pad = u * 0.06, iw = u - pad * 2, ih = iw * (img.height / img.width), capH = u * 0.2;
-  const w = u, h = pad + ih + capH;
-  const g = new Konva.Group({ x: W0 * fx, y: H0 * fy, rotation: rot, draggable: true, offsetX: w / 2, offsetY: h / 2, name: "item" });
-  g.setAttr("label", "照片：" + caption);
-  g.setAttr("swatch", swatch);
-  g.add(new Konva.Rect({ width: w, height: h, fill: "#f7f4ec", cornerRadius: 3, shadowColor: "#000", shadowBlur: 22, shadowOpacity: 0.5, shadowOffset: { x: 4, y: 10 } }));
-  const pic = new Konva.Image({ image: img, x: pad, y: pad, width: iw, height: ih, name: "pic" });
-  g.add(pic);
-  g.add(new Konva.Text({ text: caption, x: 0, y: pad + ih + capH * 0.22, width: w, align: "center", fontSize: capH * 0.42, fill: "#3a3833", fontFamily: "Microsoft JhengHei, PingFang TC, sans-serif" }));
-  g.add(new Konva.Rect({ x: w / 2 - u * 0.17, y: -u * 0.05, width: u * 0.34, height: u * 0.1, fill: swatch, opacity: 0.75, rotation: -4 }));
-  pic.cache();
-  return g;
-}
-
-function note(text, fx, fy, rot) {
-  const w = u * 0.9, h = u * 0.72;
-  const g = new Konva.Group({ x: W0 * fx, y: H0 * fy, rotation: rot, draggable: true, offsetX: w / 2, offsetY: h / 2, name: "item" });
-  g.setAttr("label", "便利貼");
-  g.setAttr("swatch", "#f7df1e");
-  g.add(new Konva.Rect({ width: w, height: h, fill: "#f7df1e", shadowColor: "#000", shadowBlur: 14, shadowOpacity: 0.4, shadowOffset: { x: 2, y: 6 } }));
-  g.add(new Konva.Text({ text, x: u * 0.08, y: u * 0.08, width: w - u * 0.16, fontSize: u * 0.095, lineHeight: 1.5, fill: "#1a1a14", fontFamily: "Microsoft JhengHei, PingFang TC, sans-serif" }));
-  return g;
-}
-
-function badge(text, fx, fy) {
-  const r = u * 0.26;
-  const g = new Konva.Group({ x: W0 * fx, y: H0 * fy, draggable: true, rotation: 12, name: "item" });
-  g.setAttr("label", "圓形貼紙");
-  g.setAttr("swatch", "#4cc9f0");
-  g.add(new Konva.Circle({ radius: r, fill: "#4cc9f0", stroke: "#ecebe6", strokeWidth: 4, shadowColor: "#000", shadowBlur: 10, shadowOpacity: 0.4 }));
-  g.add(new Konva.Text({ text, x: -r, y: -r * 0.22, width: r * 2, align: "center", fontSize: r * 0.44, fontStyle: "bold", fill: "#0e1013", fontFamily: "Microsoft JhengHei, PingFang TC, sans-serif" }));
-  return g;
-}
-
-function star(fx, fy) {
-  const s = new Konva.Star({
-    x: W0 * fx, y: H0 * fy, numPoints: 5, innerRadius: u * 0.11, outerRadius: u * 0.25, rotation: -10,
-    fill: "#f72585", stroke: "#ecebe6", strokeWidth: 4, lineJoin: "round", draggable: true, name: "item",
-    shadowColor: "#f72585", shadowBlur: 20, shadowOpacity: 0.6,
-  });
-  s.setAttr("label", "星星貼紙");
-  s.setAttr("swatch", "#f72585");
-  return s;
-}
-
-function title(fx, fy) {
-  const t = new Konva.Text({
-    x: W0 * fx, y: H0 * fy, text: "旅行靈感板", fontSize: u * 0.26, fontStyle: "bold", fill: "#ecebe6",
-    fontFamily: "Microsoft JhengHei, PingFang TC, sans-serif", draggable: true, name: "item", letterSpacing: 2,
-  });
-  t.setAttr("label", "標題文字");
-  t.setAttr("swatch", "#ecebe6");
-  return t;
-}
-
-function select(node) {
-  selected = node;
-  tr.nodes(node ? [node] : []);
-  tr.moveToTop();
-  const isPhoto = !!(node && node.findOne(".pic"));
-  document.querySelectorAll("[data-filter]").forEach((b) => { b.disabled = !isPhoto; });
-  document.getElementById("up").disabled = !node;
-  document.getElementById("down").disabled = !node;
-  renderList();
-}
-
-function renderList() {
-  listEl.innerHTML = "";
-  const items = layer.find(".item").filter((n) => n.getParent() === layer).sort((a, b) => b.zIndex() - a.zIndex());
-  for (const n of items) {
-    const li = document.createElement("li");
-    const sw = document.createElement("i");
-    sw.style.background = n.getAttr("swatch");
-    li.append(sw, document.createTextNode(n.getAttr("label")));
-    if (n === selected) li.className = "on";
-    li.addEventListener("click", () => select(n));
-    listEl.append(li);
-  }
-}
-
-function topItem(target) {
-  let n = target;
-  while (n && n.getParent() !== layer) n = n.getParent();
-  return n && n !== tr && n.hasName("item") ? n : null;
-}
-
-stage.on("click tap", (e) => {
-  if (e.target === stage) return select(null);
-  const n = topItem(e.target);
-  if (n) select(n);
-});
-stage.on("dragstart", (e) => { const n = topItem(e.target); if (n) select(n); });
-stage.on("mouseover", (e) => { if (topItem(e.target)) stage.container().style.cursor = "move"; });
-stage.on("mouseout", () => { stage.container().style.cursor = "default"; });
-
-const FILTERS = {
-  none: [], gray: [Konva.Filters.Grayscale], sepia: [Konva.Filters.Sepia], pixel: [Konva.Filters.Pixelate],
+// Konva.js showcase: eight scenes from the original moodboard editor to a shape-count stress ramp.
+Konva.pixelRatio = Math.min(2, window.devicePixelRatio || 1);
+const rootCss = getComputedStyle(document.documentElement);
+const cssVar = (name, fallback) => rootCss.getPropertyValue(name).trim() || fallback;
+const C = {
+  c1: cssVar("--c1", "#f7df1e"), c2: cssVar("--c2", "#4cc9f0"), c3: cssVar("--c3", "#f72585"),
+  c4: cssVar("--c4", "#7bd389"), c5: cssVar("--c5", "#ff8c42"), c6: cssVar("--c6", "#9d8cff"),
+  fg: cssVar("--fg", "#e8e6df"), muted: cssVar("--muted", "#9b998f"),
 };
-document.querySelectorAll("[data-filter]").forEach((b) => {
-  b.addEventListener("click", () => {
-    const pic = selected && selected.findOne(".pic");
-    if (!pic) return;
-    pic.filters(FILTERS[b.dataset.filter]);
-    pic.pixelSize(Math.max(4, Math.round(u / 22)));
-  });
-});
-document.getElementById("up").addEventListener("click", () => { if (selected) { selected.moveUp(); tr.moveToTop(); renderList(); } });
-document.getElementById("down").addEventListener("click", () => { if (selected) { selected.moveDown(); renderList(); } });
+const COLORS = [C.c1, C.c2, C.c3, C.c4, C.c5, C.c6];
+const FONT = cssVar("--font", "system-ui, sans-serif");
+const MONO = cssVar("--mono", "ui-monospace, monospace");
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const rnd = (lo, hi) => lo + Math.random() * (hi - lo);
+const span = (lo, hi) => (lo < hi ? rnd(lo, hi) : (lo + hi) / 2);
+// Y just below the top-right control cluster, so scene content starts under the buttons.
+const belowControls = (ctx) => ctx.controls.offsetHeight + 20;
+const PHOTO = (i) => `_shared/img/photo-${i}.jpg`;
+const HEART = "M0,-6 C-2,-12 -12,-11 -12,-3 C-12,4 -4,8 0,12 C4,8 12,4 12,-3 C12,-11 2,-12 0,-6 Z";
+const CORNERS = ["top-left", "top-right", "bottom-left", "bottom-right"];
+const ALL_ANCHORS = ["top-left", "top-center", "top-right", "middle-right", "middle-left", "bottom-left", "bottom-center", "bottom-right"];
+const TR_STYLE = {
+  padding: 6, rotateAnchorOffset: 26, anchorSize: 10, anchorCornerRadius: 3, anchorFill: C.c1,
+  anchorStroke: "#1a1a14", borderStroke: C.c1, borderDash: [4, 4],
+};
 
-addEventListener("resize", () => {
-  const sx = innerWidth / stage.width(), sy = innerHeight / stage.height();
-  layer.find(".item").filter((n) => n.getParent() === layer).forEach((n) => n.position({ x: n.x() * sx, y: n.y() * sy }));
-  stage.size({ width: innerWidth, height: innerHeight });
-});
+const imageCache = new Map();
+function loadImage(src) {
+  if (!imageCache.has(src)) {
+    imageCache.set(src, new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => { imageCache.delete(src); reject(new Error("圖片載入失敗：" + src)); };
+      img.src = src;
+    }));
+  }
+  return imageCache.get(src);
+}
+// Crop rectangle that makes an image cover a w x h box (like CSS object-fit: cover).
+function cover(img, w, h) {
+  const s = Math.max(w / img.width, h / img.height), cw = w / s, ch = h / s;
+  return { x: (img.width - cw) / 2, y: (img.height - ch) / 2, width: cw, height: ch };
+}
+// Small rounded caption built from Konva.Label + Tag + Text.
+function chip(text, { x = 0, y = 0, color = C.fg, size = 11, mono = true, bg = "rgba(14,16,19,.8)" } = {}) {
+  const label = new Konva.Label({ x, y, listening: false });
+  label.add(new Konva.Tag({ fill: bg, cornerRadius: 5 }));
+  label.add(new Konva.Text({ text, fontSize: size, fontFamily: mono ? MONO : FONT, fill: color, padding: 5 }));
+  return label;
+}
+// Change a chip's text and center it on (x, y).
+function placeChip(label, text, x, y) {
+  label.getText().text(text);
+  label.offset({ x: label.width() / 2, y: label.height() / 2 });
+  label.position({ x, y });
+}
 
-Promise.all(["_shared/img/photo-1.jpg", "_shared/img/photo-4.jpg", "_shared/img/photo-6.jpg"].map(loadImage))
-  .then(([fjord, pug, jelly]) => {
-    layer.add(title(0.04, W0 < 560 ? 0.17 : 0.05));
-    layer.add(photo(fjord, "挪威峽灣", 0.27, 0.42, -6, "#4cc9f0"));
-    layer.add(photo(jelly, "水族館的水母", 0.74, 0.5, 5, "#9d8cff"));
-    layer.add(note("週末出遊清單\n・看海看峽灣\n・帶狗狗散步\n・水族館", 0.5, 0.7, -3));
-    const pug2 = photo(pug, "巴哥午睡中", 0.5, 0.36, 3, "#ff8c42");
-    layer.add(pug2);
-    layer.add(badge("必去！", 0.86, 0.22));
-    layer.add(star(0.13, 0.78));
-    const pic = pug2.findOne(".pic");
-    pic.filters([Konva.Filters.Sepia]);
-    select(pug2);
-  })
-  .catch((err) => {
-    const s = demoStatus(err.message);
-    s.error(err.message);
+// Konva.Stage that fills `box` and follows its size; destroyed when the scene unmounts.
+function stageIn(ctx, box, onSize) {
+  const stage = new Konva.Stage({ container: box, width: Math.max(1, box.clientWidth), height: Math.max(1, box.clientHeight) });
+  ctx.onCleanup(() => stage.destroy());
+  let pending = 0, lw = stage.width(), lh = stage.height();
+  const ro = new ResizeObserver(() => {
+    cancelAnimationFrame(pending);
+    pending = requestAnimationFrame(() => {
+      if (!ctx.active) return;
+      const w = box.clientWidth, h = box.clientHeight;
+      if (!w || !h || (w === lw && h === lh)) return;
+      lw = w; lh = h;
+      stage.size({ width: w, height: h });
+      if (onSize) onSize(w, h);
+    });
   });
+  ro.observe(box);
+  ctx.onCleanup(() => { ro.disconnect(); cancelAnimationFrame(pending); });
+  return stage;
+}
+// Tween factory: each tween plays at once and is destroyed when it finishes or the scene unmounts.
+function tweener(ctx) {
+  const live = new Set();
+  ctx.onCleanup(() => { live.forEach((t) => t.destroy()); live.clear(); });
+  return (node, cfg) => {
+    const { onFinish, ...rest } = cfg;
+    const t = new Konva.Tween({ node, ...rest, onFinish() { live.delete(t); t.destroy(); if (onFinish) onFinish(); } });
+    live.add(t);
+    t.play();
+    return t;
+  };
+}
+
+const FX = [
+  { name: "原圖", filters: [] },
+  { name: "黑白", filters: [Konva.Filters.Grayscale] },
+  { name: "復古", filters: [Konva.Filters.Sepia] },
+  { name: "像素", filters: [Konva.Filters.Pixelate], set: (pic, u) => pic.pixelSize(Math.max(4, Math.round(u / 22))) },
+  { name: "模糊", filters: [Konva.Filters.Blur], set: (pic, u) => pic.blurRadius(Math.max(3, Math.round(u / 18))) },
+];
+
+const KINDS = [
+  { zh: "圓角矩形", en: "Rect", make: (r) => new Konva.Rect({ width: r * 1.7, height: r * 1.2, offsetX: r * 0.85, offsetY: r * 0.6, cornerRadius: r * 0.22 }) },
+  { zh: "圓形", en: "Circle", make: (r) => new Konva.Circle({ radius: r * 0.85 }) },
+  { zh: "圓環", en: "Ring", make: (r) => new Konva.Ring({ innerRadius: r * 0.45, outerRadius: r * 0.85 }) },
+  { zh: "弧形", en: "Arc", make: (r) => new Konva.Arc({ innerRadius: r * 0.42, outerRadius: r * 0.88, angle: 260, rotation: -40 }) },
+  { zh: "扇形", en: "Wedge", make: (r) => new Konva.Wedge({ radius: r * 0.9, angle: 300, rotation: 30 }) },
+  { zh: "星形", en: "Star", make: (r) => new Konva.Star({ numPoints: 5, innerRadius: r * 0.4, outerRadius: r * 0.92 }) },
+  { zh: "正多邊形", en: "RegularPolygon", make: (r) => new Konva.RegularPolygon({ sides: 6, radius: r * 0.9 }) },
+  {
+    zh: "平滑曲線", en: "Line tension", make: (r) => new Konva.Line({
+      points: [0, 1, 2, 3, 4, 5, 6].flatMap((k) => { const a = (k / 7) * Math.PI * 2, d = r * (k % 2 ? 0.55 : 0.9); return [Math.cos(a) * d, Math.sin(a) * d]; }),
+      closed: true, tension: 0.45,
+    }),
+  },
+  {
+    zh: "箭頭", en: "Arrow", make: (r) => new Konva.Arrow({
+      points: [-r * 0.9, r * 0.5, -r * 0.1, -r * 0.5, r * 0.85, r * 0.15], tension: 0.45,
+      pointerLength: r * 0.32, pointerWidth: r * 0.34, lineW: Math.max(3, r * 0.11), lineCap: "round",
+    }),
+  },
+  { zh: "SVG 路徑", en: "Path", make: (r) => new Konva.Path({ data: HEART, offsetY: 1, scaleX: r / 13, scaleY: r / 13, strokeScaleEnabled: false }) },
+  {
+    zh: "文字路徑", en: "TextPath", make: (r) => new Konva.TextPath({
+      data: `M ${-r} ${r * 0.35} Q 0 ${-r * 0.95} ${r} ${r * 0.35}`, text: "沿著路徑走的字",
+      fontSize: Math.max(10, r * 0.3), fontFamily: FONT, fontStyle: "bold",
+    }),
+  },
+  {
+    zh: "標籤", en: "Label + Tag", make: (r) => {
+      const label = new Konva.Label({ y: r * 0.55 });
+      label.add(new Konva.Tag({ pointerDirection: "down", pointerWidth: r * 0.35, pointerHeight: r * 0.28, cornerRadius: 8, lineJoin: "round" }));
+      label.add(new Konva.Text({ text: "你好！", fontSize: Math.max(12, r * 0.42), padding: r * 0.22, fontFamily: FONT, fontStyle: "bold" }));
+      return label;
+    },
+  },
+];
+// One style mode applied to any shape: 0 solid, 1 linear gradient, 2 dashed outline, 3 glow.
+function paintShape(node, i, mode) {
+  const c = COLORS[i % 6], c2 = COLORS[(i + 2) % 6];
+  const target = node instanceof Konva.Label ? node.getTag() : node;
+  const b = target.getSelfRect();
+  target.setAttrs({
+    fill: c, fillEnabled: mode !== 2, fillPriority: mode === 1 ? "linear-gradient" : "color",
+    fillLinearGradientStartPoint: { x: b.x, y: b.y }, fillLinearGradientEndPoint: { x: b.x + b.width, y: b.y + b.height },
+    fillLinearGradientColorStops: [0, c, 1, c2],
+    stroke: c, strokeEnabled: mode === 2, strokeWidth: 3, dash: [9, 6], dashEnabled: mode === 2,
+    shadowColor: c, shadowBlur: 24, shadowOpacity: 0.9, shadowOffset: { x: 0, y: 0 }, shadowEnabled: mode === 3,
+  });
+  if (node instanceof Konva.Arrow) node.setAttrs({ strokeEnabled: true, strokeWidth: node.getAttr("lineW") });
+  if (node instanceof Konva.TextPath && mode === 2) node.setAttrs({ strokeWidth: 1, dashEnabled: false });
+  if (node instanceof Konva.Label) node.getText().fill(mode === 2 ? c : "#0e1013");
+}
+
+const FURNITURE = [
+  { name: "地毯", w: 2.8, h: 1.9, x: 2.6, y: 2.9, color: C.c3, rug: true },
+  { name: "電視櫃", w: 1.8, h: 0.45, x: 2.6, y: 0.4, color: C.c1 },
+  { name: "茶几", w: 1.2, h: 0.6, x: 2.6, y: 2.9, color: C.c5 },
+  { name: "沙發", w: 2.2, h: 0.9, x: 2.6, y: 4.4, color: C.c6 },
+  { name: "餐桌", w: 1.6, h: 1.8, x: 6.2, y: 1.6, color: C.c4, chairs: true },
+  { name: "書桌", w: 1.4, h: 0.7, x: 6.3, y: 4.25, color: C.c2 },
+  { name: "植物", w: 0.6, h: 0.6, x: 0.45, y: 4.45, color: C.c4, plant: true },
+];
+
+const FILTER_TILES = [
+  { zh: "模糊", f: "Blur", set: (n, s) => n.blurRadius(Math.round(s * 20)), show: (n) => `blurRadius ${n.blurRadius()}` },
+  { zh: "亮度", f: "Brightness", set: (n, s) => n.brightness(+(0.25 + s * 1.5).toFixed(2)), show: (n) => `brightness ${n.brightness().toFixed(2)}` },
+  { zh: "對比", f: "Contrast", set: (n, s) => n.contrast(Math.round(s * 90)), show: (n) => `contrast ${n.contrast()}` },
+  { zh: "色相", f: "HSL", set: (n, s) => n.hue(Math.round(s * 359)), show: (n) => `hue ${n.hue()}°` },
+  { zh: "像素化", f: "Pixelate", set: (n, s) => n.pixelSize(1 + Math.round(s * 24)), show: (n) => `pixelSize ${n.pixelSize()}` },
+  { zh: "色階", f: "Posterize", set: (n, s) => n.levels(+(0.02 + (1 - s) * 0.12).toFixed(3)), show: (n) => `levels ${n.levels()}` },
+  { zh: "雜訊", f: "Noise", set: (n, s) => n.noise(+(s * 0.8).toFixed(2)), show: (n) => `noise ${n.noise()}` },
+  { zh: "萬花筒", f: "Kaleidoscope", set: (n, s) => { n.kaleidoscopePower(2); n.kaleidoscopeAngle(Math.round(s * 360)); }, show: (n) => `angle ${n.kaleidoscopeAngle()}°` },
+];
+
+const EASINGS = [
+  ["Linear", "線性"], ["EaseInOut", "緩入緩出"], ["StrongEaseOut", "強力減速"],
+  ["BackEaseOut", "超出回彈"], ["ElasticEaseOut", "彈簧"], ["BounceEaseOut", "落地彈跳"],
+];
+
+Showcase.run({ scenes: [
+  {
+    id: "board", title: "靈感板",
+    api: "new Konva.Transformer({ nodes, keepRatio, rotationSnaps })・node.moveUp()・image.cache() + filters()",
+    desc: "照片、便利貼與貼紙都是同一個 Layer 裡的節點：Transformer 提供縮放旋轉把手（旋轉吸附 90°），moveUp／moveDown 調前後順序，照片 cache() 後套 Konva.Filters，「重排」用補間移動。",
+    hint: "拖曳移動・拉角落把手縮放旋轉・點照片後切換濾鏡・按「重排」",
+    async mount(ctx) {
+      ctx.el.classList.add("cork");
+      ctx.html(`<div class="kv"></div><div class="panel layers"><h3>圖層（上到下）</h3><ol></ol></div>`);
+      const listEl = ctx.$(".layers ol"), layersEl = ctx.$(".layers");
+      const seg = ctx.group(FX.map((f) => f.name), 0, (i) => setFx(i));
+      const upBtn = ctx.button("上移", () => restack(1));
+      const downBtn = ctx.button("下移", () => restack(-1));
+      ctx.button("重排", shuffle, { primary: true });
+      const stage = stageIn(ctx, ctx.$(".kv"), relayout);
+      const layer = new Konva.Layer();
+      stage.add(layer);
+      const tween = tweener(ctx);
+      const tr = new Konva.Transformer({ ...TR_STYLE, keepRatio: true, enabledAnchors: CORNERS, rotationSnaps: [0, 90, 180, 270], rotationSnapTolerance: 6 });
+      layer.add(tr);
+      let selected = null;
+      let box = area();
+      const u = clamp(Math.min(box.w / 3.4, box.h / 2.5), 80, 240);
+
+      function area() {
+        const top = belowControls(ctx), right = layersEl.offsetParent ? layersEl.offsetWidth + 20 : 0;
+        return { x: 10, y: top, w: Math.max(120, stage.width() - 20 - right), h: Math.max(120, stage.height() - top - 10) };
+      }
+      const at = (fx, fy) => ({ x: box.x + box.w * fx, y: box.y + box.h * fy });
+      const items = () => layer.getChildren((n) => n.hasName("item"));
+      const picOf = (n) => (n instanceof Konva.Group ? n.findOne(".pic") : null);
+      function item(node, label, swatch) {
+        node.setAttrs({ name: "item", draggable: true, label, swatch });
+        layer.add(node);
+        return node;
+      }
+      function photo(img, caption, fx, fy, rot, swatch) {
+        const pad = u * 0.06, iw = u - pad * 2, ih = iw * (img.height / img.width), capH = u * 0.2, w = u, h = pad + ih + capH;
+        const g = new Konva.Group({ ...at(fx, fy), rotation: rot, offsetX: w / 2, offsetY: h / 2 });
+        g.add(new Konva.Rect({ width: w, height: h, fill: "#f7f4ec", cornerRadius: 3, shadowColor: "#000", shadowBlur: 22, shadowOpacity: 0.5, shadowOffset: { x: 4, y: 10 } }));
+        const pic = new Konva.Image({ image: img, x: pad, y: pad, width: iw, height: ih, name: "pic" });
+        g.add(pic);
+        g.add(new Konva.Text({ text: caption, y: pad + ih + capH * 0.22, width: w, align: "center", fontSize: capH * 0.42, fill: "#3a3833", fontFamily: FONT }));
+        g.add(new Konva.Rect({ x: w / 2 - u * 0.17, y: -u * 0.05, width: u * 0.34, height: u * 0.1, fill: swatch, opacity: 0.75, rotation: -4 }));
+        pic.cache();
+        return item(g, "照片：" + caption, swatch);
+      }
+      function note(text, fx, fy, rot) {
+        const w = u * 0.9, h = u * 0.72;
+        const g = new Konva.Group({ ...at(fx, fy), rotation: rot, offsetX: w / 2, offsetY: h / 2 });
+        g.add(new Konva.Rect({ width: w, height: h, fill: C.c1, shadowColor: "#000", shadowBlur: 14, shadowOpacity: 0.4, shadowOffset: { x: 2, y: 6 } }));
+        g.add(new Konva.Text({ text, x: u * 0.08, y: u * 0.08, width: w - u * 0.16, fontSize: Math.max(10, u * 0.095), lineHeight: 1.5, fill: "#1a1a14", fontFamily: FONT }));
+        return item(g, "便利貼", C.c1);
+      }
+      function badge(text, fx, fy) {
+        const r = u * 0.26, g = new Konva.Group({ ...at(fx, fy), rotation: 12 });
+        g.add(new Konva.Circle({ radius: r, fill: C.c2, stroke: "#ecebe6", strokeWidth: 4, shadowColor: "#000", shadowBlur: 10, shadowOpacity: 0.4 }));
+        g.add(new Konva.Text({ text, x: -r, y: -r * 0.22, width: r * 2, align: "center", fontSize: r * 0.44, fontStyle: "bold", fill: "#0e1013", fontFamily: FONT }));
+        return item(g, "圓形貼紙", C.c2);
+      }
+      function star(fx, fy) {
+        return item(new Konva.Star({
+          ...at(fx, fy), numPoints: 5, innerRadius: u * 0.11, outerRadius: u * 0.25, rotation: -10, fill: C.c3,
+          stroke: "#ecebe6", strokeWidth: 4, lineJoin: "round", shadowColor: C.c3, shadowBlur: 20, shadowOpacity: 0.6,
+        }), "星星貼紙", C.c3);
+      }
+      function title() {
+        const t = new Konva.Text({ text: "旅行靈感板", fontSize: u * 0.26, fontStyle: "bold", fill: "#ecebe6", fontFamily: FONT, letterSpacing: 2 });
+        t.offset({ x: t.width() / 2, y: t.height() / 2 });
+        t.position({ x: box.x + t.width() / 2 + 6, y: box.y + t.height() / 2 + 4 });
+        return item(t, "標題文字", "#ecebe6");
+      }
+
+      function select(node) {
+        selected = node;
+        tr.nodes(node ? [node] : []);
+        tr.moveToTop();
+        const pic = picOf(node), fx = pic ? pic.getAttr("fx") || 0 : -1;
+        [...seg.children].forEach((b, i) => { b.disabled = !pic; b.setAttribute("aria-pressed", String(i === fx)); });
+        upBtn.disabled = downBtn.disabled = !node;
+        renderList();
+      }
+      function setFx(i) {
+        const pic = picOf(selected);
+        if (!pic) return;
+        pic.setAttr("fx", i);
+        pic.filters(FX[i].filters);
+        if (FX[i].set) FX[i].set(pic, u);
+      }
+      function restack(dir) {
+        if (!selected) return;
+        if (dir > 0) selected.moveUp(); else selected.moveDown();
+        tr.moveToTop();
+        renderList();
+      }
+      function renderList() {
+        listEl.innerHTML = "";
+        for (const n of items().sort((a, b) => b.zIndex() - a.zIndex())) {
+          const li = document.createElement("li"), sw = document.createElement("i");
+          sw.style.background = n.getAttr("swatch");
+          li.append(sw, document.createTextNode(n.getAttr("label")));
+          if (n === selected) li.className = "on";
+          li.addEventListener("click", () => select(n));
+          listEl.append(li);
+        }
+      }
+      function topItem(target) {
+        let n = target;
+        while (n && n.getParent() !== layer) n = n.getParent();
+        return n && n !== tr && n.hasName("item") ? n : null;
+      }
+      function shuffle() {
+        const m = u * 0.55;
+        items().forEach((n) => tween(n, {
+          duration: 0.7, easing: Konva.Easings.BackEaseOut,
+          x: box.x + span(m, box.w - m), y: box.y + span(m, box.h - m), rotation: n instanceof Konva.Text ? 0 : rnd(-14, 14),
+        }));
+      }
+      function relayout() {
+        const b = area();
+        items().forEach((n) => n.position({ x: b.x + ((n.x() - box.x) / box.w) * b.w, y: b.y + ((n.y() - box.y) / box.h) * b.h }));
+        box = b;
+      }
+
+      stage.on("click tap", (e) => {
+        if (e.target === stage) return select(null);
+        const n = topItem(e.target);
+        if (n) select(n);
+      });
+      stage.on("dragstart", (e) => { const n = topItem(e.target); if (n) select(n); });
+      stage.on("mouseover", (e) => { if (topItem(e.target)) stage.container().style.cursor = "move"; });
+      stage.on("mouseout", () => { stage.container().style.cursor = ""; });
+      select(null);
+
+      const [fjord, pug, jelly] = await Promise.all([1, 4, 6].map((i) => loadImage(PHOTO(i))));
+      if (!ctx.active) return;
+      const order = [
+        title(),
+        photo(fjord, "挪威峽灣", 0.25, 0.42, -6, C.c2),
+        photo(jelly, "水族館的水母", 0.76, 0.52, 5, C.c6),
+        note("週末出遊清單\n・看海看峽灣\n・帶狗狗散步\n・水族館", 0.5, 0.74, -3),
+        photo(pug, "巴哥午睡中", 0.5, 0.38, 3, C.c5),
+        badge("必去！", 0.88, 0.2),
+        star(0.12, 0.8),
+      ];
+      const pugPic = picOf(order[4]);
+      pugPic.setAttr("fx", 2);
+      pugPic.filters([Konva.Filters.Sepia]);
+      order.forEach((n, i) => {
+        n.setAttrs({ opacity: 0, scaleX: 0.6, scaleY: 0.6 });
+        ctx.timeout(() => tween(n, { duration: 0.55, easing: Konva.Easings.BackEaseOut, opacity: 1, scaleX: 1, scaleY: 1 }), 80 * i);
+      });
+      tr.moveToTop();
+      select(order[4]);
+    },
+  },
+  {
+    id: "shapes", title: "圖形種類",
+    api: "Konva.Rect・Ring・Arc・Wedge・Star・RegularPolygon・Line({ tension })・Arrow・Path・TextPath・Label",
+    desc: "內建圖形共用同一組樣式屬性：fill、fillPriority 切換純色或線性漸層、dash 虛線、shadow 陰影。每個圖形都能拖曳，放開後用 ElasticEaseOut 補間彈回原位。",
+    hint: "切換上方樣式・拖曳圖形再放開・滑鼠移上去會放大",
+    mount(ctx) {
+      ctx.html(`<div class="kv"></div>`);
+      let mode = 0, shapes = [];
+      ctx.group(["純色", "漸層", "虛線描邊", "發光陰影"], mode, (i) => { mode = i; shapes.forEach(({ node, i: k }) => paintShape(node, k, mode)); });
+      const stage = stageIn(ctx, ctx.$(".kv"), build);
+      const layer = new Konva.Layer();
+      stage.add(layer);
+      const tween = tweener(ctx);
+
+      function build() {
+        layer.destroyChildren();
+        shapes = [];
+        const W = stage.width(), H = stage.height(), top = belowControls(ctx), aw = W - 20, ah = H - top - 10;
+        let best = null;
+        for (const cols of [6, 4, 3, 2]) {
+          const rows = Math.ceil(KINDS.length / cols), cw = aw / cols, ch = ah / rows, s = Math.min(cw, ch - 30);
+          if (!best || s > best.s) best = { cols, cw, ch, s };
+        }
+        const { cols, cw, ch } = best;
+        const r = clamp(Math.min(cw, ch - 38) * 0.33, 12, 64);
+        KINDS.forEach((k, i) => {
+          const cx = 10 + ((i % cols) + 0.5) * cw, cellY = top + Math.floor(i / cols) * ch, cy = cellY + (ch - 34) / 2 + 2;
+          layer.add(new Konva.Rect({ x: cx - cw / 2 + 4, y: cellY + 4, width: cw - 8, height: ch - 8, cornerRadius: 10, fill: "rgba(255,255,255,.025)", stroke: "rgba(255,255,255,.07)", strokeWidth: 1, listening: false }));
+          layer.add(new Konva.Text({ x: cx - cw / 2 + 6, y: cellY + ch - 36, width: cw - 12, align: "center", text: k.zh, fontSize: 12, fontFamily: FONT, fill: C.fg, listening: false }));
+          layer.add(new Konva.Text({ x: cx - cw / 2 + 6, y: cellY + ch - 20, width: cw - 12, align: "center", text: k.en, fontSize: 10.5, fontFamily: MONO, fill: C.muted, wrap: "none", ellipsis: true, listening: false }));
+          const holder = new Konva.Group({ x: cx, y: cy, draggable: true });
+          const node = k.make(r);
+          holder.add(node);
+          layer.add(holder);
+          paintShape(node, i, mode);
+          shapes.push({ node, i });
+          holder.on("mouseenter", () => { stage.container().style.cursor = "grab"; tween(holder, { duration: 0.18, scaleX: 1.12, scaleY: 1.12 }); });
+          holder.on("mouseleave", () => { stage.container().style.cursor = ""; tween(holder, { duration: 0.18, scaleX: 1, scaleY: 1 }); });
+          holder.on("dragstart", () => holder.moveToTop());
+          holder.on("dragend", () => tween(holder, { duration: 0.9, easing: Konva.Easings.ElasticEaseOut, x: cx, y: cy }));
+        });
+      }
+      build();
+    },
+  },
+  {
+    id: "layers", title: "圖層與拖曳",
+    api: "new Konva.Layer({ listening })・node.moveTo(dragLayer)・dragBoundFunc(pos)",
+    desc: "平面圖分三個 Layer，各自是一張 <canvas>：背景層關閉 listening 不做命中偵測，拖曳時家具暫時搬到 dragLayer，只重畫那一層；dragBoundFunc 把位置限制在牆內並吸附 25 公分格線。",
+    hint: "拖曳家具・雙擊旋轉 90°・開「分層檢視」看三層 canvas",
+    mount(ctx) {
+      ctx.html(`<div class="kv plan"></div><div class="readout"></div>`);
+      const out = ctx.$(".readout");
+      let snap = true, exploded = false, moves = 0, room = null, guides = null, tags = [];
+      ctx.toggle("吸附格線", snap, (v) => { snap = v; });
+      ctx.toggle("分層檢視", exploded, (v) => { exploded = v; explode(); });
+      ctx.button("重設", () => build());
+      const stage = stageIn(ctx, ctx.$(".kv"), () => build());
+      const bgLayer = new Konva.Layer({ listening: false });
+      const furnLayer = new Konva.Layer();
+      const dragLayer = new Konva.Layer();
+      stage.add(bgLayer, furnLayer, dragLayer);
+      const tween = tweener(ctx);
+      const say = (html) => { out.innerHTML = `${html}　<span>dragmove ×${moves}</span>`; };
+
+      // Keep a piece inside the walls; optionally snap its top-left corner to a 0.25 m grid.
+      function bound(node, pos) {
+        const swap = Math.round(node.rotation() / 90) % 2 !== 0;
+        const hw = ((swap ? node.getAttr("hm") : node.getAttr("wm")) * room.m) / 2;
+        const hh = ((swap ? node.getAttr("wm") : node.getAttr("hm")) * room.m) / 2;
+        let left = pos.x - hw, top = pos.y - hh;
+        if (snap) {
+          const st = room.m * 0.25;
+          left = room.x + Math.round((left - room.x) / st) * st;
+          top = room.y + Math.round((top - room.y) / st) * st;
+        }
+        left = clamp(left, room.x, room.x + room.w - hw * 2);
+        top = clamp(top, room.y, room.y + room.h - hh * 2);
+        return { x: left + hw, y: top + hh };
+      }
+      function piece(f) {
+        const m = room.m, w = f.w * m, h = f.h * m, fs = clamp(m * 0.2, 9, 14);
+        const g = new Konva.Group({
+          x: room.x + f.x * m, y: room.y + f.y * m, offsetX: w / 2, offsetY: h / 2, draggable: true, name: "furn",
+          label: f.name, wm: f.w, hm: f.h, dragBoundFunc: (pos) => bound(g, pos),
+        });
+        if (f.rug) {
+          g.add(new Konva.Rect({ width: w, height: h, fill: f.color, opacity: 0.22, cornerRadius: m * 0.1, stroke: f.color, strokeWidth: 2, dash: [6, 5] }));
+        } else if (f.plant) {
+          g.add(new Konva.Star({ x: w / 2, y: h / 2, numPoints: 8, innerRadius: w * 0.22, outerRadius: w * 0.5, fill: f.color, opacity: 0.9 }));
+          g.add(new Konva.Circle({ x: w / 2, y: h / 2, radius: w * 0.16, fill: "#3d6b45" }));
+          return g;
+        } else if (f.chairs) {
+          const cw = 0.42 * m;
+          for (const [cx, cy] of [[0.25, 0], [0.93, 0], [0.25, 1.38], [0.93, 1.38]]) {
+            g.add(new Konva.Rect({ x: cx * m, y: cy * m, width: cw, height: cw, cornerRadius: m * 0.06, fill: f.color, opacity: 0.55 }));
+          }
+          g.add(new Konva.Rect({ y: 0.45 * m, width: w, height: 0.9 * m, cornerRadius: m * 0.06, fill: f.color, stroke: "rgba(0,0,0,.35)", strokeWidth: 1 }));
+        } else {
+          g.add(new Konva.Rect({ width: w, height: h, cornerRadius: m * 0.06, fill: f.color, stroke: "rgba(0,0,0,.35)", strokeWidth: 1 }));
+        }
+        if (h >= fs + 4) g.add(new Konva.Text({ text: f.name, width: w, y: h / 2 - fs / 2, align: "center", fontSize: fs, fontFamily: FONT, fontStyle: "bold", fill: f.rug ? C.fg : "#14161a", listening: false }));
+        return g;
+      }
+      function build() {
+        [bgLayer, furnLayer, dragLayer].forEach((L) => L.destroyChildren());
+        moves = 0;
+        const W = stage.width(), H = stage.height(), top = belowControls(ctx), aw = W - 24, ah = H - top - 52;
+        const m = Math.max(10, Math.min(aw / 8, ah / 5));
+        room = { m, w: m * 8, h: m * 5, x: (W - m * 8) / 2, y: top + Math.max(0, (ah - m * 5) / 2) };
+        const { x, y, w, h } = room, wall = Math.max(4, m * 0.1);
+        bgLayer.add(new Konva.Rect({ x, y, width: w, height: h, fill: "#29241f" }));
+        for (let k = 1; k < 16; k++) bgLayer.add(new Konva.Line({ points: [x + k * m * 0.5, y, x + k * m * 0.5, y + h], stroke: k % 2 ? "rgba(255,255,255,.05)" : "rgba(255,255,255,.12)", strokeWidth: 1 }));
+        for (let k = 1; k < 10; k++) bgLayer.add(new Konva.Line({ points: [x, y + k * m * 0.5, x + w, y + k * m * 0.5], stroke: k % 2 ? "rgba(255,255,255,.05)" : "rgba(255,255,255,.12)", strokeWidth: 1 }));
+        bgLayer.add(new Konva.Rect({ x, y, width: w, height: h, stroke: "#d8d2c4", strokeWidth: wall }));
+        bgLayer.add(new Konva.Line({ points: [x + 4.6 * m, y, x + 6.6 * m, y], stroke: C.c2, strokeWidth: wall * 0.6 }));
+        const hinge = x + 7.4 * m;
+        bgLayer.add(new Konva.Line({ points: [hinge - 0.9 * m, y + h, hinge, y + h], stroke: "#29241f", strokeWidth: wall + 2 }));
+        bgLayer.add(new Konva.Arc({ x: hinge, y: y + h, innerRadius: 0, outerRadius: 0.9 * m, angle: 90, rotation: 180, stroke: "rgba(216,210,196,.55)", strokeWidth: 1, dash: [4, 4] }));
+        bgLayer.add(new Konva.Line({ points: [hinge, y + h, hinge, y + h - 0.9 * m], stroke: "#d8d2c4", strokeWidth: 2 }));
+        const scale = chip("客廳 8 × 5 m・格線 0.5 m", { size: 10.5 });
+        scale.position({ x: x + w - scale.width() - 8, y: y + wall + 4 });
+        bgLayer.add(scale);
+        FURNITURE.forEach((f) => furnLayer.add(piece(f)));
+        guides = new Konva.Group({ visible: false, listening: false });
+        const lineCfg = { stroke: C.c1, strokeWidth: 1.5, dash: [5, 4] };
+        guides.add(new Konva.Line(lineCfg), new Konva.Line(lineCfg), chip("", { color: C.c1, size: 10.5 }), chip("", { color: C.c1, size: 10.5 }));
+        dragLayer.add(guides);
+        const names = ["bgLayer・listening: false", "furnLayer・7 件家具", "dragLayer・拖曳中的節點搬來這層"];
+        tags = [bgLayer, furnLayer, dragLayer].map((L, i) => {
+          const t = chip(names[i], { x: x + 8, y: y + 8, color: COLORS[i + 1], size: clamp(m * 0.3, 12, 20), bg: "rgba(14,16,19,.9)" });
+          t.visible(exploded);
+          L.add(t);
+          return t;
+        });
+        explode();
+        say("拖曳家具試試：<b>dragstart</b> 時搬到 dragLayer");
+      }
+      function showGuides(node) {
+        const r = node.getClientRect({ skipStroke: true, skipShadow: true }), [l1, l2, c1, c2] = guides.getChildren();
+        const cy = r.y + r.height / 2, cx = r.x + r.width / 2;
+        l1.points([room.x, cy, r.x, cy]);
+        l2.points([cx, room.y, cx, r.y]);
+        placeChip(c1, `${((r.x - room.x) / room.m).toFixed(2)} m`, (room.x + r.x) / 2, cy - 12);
+        placeChip(c2, `${((r.y - room.y) / room.m).toFixed(2)} m`, cx + 30, (room.y + r.y) / 2);
+        guides.visible(true);
+        guides.moveToTop();
+      }
+      function explode() {
+        stage.listening(!exploded);
+        const H = stage.height(), d = H * 0.2, top = belowControls(ctx) * 0.4;
+        [bgLayer, furnLayer, dragLayer].forEach((L, i) => {
+          const c = L.getNativeCanvasElement();
+          c.style.transform = exploded ? `translateY(${top + (1 - i) * d}px) perspective(1600px) rotateX(55deg) rotateZ(-18deg) scale(.62)` : "";
+          c.style.outline = exploded ? `1px solid ${COLORS[i + 1]}` : "";
+          c.style.backgroundColor = exploded ? "rgba(76,201,240,.05)" : "";
+        });
+        tags.forEach((t) => t.visible(exploded));
+        if (exploded) say("每個 Layer 都是獨立的 <b>&lt;canvas&gt;</b>，拖曳只重畫最上層");
+      }
+
+      stage.on("dragstart", (e) => {
+        const g = e.target;
+        if (!g.hasName("furn")) return;
+        g.setAttr("z", g.zIndex());
+        g.moveTo(dragLayer);
+        showGuides(g);
+        say(`<b>dragstart</b> ${g.getAttr("label")} 搬到 dragLayer`);
+      });
+      stage.on("dragmove", (e) => {
+        if (!e.target.hasName("furn")) return;
+        moves++;
+        showGuides(e.target);
+        say(`<b>dragmove</b> ${e.target.getAttr("label")}`);
+      });
+      stage.on("dragend", (e) => {
+        const g = e.target;
+        if (!g.hasName("furn")) return;
+        g.moveTo(furnLayer);
+        g.zIndex(Math.min(g.getAttr("z"), furnLayer.children.length - 1));
+        guides.visible(false);
+        const r = g.getClientRect({ skipStroke: true, skipShadow: true });
+        say(`<b>dragend</b> ${g.getAttr("label")} 回 furnLayer，距左牆 ${((r.x - room.x) / room.m).toFixed(2)} m`);
+      });
+      stage.on("dblclick dbltap", (e) => {
+        const g = e.target.findAncestor(".furn", true);
+        if (!g) return;
+        tween(g, { duration: 0.35, easing: Konva.Easings.EaseInOut, rotation: g.rotation() + 90, onFinish: () => g.position(bound(g, g.position())) });
+        say(`<b>dblclick</b> ${g.getAttr("label")} 旋轉 90°`);
+      });
+      stage.on("mouseover", (e) => { if (e.target.findAncestor(".furn", true)) stage.container().style.cursor = "move"; });
+      stage.on("mouseout", () => { stage.container().style.cursor = ""; });
+      build();
+    },
+  },
+  {
+    id: "transform", title: "變形控制器",
+    api: "Transformer({ keepRatio, enabledAnchors, rotationSnaps, boundBoxFunc, anchorStyleFunc, centeredScaling })",
+    desc: "同一個 Transformer 換四種設定：等比縮放、八個把手自由變形（可翻轉）、只能旋轉並吸附 45°、用 boundBoxFunc 限制尺寸並以 anchorStyleFunc 改把手外觀。文字節點縮放時改寫 width，字級不變。",
+    hint: "點選節點・Shift／Ctrl 加選・空白處拖曳框選・切換上方模式",
+    async mount(ctx) {
+      ctx.html(`<div class="kv"></div><div class="readout"></div>`);
+      const out = ctx.$(".readout");
+      let maxW = 400;
+      const limit = (oldBox, newBox) => (Math.abs(newBox.width) < 50 || Math.abs(newBox.height) < 40 || Math.abs(newBox.width) > maxW || Math.abs(newBox.height) > maxW ? oldBox : newBox);
+      const pill = (a) => {
+        a.fill(C.c3); a.stroke("#fff"); a.cornerRadius(10);
+        if (a.hasName("top-center") || a.hasName("bottom-center")) a.setAttrs({ width: 26, height: 6, offsetX: 13, offsetY: 3 });
+        else if (a.hasName("middle-left") || a.hasName("middle-right")) a.setAttrs({ width: 6, height: 26, offsetX: 3, offsetY: 13 });
+        else if (a.hasName("rotater")) a.setAttrs({ width: 20, height: 20, offsetX: 10, offsetY: 10 });
+      };
+      const MODES = [
+        { keepRatio: true, enabledAnchors: CORNERS, resizeEnabled: true, flipEnabled: false, rotationSnaps: [], boundBoxFunc: null, anchorStyleFunc: null },
+        { keepRatio: false, enabledAnchors: ALL_ANCHORS, resizeEnabled: true, flipEnabled: true, rotationSnaps: [], boundBoxFunc: null, anchorStyleFunc: null },
+        { keepRatio: true, enabledAnchors: CORNERS, resizeEnabled: false, flipEnabled: false, rotationSnaps: [0, 45, 90, 135, 180, 225, 270, 315], rotationSnapTolerance: 12, boundBoxFunc: null, anchorStyleFunc: null },
+        { keepRatio: false, enabledAnchors: ALL_ANCHORS, resizeEnabled: true, flipEnabled: false, rotationSnaps: [], boundBoxFunc: limit, anchorStyleFunc: pill },
+      ];
+      let modeIdx = 0;
+      ctx.group(["等比", "自由", "吸附角度", "限制尺寸"], 0, (i) => { modeIdx = i; tr.setAttrs(MODES[i]); tr.update(); readout(); });
+      ctx.toggle("中心縮放", false, (v) => tr.centeredScaling(v));
+      const stage = stageIn(ctx, ctx.$(".kv"));
+      const layer = new Konva.Layer();
+      stage.add(layer);
+      const tr = new Konva.Transformer({ ...TR_STYLE, padding: 4, ...MODES[0] });
+      const band = new Konva.Rect({ fill: "rgba(76,201,240,.14)", stroke: C.c2, strokeWidth: 1, dash: [4, 4], visible: false, listening: false });
+      layer.add(tr, band);
+      const items = () => layer.getChildren((n) => n.hasName("item"));
+
+      function readout() {
+        const ns = tr.nodes();
+        const extra = modeIdx === 3 ? `　限制 50～${Math.round(maxW)} px` : modeIdx === 2 ? "　每 45° 吸附" : "";
+        if (!ns.length) out.textContent = "點選節點，Shift／Ctrl 加選，空白處拖曳框選" + extra;
+        else if (ns.length > 1) out.innerHTML = `已選 <b>${ns.length}</b> 個節點，一起變形${extra}`;
+        else {
+          const n = ns[0];
+          out.innerHTML = `<b>${n.getAttr("label")}</b>　x ${n.x().toFixed(0)}　y ${n.y().toFixed(0)}　寬 ${Math.abs(n.width() * n.scaleX()).toFixed(0)}　高 ${Math.abs(n.height() * n.scaleY()).toFixed(0)}　旋轉 ${n.rotation().toFixed(0)}°${extra}`;
+        }
+      }
+      const pick = (nodes) => { tr.nodes(nodes); tr.moveToTop(); readout(); };
+
+      // Rubber-band selection on empty space, as in the official multi-select example.
+      let x1 = 0, y1 = 0, banding = false;
+      stage.on("mousedown touchstart", (e) => {
+        if (e.target !== stage) return;
+        const p = stage.getPointerPosition();
+        x1 = p.x; y1 = p.y; banding = true;
+        band.setAttrs({ x: x1, y: y1, width: 0, height: 0, visible: true });
+        band.moveToTop();
+      });
+      stage.on("mousemove touchmove", () => {
+        if (!banding) return;
+        const p = stage.getPointerPosition();
+        band.setAttrs({ x: Math.min(x1, p.x), y: Math.min(y1, p.y), width: Math.abs(p.x - x1), height: Math.abs(p.y - y1) });
+      });
+      stage.on("mouseup touchend", () => {
+        if (!banding) return;
+        banding = false;
+        ctx.timeout(() => band.visible(false), 0);
+        if (band.width() * band.height() < 25) return;
+        const box = band.getClientRect();
+        pick(items().filter((n) => Konva.Util.haveIntersection(box, n.getClientRect())));
+      });
+      stage.on("click tap", (e) => {
+        if (band.visible() && band.width() * band.height() >= 25) return;
+        if (e.target === stage) return pick([]);
+        if (!e.target.hasName("item")) return;
+        const meta = e.evt.shiftKey || e.evt.ctrlKey || e.evt.metaKey, has = tr.nodes().includes(e.target);
+        if (!meta && !has) pick([e.target]);
+        else if (meta && has) pick(tr.nodes().filter((n) => n !== e.target));
+        else if (meta && !has) pick(tr.nodes().concat([e.target]));
+      });
+
+      const img = await loadImage(PHOTO(2));
+      if (!ctx.active) return;
+      const top = belowControls(ctx), aw = stage.width() - 20, ah = stage.height() - top - 50;
+      const u = clamp(Math.min(aw / 4.2, ah / 2.8), 64, 200);
+      maxW = u * 2.6;
+      const at = (fx, fy) => ({ x: 10 + aw * fx, y: top + ah * fy });
+      const pw = u * 1.5, ph = u;
+      const photo = new Konva.Image({ ...at(0.28, 0.36), image: img, width: pw, height: ph, offsetX: pw / 2, offsetY: ph / 2, crop: cover(img, pw, ph), cornerRadius: 6, rotation: -4, label: "照片 Image" });
+      const star = new Konva.Star({ ...at(0.76, 0.3), numPoints: 6, innerRadius: u * 0.28, outerRadius: u * 0.55, fill: C.c3, rotation: 8, label: "星形 Star" });
+      const cw = u * 1.3, chh = u * 0.8;
+      const card = new Konva.Rect({
+        ...at(0.7, 0.78), width: cw, height: chh, offsetX: cw / 2, offsetY: chh / 2, cornerRadius: 14, rotation: -6, label: "卡片 Rect",
+        fillLinearGradientStartPoint: { x: 0, y: 0 }, fillLinearGradientEndPoint: { x: cw, y: chh }, fillLinearGradientColorStops: [0, C.c2, 1, C.c6],
+      });
+      const text = new Konva.Text({
+        ...at(0.04, 0.68), width: u * 1.7, padding: 8, lineHeight: 1.4, fontSize: clamp(u * 0.13, 12, 20), fontFamily: FONT, fill: C.fg, label: "文字 Text",
+        text: "拉側邊把手改寬度，這段文字會重新換行，字級維持不變。",
+      });
+      text.on("transform", () => text.setAttrs({ width: Math.max(40, text.width() * text.scaleX()), scaleX: 1, scaleY: 1 }));
+      [photo, star, card, text].forEach((n) => {
+        n.setAttrs({ name: "item", draggable: true });
+        n.on("transform dragmove", readout);
+        layer.add(n);
+      });
+      stage.on("mouseover", (e) => { if (e.target.hasName("item")) stage.container().style.cursor = "move"; });
+      stage.on("mouseout", () => { stage.container().style.cursor = ""; });
+      pick([photo]);
+    },
+  },
+  {
+    id: "filters", title: "快取與濾鏡",
+    api: "image.cache({ drawBorder })・filters([Konva.Filters.Blur, …])・blurRadius()・hue()",
+    desc: "濾鏡作用在節點的點陣快取上：先 cache() 把節點畫成離屏 canvas，再逐像素套用 Konva.Filters。改濾鏡參數會標記快取過期，下一次 draw 才重算；左下顯示 8 個濾鏡一起重算的耗時。",
+    hint: "拉「強度」滑桿・開「快取邊框」看快取範圍",
+    async mount(ctx) {
+      ctx.html(`<div class="kv"></div><div class="readout"></div>`);
+      const out = ctx.$(".readout");
+      let strength = 0.6, border = false, tiles = [];
+      ctx.slider("強度", { min: 0, max: 100, value: 60, format: (v) => `${v}%` }, (v) => { strength = v / 100; update(); });
+      ctx.toggle("快取邊框", border, (v) => { border = v; tiles.forEach((t) => t.img.cache({ drawBorder: border })); update(); });
+      const stage = stageIn(ctx, ctx.$(".kv"), () => build());
+      const layer = new Konva.Layer({ listening: false });
+      stage.add(layer);
+      const photo = await loadImage(PHOTO(5));
+      if (!ctx.active) return;
+
+      function build() {
+        layer.destroyChildren();
+        const W = stage.width(), H = stage.height(), top = belowControls(ctx), aw = W - 20, ah = H - top - 48, gap = 8;
+        let best = null;
+        for (const cols of [4, 2]) {
+          const rows = 8 / cols, tw = (aw - gap * (cols - 1)) / cols, th = (ah - gap * (rows - 1)) / rows, s = Math.min(tw, th * 1.5);
+          if (!best || s > best.s) best = { cols, tw, th, s };
+        }
+        const { cols, tw, th } = best;
+        tiles = FILTER_TILES.map((def, i) => {
+          const x = 10 + (i % cols) * (tw + gap), y = top + Math.floor(i / cols) * (th + gap);
+          const img = new Konva.Image({ x, y, image: photo, width: tw, height: th, crop: cover(photo, tw, th), cornerRadius: 8 });
+          img.cache({ drawBorder: border });
+          img.filters([Konva.Filters[def.f]]);
+          layer.add(img);
+          const name = chip(`${def.zh}・${def.f}`, { x: x + 6, y: y + 6, size: 11.5, mono: false, color: COLORS[i % 6] });
+          const cap = chip("", { x: x + 6, y: y + th - 26, size: 10.5 });
+          layer.add(name, cap);
+          return { def, img, cap };
+        });
+        update();
+      }
+      function update() {
+        tiles.forEach((t) => { t.def.set(t.img, strength); t.cap.getText().text(t.def.show(t.img)); });
+        const t0 = performance.now();
+        layer.draw();
+        const ms = performance.now() - t0;
+        out.innerHTML = `layer.draw() 重算 8 個濾鏡 <b>${ms.toFixed(1)} ms</b>　強度 ${Math.round(strength * 100)}%`;
+      }
+      build();
+    },
+  },
+  {
+    id: "tween", title: "動畫與補間",
+    api: "new Konva.Animation(frame => {}, layer)・new Konva.Tween({ node, easing, x, rotation })・tween.reverse()",
+    desc: "上方是 Konva.Animation：每格拿 frame.time 自己算位置；下方六條跑道是同樣距離與時長的 Konva.Tween，只換 Konva.Easings 緩動曲線，抵達後用 reverse() 倒著播回來。",
+    hint: "拉「時長」滑桿改補間秒數・按「重播」從頭再跑",
+    mount(ctx) {
+      ctx.html(`<div class="kv"></div>`);
+      let dur = 1.6, tweens = [], dots = [], band = null, forward = true, nextAt = 0, clock = null;
+      ctx.button("重播", () => { tweens.forEach((t) => t.reset()); forward = true; nextAt = 0; }, { primary: true });
+      ctx.slider("時長", { min: 0.6, max: 3, step: 0.1, value: dur, format: (v) => `${v.toFixed(1)} 秒` }, (v) => { dur = v; build(); });
+      const stage = stageIn(ctx, ctx.$(".kv"), () => build());
+      const waveLayer = new Konva.Layer({ listening: false });
+      const laneLayer = new Konva.Layer({ listening: false });
+      stage.add(waveLayer, laneLayer);
+      const killTweens = () => { tweens.forEach((t) => t.destroy()); tweens = []; };
+      ctx.onCleanup(killTweens);
+
+      const anim = new Konva.Animation((frame) => {
+        if (!band) return false;
+        const t = frame.time;
+        dots.forEach((d, i) => {
+          const a = Math.sin(t / 520 + i * 0.42) * (0.65 + 0.35 * Math.sin(t / 1900));
+          d.y(band.cy + a * band.amp);
+          d.scale({ x: 0.7 + 0.45 * (a + 1) / 2, y: 0.7 + 0.45 * (a + 1) / 2 });
+        });
+        clock.getText().text(`Konva.Animation　frame.time ${(t / 1000).toFixed(1)} s　timeDiff ${frame.timeDiff.toFixed(1)} ms`);
+      }, waveLayer);
+      anim.start();
+      ctx.onCleanup(() => anim.stop());
+
+      function build() {
+        killTweens();
+        waveLayer.destroyChildren();
+        laneLayer.destroyChildren();
+        const W = stage.width(), H = stage.height(), top = belowControls(ctx);
+        const bandH = clamp((H - top) * 0.24, 56, 130);
+        band = { cy: top + bandH / 2 + 8, amp: bandH * 0.3 };
+        const n = clamp(Math.round(W / 26), 16, 48), gx = (W - 40) / (n - 1), dr = clamp(gx * 0.28, 3, 8);
+        dots = Array.from({ length: n }, (_, i) => new Konva.Circle({ x: 20 + i * gx, y: band.cy, radius: dr, fill: COLORS[i % 6] }));
+        waveLayer.add(...dots);
+        clock = chip("", { x: 10, y: top + bandH - 6, size: 10.5 });
+        waveLayer.add(clock);
+        const wide = W >= 560, lanesTop = top + bandH + 26, lh = (H - lanesTop - 8) / EASINGS.length;
+        // Leave ~10% headroom on the right so BackEaseOut overshoot stays visible.
+        const rr = clamp(lh * 0.3, 7, 18), labelW = wide ? 170 : 0, x0 = 20 + labelW + rr, x1 = W - 20 - rr - (W - 40 - labelW - rr * 2) * 0.1;
+        EASINGS.forEach(([name, zh], i) => {
+          const cy = lanesTop + lh * i + (wide ? lh / 2 : lh * 0.66), color = COLORS[i % 6];
+          laneLayer.add(new Konva.Line({ points: [x0, cy, x1, cy], stroke: "rgba(255,255,255,.12)", strokeWidth: 2, dash: [2, 6], lineCap: "round" }));
+          laneLayer.add(new Konva.Line({ points: [x1 + rr + 4, cy - rr, x1 + rr + 4, cy + rr], stroke: "rgba(255,255,255,.3)", strokeWidth: 2 }));
+          if (wide && lh >= 40) {
+            laneLayer.add(new Konva.Text({ x: 20, y: cy - 15, text: name, fontSize: 13, fontFamily: MONO, fill: color }));
+            laneLayer.add(new Konva.Text({ x: 20, y: cy + 2, text: zh, fontSize: 11.5, fontFamily: FONT, fill: C.muted }));
+          } else if (wide) {
+            laneLayer.add(new Konva.Text({ x: 20, y: cy - 6, text: `${name}・${zh}`, fontSize: 11.5, fontFamily: MONO, fill: color }));
+          } else {
+            laneLayer.add(new Konva.Text({ x: 20, y: cy - rr - 15, text: `${name}・${zh}`, fontSize: 10.5, fontFamily: MONO, fill: color }));
+          }
+          const star = new Konva.Star({ x: x0, y: cy, numPoints: 5, innerRadius: rr * 0.45, outerRadius: rr, fill: color });
+          laneLayer.add(star);
+          tweens.push(new Konva.Tween({ node: star, duration: dur, easing: Konva.Easings[name], x: x1, rotation: 360 }));
+        });
+        forward = true;
+        nextAt = 0;
+      }
+      // Alternate play() and reverse() so every lane runs back and forth with the same timing.
+      ctx.interval(() => {
+        const now = performance.now();
+        if (now < nextAt) return;
+        tweens.forEach((t) => (forward ? t.play() : t.reverse()));
+        forward = !forward;
+        nextAt = now + (dur + 0.7) * 1000;
+      }, 50);
+      build();
+    },
+  },
+  {
+    id: "export", title: "匯出與還原",
+    api: "stage.toDataURL({ pixelRatio })・stage.toBlob()・stage.toJSON()・Konva.Node.create(json, container)",
+    desc: "左邊用 Konva.Line 手繪（橡皮擦是 destination-out 合成模式，只擦塗鴉層）。每畫完一筆，右上用 toDataURL 輸出 PNG，右下把 toJSON 的字串交給 Konva.Node.create 重建成另一個縮小的 Stage。",
+    hint: "在左邊畫圖・切換顏色或橡皮擦・按「下載 PNG」存檔",
+    mount(ctx) {
+      ctx.html(`<div class="export"><div class="pad"></div><div class="side">
+        <div class="panel out"><h4>toDataURL() → PNG</h4><div class="view"><img alt="匯出的 PNG"></div><small class="png-info">…</small></div>
+        <div class="panel out"><h4>toJSON() → Node.create()</h4><div class="view mini"></div><small class="json-info">…</small></div>
+      </div></div>`);
+      const PENS = [["墨", "#22252b"], ["藍", "#1f8fbf"], ["粉", C.c3], ["綠", "#2f9e57"], ["橡皮擦", null]];
+      let pen = 2, width = 6, mini = null, drawing = null;
+      const urls = new Set();
+      ctx.group(PENS.map((p) => p[0]), pen, (i) => { pen = i; });
+      ctx.slider("粗細", { min: 2, max: 24, value: width }, (v) => { width = v; });
+      ctx.button("清空", () => { drawLayer.destroyChildren(); exportAll(); });
+      ctx.button("下載 PNG", async () => {
+        const blob = await stage.toBlob({ pixelRatio: 2 });
+        if (!ctx.active) return;
+        const url = URL.createObjectURL(blob);
+        urls.add(url);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "konva-塗鴉.png";
+        a.click();
+        ctx.timeout(() => { URL.revokeObjectURL(url); urls.delete(url); }, 3000);
+      }, { primary: true });
+      ctx.onCleanup(() => urls.forEach((u) => URL.revokeObjectURL(u)));
+      ctx.$(".export").style.top = `${belowControls(ctx)}px`;
+      const pngImg = ctx.$(".view img"), pngInfo = ctx.$(".png-info"), miniBox = ctx.$(".mini"), jsonInfo = ctx.$(".json-info");
+      const stage = stageIn(ctx, ctx.$(".pad"), (w, h) => { paper.size({ width: w, height: h }); exportAll(); });
+      const paperLayer = new Konva.Layer({ listening: false });
+      const drawLayer = new Konva.Layer({ listening: false });
+      stage.add(paperLayer, drawLayer);
+      ctx.onCleanup(() => { if (mini) mini.destroy(); });
+      const W = stage.width(), H = stage.height(), s = Math.min(W, H);
+      const paper = new Konva.Rect({ width: W, height: H, fill: "#fbf8ef" });
+      paperLayer.add(paper);
+      for (let y = 28; y < Math.max(H, 2000); y += 28) paperLayer.add(new Konva.Line({ points: [0, y, 4000, y], stroke: "rgba(31,143,191,.13)", strokeWidth: 1 }));
+
+      // A pre-drawn doodle so both exports have content right away.
+      const sx = W * 0.2, sy = H * 0.3, sr = s * 0.1;
+      drawLayer.add(new Konva.Circle({ x: sx, y: sy, radius: sr, fill: C.c1, stroke: "#e0a800", strokeWidth: 3 }));
+      for (let k = 0; k < 10; k++) {
+        const a = (k / 10) * Math.PI * 2;
+        drawLayer.add(new Konva.Line({ points: [sx + Math.cos(a) * sr * 1.3, sy + Math.sin(a) * sr * 1.3, sx + Math.cos(a) * sr * 1.75, sy + Math.sin(a) * sr * 1.75], stroke: "#e0a800", strokeWidth: 4, lineCap: "round" }));
+      }
+      for (let k = 0; k < 3; k++) {
+        const pts = [];
+        for (let x = W * 0.06; x <= W * 0.94; x += W * 0.11) pts.push(x, H * (0.68 + k * 0.1) + Math.sin(x / (W * 0.07) + k) * s * 0.035);
+        drawLayer.add(new Konva.Line({ points: pts, tension: 0.5, stroke: k ? C.c2 : "#1f8fbf", strokeWidth: Math.max(3, s * 0.018), lineCap: "round" }));
+      }
+      drawLayer.add(new Konva.Path({ x: W * 0.78, y: H * 0.3, data: HEART, scaleX: s / 140, scaleY: s / 140, fill: C.c3, rotation: 10 }));
+      drawLayer.add(new Konva.Text({ x: W * 0.36, y: H * 0.2, text: "週末去海邊！", fontSize: Math.max(14, s * 0.075), fontFamily: FONT, fontStyle: "bold", fill: "#3a3833", rotation: -4 }));
+
+      function exportAll() {
+        const url = stage.toDataURL({ pixelRatio: 1 });
+        pngImg.src = url;
+        pngInfo.textContent = `${stage.width()}×${stage.height()} px・${((url.length * 0.75) / 1024).toFixed(1)} KB`;
+        const json = stage.toJSON();
+        if (mini) mini.destroy();
+        mini = Konva.Node.create(json, miniBox);
+        const k = Math.min((miniBox.clientWidth - 4) / stage.width(), (miniBox.clientHeight - 4) / stage.height());
+        mini.setAttrs({ scaleX: k, scaleY: k, width: stage.width() * k, height: stage.height() * k, listening: false });
+        jsonInfo.textContent = `JSON ${(json.length / 1024).toFixed(1)} KB・${stage.find("Shape").length} 個圖形`;
+      }
+      stage.on("mousedown touchstart", () => {
+        const p = stage.getPointerPosition(), erase = PENS[pen][1] === null;
+        drawing = new Konva.Line({
+          points: [p.x, p.y, p.x, p.y], stroke: erase ? "#000" : PENS[pen][1], strokeWidth: erase ? width * 2.5 : width,
+          lineCap: "round", lineJoin: "round", globalCompositeOperation: erase ? "destination-out" : "source-over",
+        });
+        drawLayer.add(drawing);
+      });
+      stage.on("mousemove touchmove", (e) => {
+        if (!drawing) return;
+        e.evt.preventDefault();
+        const p = stage.getPointerPosition();
+        drawing.points(drawing.points().concat([p.x, p.y]));
+      });
+      const finish = () => { if (drawing) { drawing = null; exportAll(); } };
+      stage.on("mouseup touchend", finish);
+      ctx.on(window, "pointerup", finish);
+      exportAll();
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "Konva.autoDrawEnabled = false・node.x()／y()・layer.draw()・layer.listening()・perfectDrawEnabled",
+    desc: "關掉自動重畫，每格手動更新所有節點的 x、y 再呼叫 layer.draw()，兩段分開計時；逐級增加圖形數量直到掉到 30 FPS 以下。可切換命中圖與完美繪製比較成本。",
+    hint: "按「自動加壓」開始・關掉「命中圖」或打開「完美繪製」再測一次",
+    mount(ctx) {
+      ctx.html(`<div class="stress-box"></div>`);
+      ctx.controls.classList.add("bottom");
+      let hit = true, perfect = false, nodes = [], px, py, vx, vy, upd = 0, drw = 0;
+      ctx.toggle("命中圖", hit, (v) => { hit = v; layer.listening(v); });
+      ctx.toggle("完美繪製", perfect, (v) => { perfect = v; nodes.forEach((n) => n.perfectDrawEnabled(v)); });
+      const prevAuto = Konva.autoDrawEnabled;
+      Konva.autoDrawEnabled = false;
+      ctx.onCleanup(() => { Konva.autoDrawEnabled = prevAuto; });
+      const stage = stageIn(ctx, ctx.$(".stress-box"));
+      const layer = new Konva.Layer({ listening: hit });
+      stage.add(layer);
+
+      function spawn(n) {
+        layer.destroyChildren();
+        const W = stage.width(), H = stage.height(), s = clamp(Math.sqrt((W * H) / n) * 0.3, 2.5, 16);
+        px = new Float32Array(n); py = new Float32Array(n); vx = new Float32Array(n); vy = new Float32Array(n);
+        nodes = new Array(n);
+        for (let i = 0; i < n; i++) {
+          px[i] = rnd(0, W); py[i] = rnd(0, H);
+          const a = rnd(0, Math.PI * 2), sp = rnd(0.6, 2.2);
+          vx[i] = Math.cos(a) * sp; vy[i] = Math.sin(a) * sp;
+          const o = { x: px[i], y: py[i], fill: COLORS[i % 6], stroke: "#0e1013", strokeWidth: 1, opacity: 0.85, perfectDrawEnabled: perfect };
+          const kind = i % 3;
+          nodes[i] = kind === 0 ? new Konva.Circle({ ...o, radius: s })
+            : kind === 1 ? new Konva.Rect({ ...o, width: s * 1.7, height: s * 1.7, offsetX: s * 0.85, offsetY: s * 0.85 })
+            : new Konva.Star({ ...o, numPoints: 5, innerRadius: s * 0.5, outerRadius: s * 1.15 });
+          layer.add(nodes[i]);
+        }
+      }
+      ctx.raf((t, dt) => {
+        const n = nodes.length;
+        if (!n) return;
+        const W = stage.width(), H = stage.height(), k = dt / 16.7;
+        const t0 = performance.now();
+        for (let i = 0; i < n; i++) {
+          let x = px[i] + vx[i] * k, y = py[i] + vy[i] * k;
+          if (x < 0) { x = 0; vx[i] = Math.abs(vx[i]); } else if (x > W) { x = W; vx[i] = -Math.abs(vx[i]); }
+          if (y < 0) { y = 0; vy[i] = Math.abs(vy[i]); } else if (y > H) { y = H; vy[i] = -Math.abs(vy[i]); }
+          px[i] = x; py[i] = y;
+          nodes[i].x(x);
+          nodes[i].y(y);
+        }
+        const t1 = performance.now();
+        layer.draw();
+        const t2 = performance.now();
+        upd += (t1 - t0 - upd) * 0.1;
+        drw += (t2 - t1 - drw) * 0.1;
+      });
+      ctx.ramp({
+        label: "圖形", unit: "個", steps: [250, 500, 1000, 2000, 4000, 8000, 12000, 16000, 24000], minFps: 30,
+        apply(n) { spawn(n); },
+        metrics: () => ({
+          更新: `${upd.toFixed(1)} ms`,
+          繪製: `${drw.toFixed(1)} ms`,
+          模式: `${hit ? "命中圖" : "無命中圖"}・${perfect ? "完美繪製" : "直接繪製"}`,
+        }),
+        note: "每格先改所有節點的 x、y（Konva 屬性系統與變換快取），再手動 layer.draw()（場景圖走訪與 Canvas 2D 繪圖）。開著「命中圖」時每個圖形還要再畫一次到隱藏的 hit canvas 供滑鼠偵測；「完美繪製」（預設關閉）讓同時有填色、描邊與透明度的圖形先畫到 stage 大小的暫存 canvas 再合成，每個圖形多一次整張貼圖。兩者都是官方效能建議裡可關掉的開關。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

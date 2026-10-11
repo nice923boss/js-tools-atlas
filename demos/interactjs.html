@@ -3,165 +3,870 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>interact.js 示範：可拖曳縮放的便利貼牆</title>
+<title>interact.js 示範：八個場景看懂拖曳縮放手勢與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["便利貼牆","慣性甩動","八向縮放","投放區規則","吸附與限制","雙指手勢","視窗桌面","極限測試"],"note":"各場景的自動示範由程式送出合成指標事件（雙指手勢場景為兩組 pointerType: touch 的合成事件），走 interact.js 真實的事件處理流程"}</script>
 <style>
-  body {
-    background:
-      radial-gradient(circle at 1px 1px, rgba(255,255,255,.07) 1px, transparent 0) 0 0 / 22px 22px,
-      radial-gradient(80% 60% at 20% 0%, rgba(157,140,255,.10), transparent 70%),
-      var(--bg);
+  .ix-wrap { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); display: flex; flex-direction: column; gap: 9px; min-height: 0; }
+  .ix-head { display: flex; align-items: center; gap: 10px; min-height: 24px; min-width: 0; font-family: var(--font); }
+  .ix-head > b { font-size: 15px; white-space: nowrap; }
+  .ix-evt { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ix-evt code, .ix-wlog code, .ix-stats b, .ix-bin code { font-family: var(--mono); }
+  .ix-evt code { color: var(--accent); margin-right: 4px; }
+  .ix-area { position: relative; flex: 1; min-height: 0; border-radius: 12px; overflow: hidden; background: var(--bg-2); box-shadow: inset 0 0 0 1px var(--line); touch-action: none; }
+  /* fake cursor + fingers for the automatic demo */
+  .ix-cur { position: absolute; left: 0; top: 0; z-index: 300; width: 22px; height: 22px; pointer-events: none; opacity: 0; transition: opacity .25s; }
+  .ix-cur.on { opacity: 1; }
+  .ix-cur svg { display: block; filter: drop-shadow(0 2px 3px rgba(0,0,0,.6)); }
+  .ix-cur::after { content: ""; position: absolute; left: -9px; top: -9px; width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--accent); opacity: 0; transform: scale(.4); transition: opacity .15s, transform .15s; }
+  .ix-cur.down::after { opacity: 1; transform: scale(1); }
+  /* 1 sticky notes */
+  .ix-wall { background: radial-gradient(circle at 1px 1px, rgba(255,255,255,.08) 1px, transparent 0) 0 0 / 22px 22px, var(--bg-2); }
+  .ix-note { position: absolute; left: 0; top: 0; padding: 13px 13px 11px; border-radius: 4px 4px 14px 4px; box-sizing: border-box; color: #2a2618; background: var(--n); cursor: grab; user-select: none; touch-action: none; display: flex; flex-direction: column; gap: 5px; box-shadow: 0 10px 22px rgba(0,0,0,.35); outline: 2px solid transparent; outline-offset: 3px; transition: box-shadow .2s, outline-color .2s; }
+  .ix-note::before { content: ""; position: absolute; top: -8px; left: 50%; width: 50px; height: 16px; transform: translateX(-50%) rotate(-3deg); background: rgba(255,255,255,.35); border-radius: 2px; }
+  .ix-note h3 { margin: 0; font-size: 14px; line-height: 1.3; }
+  .ix-note p { margin: 0; font-size: 12px; line-height: 1.45; opacity: .8; overflow: hidden; }
+  .ix-note .ix-size { margin-top: auto; font: 600 10px/1 var(--mono); opacity: .45; }
+  .ix-grip { position: absolute; right: 3px; bottom: 3px; width: 12px; height: 12px; opacity: .4; background: linear-gradient(135deg, transparent 50%, #2a2618 50%, #2a2618 60%, transparent 60%, transparent 72%, #2a2618 72%, #2a2618 82%, transparent 82%); }
+  .ix-note.ix-lift { cursor: grabbing; box-shadow: 0 22px 40px rgba(0,0,0,.5); z-index: 30; }
+  .ix-note.ix-doom { opacity: .55; outline-color: #e5484d; }
+  .ix-trash { position: absolute; z-index: 20; right: 12px; bottom: 12px; width: 118px; height: 80px; border: 2px dashed rgba(229,72,77,.45); border-radius: 14px; color: #ff8a8d; display: grid; place-items: center; text-align: center; font-size: 12px; line-height: 1.4; background: color-mix(in srgb, #e5484d 8%, var(--bg-2)); transition: transform .2s, background .2s, border-color .2s; }
+  .ix-trash b { display: block; font-size: 20px; }
+  .ix-trash.ix-on { border-color: rgba(229,72,77,.85); }
+  .ix-trash.ix-hot { transform: scale(1.08); background: rgba(229,72,77,.22); border-style: solid; }
+  /* 2 inertia */
+  .ix-stats { display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .ix-stats span { padding: 4px 9px; border-radius: 99px; background: rgba(255,255,255,.05); border: 1px solid var(--line); white-space: nowrap; }
+  .ix-stats b { color: var(--fg); font-weight: 600; }
+  .ix-area canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .ix-puck { position: absolute; left: 0; top: 0; width: 56px; height: 56px; border-radius: 50%; cursor: grab; touch-action: none; background: radial-gradient(circle at 35% 30%, #fff6b0, var(--accent) 45%, #b39b00); box-shadow: 0 8px 20px rgba(0,0,0,.5), 0 0 0 4px rgba(247,223,30,.15); }
+  .ix-legend { position: absolute; left: 10px; bottom: 8px; font-size: 11.5px; color: var(--muted); display: flex; gap: 12px; pointer-events: none; }
+  .ix-legend i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; background: var(--c); }
+  /* 3 crop */
+  .ix-area > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; pointer-events: none; user-select: none; }
+  .ix-box { position: absolute; left: 0; top: 0; box-sizing: border-box; border: 1.5px solid #fff; cursor: move; touch-action: none; box-shadow: 0 0 0 9999px rgba(8,10,14,.62); background: linear-gradient(90deg, transparent 33%, rgba(255,255,255,.35) 33%, rgba(255,255,255,.35) calc(33% + 1px), transparent calc(33% + 1px), transparent 66%, rgba(255,255,255,.35) 66%, rgba(255,255,255,.35) calc(66% + 1px), transparent calc(66% + 1px)), linear-gradient(transparent 33%, rgba(255,255,255,.35) 33%, rgba(255,255,255,.35) calc(33% + 1px), transparent calc(33% + 1px), transparent 66%, rgba(255,255,255,.35) 66%, rgba(255,255,255,.35) calc(66% + 1px), transparent calc(66% + 1px)); }
+  .ix-box.ix-anim { transition: transform .25s, width .25s, height .25s; }
+  .ix-hd { position: absolute; width: 10px; height: 10px; background: #fff; border-radius: 2px; box-shadow: 0 1px 3px rgba(0,0,0,.6); pointer-events: none; }
+  .ix-dim { position: absolute; left: 6px; top: 6px; padding: 2px 6px; border-radius: 5px; background: rgba(0,0,0,.6); color: #fff; font: 600 11px/1.3 var(--mono); pointer-events: none; white-space: nowrap; }
+  /* 4 dropzones */
+  .ix-tray { position: relative; z-index: 2; display: flex; flex-wrap: wrap; gap: 7px; padding: 9px; border-radius: 12px; background: var(--bg-2); box-shadow: inset 0 0 0 1px var(--line); }
+  .ix-item { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 99px; background: #262b33; border: 1px solid rgba(255,255,255,.1); font-size: 13px; cursor: grab; user-select: none; touch-action: none; white-space: nowrap; }
+  .ix-item::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--k); }
+  .ix-item.ix-lift { z-index: 40; position: relative; box-shadow: 0 10px 22px rgba(0,0,0,.5); cursor: grabbing; }
+  .ix-item.ix-back { transition: transform .3s cubic-bezier(.2,1.3,.4,1); }
+  .ix-bins { flex: 1; min-height: 0; display: grid; gap: 9px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .ix-bin { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-radius: 12px; background: var(--bg-2); border: 2px dashed var(--line); padding: 9px; gap: 6px; transition: border-color .2s, background .2s, opacity .2s, transform .2s; }
+  .ix-bin header { display: flex; align-items: center; gap: 7px; font-weight: 700; font-size: 13px; }
+  .ix-bin header i { width: 9px; height: 9px; border-radius: 50%; background: var(--k); flex: none; }
+  .ix-bin header span { margin-left: auto; font: 600 11px/1 var(--mono); color: var(--muted); }
+  .ix-bin code { display: block; font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ix-binlist { flex: 1; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 5px; padding-top: 4px; }
+  .ix-binlist .ix-item { font-size: 12px; padding: 4px 8px; }
+  .ix-bins.ix-busy .ix-bin { opacity: .4; }
+  .ix-bins.ix-busy .ix-bin.ix-on { opacity: 1; border-color: var(--k); }
+  .ix-bin.ix-hot { background: color-mix(in srgb, var(--k) 16%, var(--bg-2)); border-style: solid; transform: scale(1.02); }
+  /* 5 modifiers */
+  .ix-field { background-image: linear-gradient(rgba(255,255,255,.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.06) 1px, transparent 1px); background-size: 40px 40px; }
+  .ix-field.ix-m0, .ix-field.ix-m3 { background-image: linear-gradient(rgba(76,201,240,.28) 1px, transparent 1px), linear-gradient(90deg, rgba(76,201,240,.28) 1px, transparent 1px); }
+  .ix-pt { position: absolute; width: 140px; height: 140px; margin: -70px 0 0 -70px; border-radius: 50%; border: 1px dashed rgba(247,223,30,.35); display: none; pointer-events: none; }
+  .ix-pt::after { content: ""; position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; margin: -5px; border-radius: 50%; background: var(--accent); }
+  .ix-m1 .ix-pt { display: block; }
+  .ix-zone { position: absolute; display: none; border: 2px solid var(--c5); border-radius: 10px; background: rgba(255,107,107,.07); pointer-events: none; }
+  .ix-zone span { position: absolute; left: 6px; top: 4px; font-size: 11px; color: var(--c5); }
+  .ix-m2 .ix-zone { display: block; }
+  .ix-piece { position: absolute; left: 0; top: 0; width: 80px; height: 80px; border-radius: 10px; background: linear-gradient(135deg, var(--c2), var(--c6)); box-shadow: 0 8px 18px rgba(0,0,0,.45); cursor: grab; touch-action: none; display: grid; place-items: center; font: 700 12px/1.2 var(--mono); color: #0b1020; text-align: center; }
+  .ix-ghost { position: absolute; left: 0; top: 0; width: 80px; height: 80px; border-radius: 10px; border: 2px dashed rgba(255,255,255,.55); pointer-events: none; display: none; }
+  .ix-ghost.on { display: block; }
+  /* 6 gestures */
+  .ix-photo { position: absolute; left: 0; top: 0; width: 220px; height: 150px; border-radius: 12px; overflow: hidden; touch-action: none; cursor: grab; box-shadow: 0 16px 30px rgba(0,0,0,.5); transform-origin: 50% 50%; background: #222; }
+  .ix-photo img { display: block; width: 100%; height: 100%; object-fit: cover; pointer-events: none; user-select: none; }
+  .ix-finger { position: absolute; left: 0; top: 0; width: 34px; height: 34px; margin: -17px; border-radius: 50%; background: rgba(247,223,30,.25); border: 2px solid var(--accent); pointer-events: none; opacity: 0; transition: opacity .2s; z-index: 5; }
+  .ix-fline { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: 0; transition: opacity .2s; z-index: 4; }
+  .ix-touching .ix-finger, .ix-touching .ix-fline { opacity: 1; }
+  .ix-badge { position: absolute; left: 10px; top: 10px; z-index: 6; padding: 4px 9px; border-radius: 8px; font-size: 12px; background: rgba(0,0,0,.55); border: 1px solid var(--line); color: var(--muted); }
+  .ix-touching .ix-badge { color: var(--accent); border-color: rgba(247,223,30,.5); }
+  /* 7 desktop */
+  .ix-desk { background: radial-gradient(120% 90% at 80% 0%, rgba(157,140,255,.16), transparent 60%), radial-gradient(90% 80% at 0% 100%, rgba(76,201,240,.12), transparent 60%), var(--bg-2); }
+  .ix-icons { position: absolute; left: 8px; top: 8px; display: flex; flex-direction: column; gap: 8px; }
+  .ix-icon { position: relative; width: 58px; padding: 6px 2px; border-radius: 9px; text-align: center; font-size: 11px; cursor: pointer; user-select: none; touch-action: none; border: 1px solid transparent; }
+  .ix-icon b { display: grid; place-items: center; width: 34px; height: 34px; margin: 0 auto 4px; border-radius: 9px; font-size: 17px; background: var(--k); color: #111; }
+  .ix-icon.ix-sel { background: rgba(255,255,255,.08); border-color: var(--line); }
+  .ix-icon::after { content: ""; position: absolute; left: 50%; top: 2px; width: 42px; height: 42px; margin-left: -21px; border-radius: 50%; background: conic-gradient(var(--accent) calc(var(--p, 0) * 1turn), transparent 0); -webkit-mask: radial-gradient(circle, transparent 18px, #000 19px); mask: radial-gradient(circle, transparent 18px, #000 19px); opacity: 0; pointer-events: none; }
+  .ix-icon.ix-press::after { opacity: 1; animation: ix-ring .6s linear forwards; }
+  @property --p { syntax: "<number>"; inherits: false; initial-value: 0; }
+  @keyframes ix-ring { from { --p: 0; } to { --p: 1; } }
+  .ix-win { position: absolute; left: 0; top: 0; box-sizing: border-box; display: flex; flex-direction: column; border-radius: 10px; overflow: hidden; background: #1c2027; border: 1px solid rgba(255,255,255,.12); box-shadow: 0 16px 36px rgba(0,0,0,.5); touch-action: none; }
+  .ix-win.ix-anim { transition: transform .25s, width .25s, height .25s; }
+  .ix-win.ix-hidden { display: none; }
+  .ix-title { display: flex; align-items: center; gap: 6px; padding: 7px 10px; background: #262b34; cursor: grab; user-select: none; font-size: 12.5px; font-weight: 700; white-space: nowrap; }
+  .ix-title i { width: 9px; height: 9px; border-radius: 50%; background: var(--k); flex: none; }
+  .ix-wbody { flex: 1; min-height: 0; padding: 9px; display: flex; }
+  .ix-wbody textarea { flex: 1; resize: none; border: 1px solid var(--line); border-radius: 7px; background: #15181d; color: var(--fg); font: 12.5px/1.55 var(--font); padding: 7px; min-width: 0; }
+  .ix-wbody img { flex: 1; min-width: 0; width: 100%; object-fit: cover; border-radius: 7px; pointer-events: none; }
+  .ix-menu { position: absolute; z-index: 90; min-width: 110px; padding: 5px; border-radius: 9px; background: #262b34; border: 1px solid var(--line); box-shadow: 0 12px 28px rgba(0,0,0,.5); font-size: 12.5px; display: none; }
+  .ix-menu.on { display: block; animation: ix-pop .18s; }
+  .ix-menu div { padding: 5px 9px; border-radius: 6px; }
+  .ix-menu div:first-child { background: rgba(247,223,30,.14); color: var(--accent); }
+  @keyframes ix-pop { from { transform: scale(.85); opacity: 0; } }
+  .ix-wlog { position: absolute; right: 8px; bottom: 8px; z-index: 80; width: min(230px, 46%); padding: 6px 8px; border-radius: 9px; background: rgba(10,12,16,.72); border: 1px solid var(--line); font-size: 11.5px; line-height: 1.5; pointer-events: none; }
+  .ix-wlog div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+  .ix-wlog code { color: var(--accent); margin-right: 5px; }
+  /* 8 stress */
+  .ix-stress { position: absolute; inset: 8px 8px 8px 350px; display: grid; justify-content: center; align-content: center; gap: 1px; overflow: hidden; border-radius: 10px; background: var(--bg-2); border: 1px solid var(--line); touch-action: none; }
+  .ix-stress > div { border-radius: 2px; touch-action: none; }
+  @media (max-width: 760px) { .ix-stress { inset: 8px; opacity: .9; } }
+  @media (max-width: 520px) {
+    .ix-wrap { padding-left: 7px; padding-right: 7px; gap: 7px; }
+    .ix-head > b { font-size: 13px; }
+    .ix-trash { width: 88px; height: 62px; font-size: 11px; right: 8px; bottom: 8px; }
+    .ix-trash b { font-size: 16px; }
+    .ix-note { padding: 11px 9px 9px; }
+    .ix-note h3 { font-size: 13px; }
+    .ix-note p { font-size: 11px; }
+    .ix-bins { gap: 5px; }
+    .ix-bin { padding: 6px; }
+    .ix-bin header { font-size: 12px; gap: 4px; white-space: nowrap; }
+    .ix-bin header span { font-size: 9.5px; }
+    .ix-bin code { font-size: 9.5px; }
+    .ix-item { padding: 5px 8px; font-size: 12px; }
+    .ix-stats { gap: 5px; font-size: 11px; }
+    .ix-stats span { padding: 3px 7px; }
+    .ix-icon { width: 48px; font-size: 10px; }
+    .ix-icon b { width: 30px; height: 30px; font-size: 15px; }
   }
-  #board { position: fixed; inset: 0; touch-action: none; }
-  .note {
-    position: absolute; left: 0; top: 0; width: 170px; height: 150px;
-    padding: 14px 14px 12px; border-radius: 4px 4px 14px 4px;
-    color: #2a2618; background: var(--n); cursor: grab; user-select: none; touch-action: none;
-    box-shadow: 0 10px 22px rgba(0,0,0,.35), inset 0 -18px 30px rgba(0,0,0,.05);
-    display: flex; flex-direction: column; gap: 6px; box-sizing: border-box;
-    transition: box-shadow .2s, outline-color .2s; outline: 2px solid transparent; outline-offset: 3px;
-  }
-  .note::before { /* tape */
-    content: ""; position: absolute; top: -9px; left: 50%; width: 54px; height: 18px; transform: translateX(-50%) rotate(-3deg);
-    background: rgba(255,255,255,.35); border-radius: 2px; backdrop-filter: blur(2px);
-  }
-  .note h3 { margin: 0; font-size: 15px; line-height: 1.3; }
-  .note p { margin: 0; font-size: 12px; line-height: 1.5; opacity: .8; overflow: hidden; }
-  .note .size { margin-top: auto; font: 600 10px/1 var(--mono); opacity: .45; }
-  .note .grip { position: absolute; right: 4px; bottom: 4px; width: 14px; height: 14px; opacity: .35;
-    background: linear-gradient(135deg, transparent 50%, #2a2618 50%, #2a2618 60%, transparent 60%, transparent 72%, #2a2618 72%, #2a2618 82%, transparent 82%); }
-  .note.dragging { cursor: grabbing; box-shadow: 0 22px 40px rgba(0,0,0,.5); z-index: 30; }
-  .note.over-trash { opacity: .55; outline-color: #e5484d; }
-  #trash {
-    position: fixed; right: 16px; bottom: 16px; width: 120px; height: 82px; z-index: 5;
-    border: 2px dashed rgba(229,72,77,.45); border-radius: 14px; color: #ff8a8d;
-    display: grid; place-items: center; text-align: center; font-size: 12px; line-height: 1.4;
-    background: rgba(229,72,77,.06); transition: transform .2s, background .2s, border-color .2s;
-  }
-  #trash b { display: block; font-size: 22px; }
-  #trash.active { border-color: rgba(229,72,77,.8); }
-  #trash.hot { transform: scale(1.08); background: rgba(229,72,77,.2); border-style: solid; }
-  @media (max-width: 520px) { #trash { bottom: 50px; width: 90px; height: 64px; font-size: 11px; } #trash b { font-size: 18px; } }
 </style>
 </head>
 <body>
-<div id="board"></div>
-<div id="trash"><div><b>🗑</b>拖到這裡刪除</div></div>
-<div class="controls">
-  <button class="btn primary" id="add">＋ 新便利貼</button>
-  <button class="btn" id="tidy">整齊排列</button>
-</div>
-<div class="hint">拖曳移動（有慣性）・拉右下角縮放・丟進垃圾桶刪除</div>
-
 <script src="https://cdn.jsdelivr.net/npm/interactjs@1.10.28/dist/interact.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Sticky-note wall: interact.js draggable (inertia + bounds), resizable (min/max) and a dropzone.
+// interact.js showcase: eight scenes from a sticky-note wall to an interactable-count stress ramp.
+const { h } = Showcase;
+const M = interact.modifiers;
+const ARROW = '<svg viewBox="0 0 24 24" width="22" height="22"><path d="M3 2l6.5 19 2.6-7.6L20 11z" fill="#fff" stroke="#111" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const r0 = (v) => Math.round(v);
+
+// Interactable that is unset (and its running interactions stopped) when the scene unmounts.
+function ix(ctx, target, opts) {
+  const i = interact(target, opts);
+  ctx.onCleanup(() => { interact.stop(); i.unset(); });
+  return i;
+}
+// Translate helper: position lives in data-x / data-y.
+function moveBy(el, dx, dy) { setXY(el, (+el.dataset.x || 0) + dx, (+el.dataset.y || 0) + dy); }
+function setXY(el, x, y, extra = el.dataset.t || "") {
+  el.dataset.x = x; el.dataset.y = y;
+  el.style.transform = `translate(${x}px, ${y}px) ${extra}`;
+}
+const at = (el, fx = 0.5, fy = 0.5) => () => { const r = el.getBoundingClientRect(); return [r.left + r.width * fx, r.top + r.height * fy]; };
+const off = (el, dx, dy, fx = 0.5, fy = 0.5) => () => { const [x, y] = at(el, fx, fy)(); return [x + dx, y + dy]; };
+const pt = (p) => (typeof p === "function" ? p() : at(p)());
+
+// The robot reuses the real mouse's pointerId (1 in Chromium, 0 in Firefox): interact.js keeps a mouse
+// pointer registered after release, and a second mouse id would turn later real drags into two-pointer ones.
+let mouseId = 1;
+for (const t of ["pointerdown", "pointermove"]) document.addEventListener(t, (e) => { if (e.isTrusted && e.pointerType === "mouse") mouseId = e.pointerId; }, true);
+function firePointer(type, x, y, id = mouseId, pointerType = "mouse", buttons = type === "pointerup" ? 0 : 1) {
+  const target = document.elementFromPoint(x, y) || document.body;
+  target.dispatchEvent(new PointerEvent(type, {
+    bubbles: true, cancelable: true, composed: true, pointerId: id, pointerType, isPrimary: pointerType === "mouse" || id % 2 === 1,
+    button: type === "pointermove" ? -1 : 0, buttons, clientX: x, clientY: y,
+  }));
+  return target;
+}
+// Fake cursor overlay so screenshots show what the automatic demo is doing.
+function cursor(ctx) {
+  let cur = ctx.el.querySelector(".ix-cur");
+  if (!cur) { cur = h("div", { class: "ix-cur" }); cur.innerHTML = ARROW; ctx.el.append(cur); }
+  const host = ctx.el.getBoundingClientRect();
+  return {
+    place(x, y) { cur.style.transform = `translate(${x - host.left}px, ${y - host.top}px)`; cur.classList.add("on"); },
+    down(v) { cur.classList.toggle("down", v); },
+  };
+}
+// A real (trusted) pointerdown aborts a running automatic demo. A window capture listener runs before
+// any document listener of interact.js, so the robot's pointer is released first and the two
+// never share one mouse interaction.
+const USER = new Error("user took over");
+const robot = { down: false, x: 0, y: 0 };
+let userAt = 0;
+window.addEventListener("pointerdown", (e) => {
+  if (!e.isTrusted) return;
+  userAt = performance.now();
+  if (robot.down) { robot.down = false; firePointer("pointerup", robot.x, robot.y); }
+}, true);
+// Robot and real mouse share one pointerId, so a real hover move during a robot drag would be read as
+// part of that drag. Swallow button-less real mouse moves while the robot holds its button down.
+window.addEventListener("pointermove", (e) => { if (e.isTrusted && robot.down && e.pointerType === "mouse" && !e.buttons) e.stopImmediatePropagation(); }, true);
+function robotFire(type, x, y) { Object.assign(robot, { down: type !== "pointerup", x, y }); firePointer(type, x, y); }
+// Automatic demo: synthetic pointer events go through interact.js's real document listeners,
+// so actions, modifiers, inertia and dropzones are exercised for real. `to` may be a list of waypoints.
+async function simDrag(ctx, from, to, { ms = 650, hold = 140, linear = false } = {}) {
+  if (!ctx.active) return;
+  const c = cursor(ctx);
+  const since = ctx.ixSince ?? performance.now();
+  const [x0, y0] = pt(from);
+  c.place(x0, y0);
+  await ctx.sleep(200);
+  if (userAt > since) throw USER;
+  c.down(true);
+  robotFire("pointerdown", x0, y0);
+  let x = x0, y = y0;
+  const legs = Array.isArray(to) ? to : [to];
+  for (const leg of legs) {
+    const [sx, sy] = [x, y];
+    const hb = ctx.el.getBoundingClientRect();
+    const [tx, ty] = pt(leg).map((v, i) => clamp(v, (i ? hb.top : hb.left) + 6, (i ? hb.bottom : hb.right) - 26));
+    const t0 = performance.now();
+    for (;;) {
+      const k = Math.min(1, (performance.now() - t0) / (ms / legs.length));
+      const e = linear ? k : k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+      x = sx + (tx - sx) * e; y = sy + (ty - sy) * e;
+      c.place(x, y);
+      if (userAt > since) { c.down(false); throw USER; }
+      robotFire("pointermove", x, y);
+      if (k >= 1) break;
+      await ctx.sleep(16);
+    }
+  }
+  if (hold) await ctx.sleep(hold);
+  if (userAt > since) { c.down(false); throw USER; }
+  robotFire("pointerup", x, y);
+  c.down(false);
+  await ctx.sleep(300);
+}
+async function tap(ctx, target, { hold = 70 } = {}) {
+  const c = cursor(ctx);
+  const [x, y] = pt(target);
+  const since = ctx.ixSince ?? performance.now();
+  c.place(x, y);
+  await ctx.sleep(160);
+  if (userAt > since) throw USER;
+  c.down(true); robotFire("pointerdown", x, y);
+  await ctx.sleep(hold);
+  c.down(false);
+  if (userAt > since) throw USER;
+  robotFire("pointerup", x, y);
+}
+async function doubleTap(ctx, target) { await tap(ctx, target); await ctx.sleep(60); await tap(ctx, target); }
+function demoRunner(ctx, fn, delay = 700) {
+  let busy = false;
+  const go = async () => {
+    if (busy) return;
+    busy = true;
+    ctx.ixSince = performance.now(); // a real press any time after this stops the whole run
+    try { await fn(); } catch (err) { if (err !== USER) throw err; } finally { busy = false; const c = ctx.el.querySelector(".ix-cur"); if (c) c.classList.remove("on"); }
+  };
+  ctx.timeout(go, delay);
+  return go;
+}
+const evtLine = (el) => (name, text = "") => { el.innerHTML = `<code>${name}</code>${esc(text)}`; };
+
 const COLORS = ["#fde68a", "#a7f3d0", "#fbcfe8", "#bae6fd", "#ddd6fe", "#fed7aa"];
 const NOTES = [
-  ["週一 10:00", "與講師確認新竹場的課程大綱"],
-  ["買文具", "白板筆、便利貼、延長線"],
-  ["靈感", "把作業改成小組闖關形式"],
-  ["待回覆", "台南學員詢問發票抬頭"],
-  ["本週目標", "完成三支教學短片剪輯"],
-  ["電話", "回撥花蓮場合作窗口"],
+  ["週一 10:00", "與講師確認新竹場的課程大綱"], ["買文具", "白板筆、便利貼、延長線"], ["靈感", "把作業改成小組闖關形式"],
+  ["待回覆", "台南學員詢問發票抬頭"], ["本週目標", "完成三支教學短片剪輯"], ["電話", "回撥花蓮場合作窗口"],
 ];
-const board = document.getElementById("board");
-let made = 0;
-
-function setPos(el, x, y, rot) {
-  el.dataset.x = x;
-  el.dataset.y = y;
-  if (rot !== undefined) el.dataset.r = rot;
-  el.style.transform = `translate(${x}px, ${y}px) rotate(${el.dataset.r || 0}deg)`;
-}
-function updateSize(el) {
-  el.querySelector(".size").textContent = `${Math.round(el.offsetWidth)} × ${Math.round(el.offsetHeight)}`;
-}
-
-function addNote([title, body], x, y) {
-  const el = document.createElement("div");
-  el.className = "note";
-  el.style.setProperty("--n", COLORS[made % COLORS.length]);
-  el.innerHTML = `<h3></h3><p></p><span class="size"></span><span class="grip"></span>`;
-  el.querySelector("h3").textContent = title;
-  el.querySelector("p").textContent = body;
-  board.append(el);
-  const small = innerWidth < 520;
-  el.style.width = `${(small ? 122 : 165) + (made * 17) % (small ? 20 : 45)}px`;
-  el.style.height = `${(small ? 112 : 140) + (made * 23) % (small ? 16 : 40)}px`;
-  setPos(el, x, y, (Math.random() * 8 - 4).toFixed(1));
-  updateSize(el);
-  made++;
-  return el;
-}
-
-function layout() {
-  // Spread notes over the board: one cell per note, note centered in its cell with a little jitter.
-  const notes = [...board.children];
-  const top = 58, bottom = innerWidth < 520 ? 120 : 92;
-  const W = innerWidth - 20, H = innerHeight - top - bottom;
-  const cols = Math.max(1, Math.round(Math.sqrt(notes.length * W / H)));
-  const rows = Math.ceil(notes.length / cols);
-  const cw = W / cols, ch = H / rows;
-  notes.forEach((el, i) => {
-    const col = i % cols, row = Math.floor(i / cols);
-    const x = 10 + col * cw + (cw - el.offsetWidth) / 2 + (i % 3 - 1) * 10;
-    const y = top + row * ch + (ch - el.offsetHeight) / 2 + ((i * 7) % 3 - 1) * 8;
-    setPos(el, Math.max(6, x), Math.max(top, y));
-  });
-}
-
-NOTES.forEach((n) => addNote(n, 0, 0));
-layout();
-
-interact(".note")
-  .draggable({
-    inertia: true,
-    modifiers: [interact.modifiers.restrictRect({ restriction: "parent", endOnly: true })],
-    listeners: {
-      start(e) { e.target.classList.add("dragging"); board.append(e.target); },
-      move(e) {
-        const el = e.target;
-        setPos(el, (parseFloat(el.dataset.x) || 0) + e.dx, (parseFloat(el.dataset.y) || 0) + e.dy);
-      },
-      end(e) { e.target.classList.remove("dragging"); },
-    },
-  })
-  .resizable({
-    edges: { right: true, bottom: true },
-    modifiers: [interact.modifiers.restrictSize({ min: { width: 110, height: 90 }, max: { width: 340, height: 300 } })],
-    listeners: {
-      move(e) {
-        const el = e.target;
-        el.style.width = e.rect.width + "px";
-        el.style.height = e.rect.height + "px";
-        updateSize(el);
-      },
-    },
-  });
-
-interact("#trash").dropzone({
-  accept: ".note",
-  overlap: 0.35,
-  ondropactivate: (e) => e.target.classList.add("active"),
-  ondropdeactivate: (e) => e.target.classList.remove("active", "hot"),
-  ondragenter: (e) => { e.target.classList.add("hot"); e.relatedTarget.classList.add("over-trash"); },
-  ondragleave: (e) => { e.target.classList.remove("hot"); e.relatedTarget.classList.remove("over-trash"); },
-  ondrop: (e) => {
-    const el = e.relatedTarget;
-    el.animate([{ opacity: 1, scale: 1 }, { opacity: 0, scale: .3 }], { duration: 220, easing: "ease-in" }).onfinish = () => el.remove();
-  },
-});
-
 const IDEAS = [["新想法", "結業式加一段學員作品展"], ["提醒", "下午三點交月報"], ["問卷", "整理課後滿意度"]];
-document.getElementById("add").addEventListener("click", () => {
-  const el = addNote(IDEAS[made % IDEAS.length], innerWidth / 2 - 85 + Math.random() * 60 - 30, innerHeight / 2 - 75 + Math.random() * 40 - 20);
-  el.animate([{ scale: .6, opacity: 0 }, { scale: 1, opacity: 1 }], { duration: 260, easing: "cubic-bezier(.2,1.4,.4,1)" });
-});
-document.getElementById("tidy").addEventListener("click", layout);
-addEventListener("resize", layout);
+
+Showcase.run({ scenes: [
+  {
+    id: "notes", title: "便利貼牆",
+    api: "interact('.note').draggable({ inertia }).resizable({ edges }) + dropzone",
+    desc: "同一張便利貼同時是 draggable（有慣性，放開後才用 restrictRect 拉回牆內）與 resizable（右下角邊緣，restrictSize 限最小最大），垃圾桶是 dropzone（accept 只收便利貼、overlap 'pointer' 看指標是否進入；若用比例，放大後的便利貼會因面積比例永遠不夠而丟不進去）。interact.js 依指標位置判斷這次按下要拖曳還是縮放。",
+    hint: "拖曳移動（可甩）・拉右下角縮放・丟進垃圾桶刪除",
+    mount(ctx) {
+      ctx.html(`<div class="ix-wrap"><div class="ix-head"><b>便利貼牆</b><span class="ix-evt">拖曳、甩動、拉右下角縮放，丟進垃圾桶刪除</span></div><div class="ix-area ix-wall"><div class="ix-trash"><div><b>🗑</b>拖到這裡刪除</div></div></div></div>`);
+      const wall = ctx.$(".ix-wall");
+      const evt = evtLine(ctx.$(".ix-evt"));
+      let made = 0;
+      const sizeOf = () => { const w = clamp(wall.clientWidth / 4.4, 100, 168); return [w, w * 0.84]; };
+      const label = (el) => { el.querySelector(".ix-size").textContent = `${r0(el.offsetWidth)} × ${r0(el.offsetHeight)}`; };
+      const addNote = ([title, body], x, y) => {
+        const el = h("div", { class: "ix-note" });
+        el.style.setProperty("--n", COLORS[made % COLORS.length]);
+        el.innerHTML = `<h3>${esc(title)}</h3><p>${esc(body)}</p><span class="ix-size"></span><span class="ix-grip"></span>`;
+        const [w, hh] = sizeOf();
+        el.style.width = `${w + (made * 13) % 24}px`;
+        el.style.height = `${hh + (made * 17) % 20}px`;
+        el.dataset.t = `rotate(${((made * 37) % 9 - 4) * 0.5}deg)`;
+        wall.append(el);
+        setXY(el, x, y);
+        label(el);
+        made++;
+        return el;
+      };
+      const layout = () => {
+        const notes = ctx.$$(".ix-note");
+        const W = wall.clientWidth - 16, H = wall.clientHeight - 16;
+        // one extra grid cell is reserved so the last (bottom-right) cell stays free for the trash can
+        const cols = Math.max(1, Math.round(Math.sqrt(((notes.length + 1) * W) / H)));
+        const rows = Math.ceil((notes.length + 1) / cols);
+        const cw = W / cols, ch = H / rows;
+        notes.forEach((el, i) => {
+          el.style.width = `${clamp(el.offsetWidth, 96, Math.max(96, cw - 14))}px`;
+          el.style.height = `${clamp(el.offsetHeight, 80, Math.max(80, ch - 16))}px`;
+          label(el);
+          const x = 8 + (i % cols) * cw + (cw - el.offsetWidth) / 2 + ((i % 3) - 1) * 6;
+          const y = 12 + Math.floor(i / cols) * ch + (ch - el.offsetHeight) / 2;
+          setXY(el, clamp(x, 4, W - el.offsetWidth), clamp(y, 10, H - el.offsetHeight));
+        });
+      };
+      NOTES.forEach((n) => addNote(n, 0, 0));
+      layout();
+      ctx.onResize(layout);
+      // While over the trash the wall restriction is switched off; otherwise its endOnly pull-back would
+      // move a large note (and the drop pointer) out of the corner trash before the drop is checked.
+      const keepIn = M.restrictRect({ restriction: "parent", endOnly: true });
+      ix(ctx, ".ix-note")
+        .draggable({ inertia: true, modifiers: [keepIn] })
+        .resizable({ edges: { right: true, bottom: true }, margin: 16, modifiers: [M.restrictSize({ min: { width: 96, height: 80 }, max: { width: 340, height: 300 } })] })
+        .on("dragstart", (e) => { e.target.classList.add("ix-lift"); wall.append(e.target); evt("dragstart", ` ${e.target.querySelector("h3").textContent}`); })
+        .on("dragmove", (e) => moveBy(e.target, e.dx, e.dy))
+        .on("draginertiastart", (e) => evt("draginertiastart", e.speed > 100 ? ` 放開速度 ${r0(e.speed)} px/s，慣性滑行，結束時 restrictRect 拉回牆內` : ` 放開速度 ${r0(e.speed)} px/s 低於 minSpeed，不滑行，只做 endOnly 修正`))
+        .on("dragend", (e) => e.target.classList.remove("ix-lift"))
+        .on("resizemove", (e) => {
+          const el = e.target;
+          el.style.width = `${e.rect.width}px`; el.style.height = `${e.rect.height}px`;
+          label(el);
+          evt("resizemove", ` 邊緣 ${Object.keys(e.edges).filter((k) => e.edges[k]).join("+")}，${r0(e.rect.width)} × ${r0(e.rect.height)}（限 96~340 × 80~300）`);
+        });
+      ix(ctx, ctx.$(".ix-trash")).dropzone({
+        accept: ".ix-note", overlap: "pointer",
+        ondropactivate: (e) => e.target.classList.add("ix-on"),
+        ondragenter: (e) => { keepIn.options.enabled = false; e.target.classList.add("ix-hot"); e.relatedTarget.classList.add("ix-doom"); },
+        ondragleave: (e) => { keepIn.options.enabled = true; e.target.classList.remove("ix-hot"); e.relatedTarget.classList.remove("ix-doom"); },
+        ondropdeactivate: (e) => { keepIn.options.enabled = true; e.target.classList.remove("ix-on", "ix-hot"); },
+        ondrop: (e) => {
+          const el = e.relatedTarget;
+          evt("drop", ` 垃圾桶收下「${el.querySelector("h3").textContent}」`);
+          el.animate([{ opacity: 1, scale: 1 }, { opacity: 0, scale: 0.3 }], { duration: 220, easing: "ease-in" }).onfinish = () => el.remove();
+        },
+      });
+      ctx.button("＋ 新便利貼", () => {
+        const [w, hh] = sizeOf();
+        const el = addNote(IDEAS[made % IDEAS.length], wall.clientWidth / 2 - w / 2 + (made % 3) * 18, wall.clientHeight / 2 - hh / 2);
+        el.animate([{ opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1 }], { duration: 260, easing: "cubic-bezier(.2,1.4,.4,1)" });
+      }, { primary: true });
+      ctx.button("整齊排列", layout);
+      const go = demoRunner(ctx, async () => {
+        const n = ctx.$$(".ix-note");
+        if (n[1]) { await simDrag(ctx, n[1], off(n[1], 260, -40), { ms: 170, hold: 0, linear: true }); await ctx.sleep(1100); }
+        if (n[3]) { const g = n[3].querySelector(".ix-grip"); await simDrag(ctx, g, off(g, 56, 34), { ms: 600 }); }
+        const last = ctx.$$(".ix-note").pop();
+        if (last) await simDrag(ctx, last, at(ctx.$(".ix-trash")), { ms: 900, hold: 260 });
+      });
+      ctx.button("自動示範", go);
+    },
+  },
+  {
+    id: "inertia", title: "慣性甩動",
+    api: "draggable({ inertia: { resistance, minSpeed, endSpeed }, modifiers: [restrictRect({ endOnly })] })",
+    desc: "放開時若速度超過 minSpeed，interact.js 以 resistance 計算指數減速並繼續送出 dragmove，直到速度低於 endSpeed 才送 dragend。軌跡青色是手拖段、黃色是慣性段。endOnly 開啟時可以甩出邊界，結束才平滑拉回；關閉時邊界在整段都生效。",
+    hint: "抓住黃色圓盤用力甩・調阻力或切換 endOnly 比較",
+    mount(ctx) {
+      ctx.html(`<div class="ix-wrap"><div class="ix-head"><b>慣性甩動</b><span class="ix-evt">甩一下圓盤，看慣性段怎麼減速</span></div>
+        <div class="ix-stats"><span>放開速度 <b class="ix-v1">-</b></span><span>慣性滑行 <b class="ix-v2">-</b></span><span>慣性位移 <b class="ix-v3">-</b></span></div>
+        <div class="ix-area ix-rink"><canvas></canvas><div class="ix-puck"></div><div class="ix-legend"><span style="--c:var(--c2)"><i></i>dragmove（手拖）</span><span style="--c:var(--accent)"><i></i>dragmove（慣性）</span></div></div></div>`);
+      const rink = ctx.$(".ix-rink"), puck = ctx.$(".ix-puck"), cv = ctx.$("canvas"), g = cv.getContext("2d");
+      const evt = evtLine(ctx.$(".ix-evt"));
+      let res = 8, endOnly = true, inertia = false, last = null, tIn = 0, pIn = null;
+      const fit = () => {
+        const dpr = devicePixelRatio || 1;
+        cv.width = rink.clientWidth * dpr; cv.height = rink.clientHeight * dpr;
+        g.setTransform(dpr, 0, 0, dpr, 0, 0);
+        setXY(puck, rink.clientWidth / 2 - 28, rink.clientHeight / 2 - 28);
+      };
+      fit();
+      ctx.onResize(fit);
+      const center = () => [+puck.dataset.x + 28, +puck.dataset.y + 28];
+      const it = ix(ctx, puck);
+      const conf = () => it.draggable({ inertia: { resistance: res, minSpeed: 150, endSpeed: 20 }, modifiers: [M.restrictRect({ restriction: "parent", endOnly })] });
+      conf();
+      it.on("dragstart", () => {
+        inertia = false; last = center();
+        g.save(); g.globalCompositeOperation = "destination-out"; g.fillStyle = "rgba(0,0,0,.55)"; g.fillRect(0, 0, cv.width, cv.height); g.restore();
+        evt("dragstart", "");
+      })
+        .on("dragmove", (e) => {
+          moveBy(puck, e.dx, e.dy);
+          const p = center();
+          g.strokeStyle = inertia ? "#f7df1e" : "#4cc9f0"; g.lineWidth = 3; g.lineCap = "round";
+          g.beginPath(); g.moveTo(last[0], last[1]); g.lineTo(p[0], p[1]); g.stroke();
+          g.fillStyle = g.strokeStyle; g.beginPath(); g.arc(p[0], p[1], 2.2, 0, 7); g.fill();
+          last = p;
+        })
+        .on("draginertiastart", (e) => {
+          if (e.speed <= 150) return; // below minSpeed: endOnly smoothing only, no throw
+          inertia = true; tIn = performance.now(); pIn = center();
+          ctx.$(".ix-v1").textContent = `${r0(e.speed)} px/s`;
+          evt("draginertiastart", ` 速度 ${r0(e.speed)} px/s 超過 minSpeed 150，進入慣性`);
+        })
+        .on("dragend", () => {
+          if (inertia && pIn) {
+            const p = center();
+            ctx.$(".ix-v2").textContent = Showcase.fmtMs(performance.now() - tIn);
+            ctx.$(".ix-v3").textContent = `${r0(Math.hypot(p[0] - pIn[0], p[1] - pIn[1]))} px`;
+            evt("dragend", ` 慣性結束（resistance ${res}${endOnly ? "，endOnly 拉回邊界內" : ""}）`);
+          } else { ctx.$(".ix-v1").textContent = "未達 minSpeed"; evt("dragend", " 放開太慢，沒有慣性"); }
+        });
+      ctx.slider("阻力", { min: 2, max: 30, value: res }, (v) => { res = v; conf(); });
+      ctx.toggle("endOnly", endOnly, (v) => { endOnly = v; conf(); });
+      const go = demoRunner(ctx, async () => {
+        for (const [dx, dy] of [[190, -70], [-230, 90], [120, 150]]) {
+          await simDrag(ctx, puck, off(puck, dx, dy), { ms: 150, hold: 0, linear: true });
+          await ctx.sleep(1500);
+        }
+      });
+      ctx.button("自動示範", go);
+    },
+  },
+  {
+    id: "crop", title: "八向縮放",
+    api: "resizable({ edges: { top, left, bottom, right }, modifiers: [aspectRatio({ ratio, modifiers })] })",
+    desc: "裁切框四邊四角都能拉：resizemove 的 deltaRect 告訴你左上角位移、rect 給新尺寸，e.edges 說明是哪幾條邊。restrictEdges 讓框不出照片、restrictSize 設最小尺寸；切到 16:9 或 1:1 時加上 aspectRatio，限制條件放進它的 modifiers 才能在鎖比例下一起生效。",
+    hint: "拉邊或角縮放・拖中間移動・上方切換比例",
+    mount(ctx) {
+      ctx.html(`<div class="ix-wrap"><div class="ix-head"><b>裁切照片</b><span class="ix-evt">拉任一條邊或角</span></div>
+        <div class="ix-area ix-crop"><img src="_shared/img/photo-1.jpg" alt="峽灣"><div class="ix-box">${["0,0", "50%,0", "100%,0", "0,50%", "100%,50%", "0,100%", "50%,100%", "100%,100%"].map((p, i) => { const [l, t] = p.split(","); return `<i class="ix-hd" data-i="${i}" style="left:calc(${l} - ${l === "0" ? 0 : l === "100%" ? 10 : 5}px);top:calc(${t} - ${t === "0" ? 0 : t === "100%" ? 10 : 5}px)"></i>`; }).join("")}<span class="ix-dim"></span></div></div></div>`);
+      const area = ctx.$(".ix-crop"), box = ctx.$(".ix-box");
+      const evt = evtLine(ctx.$(".ix-evt"));
+      const s = { x: 0, y: 0, w: 0, hh: 0 };
+      let ratio = 0;
+      const apply = () => {
+        box.style.width = `${s.w}px`; box.style.height = `${s.hh}px`;
+        setXY(box, s.x, s.y);
+        ctx.$(".ix-dim").textContent = `${r0(s.w)} × ${r0(s.hh)}${ratio ? `  ${(s.w / s.hh).toFixed(2)}` : ""}`;
+      };
+      const reset = () => {
+        const W = area.clientWidth, H = area.clientHeight;
+        s.w = W * 0.56; s.hh = H * 0.56; s.x = (W - s.w) / 2; s.y = (H - s.hh) / 2;
+        apply();
+      };
+      reset();
+      ctx.onResize(reset);
+      const it = ix(ctx, box);
+      const base = () => [M.restrictEdges({ outer: "parent" }), M.restrictSize({ min: { width: 60, height: 40 } })];
+      const conf = () => it.resizable({ edges: { top: true, left: true, bottom: true, right: true }, margin: 14, modifiers: ratio ? [M.aspectRatio({ ratio: ratio < 0 ? "preserve" : ratio, modifiers: base() })] : base() });
+      conf();
+      it.draggable({ modifiers: [M.restrictRect({ restriction: "parent" })] })
+        .on("dragmove", (e) => { s.x += e.dx; s.y += e.dy; apply(); evt("dragmove", ` 位置 ${r0(s.x)}, ${r0(s.y)}`); })
+        .on("resizemove", (e) => {
+          s.x += e.deltaRect.left; s.y += e.deltaRect.top; s.w = e.rect.width; s.hh = e.rect.height;
+          apply();
+          const ed = Object.keys(e.edges).filter((k) => e.edges[k]).join(" + ");
+          evt("resizemove", ` edges: ${ed}　deltaRect.left ${r0(e.deltaRect.left)} top ${r0(e.deltaRect.top)}`);
+        });
+      const seg = ctx.group(["自由", "16:9", "1:1", "維持比例"], 0, (i) => {
+        ratio = [0, 16 / 9, 1, -1][i];
+        if (ratio > 0) {
+          const W = area.clientWidth, H = area.clientHeight;
+          s.hh = s.w / ratio;
+          if (s.y + s.hh > H) { s.hh = H - s.y; s.w = s.hh * ratio; }
+          if (s.x + s.w > W) { s.w = W - s.x; s.hh = s.w / ratio; }
+          box.classList.add("ix-anim"); apply(); ctx.timeout(() => box.classList.remove("ix-anim"), 260);
+        }
+        conf();
+        evt("aspectRatio", ratio ? ` ratio: ${ratio < 0 ? "'preserve'" : ratio.toFixed(3)}` : " 已移除，自由縮放");
+      });
+      const hd = (i) => ctx.$(`.ix-hd[data-i="${i}"]`);
+      const go = demoRunner(ctx, async () => {
+        await simDrag(ctx, hd(0), off(hd(0), 50, 34));
+        await simDrag(ctx, hd(4), off(hd(4), 70, 0));
+        seg.children[2].click();
+        await ctx.sleep(500);
+        await simDrag(ctx, hd(7), off(hd(7), -40, 30));
+        await simDrag(ctx, off(box, 0, 0, 0.5, 0.45), off(box, -50, 10, 0.5, 0.45));
+      });
+      ctx.button("自動示範", go);
+    },
+  },
+  {
+    id: "drop", title: "投放區規則",
+    api: "dropzone({ accept, overlap: 'pointer' | 'center' | 0.5, checker })",
+    desc: "三個回收桶各有規則：紙類只收 .ix-paper、判定看物件中心（center）；塑膠金屬只收 .ix-pm、看指標位置（pointer）；一般垃圾什麼都收、要重疊 50%，再用 checker 限制容量 3 件。拖曳開始時只有會接受的桶亮起（dropactivate），放錯地方物件會彈回原位。",
+    hint: "把物品拖進回收桶・放錯會彈回",
+    mount(ctx) {
+      const KIND = { paper: "var(--c4)", pm: "var(--c2)", other: "var(--c5)" };
+      const ITEMS = [["報紙", "paper"], ["寶特瓶", "pm"], ["紙箱", "paper"], ["鋁罐", "pm"], ["便當盒", "other"], ["雜誌", "paper"], ["鐵罐", "pm"], ["衛生紙", "other"]];
+      const BINS = [
+        { name: "紙類", accept: ".ix-paper", overlap: "center", k: "paper" },
+        { name: "塑膠金屬", accept: ".ix-pm", overlap: "pointer", k: "pm" },
+        { name: "一般垃圾", accept: ".ix-item", overlap: 0.5, k: "other", cap: 3 },
+      ];
+      ctx.html(`<div class="ix-wrap"><div class="ix-head"><b>垃圾分類</b><span class="ix-evt">拖曳物品，只有會接受的回收桶會亮起</span></div>
+        <div class="ix-tray">${ITEMS.map(([t, k]) => `<span class="ix-item ix-${k}" style="--k:${KIND[k]}">${t}</span>`).join("")}</div>
+        <div class="ix-bins">${BINS.map((b) => `<section class="ix-bin" style="--k:${KIND[b.k]}"><header><i></i>${b.name}<span>0${b.cap ? " / " + b.cap : ""}</span></header><code>accept: '${b.accept}'</code><code>overlap: ${typeof b.overlap === "string" ? `'${b.overlap}'` : b.overlap}${b.cap ? " + checker" : ""}</code><div class="ix-binlist"></div></section>`).join("")}</div></div>`);
+      const evt = evtLine(ctx.$(".ix-evt"));
+      const bins = ctx.$$(".ix-bin"), wrap = ctx.$(".ix-bins");
+      const count = () => bins.forEach((b, i) => { b.querySelector("header span").textContent = `${b.querySelectorAll(".ix-item").length}${BINS[i].cap ? " / " + BINS[i].cap : ""}`; });
+      ix(ctx, ".ix-item")
+        .draggable({})
+        .on("dragstart", (e) => {
+          const el = e.target;
+          el.classList.remove("ix-back"); el.classList.add("ix-lift"); el.dataset.dropped = "";
+          wrap.classList.add("ix-busy");
+          ctx.timeout(() => evt("dropactivate", ` 「${el.textContent}」可放進：${ctx.$$(".ix-bin.ix-on header").map((x) => x.firstChild.nextSibling.textContent).join("、") || "無"}`), 0);
+        })
+        .on("dragmove", (e) => moveBy(e.target, e.dx, e.dy))
+        .on("dragend", (e) => {
+          const el = e.target;
+          el.classList.remove("ix-lift"); wrap.classList.remove("ix-busy");
+          ctx.timeout(() => {
+            if (el.dataset.dropped) return;
+            el.classList.add("ix-back"); setXY(el, 0, 0);
+            evt("dragend", ` 「${el.textContent}」沒有被任何回收桶接受，彈回原位`);
+          }, 0);
+        });
+      bins.forEach((bin, i) => {
+        const b = BINS[i];
+        ix(ctx, bin).dropzone({
+          accept: b.accept, overlap: b.overlap,
+          ...(b.cap ? { checker: (dragEv, ev, dropped, dz, dzEl) => dropped && dzEl.querySelectorAll(".ix-item").length < b.cap } : {}),
+          ondropactivate: (e) => e.target.classList.add("ix-on"),
+          ondropdeactivate: (e) => e.target.classList.remove("ix-on", "ix-hot"),
+          ondragenter: (e) => { e.target.classList.add("ix-hot"); evt("dragenter", ` ${b.name} ← ${e.relatedTarget.textContent}`); },
+          ondragleave: (e) => { e.target.classList.remove("ix-hot"); evt("dragleave", ` ${b.name}`); },
+          ondrop: (e) => {
+            const el = e.relatedTarget;
+            el.dataset.dropped = "1"; el.classList.remove("ix-back");
+            setXY(el, 0, 0);
+            bin.querySelector(".ix-binlist").append(el);
+            count();
+            evt("drop", ` ${b.name} 收下「${el.textContent}」（overlap ${typeof b.overlap === "string" ? b.overlap : b.overlap * 100 + "%"}）`);
+          },
+        });
+      });
+      const item = (t) => ctx.$$(".ix-tray .ix-item").find((x) => x.textContent === t);
+      const go = demoRunner(ctx, async () => {
+        const steps = [["報紙", 0, 0.5, 0.6], ["寶特瓶", 0, 0.5, 0.6], ["鋁罐", 1, 0.15, 0.3], ["便當盒", 2, 0.5, 0.6]];
+        for (const [t, bi, fx, fy] of steps) {
+          const el = item(t);
+          if (el) await simDrag(ctx, el, at(bins[bi], fx, fy), { ms: 800, hold: 300 });
+          await ctx.sleep(500);
+        }
+      });
+      ctx.button("自動示範", go);
+    },
+  },
+  {
+    id: "mods", title: "吸附與限制",
+    api: "modifiers: [snap({ targets: [snappers.grid() | points], range }), restrictRect()]",
+    desc: "modifier 會在 interact.js 送出事件前改寫座標，所以監聽器拿到的 dx/dy 已經是吸附或限制後的結果。虛線框是「沒有 modifier 時」方塊會在的位置，標題列顯示兩者差距。最後一種是 endOnly：拖曳時自由移動，放開才帶著慣性滑進最近的格子。",
+    hint: "上方切換 modifier 再拖藍色方塊",
+    mount(ctx) {
+      const PTS = [[0.18, 0.3], [0.5, 0.22], [0.82, 0.32], [0.3, 0.74], [0.72, 0.72]];
+      ctx.html(`<div class="ix-wrap"><div class="ix-head"><b>Modifiers</b><span class="ix-evt"></span></div>
+        <div class="ix-area ix-field ix-m0">${PTS.map(() => '<span class="ix-pt"></span>').join("")}<div class="ix-zone"><span>restriction 區域</span></div><div class="ix-ghost"></div><div class="ix-piece">80×80</div></div></div>`);
+      const field = ctx.$(".ix-field"), piece = ctx.$(".ix-piece"), ghost = ctx.$(".ix-ghost"), zone = ctx.$(".ix-zone");
+      const evt = evtLine(ctx.$(".ix-evt"));
+      let mode = 0, start = null, p0 = null, raw = null;
+      const CODE = ["snap({ targets: [grid({ x: 40, y: 40 })], offset: 'parent' })", "snap({ targets: 5 個點, range: 70, relativePoints: 中心 })", "restrictRect({ restriction: 紅框元素 })", "inertia + snap({ ..., endOnly: true })"];
+      const place = () => {
+        const W = field.clientWidth, H = field.clientHeight;
+        ctx.$$(".ix-pt").forEach((p, i) => { p.style.left = `${PTS[i][0] * W}px`; p.style.top = `${PTS[i][1] * H}px`; });
+        Object.assign(zone.style, { left: `${W * 0.3}px`, top: `${H * 0.2}px`, width: `${W * 0.4}px`, height: `${H * 0.6}px` });
+      };
+      place();
+      setXY(piece, 40, 40);
+      ctx.onResize(place);
+      const grid = () => interact.snappers.grid({ x: 40, y: 40 });
+      const MODS = [
+        () => [M.snap({ targets: [grid()], range: Infinity, relativePoints: [{ x: 0, y: 0 }], offset: "parent" })],
+        () => [M.snap({ targets: PTS.map(([fx, fy]) => ({ x: fx * field.clientWidth, y: fy * field.clientHeight })), range: 70, relativePoints: [{ x: 0.5, y: 0.5 }], offset: "parent" })],
+        () => [M.restrictRect({ restriction: zone })],
+        () => [M.snap({ targets: [grid()], range: Infinity, relativePoints: [{ x: 0, y: 0 }], offset: "parent", endOnly: true })],
+      ];
+      const it = ix(ctx, piece);
+      const conf = () => { it.draggable({ inertia: mode === 3, modifiers: MODS[mode]() }); evt("modifiers", ` ${CODE[mode]}`); };
+      conf();
+      ctx.on(field, "pointerdown", (e) => { p0 = [e.clientX, e.clientY]; });
+      ctx.on(field, "pointermove", (e) => { raw = [e.clientX, e.clientY]; });
+      it.on("dragstart", () => { start = [+piece.dataset.x, +piece.dataset.y]; ghost.classList.add("on"); })
+        .on("dragmove", (e) => {
+          moveBy(piece, e.dx, e.dy);
+          if (!start || !p0 || !raw) return;
+          const gx = start[0] + raw[0] - p0[0], gy = start[1] + raw[1] - p0[1];
+          setXY(ghost, gx, gy);
+          piece.textContent = `${r0(+piece.dataset.x)}, ${r0(+piece.dataset.y)}`;
+          evt("dragmove", ` 修正量 Δx ${r0(+piece.dataset.x - gx)}　Δy ${r0(+piece.dataset.y - gy)}　${CODE[mode]}`);
+        })
+        .on("dragend", () => ghost.classList.remove("on"));
+      const seg = ctx.group(["網格", "目標點", "限制區", "結束吸附"], 0, (i) => {
+        mode = i;
+        field.className = `ix-area ix-field ix-m${i}`;
+        if (i === 2) setXY(piece, zone.offsetLeft + 20, zone.offsetTop + 30);
+        conf();
+      });
+      const go = demoRunner(ctx, async () => {
+        for (let i = 0; i < 4; i++) {
+          seg.children[i].click();
+          await ctx.sleep(350);
+          const W = field.clientWidth, H = field.clientHeight;
+          const f = (fx, fy) => () => { const r = field.getBoundingClientRect(); return [r.left + fx * W, r.top + fy * H]; };
+          const route = i === 2 ? [f(0.9, 0.15), f(0.1, 0.9), f(0.55, 0.5)] : [f(0.48, 0.3), f(0.25, 0.7), f(0.68, 0.62)];
+          await simDrag(ctx, piece, route, { ms: 1800, hold: i === 3 ? 0 : 250, linear: i === 3 });
+          await ctx.sleep(i === 3 ? 900 : 400);
+        }
+      });
+      ctx.button("自動示範", go);
+    },
+  },
+  {
+    id: "gesture", title: "雙指手勢",
+    api: "gesturable({ listeners: { move(e) { e.da, e.ds, e.scale, e.distance } } })",
+    desc: "gesturable 需要同時兩個指標，也就是觸控螢幕的兩根手指；滑鼠只有一個指標，在桌機上只能單指拖移。這裡的自動示範與按鈕由程式送出兩組 pointerType: touch 的合成指標事件（畫面上的黃色圓圈），interact.js 照樣算出旋轉角差 da 與縮放差 ds。",
+    hint: "觸控螢幕兩指旋轉縮放・桌機請按上方「模擬」按鈕",
+    mount(ctx) {
+      ctx.html(`<div class="ix-wrap"><div class="ix-head"><b>旋轉縮放照片</b><span class="ix-evt">需要兩指觸控；滑鼠可單指拖移</span></div>
+        <div class="ix-stats"><span>angle <b class="ix-g1">0°</b></span><span>scale <b class="ix-g2">1.00</b></span><span>distance <b class="ix-g3">-</b></span><span>gesturemove <b class="ix-g4">0</b> 次</span></div>
+        <div class="ix-area ix-gest"><span class="ix-badge">真實觸控或合成觸控事件皆可</span><svg class="ix-fline"><line stroke="#f7df1e" stroke-width="2" stroke-dasharray="5 4"/></svg><i class="ix-finger"></i><i class="ix-finger"></i><div class="ix-photo"><img src="_shared/img/photo-6.jpg" alt="水母"></div></div></div>`);
+      const area = ctx.$(".ix-gest"), photo = ctx.$(".ix-photo"), badge = ctx.$(".ix-badge");
+      const evt = evtLine(ctx.$(".ix-evt"));
+      const st = { x: 0, y: 0, a: 0, s: 1 };
+      let moves = 0;
+      const apply = () => { photo.dataset.t = `rotate(${st.a}deg) scale(${st.s})`; setXY(photo, st.x, st.y); };
+      const reset = () => { st.x = area.clientWidth / 2 - 110; st.y = area.clientHeight / 2 - 75; st.a = 0; st.s = 1; apply(); };
+      reset();
+      ctx.onResize(reset);
+      ix(ctx, photo).draggable({}).gesturable({})
+        .on("dragmove", (e) => { st.x += e.dx; st.y += e.dy; apply(); evt("dragmove", " 單一指標：只能移動"); })
+        .on("gesturestart", () => { moves = 0; evt("gesturestart", " 偵測到兩個指標"); })
+        .on("gesturemove", (e) => {
+          st.a += e.da; st.s = clamp(st.s * (1 + e.ds), 0.4, 3); st.x += e.dx; st.y += e.dy;
+          apply();
+          ctx.$(".ix-g1").textContent = `${st.a.toFixed(1)}°`;
+          ctx.$(".ix-g2").textContent = st.s.toFixed(2);
+          ctx.$(".ix-g3").textContent = `${r0(e.distance)} px`;
+          ctx.$(".ix-g4").textContent = ++moves;
+          evt("gesturemove", ` da ${e.da.toFixed(2)}°　ds ${e.ds.toFixed(3)}　scale ${e.scale.toFixed(2)}`);
+        })
+        .on("gestureend", () => evt("gestureend", ` 共 ${moves} 次 gesturemove`));
+      // Two synthetic touch pointers (ids 21/22) orbiting or spreading around the photo center.
+      const fingers = ctx.$$(".ix-finger"), line = ctx.$(".ix-fline line");
+      let busy = false;
+      const twoFinger = async (kind) => {
+        if (busy) return;
+        busy = true;
+        area.classList.add("ix-touching");
+        badge.textContent = "合成觸控事件：pointerType 'touch' × 2";
+        try {
+          const host = area.getBoundingClientRect(), r = photo.getBoundingClientRect();
+          const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+          const pos = (k) => {
+            const ang = ((kind === "rotate" ? 15 + k * 80 : 25) * Math.PI) / 180;
+            const rad = kind === "rotate" ? 48 : 34 + k * 60;
+            return [[cx - rad * Math.cos(ang), cy - rad * Math.sin(ang)], [cx + rad * Math.cos(ang), cy + rad * Math.sin(ang)]];
+          };
+          const show = (ps) => {
+            ps.forEach(([x, y], i) => { fingers[i].style.transform = `translate(${x - host.left}px, ${y - host.top}px)`; });
+            line.setAttribute("x1", ps[0][0] - host.left); line.setAttribute("y1", ps[0][1] - host.top);
+            line.setAttribute("x2", ps[1][0] - host.left); line.setAttribute("y2", ps[1][1] - host.top);
+          };
+          let ps = pos(0);
+          show(ps);
+          await ctx.sleep(250);
+          ps.forEach(([x, y], i) => firePointer("pointerdown", x, y, 21 + i, "touch"));
+          // steps must exceed interact.js's 1px pointerMoveTolerance, or the gesture never starts
+          for (let s = 1; s <= 28; s++) {
+            ps = pos(s / 28);
+            show(ps);
+            ps.forEach(([x, y], i) => firePointer("pointermove", x, y, 21 + i, "touch"));
+            await ctx.sleep(26);
+          }
+          ps.forEach(([x, y], i) => firePointer("pointerup", x, y, 21 + i, "touch"));
+          await ctx.sleep(300);
+        } finally {
+          busy = false;
+          area.classList.remove("ix-touching");
+          badge.textContent = "真實觸控或合成觸控事件皆可";
+        }
+      };
+      ctx.button("模擬雙指旋轉", () => twoFinger("rotate"), { primary: true });
+      ctx.button("模擬雙指縮放", () => twoFinger("pinch"));
+      ctx.button("重設", reset);
+      ctx.timeout(async () => { await twoFinger("rotate"); await ctx.sleep(300); await twoFinger("pinch"); }, 700);
+    },
+  },
+  {
+    id: "desk", title: "視窗桌面",
+    api: "draggable({ allowFrom }) + resizable({ ignoreFrom }) + on('tap' | 'doubletap' | 'hold')",
+    desc: "多種互動疊在一起：視窗只能從標題列拖（allowFrom），內容區的文字框照常打字；三邊可縮放（ignoreFrom 排除文字框）。interact.js 也提供指標事件：點一下視窗 tap 置頂、雙擊標題 doubletap 最大化或還原、桌面圖示按住 600ms 觸發 hold 開出選單。",
+    hint: "從標題列拖視窗・雙擊標題最大化・按住圖示開選單",
+    mount(ctx) {
+      ctx.html(`<div class="ix-wrap"><div class="ix-head"><b>迷你桌面</b><span class="ix-evt">tap、doubletap、hold 與拖曳縮放同時運作</span></div>
+        <div class="ix-area ix-desk">
+          <div class="ix-icons"><div class="ix-icon" data-w="0" style="--k:var(--c4)"><b>✎</b>筆記</div><div class="ix-icon" data-w="1" style="--k:var(--c2)"><b>▣</b>相簿</div><div class="ix-icon" style="--k:var(--c5)"><b>⌫</b>回收筒</div></div>
+          <section class="ix-win" style="--k:var(--c4)"><div class="ix-title"><i></i>課程筆記.txt</div><div class="ix-wbody"><textarea>第 3 單元：拖曳與手勢
+- allowFrom 只讓標題列拖
+- 文字框可正常選字打字</textarea></div></section>
+          <section class="ix-win" style="--k:var(--c2)"><div class="ix-title"><i></i>相簿：紅岩峽谷</div><div class="ix-wbody"><img src="_shared/img/photo-2.jpg" alt="紅岩峽谷"></div></section>
+          <div class="ix-menu"><div>開啟</div><div>重新命名</div><div>內容</div></div>
+          <div class="ix-wlog"></div></div></div>`);
+      const desk = ctx.$(".ix-desk"), wins = ctx.$$(".ix-win"), menu = ctx.$(".ix-menu"), logBox = ctx.$(".ix-wlog");
+      const evt = evtLine(ctx.$(".ix-evt"));
+      const log = (name, text) => {
+        evt(name, ` ${text}`);
+        logBox.prepend(h("div", { html: `<code>${name}</code>${esc(text)}` }));
+        while (logBox.children.length > 5) logBox.lastElementChild.remove();
+      };
+      let z = 10;
+      const front = (w) => { w.style.zIndex = ++z; };
+      const geo = (w, x, y, ww, hh) => { w.style.width = `${ww}px`; w.style.height = `${hh}px`; setXY(w, x, y); };
+      const layout = () => {
+        const W = desk.clientWidth, H = desk.clientHeight, L = W < 420 ? 62 : 80;
+        geo(wins[0], L, 10, Math.min(300, W - L - 12), Math.min(200, H * 0.48));
+        geo(wins[1], Math.max(L, W * 0.4), H * 0.4, Math.min(280, W - L - 30), Math.min(190, H * 0.42));
+        wins.forEach((w) => delete w.dataset.max);
+      };
+      layout();
+      ctx.onResize(layout);
+      const anim = (w) => { w.classList.add("ix-anim"); ctx.timeout(() => w.classList.remove("ix-anim"), 270); };
+      ix(ctx, ".ix-win")
+        .draggable({ allowFrom: ".ix-title", modifiers: [M.restrictRect({ restriction: "parent" })] })
+        .resizable({ edges: { left: true, right: true, bottom: true }, margin: 8, ignoreFrom: "textarea", modifiers: [M.restrictEdges({ outer: "parent" }), M.restrictSize({ min: { width: 150, height: 110 } })] })
+        .on("dragstart", (e) => { front(e.target); log("dragstart", "從標題列開始拖（allowFrom）"); })
+        .on("dragmove", (e) => moveBy(e.target, e.dx, e.dy))
+        .on("resizestart", (e) => { front(e.target); log("resizestart", `邊緣 ${Object.keys(e.edges).filter((k) => e.edges[k]).join("+")}`); })
+        .on("resizemove", (e) => {
+          const w = e.target;
+          w.style.width = `${e.rect.width}px`; w.style.height = `${e.rect.height}px`;
+          moveBy(w, e.deltaRect.left, e.deltaRect.top);
+        })
+        .on("tap", (e) => { front(e.currentTarget); });
+      ix(ctx, ".ix-title").on("doubletap", (e) => {
+        const w = e.currentTarget.parentElement;
+        anim(w);
+        if (w.dataset.max) {
+          const [x, y, ww, hh] = w.dataset.max.split(",").map(Number);
+          geo(w, x, y, ww, hh); delete w.dataset.max;
+          log("doubletap", "標題列 → 還原");
+        } else {
+          w.dataset.max = [+w.dataset.x, +w.dataset.y, w.offsetWidth, w.offsetHeight].join(",");
+          geo(w, 0, 0, desk.clientWidth, desk.clientHeight); front(w);
+          log("doubletap", "標題列 → 最大化");
+        }
+      });
+      // interact.js still fires `tap` on release after a `hold`; `held` swallows that tap so the menu stays open
+      let held = false;
+      ix(ctx, ".ix-icon")
+        .on("down", (e) => { held = false; e.currentTarget.classList.add("ix-press"); })
+        .on("up", (e) => e.currentTarget.classList.remove("ix-press"))
+        .on("tap", (e) => { if (held) return; ctx.$$(".ix-icon").forEach((i) => i.classList.toggle("ix-sel", i === e.currentTarget)); log("tap", `選取「${e.currentTarget.textContent.slice(1)}」`); })
+        .on("doubletap", (e) => {
+          const w = wins[+e.currentTarget.dataset.w];
+          if (w) { front(w); w.animate([{ scale: 0.92 }, { scale: 1 }], { duration: 200 }); }
+          log("doubletap", `開啟「${e.currentTarget.textContent.slice(1)}」`);
+        })
+        .on("hold", (e) => {
+          const ic = e.currentTarget, r = ic.getBoundingClientRect(), d = desk.getBoundingClientRect();
+          ic.classList.remove("ix-press");
+          Object.assign(menu.style, { left: `${r.right - d.left + 4}px`, top: `${r.top - d.top + 6}px`, zIndex: ++z });
+          menu.classList.add("on"); held = true;
+          log("hold", `按住 ${e.holdDuration ?? 600}ms →「${ic.textContent.slice(1)}」選單`);
+        });
+      ix(ctx, desk).on("down", (e) => { if (!e.target.closest(".ix-icon")) held = false; })
+        .on("tap", (e) => { if (!held && !e.target.closest(".ix-icon")) menu.classList.remove("on"); });
+      const title = (i) => wins[i].querySelector(".ix-title");
+      const go = demoRunner(ctx, async () => {
+        await simDrag(ctx, off(title(1), 0, 0, 0.4, 0.5), off(title(1), -60, -40, 0.4, 0.5), { ms: 700 });
+        await simDrag(ctx, at(wins[0].querySelector("textarea"), 0.5, 0.8), off(wins[0].querySelector("textarea"), 60, 40, 0.5, 0.8), { ms: 500 });
+        log("說明", "從內容區拖：不在 allowFrom，視窗不動");
+        await simDrag(ctx, off(wins[0], -3, 0, 1, 0.5), off(wins[0], 50, 0, 1, 0.5), { ms: 600 });
+        await doubleTap(ctx, off(title(1), 0, 0, 0.6, 0.5));
+        await ctx.sleep(900);
+        await doubleTap(ctx, off(title(1), 0, 0, 0.6, 0.5));
+        await ctx.sleep(500);
+        await tap(ctx, ctx.$$(".ix-icon")[1], { hold: 750 });
+      });
+      ctx.button("自動示範", go);
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "interact(el).draggable()  ×  N 個元素，指標事件持續拖曳",
+    desc: "放入 N 個可拖曳色塊，程式每一幀送出合成指標事件：按下隨機色塊、拖 12 幀、放開、再在上方移動 6 幀（hover），逐級加量直到掉到 30 FPS 以下。同時量建立耗時，以及 pointerdown 與 hover pointermove 交給 interact.js 處理的同步耗時。可切換「逐一綁定」與「選擇器委派」比較。",
+    hint: "按「自動加壓」開始・切換委派模式比較",
+    mount(ctx) {
+      ctx.html(`<div class="ix-stress"></div>`);
+      const box = ctx.$(".ix-stress");
+      let deleg = false, list = [], one = null, n = 0, initMs = 0, unsetMs = 0;
+      const T = { down: [], drag: [], hover: [] };
+      const avg = (a) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : 0);
+      const push = (a, v) => { a.push(v); if (a.length > 90) a.shift(); };
+      const release = () => {
+        const t0 = performance.now();
+        if (one) { one.unset(); one = null; }
+        for (const i of list) i.unset();
+        list = [];
+        unsetMs = performance.now() - t0;
+      };
+      ctx.onCleanup(() => { interact.stop(); release(); });
+      const onMove = (e) => moveBy(e.target, e.dx, e.dy);
+      const build = (count) => {
+        interact.stop(); release(); n = count;
+        T.down.length = T.drag.length = T.hover.length = 0;
+        const W = box.clientWidth - 8, H = box.clientHeight - 8;
+        const side = Math.max(3, Math.floor(Math.sqrt((W * H) / n)) - 1);
+        box.style.gridTemplateColumns = `repeat(${Math.max(1, Math.floor(W / (side + 1)))}, ${side}px)`;
+        box.style.gridAutoRows = `${side}px`;
+        const frag = document.createDocumentFragment();
+        for (let i = 0; i < n; i++) {
+          const d = document.createElement("div");
+          d.className = "ix-dot";
+          d.style.background = `hsl(${(i / n) * 300} 70% 55%)`;
+          frag.append(d);
+        }
+        box.replaceChildren(frag);
+        const t0 = performance.now();
+        if (deleg) one = interact(".ix-dot", { context: box }).draggable({ listeners: { move: onMove } });
+        else for (const d of box.children) list.push(interact(d).draggable({ listeners: { move: onMove } }));
+        initMs = performance.now() - t0;
+      };
+      // Robot pointer: press a random tile, drag it 12 frames, release, hover 6 frames.
+      const timed = (type, x, y, buttons) => {
+        const t = document.elementFromPoint(x, y) || box;
+        const ev = new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: mouseId, pointerType: "mouse", isPrimary: true, button: type === "pointermove" ? -1 : 0, buttons, clientX: x, clientY: y });
+        const t0 = performance.now();
+        t.dispatchEvent(ev);
+        return performance.now() - t0;
+      };
+      const bot = { phase: 0, k: 0, x: 0, y: 0, a: 0 };
+      ctx.raf(() => {
+        if (!n || !box.children.length) return;
+        if (bot.phase === 0) {
+          const d = box.children[(Math.random() * box.children.length) | 0], r = d.getBoundingClientRect();
+          bot.x = r.left + r.width / 2; bot.y = r.top + r.height / 2; bot.a = Math.random() * 6.28; bot.k = 0; bot.phase = 1;
+          push(T.down, timed("pointerdown", bot.x, bot.y, 1));
+        } else if (bot.phase === 1) {
+          bot.x += Math.cos(bot.a) * 5; bot.y += Math.sin(bot.a) * 5;
+          push(T.drag, timed("pointermove", bot.x, bot.y, 1));
+          if (++bot.k >= 12) { timed("pointerup", bot.x, bot.y, 0); bot.phase = 2; bot.k = 0; }
+        } else {
+          bot.x += 7; bot.y += 3;
+          push(T.hover, timed("pointermove", bot.x, bot.y, 0));
+          if (++bot.k >= 6) bot.phase = 0;
+        }
+      });
+      ctx.controls.classList.add("bottom");
+      ctx.toggle("選擇器委派", deleg, (v) => { deleg = v; build(n || 100); });
+      ctx.ramp({
+        label: "可拖曳元素", steps: [100, 300, 1000, 3000, 10000, 20000, 40000], minFps: 30,
+        apply: (c) => build(c),
+        metrics: () => ({
+          "建立": Showcase.fmtMs(initMs), "解除": Showcase.fmtMs(unsetMs),
+          "pointerdown": Showcase.fmtMs(avg(T.down)), "拖曳 move": Showcase.fmtMs(avg(T.drag)), "hover move": Showcase.fmtMs(avg(T.hover)),
+          "綁定方式": deleg ? "選擇器委派" : "逐一綁定",
+        }),
+        note: "interact.js 每次 pointerdown 與滑鼠 hover 都要沿著 DOM 祖先逐層，在「全部 interactable 清單」裡找符合者，所以逐一綁定 N 個元素時，這兩種事件成本隨 N 線性上升；改用一個選擇器 interactable 委派，清單只有一筆。拖曳進行中的 move 不需查找，幾乎不受 N 影響。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

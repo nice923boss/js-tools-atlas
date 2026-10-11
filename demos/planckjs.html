@@ -3,339 +3,1378 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Planck.js 示範：Box2D 彈珠台</title>
+<title>Planck.js 示範：8 個場景看懂 Box2D 物理引擎與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["台灣彈珠台","形狀與剛體","材質參數","關節大全","碰撞過濾與事件","射線與範圍查詢","子彈與休眠","極限測試"]}</script>
 <style>
-  body { background: radial-gradient(circle at 50% 30%, #1a1f3d 0%, #07080f 75%); }
-  #cv { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; touch-action: none; }
-  .score { position: fixed; left: 12px; top: 12px; z-index: 40; display: grid; gap: 2px; padding: 8px 12px; pointer-events: none; }
-  .score b { font-family: var(--mono); font-size: 22px; color: var(--c2); }
-  .score span { font-size: 12px; color: var(--muted); }
-  .flips { position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 40; display: flex; justify-content: space-between; pointer-events: none; }
-  .flips .btn { pointer-events: auto; min-width: 84px; padding: 10px 14px; user-select: none; -webkit-user-select: none; }
-  @media (max-width: 600px) {
-    .score { display: flex; align-items: baseline; gap: 8px; padding: 6px 10px; }
-    .score b { font-size: 18px; }
-    .score .keys { display: none; }
-  }
+  .sc-scene canvas.pl-cv { position: absolute; left: 0; top: 0; touch-action: none; cursor: grab; }
+  .sc-scene canvas.pl-cv.aim { cursor: crosshair; }
+  .sc-scene canvas.pl-cv.flip { cursor: pointer; }
+  .sc-scene.pinball { background: radial-gradient(circle at 50% 30%, #1a1f3d 0%, #07080f 75%); }
 </style>
 </head>
 <body>
-<canvas id="cv"></canvas>
-<div class="score panel"><span>分數</span><b id="score">0</b><span id="ballNo">第 1 球</span><span class="keys">鍵盤 ← → 或按左右半邊</span></div>
-<div class="controls">
-  <button class="btn" id="newBall">新球</button>
-  <button class="btn" id="auto" aria-pressed="true">自動接球</button>
-</div>
-<div class="flips">
-  <button class="btn" id="flipL">◀ 左擋板</button>
-  <button class="btn" id="flipR">右擋板 ▶</button>
-</div>
-
 <script src="https://cdn.jsdelivr.net/npm/planck@1.5.0/dist/planck.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Planck.js is a JavaScript port of Box2D: chain walls, revolute-joint flippers with motors,
-// restitution bumpers and sensor lanes. Units are meters, y points up.
-const { World, Vec2, Circle, Box, Polygon, Chain, RevoluteJoint } = planck;
-const world = new World({ gravity: Vec2(0, -11) });
-const ground = world.createBody();
+// Planck.js (Box2D port) showcase: eight scenes from the original pinball table to a body-count stress ramp.
+// World units are meters with y pointing up; every scene maps them to canvas pixels through lab().
+const { World, Vec2, Circle, Box, Polygon, Edge, Chain, AABB, RevoluteJoint, PrismaticJoint, DistanceJoint, WeldJoint, WheelJoint, RopeJoint, PulleyJoint, GearJoint, MouseJoint } = planck;
+const V = (x, y) => new Vec2(x, y);
+const TAU = Math.PI * 2;
+const COLORS = ["#f72585", "#ffb703", "#4cc9f0", "#7bd389", "#9d8cff", "#ff7b54"];
+const MUTED = "#9b998f", STEEL = "#4a5262", INK = "#e8e6df", AMBER = "#ffb703";
+const rootCss = getComputedStyle(document.documentElement);
+const FONT = rootCss.getPropertyValue("--font").trim() || "system-ui, sans-serif";
+const MONO = rootCss.getPropertyValue("--mono").trim() || "ui-monospace, monospace";
+const font = (weight, px, mono) => `${weight} ${px}px ${mono ? MONO : FONT}`;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const rnd = (lo, hi) => lo + Math.random() * (hi - lo);
+const below = (ctx) => ctx.controls.offsetHeight + 20;
 
-// Table outline: lower guides, straight sides and a semicircular top.
-const outline = [Vec2(2.9, 1.9), Vec2(0, 3.6), Vec2(0, 11)];
-for (let i = 1; i < 24; i++) {
-  const a = Math.PI - (i / 24) * Math.PI;
-  outline.push(Vec2(5 + 5 * Math.cos(a), 11 + 5 * Math.sin(a)));
+// Rounded caption on the canvas (CSS pixels). Returns its width so callers can lay chips out in a row.
+function chip(g, text, x, y, { color = INK, size = 11, align = "center", mono = false, fit = 0, bg = "rgba(14,16,19,.8)" } = {}) {
+  g.font = font(600, size, mono);
+  const w = g.measureText(text).width + 10, hh = size + 8;
+  let left = align === "center" ? x - w / 2 : align === "right" ? x - w : x;
+  if (fit) left = clamp(left, 4, fit - w - 4);
+  g.fillStyle = bg;
+  g.beginPath();
+  g.roundRect(left, y - hh / 2, w, hh, 5);
+  g.fill();
+  g.fillStyle = color;
+  g.textAlign = "left";
+  g.textBaseline = "middle";
+  g.fillText(text, left + 5, y + 0.5);
+  return w;
 }
-outline.push(Vec2(10, 11), Vec2(10, 3.6), Vec2(7.1, 1.9));
-ground.createFixture(new Chain(outline, false), { friction: 0.1, userData: "wall" });
-
-const BUMPERS = [Vec2(3.1, 9.4), Vec2(6.9, 9.4), Vec2(5, 11.3)];
-BUMPERS.forEach((p, i) => ground.createFixture(new Circle(p, 0.62), { restitution: 0.9, userData: "bumper" + i }));
-
-const SLINGS = [
-  [Vec2(0.8, 3.95), Vec2(0.8, 5.8), Vec2(2.3, 3.35)],
-  [Vec2(9.2, 3.95), Vec2(7.7, 3.35), Vec2(9.2, 5.8)],
-];
-SLINGS.forEach((v, i) => ground.createFixture(new Polygon(v), { restitution: 1.15, userData: "sling" + i }));
-
-// Lane dividers and rollover sensors near the top.
-const POSTS = [2.6, 4.2, 5.8, 7.4];
-POSTS.forEach((x) => ground.createFixture(new Box(0.07, 0.45, Vec2(x, 13.6), 0), { userData: "post" }));
-const LANES = [{ x: 3.4, ch: "台" }, { x: 5, ch: "灣" }, { x: 6.6, ch: "讚" }];
-LANES.forEach((l, i) => {
-  l.lit = false;
-  ground.createFixture(new Circle(Vec2(l.x, 13.6), 0.28), { isSensor: true, userData: "lane" + i });
-});
-
-// Flippers: tapered polygons hinged to the ground with motorised, limited revolute joints.
-function makeFlipper(pivot, dir) {
-  const body = world.createDynamicBody({ position: pivot, bullet: true });
-  const L = 1.6 * dir;
-  body.createFixture(new Polygon([Vec2(0, 0.17), Vec2(0, -0.17), Vec2(L, -0.06), Vec2(L, 0.06)]), { density: 2, friction: 0.6, userData: "flipper" });
-  body.createFixture(new Circle(Vec2(0, 0), 0.17), { density: 2, userData: "flipper" });
-  const joint = world.createJoint(new RevoluteJoint({
-    enableMotor: true, maxMotorTorque: 260, motorSpeed: 0,
-    enableLimit: true, lowerAngle: -0.45, upperAngle: 0.45,
-  }, ground, body, pivot));
-  return { body, joint, dir, len: 1.6, pivot, pressed: false, autoUntil: 0 };
+function dashLine(g, x1, y1, x2, y2, color = "rgba(255,255,255,.25)", w = 1) {
+  g.save();
+  g.setLineDash([5, 5]);
+  g.strokeStyle = color;
+  g.lineWidth = w;
+  g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+  g.restore();
 }
-const flippers = [makeFlipper(Vec2(3.0, 1.8), 1), makeFlipper(Vec2(7.0, 1.8), -1)];
-function updateMotors(now) {
-  for (const f of flippers) {
-    const up = f.pressed || f.autoUntil > now;
-    // Left flipper raises with positive (CCW) rotation, right flipper with negative.
-    f.joint.setMotorSpeed((up ? 22 : -14) * f.dir);
+function dot(g, x, y, r, color) {
+  g.fillStyle = color;
+  g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill();
+}
+function zigzag(g, x1, y1, x2, y2, n, amp, color) {
+  const dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy) || 1, nx = -dy / L, ny = dx / L;
+  g.beginPath(); g.moveTo(x1, y1);
+  for (let i = 1; i < n; i++) {
+    const t = i / n, s = i % 2 ? amp : -amp;
+    g.lineTo(x1 + dx * t + nx * s, y1 + dy * t + ny * s);
   }
+  g.lineTo(x2, y2);
+  g.strokeStyle = color; g.lineWidth = 1.5; g.stroke();
 }
 
-let ball = null;
-let ballNo = 0;
-let score = 0;
-const flashes = {};
-const trail = [];
-function newBall() {
-  if (ball) world.destroyBody(ball);
-  ballNo += 1;
-  document.getElementById("ballNo").textContent = "第 " + ballNo + " 球";
-  ball = world.createDynamicBody({ position: Vec2(4 + Math.random() * 2, 14.9), bullet: true });
-  ball.createFixture(new Circle(0.24), { density: 1.2, friction: 0.15, restitution: 0.3, userData: "ball" });
-  ball.setLinearVelocity(Vec2((Math.random() - 0.5) * 6, -1));
-  trail.length = 0;
-}
-const addScore = (n) => { score += n; document.getElementById("score").textContent = score.toLocaleString("zh-TW"); };
-
-// Contacts are collected during the step and handled afterwards (bodies are locked mid-step).
-const kicks = [];
-world.on("begin-contact", (c) => {
-  const a = c.getFixtureA().getUserData();
-  const b = c.getFixtureB().getUserData();
-  const other = a === "ball" ? b : b === "ball" ? a : null;
-  if (other) kicks.push(other);
-});
-function handleContacts(now) {
-  for (const tag of kicks.splice(0)) {
-    if (!ball) break;
-    if (tag.startsWith("bumper")) {
-      const p = BUMPERS[Number(tag.slice(6))];
-      const d = Vec2.sub(ball.getPosition(), p);
-      d.normalize();
-      ball.setLinearVelocity(Vec2.mul(d, 11));
-      flashes[tag] = now;
-      addScore(100);
-    } else if (tag.startsWith("sling")) {
-      flashes[tag] = now;
-      addScore(10);
-    } else if (tag.startsWith("lane")) {
-      const lane = LANES[Number(tag.slice(4))];
-      if (!lane.lit) { lane.lit = true; addScore(250); }
-      if (LANES.every((l) => l.lit)) {
-        addScore(2000);
-        flashes.bonus = now;
-        setTimeout(() => LANES.forEach((l) => (l.lit = false)), 900);
+// One planck World bound to a scene canvas: fixed-step loop, camera (meters to pixels), debug drawing
+// and mouse dragging through a MouseJoint. Scenes plug in p.layout / before / after / draw / onDown.
+function lab(ctx, { gravity = -10, hz = 60, vel = 8, pos = 3, drag = true, perFrame = false, cls = "" } = {}) {
+  const cv = document.createElement("canvas");
+  cv.className = "pl-cv" + (cls ? " " + cls : "");
+  ctx.el.appendChild(cv);
+  ctx.onCleanup(() => cv.remove());
+  const g = cv.getContext("2d");
+  const p = { cv, g, W: 0, H: 0, s: 30, ox: 0, oy: 0, dt: 1 / hz, vel, pos, speed: 1, time: 0, phys: 0, paint: 0, world: null, ground: null, mouse: null };
+  p.reset = (gy = gravity) => {
+    p.world = new World({ gravity: V(0, gy) });
+    p.ground = p.world.createBody();
+    p.ground.setUserData({ color: "#5d6880" });
+    p.mouse = null;
+    return p.world;
+  };
+  p.reset();
+  p.X = (x) => p.ox + x * p.s;
+  p.Y = (y) => p.oy - y * p.s;
+  p.toWorld = (px, py) => V((px - p.ox) / p.s, (p.oy - py) / p.s);
+  // Fit the world rect into the canvas. t: "auto" keeps the top margin small unless the rect would
+  // slide under the top-right control cluster, in which case it starts below the controls.
+  p.fit = (x0, y0, x1, y1, m = {}) => {
+    const r = m.r ?? 12, b = m.b ?? 12, l = m.l ?? 12;
+    const place = (t) => {
+      const aw = Math.max(40, p.W - l - r), ah = Math.max(40, p.H - t - b);
+      p.s = Math.min(aw / (x1 - x0), ah / (y1 - y0));
+      p.ox = l + (aw - (x1 - x0) * p.s) / 2 - x0 * p.s;
+      p.oy = t + (ah - (y1 - y0) * p.s) / 2 + y1 * p.s;
+    };
+    if (m.t === "auto") {
+      place(12);
+      const c = ctx.controls;
+      if (c.offsetHeight && p.X(x1) > p.W - 10 - c.offsetWidth && p.Y(y1) < 10 + c.offsetHeight) place(below(ctx));
+    } else place(m.t ?? 12);
+  };
+  p.kill = (b) => {
+    if (p.mouse && p.mouse.getBodyB() === b) { p.world.destroyJoint(p.mouse); p.mouse = null; }
+    p.world.destroyBody(b);
+  };
+  p.tx = (b, v) => {
+    const t = b.getTransform();
+    return { x: t.q.c * v.x - t.q.s * v.y + t.p.x, y: t.q.s * v.x + t.q.c * v.y + t.p.y };
+  };
+  // Adds one fixture outline to the current path. Circles return their world center.
+  p.path = (b, f) => {
+    const sh = f.getShape(), type = sh.getType();
+    if (type === "circle") {
+      const c = p.tx(b, sh.getCenter());
+      g.moveTo(p.X(c.x) + sh.getRadius() * p.s, p.Y(c.y));
+      g.arc(p.X(c.x), p.Y(c.y), sh.getRadius() * p.s, 0, TAU);
+      return c;
+    }
+    const pts = type === "edge" ? [sh.m_vertex1, sh.m_vertex2] : sh.m_vertices;
+    const n = type === "edge" ? 2 : sh.m_count;
+    for (let i = 0; i < n; i++) {
+      const q = p.tx(b, pts[i]);
+      i ? g.lineTo(p.X(q.x), p.Y(q.y)) : g.moveTo(p.X(q.x), p.Y(q.y));
+    }
+    if (type === "polygon") g.closePath();
+    return null;
+  };
+  p.drawBody = (b, col) => {
+    const ud = b.getUserData() || {};
+    if (ud.hidden) return;
+    col = col || ud.color || (b.isStatic() ? STEEL : b.isKinematic() ? COLORS[4] : COLORS[2]);
+    g.globalAlpha = b.isDynamic() && !b.isAwake() ? 0.45 : 1;
+    for (let f = b.getFixtureList(); f; f = f.getNext()) {
+      const fu = f.getUserData(), fc = (fu && fu.color) || col, type = f.getShape().getType();
+      g.beginPath();
+      const c = p.path(b, f);
+      if (type === "edge" || type === "chain") {
+        g.strokeStyle = fc; g.lineWidth = 2.5; g.lineJoin = "round"; g.stroke();
+        continue;
+      }
+      if (f.isSensor()) {
+        g.setLineDash([4, 4]); g.strokeStyle = fc; g.lineWidth = 1.5; g.stroke(); g.setLineDash([]);
+        continue;
+      }
+      g.fillStyle = fc; g.fill();
+      g.strokeStyle = "rgba(0,0,0,.4)"; g.lineWidth = 1; g.stroke();
+      if (c && !b.isStatic()) {
+        const a = b.getAngle(), r = f.getShape().getRadius();
+        g.beginPath();
+        g.moveTo(p.X(c.x), p.Y(c.y));
+        g.lineTo(p.X(c.x + Math.cos(a) * r), p.Y(c.y + Math.sin(a) * r));
+        g.strokeStyle = "rgba(0,0,0,.45)"; g.lineWidth = 1.5; g.stroke();
       }
     }
-  }
-}
-
-// Auto play: flip whenever the ball is close above a flipper and moving down.
-let auto = true;
-function autoPlay(now) {
-  if (!auto || !ball) return;
-  const p = ball.getPosition();
-  const v = ball.getLinearVelocity();
-  for (const f of flippers) {
-    const dx = (p.x - f.pivot.x) * f.dir;
-    if (dx > 0.35 && dx < 1.75 && p.y < 2.75 && p.y > 0.6 && v.y < 1 && f.autoUntil < now - 0.25) f.autoUntil = now + 0.22;
-  }
-}
-
-// Input: hold buttons, arrow keys, or press the left/right half of the canvas.
-const setAuto = (on) => { auto = on; document.getElementById("auto").setAttribute("aria-pressed", String(on)); };
-function press(i, on) {
-  if (on) setAuto(false);
-  flippers[i].pressed = on;
-}
-[["flipL", 0], ["flipR", 1]].forEach(([id, i]) => {
-  const el = document.getElementById(id);
-  el.addEventListener("pointerdown", (e) => { e.preventDefault(); press(i, true); });
-  for (const t of ["pointerup", "pointerleave", "pointercancel"]) el.addEventListener(t, () => press(i, false));
-});
-const canvas = document.getElementById("cv");
-const held = new Map();
-canvas.addEventListener("pointerdown", (e) => { const i = e.clientX < innerWidth / 2 ? 0 : 1; held.set(e.pointerId, i); press(i, true); });
-const release = (e) => { if (held.has(e.pointerId)) { press(held.get(e.pointerId), false); held.delete(e.pointerId); } };
-canvas.addEventListener("pointerup", release);
-canvas.addEventListener("pointercancel", release);
-const KEYS = { ArrowLeft: 0, KeyZ: 0, ArrowRight: 1, Slash: 1, KeyM: 1 };
-addEventListener("keydown", (e) => { if (e.code in KEYS) press(KEYS[e.code], true); if (e.code === "Space") newBall(); });
-addEventListener("keyup", (e) => { if (e.code in KEYS) press(KEYS[e.code], false); });
-document.getElementById("newBall").addEventListener("click", newBall);
-document.getElementById("auto").addEventListener("click", () => setAuto(!auto));
-
-// Rendering: world (m) to screen (px) with y flipped.
-const ctx = canvas.getContext("2d");
-let s = 1, ox = 0, oy = 0;
-function resize() {
-  const dpr = Math.min(devicePixelRatio || 1, 2);
-  canvas.width = innerWidth * dpr;
-  canvas.height = innerHeight * dpr;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const top = 58;
-  const bottom = 64;
-  s = Math.min((innerHeight - top - bottom) / 16.4, (innerWidth - 24) / 10.4);
-  ox = (innerWidth - 10 * s) / 2;
-  oy = top + (innerHeight - top - bottom - 16.4 * s) / 2 + 16.1 * s;
-}
-const X = (x) => ox + x * s;
-const Y = (y) => oy - y * s;
-function poly(pts) {
-  ctx.beginPath();
-  pts.forEach((p, i) => (i ? ctx.lineTo(X(p.x), Y(p.y)) : ctx.moveTo(X(p.x), Y(p.y))));
-}
-const glow = (t, now) => Math.max(0, 1 - (now - (flashes[t] || -9)) / 0.25);
-
-function draw(now) {
-  ctx.clearRect(0, 0, innerWidth, innerHeight);
-  // Playfield.
-  poly(outline);
-  ctx.lineTo(X(5.6), Y(-0.3));
-  ctx.lineTo(X(4.4), Y(-0.3));
-  ctx.closePath();
-  const bg = ctx.createLinearGradient(0, Y(16), 0, Y(0));
-  bg.addColorStop(0, "#1b2552");
-  bg.addColorStop(1, "#0c1027");
-  ctx.fillStyle = bg;
-  ctx.fill();
-  ctx.save();
-  ctx.font = "800 " + Math.round(s * 0.95) + "px " + getComputedStyle(document.body).fontFamily;
-  ctx.textAlign = "center";
-  ctx.fillStyle = "rgba(157,140,255," + (0.13 + glow("bonus", now) * 0.6) + ")";
-  ctx.fillText("台灣彈珠台", X(5), Y(6.6));
-  ctx.restore();
-  // Walls.
-  ctx.lineJoin = "round";
-  ctx.lineCap = "round";
-  ctx.shadowColor = "#4cc9f0";
-  ctx.shadowBlur = 12;
-  ctx.strokeStyle = "#4cc9f0";
-  ctx.lineWidth = Math.max(2, s * 0.09);
-  poly(outline);
-  ctx.stroke();
-  // Posts and lane lights.
-  ctx.fillStyle = "#4cc9f0";
-  POSTS.forEach((x) => ctx.fillRect(X(x - 0.07), Y(14.05), 0.14 * s, 0.9 * s));
-  ctx.shadowBlur = 0;
-  ctx.font = "700 " + Math.round(s * 0.36) + "px " + getComputedStyle(document.body).fontFamily;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  LANES.forEach((l) => {
-    ctx.beginPath();
-    ctx.arc(X(l.x), Y(13.6), s * 0.3, 0, Math.PI * 2);
-    ctx.fillStyle = l.lit ? "#ffb703" : "rgba(255,255,255,.08)";
-    ctx.fill();
-    ctx.fillStyle = l.lit ? "#0e1013" : "rgba(255,255,255,.55)";
-    ctx.fillText(l.ch, X(l.x), Y(13.6) + 1);
-  });
-  // Slingshots.
-  SLINGS.forEach((v, i) => {
-    const g = glow("sling" + i, now);
-    poly(v);
-    ctx.closePath();
-    ctx.fillStyle = "rgba(247,37,133," + (0.35 + g * 0.6) + ")";
-    ctx.shadowColor = "#f72585";
-    ctx.shadowBlur = 10 + g * 20;
-    ctx.fill();
-  });
-  // Bumpers.
-  BUMPERS.forEach((p, i) => {
-    const g = glow("bumper" + i, now);
-    const r = s * (0.62 + g * 0.08);
-    ctx.shadowColor = "#ffb703";
-    ctx.shadowBlur = 14 + g * 30;
-    ctx.beginPath();
-    ctx.arc(X(p.x), Y(p.y), r, 0, Math.PI * 2);
-    ctx.fillStyle = g > 0 ? "#fff3c4" : "#ffb703";
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.beginPath();
-    ctx.arc(X(p.x), Y(p.y), r * 0.55, 0, Math.PI * 2);
-    ctx.fillStyle = "#0e1013";
-    ctx.fill();
-    ctx.fillStyle = "#ffb703";
-    ctx.font = "700 " + Math.round(s * 0.26) + "px " + getComputedStyle(document.body).fontFamily;
-    ctx.fillText("100", X(p.x), Y(p.y) + 1);
-  });
-  // Flippers.
-  ctx.shadowColor = "#7bd389";
-  ctx.shadowBlur = 12;
-  ctx.fillStyle = "#7bd389";
-  for (const f of flippers) {
-    const b = f.body;
-    for (let fx = b.getFixtureList(); fx; fx = fx.getNext()) {
-      const shape = fx.getShape();
-      if (shape.getType() === "polygon") {
-        poly(shape.m_vertices.map((v) => b.getWorldPoint(v)));
-        ctx.closePath();
-      } else {
-        const c = b.getWorldPoint(shape.getCenter());
-        ctx.beginPath();
-        ctx.arc(X(c.x), Y(c.y), shape.getRadius() * s, 0, Math.PI * 2);
-      }
-      ctx.fill();
+    g.globalAlpha = 1;
+  };
+  p.drawJoint = (j) => {
+    const type = j.getType(), ud = j.getUserData() || {};
+    if (type === "gear-joint" || ud.style === "none") return;
+    const a = j.getAnchorA(), b = j.getAnchorB();
+    const ax = p.X(a.x), ay = p.Y(a.y), bx = p.X(b.x), by = p.Y(b.y);
+    if (type === "mouse-joint") { dashLine(g, ax, ay, bx, by, AMBER, 1.5); dot(g, ax, ay, 4, AMBER); return; }
+    if (type === "pulley-joint") {
+      const ga = j.getGroundAnchorA(), gb = j.getGroundAnchorB();
+      g.beginPath(); g.moveTo(ax, ay); g.lineTo(p.X(ga.x), p.Y(ga.y)); g.lineTo(p.X(gb.x), p.Y(gb.y)); g.lineTo(bx, by);
+      g.strokeStyle = "rgba(232,230,223,.7)"; g.lineWidth = 1.5; g.stroke();
+      return;
     }
-  }
-  ctx.shadowBlur = 0;
-  // Ball with a short trail.
-  if (ball) {
-    const p = ball.getPosition();
-    trail.push({ x: p.x, y: p.y });
-    if (trail.length > 14) trail.shift();
-    trail.forEach((t, i) => {
-      ctx.beginPath();
-      ctx.arc(X(t.x), Y(t.y), s * 0.24 * (i / trail.length), 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(200,220,255," + (i / trail.length) * 0.25 + ")";
-      ctx.fill();
+    if (type === "distance-joint" || type === "rope-joint") {
+      if (ud.style === "spring") zigzag(g, ax, ay, bx, by, 12, 5, "rgba(232,230,223,.8)");
+      else { g.beginPath(); g.moveTo(ax, ay); g.lineTo(bx, by); g.strokeStyle = "rgba(232,230,223,.6)"; g.lineWidth = 2; g.stroke(); }
+      dot(g, ax, ay, 3, INK);
+      return;
+    }
+    dot(g, bx, by, 2.5, "rgba(232,230,223,.8)");
+  };
+  p.drawWorld = () => {
+    for (let b = p.world.getBodyList(); b; b = b.getNext()) p.drawBody(b);
+    for (let j = p.world.getJointList(); j; j = j.getNext()) p.drawJoint(j);
+  };
+  // First fixture under a world point, filtered by test(body, fixture).
+  p.pick = (w, test = () => true) => {
+    let hit = null;
+    p.world.queryAABB(new AABB(V(w.x - 0.01, w.y - 0.01), V(w.x + 0.01, w.y + 0.01)), (f) => {
+      if (f.testPoint(w) && test(f.getBody(), f)) { hit = f.getBody(); return false; }
+      return true;
     });
-    const g = ctx.createRadialGradient(X(p.x) - s * 0.08, Y(p.y) - s * 0.08, s * 0.03, X(p.x), Y(p.y), s * 0.24);
-    g.addColorStop(0, "#ffffff");
-    g.addColorStop(1, "#8d99ae");
-    ctx.beginPath();
-    ctx.arc(X(p.x), Y(p.y), s * 0.24, 0, Math.PI * 2);
-    ctx.fillStyle = g;
-    ctx.fill();
-  }
+    return hit;
+  };
+  let ptr = null;
+  p.ptr = () => ptr;
+  const evPt = (e) => { const r = cv.getBoundingClientRect(); return p.toWorld(e.clientX - r.left, e.clientY - r.top); };
+  ctx.on(cv, "pointerdown", (e) => {
+    const w = (ptr = evPt(e));
+    cv.setPointerCapture(e.pointerId);
+    if (p.onDown && p.onDown(w, e)) return;
+    if (!drag) return;
+    const b = p.pick(w, (b) => b.isDynamic());
+    if (!b) return;
+    p.mouse = p.world.createJoint(new MouseJoint({ maxForce: 1000 * b.getMass(), frequencyHz: 5, dampingRatio: 0.7 }, p.ground, b, w));
+  });
+  ctx.on(cv, "pointermove", (e) => {
+    const w = (ptr = evPt(e));
+    if (p.mouse) p.mouse.setTarget(w);
+    if (p.onMove) p.onMove(w, e);
+  });
+  const up = (e) => {
+    if (p.mouse) { p.world.destroyJoint(p.mouse); p.mouse = null; }
+    if (p.onUp) p.onUp(e);
+  };
+  ctx.on(cv, "pointerup", up);
+  ctx.on(cv, "pointercancel", up);
+  ctx.on(cv, "pointerleave", (e) => { if (!e.buttons) ptr = null; });
+
+  const stepOnce = () => {
+    if (p.before) p.before(p.dt);
+    p.world.step(p.dt, p.vel, p.pos);
+    p.time += p.dt;
+    if (p.after) p.after(p.dt);
+  };
+  p.go = () => {
+    const size = ({ width, height }) => {
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      p.W = width; p.H = height;
+      cv.width = Math.round(width * dpr); cv.height = Math.round(height * dpr);
+      cv.style.width = width + "px"; cv.style.height = height + "px";
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (p.layout) p.layout(width, height);
+    };
+    size(ctx.size());
+    ctx.onResize(size);
+    let acc = 0;
+    ctx.raf((t, ms) => {
+      const t0 = performance.now();
+      if (perFrame) stepOnce();
+      else {
+        acc = Math.min(acc + (ms / 1000) * p.speed, p.dt * 4);
+        while (acc >= p.dt) { acc -= p.dt; stepOnce(); }
+      }
+      const t1 = performance.now();
+      g.clearRect(0, 0, p.W, p.H);
+      p.draw ? p.draw(g) : p.drawWorld();
+      const t2 = performance.now();
+      p.phys += (t1 - t0 - p.phys) * 0.1;
+      p.paint += (t2 - t1 - p.paint) * 0.1;
+    });
+  };
+  return p;
 }
 
-// Fixed-step simulation: several small steps per frame keep the fast ball from tunnelling.
-let last = performance.now();
-let acc = 0;
-let drainAt = 0;
-function frame(t) {
-  const now = t / 1000;
-  acc += Math.min(0.05, (t - last) / 1000);
-  last = t;
-  while (acc >= 1 / 120) {
-    autoPlay(now);
-    updateMotors(now);
-    world.step(1 / 120, 8, 3);
-    handleContacts(now);
-    acc -= 1 / 120;
-  }
-  if (ball && ball.getPosition().y < -0.6) {
-    world.destroyBody(ball);
-    ball = null;
-    drainAt = now;
-  }
-  if (!ball && now - drainAt > 0.9) newBall();
-  draw(now);
-  requestAnimationFrame(frame);
-}
-addEventListener("resize", resize);
-resize();
-newBall();
-requestAnimationFrame(frame);
+Showcase.run({ scenes: [
+  {
+    id: "pinball", title: "台灣彈珠台",
+    api: "new Chain(outline) + RevoluteJoint({ enableMotor, enableLimit }) + world.on(\"begin-contact\")",
+    desc: "原本的招牌示範升級：Chain 圍出台面，擋板是有馬達與角度限制的 RevoluteJoint，彈簧柱靠 restitution，「台灣讚」是 isSensor 感應器。中央多了一支 kinematic 旋轉桿，還能多球同時開打。",
+    hint: "點畫面左半／右半或按 ← →（Z、M）打擋板・空白鍵發新球",
+    mount(ctx) {
+      ctx.el.classList.add("pinball");
+      let auto = true;
+      ctx.button("新球", () => serve(1));
+      ctx.button("多球 ×3", () => serve(3), { primary: true });
+      const autoBtn = ctx.toggle("自動接球", true, (v) => { auto = v; });
+      const p = lab(ctx, { gravity: -11, hz: 120, drag: false, cls: "flip" });
+      const { world, ground } = p;
+
+      // Table outline: lower guides, straight sides and a semicircular top.
+      const outline = [V(2.9, 1.9), V(0, 3.6), V(0, 11)];
+      for (let i = 1; i < 24; i++) {
+        const a = Math.PI - (i / 24) * Math.PI;
+        outline.push(V(5 + 5 * Math.cos(a), 11 + 5 * Math.sin(a)));
+      }
+      outline.push(V(10, 11), V(10, 3.6), V(7.1, 1.9));
+      ground.createFixture(new Chain(outline, false), { friction: 0.1, userData: "wall" });
+      const BUMPERS = [V(3.1, 9.4), V(6.9, 9.4), V(5, 11.3)];
+      BUMPERS.forEach((c, i) => ground.createFixture(new Circle(c, 0.62), { restitution: 0.9, userData: "bumper" + i }));
+      const SLINGS = [
+        [V(0.8, 3.95), V(0.8, 5.8), V(2.3, 3.35)],
+        [V(9.2, 3.95), V(7.7, 3.35), V(9.2, 5.8)],
+      ];
+      SLINGS.forEach((v, i) => ground.createFixture(new Polygon(v), { restitution: 1.15, userData: "sling" + i }));
+      const POSTS = [2.6, 4.2, 5.8, 7.4];
+      POSTS.forEach((x) => ground.createFixture(new Box(0.07, 0.45, V(x, 13.6), 0), { userData: "post" }));
+      const LANES = [{ x: 3.4, ch: "台" }, { x: 5, ch: "灣" }, { x: 6.6, ch: "讚" }];
+      LANES.forEach((l, i) => { l.lit = false; ground.createFixture(new Circle(V(l.x, 13.6), 0.28), { isSensor: true, userData: "lane" + i }); });
+      // Kinematic spinner: moves at a set angular velocity, ignores forces, still knocks balls around.
+      const spinner = world.createKinematicBody({ position: V(5, 5.25), angularVelocity: 2.6 });
+      spinner.createFixture(new Box(0.7, 0.07), { friction: 0.2, userData: "spin" });
+
+      function makeFlipper(pivot, dir) {
+        const body = world.createDynamicBody({ position: pivot, bullet: true });
+        const L = 1.6 * dir;
+        body.createFixture(new Polygon([V(0, 0.17), V(0, -0.17), V(L, -0.06), V(L, 0.06)]), { density: 2, friction: 0.6, userData: "flipper" });
+        body.createFixture(new Circle(V(0, 0), 0.17), { density: 2, userData: "flipper" });
+        const joint = world.createJoint(new RevoluteJoint({ enableMotor: true, maxMotorTorque: 260, motorSpeed: 0, enableLimit: true, lowerAngle: -0.45, upperAngle: 0.45 }, ground, body, pivot));
+        return { body, joint, dir, pivot, pressed: false, autoUntil: 0 };
+      }
+      const flippers = [makeFlipper(V(3, 1.8), 1), makeFlipper(V(7, 1.8), -1)];
+
+      const balls = [], flashes = {}, pops = [], kicks = [];
+      let ballNo = 0, score = 0, drainAt = 0, bonusPending = false;
+      function serve(n) {
+        for (let i = 0; i < n && balls.length < 6; i++) {
+          ballNo += 1;
+          const x = n > 1 ? 3.6 + i * 1.4 + rnd(-0.2, 0.2) : rnd(4, 6);
+          const b = world.createDynamicBody({ position: V(x, 14.9), bullet: true });
+          b.createFixture(new Circle(0.24), { density: 1.2, friction: 0.15, restitution: 0.3, userData: "ball" });
+          b.setLinearVelocity(V(rnd(-3, 3), -1));
+          b.setUserData({ trail: [] });
+          balls.push(b);
+        }
+      }
+      const addScore = (n, x, y) => { score += n; pops.push({ n, x, y, t: p.time }); if (pops.length > 20) pops.shift(); };
+      // Contacts are queued during the step and handled afterwards (the world is locked mid-step).
+      world.on("begin-contact", (c) => {
+        const fa = c.getFixtureA(), fb = c.getFixtureB(), a = fa.getUserData(), b = fb.getUserData();
+        if (a === "ball" && b !== "ball") kicks.push([fa.getBody(), b]);
+        else if (b === "ball" && a !== "ball") kicks.push([fb.getBody(), a]);
+      });
+      function handle() {
+        for (const [ball, tag] of kicks.splice(0)) {
+          if (!tag || !balls.includes(ball)) continue;
+          const q = ball.getPosition();
+          if (tag.startsWith("bumper")) {
+            const c = BUMPERS[+tag.slice(6)], d = V(q.x - c.x, q.y - c.y);
+            d.normalize();
+            ball.setLinearVelocity(V(d.x * 11, d.y * 11));
+            flashes[tag] = p.time;
+            addScore(100, c.x, c.y + 0.9);
+          } else if (tag.startsWith("sling")) {
+            flashes[tag] = p.time; addScore(10, q.x, q.y + 0.5);
+          } else if (tag === "spin") {
+            flashes.spin = p.time; addScore(5, q.x, q.y + 0.4);
+          } else if (tag.startsWith("lane")) {
+            const lane = LANES[+tag.slice(4)];
+            if (!lane.lit) { lane.lit = true; addScore(250, lane.x, 14.3); }
+            if (!bonusPending && LANES.every((l) => l.lit)) {
+              bonusPending = true;
+              flashes.bonus = p.time;
+              addScore(2000, 5, 12.5);
+              ctx.timeout(() => { LANES.forEach((l) => (l.lit = false)); bonusPending = false; }, 900);
+            }
+          }
+        }
+      }
+      p.before = () => {
+        const now = p.time;
+        if (auto) {
+          for (const b of balls) {
+            const q = b.getPosition(), v = b.getLinearVelocity();
+            for (const f of flippers) {
+              const dx = (q.x - f.pivot.x) * f.dir;
+              if (dx > 0.35 && dx < 1.75 && q.y < 2.75 && q.y > 0.6 && v.y < 1 && f.autoUntil < now - 0.25) f.autoUntil = now + 0.22;
+            }
+          }
+        }
+        // Left flipper raises with positive (CCW) rotation, right flipper with negative.
+        for (const f of flippers) f.joint.setMotorSpeed((f.pressed || f.autoUntil > now ? 22 : -14) * f.dir);
+      };
+      p.after = () => {
+        handle();
+        for (let i = balls.length - 1; i >= 0; i--) {
+          if (balls[i].getPosition().y < -0.6) { world.destroyBody(balls[i]); balls.splice(i, 1); drainAt = p.time; }
+        }
+        if (!balls.length && p.time - drainAt > 0.9) serve(1);
+      };
+
+      // Input: press the left or right half of the table, or use the keyboard.
+      const press = (i, on) => {
+        if (on && auto) { auto = false; autoBtn.setAttribute("aria-pressed", "false"); }
+        flippers[i].pressed = on;
+      };
+      const held = new Map();
+      p.onDown = (w, e) => { const i = w.x < 5 ? 0 : 1; held.set(e.pointerId, i); press(i, true); return true; };
+      p.onUp = (e) => { if (held.has(e.pointerId)) { press(held.get(e.pointerId), false); held.delete(e.pointerId); } };
+      const KEYS = { ArrowLeft: 0, KeyZ: 0, ArrowRight: 1, KeyM: 1, Slash: 1 };
+      const skip = (e) => e.target && e.target.closest && e.target.closest('[role="tablist"], input, select, textarea');
+      ctx.on(window, "keydown", (e) => {
+        if (skip(e)) return;
+        if (e.code in KEYS) { e.preventDefault(); if (!e.repeat) press(KEYS[e.code], true); }
+        else if (e.code === "Space" && !(e.target.closest && e.target.closest("button"))) { e.preventDefault(); serve(1); }
+      });
+      ctx.on(window, "keyup", (e) => { if (e.code in KEYS) press(KEYS[e.code], false); });
+
+      p.layout = () => p.fit(-0.2, -0.3, 10.2, 16.1, { t: "auto" });
+      p.draw = (g) => {
+        const s = p.s, X = p.X, Y = p.Y, now = p.time;
+        const glow = (k) => Math.max(0, 1 - (now - (flashes[k] ?? -9)) / 0.25);
+        const poly = (pts) => { g.beginPath(); pts.forEach((q, i) => (i ? g.lineTo(X(q.x), Y(q.y)) : g.moveTo(X(q.x), Y(q.y)))); };
+        g.lineJoin = "round"; g.lineCap = "round";
+        poly(outline); g.lineTo(X(5.6), Y(-0.3)); g.lineTo(X(4.4), Y(-0.3)); g.closePath();
+        const bg = g.createLinearGradient(0, Y(16), 0, Y(0));
+        bg.addColorStop(0, "#1b2552"); bg.addColorStop(1, "#0c1027");
+        g.fillStyle = bg; g.fill();
+        g.textAlign = "center"; g.textBaseline = "middle";
+        g.font = font(800, Math.round(s * 0.95));
+        g.fillStyle = `rgba(157,140,255,${0.13 + glow("bonus") * 0.6})`;
+        g.fillText("台灣彈珠台", X(5), Y(7.6));
+        g.font = font(700, Math.round(s * 0.55), true);
+        g.fillStyle = "rgba(255,183,3,.85)";
+        g.fillText(score.toLocaleString("zh-TW"), X(5), Y(6.62));
+        g.font = font(600, Math.round(s * 0.3));
+        g.fillStyle = "rgba(255,255,255,.45)";
+        g.fillText(`第 ${ballNo} 球・場上 ${balls.length} 顆`, X(5), Y(4.12));
+        // Walls and lane posts.
+        g.shadowColor = "#4cc9f0"; g.shadowBlur = 12;
+        g.strokeStyle = "#4cc9f0"; g.lineWidth = Math.max(2, s * 0.09);
+        poly(outline); g.stroke();
+        g.fillStyle = "#4cc9f0";
+        POSTS.forEach((x) => g.fillRect(X(x - 0.07), Y(14.05), 0.14 * s, 0.9 * s));
+        g.shadowBlur = 0;
+        g.font = font(700, Math.round(s * 0.36));
+        LANES.forEach((l) => {
+          g.beginPath(); g.arc(X(l.x), Y(13.6), s * 0.3, 0, TAU);
+          g.fillStyle = l.lit ? "#ffb703" : "rgba(255,255,255,.08)"; g.fill();
+          g.fillStyle = l.lit ? "#0e1013" : "rgba(255,255,255,.55)";
+          g.fillText(l.ch, X(l.x), Y(13.6) + 1);
+        });
+        SLINGS.forEach((v, i) => {
+          const k = glow("sling" + i);
+          poly(v); g.closePath();
+          g.fillStyle = `rgba(247,37,133,${0.35 + k * 0.6})`;
+          g.shadowColor = "#f72585"; g.shadowBlur = 10 + k * 20;
+          g.fill();
+        });
+        BUMPERS.forEach((c, i) => {
+          const k = glow("bumper" + i), r = s * (0.62 + k * 0.08);
+          g.shadowColor = "#ffb703"; g.shadowBlur = 14 + k * 30;
+          g.beginPath(); g.arc(X(c.x), Y(c.y), r, 0, TAU);
+          g.fillStyle = k > 0 ? "#fff3c4" : "#ffb703"; g.fill();
+          g.shadowBlur = 0;
+          g.beginPath(); g.arc(X(c.x), Y(c.y), r * 0.55, 0, TAU);
+          g.fillStyle = "#0e1013"; g.fill();
+          g.fillStyle = "#ffb703";
+          g.font = font(700, Math.round(s * 0.26), true);
+          g.fillText("100", X(c.x), Y(c.y) + 1);
+        });
+        const sk = glow("spin");
+        g.shadowColor = "#9d8cff"; g.shadowBlur = 8 + sk * 22;
+        g.fillStyle = sk > 0 ? "#ddd6ff" : "#9d8cff";
+        g.beginPath(); p.path(spinner, spinner.getFixtureList()); g.fill();
+        g.shadowBlur = 0;
+        dot(g, X(5), Y(5.25), Math.max(2, s * 0.09), "#0e1013");
+        g.shadowColor = "#7bd389"; g.shadowBlur = 12; g.fillStyle = "#7bd389";
+        for (const f of flippers) {
+          for (let fx = f.body.getFixtureList(); fx; fx = fx.getNext()) { g.beginPath(); p.path(f.body, fx); g.fill(); }
+        }
+        g.shadowBlur = 0;
+        for (const b of balls) {
+          const q = b.getPosition(), tr = b.getUserData().trail;
+          tr.push(q.x, q.y);
+          if (tr.length > 28) tr.splice(0, 2);
+          const n = tr.length / 2;
+          for (let i = 0; i < n; i++) {
+            g.beginPath(); g.arc(X(tr[2 * i]), Y(tr[2 * i + 1]), s * 0.24 * (i / n), 0, TAU);
+            g.fillStyle = `rgba(200,220,255,${(i / n) * 0.25})`; g.fill();
+          }
+          const gr = g.createRadialGradient(X(q.x) - s * 0.08, Y(q.y) - s * 0.08, s * 0.03, X(q.x), Y(q.y), s * 0.24);
+          gr.addColorStop(0, "#ffffff"); gr.addColorStop(1, "#8d99ae");
+          g.beginPath(); g.arc(X(q.x), Y(q.y), s * 0.24, 0, TAU);
+          g.fillStyle = gr; g.fill();
+        }
+        g.font = font(700, Math.max(10, Math.round(s * 0.32)), true);
+        for (let i = pops.length - 1; i >= 0; i--) {
+          const o = pops[i], age = now - o.t;
+          if (age > 0.7) { pops.splice(i, 1); continue; }
+          g.fillStyle = `rgba(255,243,196,${1 - age / 0.7})`;
+          g.fillText("+" + o.n, X(o.x), Y(o.y + age * 1.2));
+        }
+      };
+      serve(1);
+      p.go();
+    },
+  },
+  {
+    id: "shapes", title: "形狀與剛體",
+    api: "new Circle / Box / Polygon / Edge / Chain + world.createKinematicBody()",
+    desc: "四種形狀加上「一個剛體掛多個 Fixture」的組合體（白點是質心），落在 Edge 斜坡與 Chain 起伏地形上。紫色風車與平台是 kinematic：照設定速度運動、不受力，卻能推動別人。",
+    hint: "拖曳任何物體・上方切換要掉落的形狀",
+    mount(ctx) {
+      let kind = 0, ww = 0, drops = [], mill = null, plat = null, next = 0;
+      ctx.group(["混合", "圓形", "方塊", "多邊形", "組合"], 0, (i) => { kind = i; });
+      ctx.button("清空", () => drops.splice(0).forEach((b) => p.kill(b)));
+      const p = lab(ctx);
+      const NAMES = ["Circle", "Box", "Polygon", "多 Fixture 組合"];
+      function drop(x, y) {
+        const k = kind ? kind - 1 : Math.floor(Math.random() * 4);
+        const b = p.world.createDynamicBody({ position: V(x, y), angle: rnd(0, TAU) });
+        const fd = { density: 1, friction: 0.4, restitution: 0.15 };
+        if (k === 0) b.createFixture(new Circle(rnd(0.25, 0.5)), fd);
+        else if (k === 1) b.createFixture(new Box(rnd(0.25, 0.5), rnd(0.2, 0.45)), fd);
+        else if (k === 2) {
+          const n = 3 + Math.floor(Math.random() * 5), r = rnd(0.38, 0.55), pts = [];
+          for (let i = 0; i < n; i++) { const a = ((i + rnd(-0.3, 0.3)) / n) * TAU; pts.push(V(Math.cos(a) * r, Math.sin(a) * r)); }
+          b.createFixture(new Polygon(pts), fd);
+        } else {
+          b.createFixture(new Box(0.55, 0.12), fd);
+          b.createFixture(new Box(0.12, 0.4, V(-0.43, 0.28), 0), fd);
+          b.createFixture(new Circle(V(0.5, 0.18), 0.22), fd);
+        }
+        b.setUserData({ color: COLORS[k], compound: k === 3 });
+        drops.push(b);
+        if (drops.length > 45) p.kill(drops.shift());
+      }
+      function build(nw) {
+        ww = nw;
+        p.reset();
+        drops = [];
+        const pts = [V(0, 14.4)];
+        for (let i = 0; i <= 24; i++) { const x = (ww * i) / 24; pts.push(V(x, 1 + 0.35 * Math.sin(0.9 * x) + 0.22 * Math.cos(2.3 * x))); }
+        pts.push(V(ww, 14.4));
+        p.ground.createFixture(new Chain(pts, false), { friction: 0.6 });
+        p.ground.createFixture(new Edge(V(0, 9.2), V(0.3 * ww, 7.6)), { friction: 0.2 });
+        p.ground.createFixture(new Edge(V(ww, 9.2), V(0.7 * ww, 7.6)), { friction: 0.2 });
+        const arm = Math.min(2.2, 0.17 * ww);
+        mill = p.world.createKinematicBody({ position: V(ww / 2, 6.6), angularVelocity: 0.9 });
+        mill.createFixture(new Box(arm, 0.12));
+        mill.createFixture(new Box(0.12, arm));
+        mill.setUserData({ color: COLORS[4] });
+        plat = p.world.createKinematicBody({ position: V(0.3 * ww, 3), linearVelocity: V(2, 0) });
+        plat.createFixture(new Box(1.4, 0.16), { friction: 0.8 });
+        plat.setUserData({ color: COLORS[4] });
+        for (let i = 0; i < 14; i++) drop(rnd(1, ww - 1), rnd(10, 13.6));
+      }
+      p.layout = (W, H) => {
+        const t = below(ctx), nw = clamp(((W - 24) / Math.max(120, H - t - 46)) * 14.4, 10, 26);
+        if (Math.abs(nw - ww) > 0.5) build(nw);
+        p.fit(0, 0, ww, 14.4, { t, b: 34 });
+      };
+      p.before = () => {
+        const x = plat.getPosition().x;
+        if (x > 0.78 * ww - 1.4) plat.setLinearVelocity(V(-2, 0));
+        else if (x < 0.22 * ww + 1.4) plat.setLinearVelocity(V(2, 0));
+        if (p.time > next) { next = p.time + 0.5; drop(rnd(1, ww - 1), 13.2); }
+      };
+      p.draw = (g) => {
+        p.drawWorld();
+        for (const b of drops) {
+          if (!b.getUserData().compound) continue;
+          const c = b.getWorldCenter();
+          dot(g, p.X(c.x), p.Y(c.y), 2.6, "#ffffff");
+        }
+        const fit = p.W;
+        chip(g, "Edge 斜坡", p.X(0.15 * ww), p.Y(8.4) - 18, { color: MUTED, fit });
+        chip(g, "Chain 地形", p.X(ww - 1.4), p.Y(2.2), { color: MUTED, fit });
+        const mc = mill.getPosition();
+        chip(g, "kinematic", p.X(mc.x), p.Y(mc.y), { color: COLORS[4], mono: true, size: 10 });
+        chip(g, `剛體 ${p.world.getBodyCount()}・接觸 ${p.world.getContactCount()}`, p.X(0) + 6, p.Y(14.4) + 14, { align: "left" });
+        let x = 8;
+        NAMES.forEach((n, i) => { x += chip(g, "● " + n, x, p.H - 15, { align: "left", color: COLORS[i] }) + 6; });
+      };
+      p.go();
+    },
+  },
+  {
+    id: "material", title: "材質參數",
+    api: "createFixture(shape, { restitution, friction, density }) + body.resetMassData()",
+    desc: "同畫面並排比較：彈性看回彈高度（理論約 e²），摩擦看滑行距離（Box2D 把兩個表面的摩擦取幾何平均），密度看翹翹板往哪邊倒，最後一組體積不同但質量相同。",
+    hint: "密度模式點方塊可循環切換密度・其他模式可拖曳",
+    mount(ctx) {
+      let mode = 0, cur = null, clock = 0;
+      ctx.group(["彈性", "摩擦", "密度"], 0, (i) => { mode = i; start(); });
+      ctx.button("重放", () => start());
+      const p = lab(ctx, { hz: 120 });
+      const body = (x, y, color, def = {}) => {
+        const b = p.world.createDynamicBody({ position: V(x, y), ...def });
+        b.setUserData({ color });
+        return b;
+      };
+      function bounce() {
+        p.ground.createFixture(new Edge(V(-0.5, 0), V(16.5, 0)), { friction: 0.5 });
+        const items = [0, 0.3, 0.6, 0.9].map((e, i) => {
+          const b = body(2 + i * 4, 8, COLORS[i]);
+          b.createFixture(new Circle(0.45), { density: 1, restitution: e, friction: 0.5 });
+          return { b, e, x: 2 + i * 4, color: COLORS[i], peak: 0, phase: 0 };
+        });
+        return {
+          rect: [0, -2, 16, 9.4], period: 5,
+          after() {
+            for (const o of items) {
+              const y = o.b.getPosition().y, vy = o.b.getLinearVelocity().y;
+              if (o.phase === 0 && vy > 0.3) o.phase = 1;
+              if (o.phase === 1) { o.peak = Math.max(o.peak, y); if (vy < 0) o.phase = 2; }
+            }
+          },
+          draw(g) {
+            dashLine(g, p.X(0), p.Y(8.45), p.X(16), p.Y(8.45));
+            for (const o of items) {
+              chip(g, `e = ${o.e}`, p.X(o.x), p.Y(8.45) - 14, { mono: true, color: o.color });
+              if (o.phase) dashLine(g, p.X(o.x - 0.9), p.Y(o.peak + 0.45), p.X(o.x + 0.9), p.Y(o.peak + 0.45), o.color, 1.5);
+              const pct = ((o.peak - 0.45) / 7.55) * 100;
+              chip(g, o.phase === 2 ? `實測 ${pct.toFixed(0)}%` : o.phase ? "回彈中" : clock > 1.5 ? "實測 0%" : "下落中", p.X(o.x), p.Y(0) + 14, { color: o.color });
+              chip(g, `理論 ${(o.e * o.e * 100).toFixed(0)}%`, p.X(o.x), p.Y(0) + 37, { color: MUTED });
+            }
+          },
+        };
+      }
+      function slide() {
+        const items = [0, 0.1, 0.3, 0.8].map((mu, i) => {
+          const y0 = 7.2 - i * 2.4, mix = Math.sqrt(mu);
+          p.ground.createFixture(new Edge(V(0, y0), V(16, y0)), { friction: 1 });
+          p.ground.createFixture(new Edge(V(16, y0), V(16, y0 + 1.2)), { friction: 1 });
+          const b = body(1, y0 + 0.3, COLORS[i], { linearVelocity: V(7, 0) });
+          b.createFixture(new Box(0.5, 0.3), { density: 1, friction: mu });
+          // v^2 / (2 g mu_mix) with v = 7 m/s, g = 10
+          return { b, mu, mix, y0, color: COLORS[i], theory: mu ? 49 / (20 * mix) : Infinity, dist: null };
+        });
+        return {
+          rect: [0, -0.9, 16, 9.1], period: 6,
+          after() {
+            for (const o of items) {
+              if (o.dist === null && clock > 0.2 && o.b.getLinearVelocity().length() < 0.02) o.dist = o.b.getPosition().x - 1;
+            }
+          },
+          draw(g) {
+            for (const o of items) {
+              g.strokeStyle = "rgba(255,255,255,.25)"; g.lineWidth = 1;
+              g.beginPath();
+              for (let x = 1; x <= 15; x += 2) { g.moveTo(p.X(x), p.Y(o.y0)); g.lineTo(p.X(x), p.Y(o.y0) + 5); }
+              g.stroke();
+              if (o.theory < 15) dashLine(g, p.X(1 + o.theory), p.Y(o.y0), p.X(1 + o.theory), p.Y(o.y0 + 1.1), o.color, 1.5);
+              chip(g, `μ ${o.mu}（混合後 ${o.mix.toFixed(2)}）`, p.X(0) + 2, p.Y(o.y0 + 1.5), { align: "left", color: o.color });
+              const res = o.dist === null ? "滑行中" : o.b.getPosition().x > 15 ? "撞到底" : `實測 ${o.dist.toFixed(1)} m`;
+              const th = Number.isFinite(o.theory) ? `理論 ${o.theory.toFixed(1)} m` : "理論：不會停";
+              chip(g, `${th}・${res}`, p.X(16) - 2, p.Y(o.y0 + 1.5), { align: "right" });
+            }
+            g.font = font(600, 10, true); g.fillStyle = MUTED; g.textAlign = "center"; g.textBaseline = "top";
+            for (let x = 1; x <= 15; x += 2) g.fillText(`${x - 1}`, p.X(x), p.Y(0) + 7);
+          },
+        };
+      }
+      function seesaw() {
+        const wide = p.W / Math.max(1, p.H) > 1.6;
+        const PAIRS = [[1, 1, 0.35, 0.35], [1, 2, 0.35, 0.35], [1, 4, 0.35, 0.35], [4, 1, 0.25, 0.5]];
+        const items = PAIRS.map(([dl, dr, hl, hr], i) => {
+          const cx = 2.2 + (wide ? i : i % 2) * 4.4, cy = wide || i >= 2 ? 1 : 5.4;
+          p.ground.createFixture(new Edge(V(cx - 2.1, cy - 1), V(cx + 2.1, cy - 1)), { friction: 0.6 });
+          p.ground.createFixture(new Polygon([V(cx - 0.4, cy - 1), V(cx + 0.4, cy - 1), V(cx, cy)]));
+          const plank = body(cx, cy + 0.08, "#8b93a7");
+          plank.createFixture(new Box(1.9, 0.08), { density: 1, friction: 0.9 });
+          // A zero-speed motor with a small torque cap acts as joint friction, so equal masses stay level.
+          p.world.createJoint(new RevoluteJoint({ enableLimit: true, lowerAngle: -0.32, upperAngle: 0.32, enableMotor: true, motorSpeed: 0, maxMotorTorque: 0.5 }, p.ground, plank, V(cx, cy)));
+          const box = (side, d, h, color) => {
+            const b = body(cx + side * 1.25, cy + 0.17 + h, color);
+            b.createFixture(new Box(h, h), { density: d, friction: 0.9 });
+            Object.assign(b.getUserData(), { tap: true, h });
+            return b;
+          };
+          return { cx, cy, i, dl, dr, L: box(-1, dl, hl, COLORS[2]), R: box(1, dr, hr, COLORS[0]) };
+        });
+        const D = [0.5, 1, 2, 4, 8];
+        return {
+          wide, rect: wide ? [0, -1, 17.6, 3.9] : [0, -1, 8.8, 8.1],
+          tap(w) {
+            const b = p.pick(w, (b) => b.getUserData() && b.getUserData().tap);
+            if (!b) return false;
+            const f = b.getFixtureList();
+            f.setDensity(D[(D.indexOf(f.getDensity()) + 1) % D.length]);
+            b.resetMassData();
+            for (let q = p.world.getBodyList(); q; q = q.getNext()) q.setAwake(true);
+            return true;
+          },
+          draw(g) {
+            for (const it of items) {
+              for (const b of [it.L, it.R]) {
+                const c = b.getPosition(), h = b.getUserData().h;
+                g.font = font(700, Math.max(9, Math.round(p.s * 0.32)), true);
+                g.fillStyle = "#0e1013"; g.textAlign = "center"; g.textBaseline = "middle";
+                g.fillText(String(b.getFixtureList().getDensity()), p.X(c.x), p.Y(c.y));
+                chip(g, `${b.getMass().toFixed(2)} kg`, p.X(c.x), p.Y(c.y + h) - 13, { mono: true, size: 10 });
+              }
+              const dl = it.L.getFixtureList().getDensity(), dr = it.R.getFixtureList().getDensity();
+              const cap = it.i === 3 && dl === 4 && dr === 1 ? "密度 4 : 1，體積 1 : 4" : `密度 ${dl} : ${dr}`;
+              chip(g, cap, p.X(it.cx), p.Y(it.cy - 1) + 15, { color: MUTED });
+            }
+          },
+        };
+      }
+      function start() {
+        p.reset();
+        cur = [bounce, slide, seesaw][mode]();
+        clock = 0;
+        if (p.W) p.layout(p.W, p.H);
+      }
+      p.layout = (W, H) => {
+        if (mode === 2 && cur.wide !== W / Math.max(1, H) > 1.6) return start();
+        const [x0, y0, x1, y1] = cur.rect;
+        p.fit(x0, y0, x1, y1, { t: "auto" });
+      };
+      p.onDown = (w) => (cur.tap ? cur.tap(w) : false);
+      p.after = () => {
+        clock += p.dt;
+        if (cur.after) cur.after();
+        if (cur.period && clock > cur.period) start();
+      };
+      p.draw = (g) => { p.drawWorld(); cur.draw(g); };
+      start();
+      p.go();
+    },
+  },
+  {
+    id: "joints", title: "關節大全",
+    api: "world.createJoint(new RevoluteJoint / PrismaticJoint / DistanceJoint / WeldJoint / RopeJoint / PulleyJoint / GearJoint / WheelJoint(...))",
+    desc: "Box2D 的八種關節各放一格：馬達加角度限制、斜向滑軌、剛性與彈簧距離、剛性與柔性焊接、繩長上限、滑輪、齒輪帶動齒條、輪軸避震小車。",
+    hint: "拖曳任何零件・開「慢動作」看細節",
+    mount(ctx) {
+      ctx.button("重設", () => build());
+      ctx.toggle("慢動作", false, (v) => { p.speed = v ? 0.3 : 1; });
+      const p = lab(ctx);
+      const CW = 6, CH = 5, GAP = 0.4;
+      const NAMES = ["Revolute 轉軸", "Prismatic 滑軌", "Distance 距離", "Weld 焊接", "Rope 繩長上限", "Pulley 滑輪", "Gear 齒輪", "Wheel 輪軸避震"];
+      let wide = null, cells = [], tasks = [];
+      const dyn = (pos, color, def = {}) => {
+        const b = p.world.createDynamicBody({ position: pos, ...def });
+        b.setUserData({ color });
+        return b;
+      };
+      const joint = (j, ud) => { const r = p.world.createJoint(j); if (ud) r.setUserData(ud); return r; };
+      const every = (period, fn) => { let next = period; tasks.push(() => { if (p.time > next) { next = p.time + period; fn(); } }); };
+      function gearPath(g, b, r, n, phase) {
+        const c = b.getPosition(), a0 = b.getAngle() + phase, pitch = TAU / n;
+        g.beginPath();
+        for (let k = 0; k < n; k++) {
+          const m = a0 + k * pitch;
+          [[m - 0.3 * pitch, r - 0.1], [m - 0.18 * pitch, r + 0.1], [m + 0.18 * pitch, r + 0.1], [m + 0.3 * pitch, r - 0.1]].forEach(([a, rr], q) => {
+            const x = p.X(c.x + Math.cos(a) * rr), y = p.Y(c.y + Math.sin(a) * rr);
+            k || q ? g.lineTo(x, y) : g.moveTo(x, y);
+          });
+        }
+        g.closePath();
+      }
+      const BUILD = [
+        (o, at) => {
+          const c = at(2.4, 2.4);
+          const arm = dyn(c, COLORS[0]);
+          arm.createFixture(new Box(0.8, 0.1, V(0.8, 0), 0), { density: 1 });
+          arm.createFixture(new Circle(V(1.6, 0), 0.32), { density: 1 });
+          const j = joint(new RevoluteJoint({ enableLimit: true, lowerAngle: -0.75, upperAngle: 0.75, enableMotor: true, maxMotorTorque: 60, motorSpeed: 1.5 }, p.ground, arm, c));
+          tasks.push(() => { const a = j.getJointAngle(); if (a > 0.7) j.setMotorSpeed(-1.5); else if (a < -0.7) j.setMotorSpeed(1.5); });
+          o.draw = (g) => {
+            g.beginPath(); g.moveTo(p.X(c.x), p.Y(c.y)); g.arc(p.X(c.x), p.Y(c.y), 2.2 * p.s, -0.75, 0.75); g.closePath();
+            g.fillStyle = "rgba(247,37,133,.12)"; g.fill();
+            chip(g, "限制 ±43°", p.X(c.x + 1.3), p.Y(o.y + 0.45), { size: 10 });
+          };
+        },
+        (o, at) => {
+          const c = at(3, 2.3), ax = V(0.8, 0.6);
+          const b = dyn(c, COLORS[1], { angle: Math.atan2(0.6, 0.8) });
+          b.createFixture(new Box(0.45, 0.28), { density: 1 });
+          const j = joint(new PrismaticJoint({ enableLimit: true, lowerTranslation: -1.6, upperTranslation: 1.6, enableMotor: true, maxMotorForce: 200, motorSpeed: 1.6 }, p.ground, b, c, ax));
+          tasks.push(() => { const t = j.getJointTranslation(); if (t > 1.5) j.setMotorSpeed(-1.6); else if (t < -1.5) j.setMotorSpeed(1.6); });
+          o.draw = (g) => {
+            dashLine(g, p.X(c.x - ax.x * 2.1), p.Y(c.y - ax.y * 2.1), p.X(c.x + ax.x * 2.1), p.Y(c.y + ax.y * 2.1), "rgba(255,183,3,.7)", 1.5);
+            chip(g, "±1.6 m", p.X(c.x + 1.9), p.Y(o.y + 0.45), { size: 10, mono: true });
+          };
+        },
+        (o, at) => {
+          const A1 = at(2.4, 4.3), A2 = at(4.5, 4.3);
+          const bob1 = dyn(at(1.13, 3.03), COLORS[2]);
+          bob1.createFixture(new Circle(0.26), { density: 1 });
+          joint(new DistanceJoint({}, p.ground, bob1, A1, bob1.getPosition()));
+          const bob2 = dyn(at(4.5, 2.1), COLORS[3]);
+          bob2.createFixture(new Circle(0.3), { density: 1 });
+          joint(new DistanceJoint({ frequencyHz: 1.5, dampingRatio: 0.05, length: 1.6 }, p.ground, bob2, A2, bob2.getPosition()), { style: "spring" });
+          every(4, () => bob2.applyLinearImpulse(V(0, -3 * bob2.getMass()), bob2.getWorldCenter(), true));
+          o.draw = (g) => {
+            chip(g, "剛性", p.X(A1.x), p.Y(o.y + 0.45), { size: 10 });
+            chip(g, "彈簧 1.5 Hz", p.X(A2.x), p.Y(o.y + 0.45), { size: 10 });
+          };
+        },
+        (o, at) => {
+          // Rigid: three planks welded into one piece. Soft: one plank on a 2.5 Hz angular spring (a diving board).
+          // Long chains of soft welds drift in Box2D, so the soft case uses a single joint.
+          const tips = [];
+          [[3.7, 0, 3, [COLORS[3], "#5fae6c", COLORS[3]]], [1.9, 2.5, 1, [COLORS[5]]]].forEach(([y, hz, n, cols]) => {
+            p.ground.createFixture(new Box(0.125, 0.4, at(0.125, y), 0));
+            let prev = p.ground;
+            const hx = 1.2 / n;
+            for (let k = 0; k < n; k++) {
+              const b = dyn(at(0.25 + hx * (2 * k + 1), y), cols[k]);
+              b.createFixture(new Box(hx, 0.1), { density: 1 });
+              joint(new WeldJoint({ frequencyHz: hz, dampingRatio: 0.1 }, prev, b, at(0.25 + 2 * hx * k, y)));
+              prev = b;
+            }
+            tips.push({ b: prev, y, hz });
+          });
+          every(4, () => tips.forEach((t) => t.b.applyLinearImpulse(V(0, 1.2), t.b.getWorldCenter(), true)));
+          o.draw = (g) => tips.forEach((t) => chip(g, t.hz ? `${t.hz} Hz` : "剛性", p.X(o.x + 4.6), p.Y(o.y + t.y), { size: 10, mono: !!t.hz }));
+        },
+        (o, at) => {
+          const A = at(3, 4.3), d = V(0.6, -0.8);
+          let prev = p.ground, last = null;
+          for (let k = 0; k < 8; k++) {
+            const b = dyn(at(3 + d.x * (0.25 + 0.5 * k), 4.3 + d.y * (0.25 + 0.5 * k)), COLORS[1], { angle: Math.atan2(d.y, d.x) });
+            b.createFixture(new Box(0.25, 0.06), { density: 1, filterGroupIndex: -1 });
+            joint(new RevoluteJoint({}, prev, b, at(3 + d.x * 0.5 * k, 4.3 + d.y * 0.5 * k)));
+            prev = last = b;
+          }
+          last.createFixture(new Circle(V(0.25, 0), 0.2), { density: 2, filterGroupIndex: -1 });
+          // Rope max length is shorter than the link chain, so the rope (not the links) decides how far the end can hang.
+          const rope = joint(new RopeJoint({ localAnchorA: A, localAnchorB: V(0, 0), maxLength: 3.6 }, p.ground, last), { style: "none" });
+          every(3, () => last.applyLinearImpulse(V(rnd(-0.6, 0.6), 1.6), last.getWorldCenter(), true));
+          o.draw = (g) => {
+            const e = last.getPosition(), taut = rope.getLimitState() === 2;
+            if (taut) { g.beginPath(); g.moveTo(p.X(A.x), p.Y(A.y)); g.lineTo(p.X(e.x), p.Y(e.y)); g.strokeStyle = AMBER; g.lineWidth = 2; g.stroke(); }
+            else dashLine(g, p.X(A.x), p.Y(A.y), p.X(e.x), p.Y(e.y), "rgba(255,183,3,.5)", 1.5);
+            dot(g, p.X(A.x), p.Y(A.y), 3.5, INK);
+            chip(g, (p.s < 30 ? "" : "maxLength 3.6 m・") + (taut ? "拉緊" : "鬆弛"), p.X(o.x + 3), p.Y(o.y + 0.45), { size: 10, color: taut ? AMBER : INK });
+          };
+        },
+        (o, at) => {
+          const gA = at(2.4, 4.1), gB = at(4.4, 4.1);
+          const mk = (x, color) => { const b = dyn(at(x, 1.7), color, { fixedRotation: true }); b.createFixture(new Box(0.38, 0.38), { density: 1 }); return b; };
+          const A = mk(2.4, COLORS[4]), B = mk(4.4, COLORS[5]);
+          joint(new PulleyJoint({}, A, B, gA, gB, at(2.4, 2.08), at(4.4, 2.08), 1));
+          let heavy = 1;
+          const setHeavy = () => [A, B].forEach((b, k) => { b.getFixtureList().setDensity(k === heavy ? 2 : 1); b.resetMassData(); b.setAwake(true); });
+          setHeavy();
+          every(3.5, () => { heavy = 1 - heavy; setHeavy(); });
+          o.draw = (g) => {
+            for (const q of [gA, gB]) { g.beginPath(); g.arc(p.X(q.x), p.Y(q.y), 0.2 * p.s, 0, TAU); g.strokeStyle = INK; g.lineWidth = 1.5; g.stroke(); }
+            [A, B].forEach((b) => {
+              const c = b.getPosition();
+              g.font = font(700, Math.max(9, Math.round(p.s * 0.3)), true); g.fillStyle = "#0e1013"; g.textAlign = "center"; g.textBaseline = "middle";
+              g.fillText("ρ" + b.getFixtureList().getDensity(), p.X(c.x), p.Y(c.y));
+            });
+            chip(g, "ratio 1", p.X(o.x + 3.4), p.Y(o.y + 3.55), { size: 10, mono: true });
+          };
+        },
+        (o, at) => {
+          const cA = at(2.2, 2.9), cB = at(3.7, 2.9), cR = at(2.2, 1.8);
+          const A = dyn(cA, COLORS[3]), B = dyn(cB, COLORS[1]), R = dyn(cR, COLORS[2]);
+          A.createFixture(new Circle(1), { density: 1, filterGroupIndex: -3 });
+          B.createFixture(new Circle(0.5), { density: 1, filterGroupIndex: -3 });
+          R.createFixture(new Box(1.2, 0.1), { density: 1, filterGroupIndex: -3 });
+          [A, B, R].forEach((b) => (b.getUserData().hidden = true));
+          const jA = joint(new RevoluteJoint({ enableMotor: true, motorSpeed: 1.2, maxMotorTorque: 500 }, p.ground, A, cA));
+          const jB = joint(new RevoluteJoint({}, p.ground, B, cB));
+          const jR = joint(new PrismaticJoint({ enableLimit: true, lowerTranslation: -0.9, upperTranslation: 0.9 }, p.ground, R, cR, V(1, 0)));
+          // ratio 0.5 meshes a radius-1 gear with a radius-0.5 gear; ratio -1 turns the big gear into a rack drive.
+          joint(new GearJoint({}, A, B, jA, jB, 0.5));
+          joint(new GearJoint({}, A, R, jA, jR, -1));
+          tasks.push(() => { const t = jR.getJointTranslation(); if (t > 0.8) jA.setMotorSpeed(-1.2); else if (t < -0.8) jA.setMotorSpeed(1.2); });
+          o.draw = (g) => {
+            const pitch = TAU / 16, rx = R.getPosition().x - cR.x;
+            g.beginPath();
+            g.rect(p.X(R.getPosition().x - 1.2), p.Y(1.9), 2.4 * p.s, 0.2 * p.s);
+            for (let k = -4; k < 3; k++) {
+              const x = cA.x + rx + (k + 0.5) * pitch;
+              g.moveTo(p.X(x - 0.3 * pitch), p.Y(1.9)); g.lineTo(p.X(x - 0.18 * pitch), p.Y(2.0));
+              g.lineTo(p.X(x + 0.18 * pitch), p.Y(2.0)); g.lineTo(p.X(x + 0.3 * pitch), p.Y(1.9));
+            }
+            g.fillStyle = COLORS[2]; g.fill();
+            gearPath(g, A, 1, 16, 0); g.fillStyle = COLORS[3]; g.fill();
+            gearPath(g, B, 0.5, 8, Math.PI / 8); g.fillStyle = COLORS[1]; g.fill();
+            for (const [b, r] of [[A, 0.75], [B, 0.35]]) {
+              const c = b.getPosition(), a = b.getAngle();
+              g.beginPath(); g.moveTo(p.X(c.x), p.Y(c.y)); g.lineTo(p.X(c.x + Math.cos(a) * r), p.Y(c.y + Math.sin(a) * r));
+              g.strokeStyle = "rgba(0,0,0,.5)"; g.lineWidth = 2; g.stroke();
+              dot(g, p.X(c.x), p.Y(c.y), 3, "#0e1013");
+            }
+            const wa = A.getAngularVelocity();
+            chip(g, `ω 比 ${Math.abs(wa) > 0.05 ? (B.getAngularVelocity() / wa).toFixed(2) : "-2.00"}`, p.X(o.x + 4.9), p.Y(o.y + 0.45), { size: 10 });
+          };
+        },
+        (o, at) => {
+          const pts = [];
+          for (let k = 0; k <= 24; k++) { const x = 0.15 + (5.7 * k) / 24; pts.push(at(x, 0.55 + 0.16 * Math.sin(x * 3.1))); }
+          p.ground.createFixture(new Chain(pts, false), { friction: 0.9 });
+          const car = dyn(at(3, 1.75), COLORS[2]);
+          car.createFixture(new Box(0.95, 0.2), { density: 1, filterGroupIndex: -2 });
+          car.createFixture(new Box(0.45, 0.18, V(-0.1, 0.36), 0), { density: 1, filterGroupIndex: -2 });
+          const wheels = [-0.65, 0.65].map((dx) => {
+            const w = dyn(at(3 + dx, 1.15), "#cfd3dc");
+            w.createFixture(new Circle(0.3), { density: 1, friction: 0.9, filterGroupIndex: -2 });
+            const j = joint(new WheelJoint({ frequencyHz: 4, dampingRatio: 0.7, enableMotor: true, maxMotorTorque: 20, motorSpeed: -6 }, car, w, w.getPosition(), V(0, 1)), { style: "none" });
+            return { w, j, dx };
+          });
+          let dir = 1;
+          tasks.push(() => {
+            const x = car.getPosition().x - o.x;
+            if (x > 4.6 && dir > 0) dir = -1; else if (x < 1.4 && dir < 0) dir = 1;
+            wheels.forEach((q) => q.j.setMotorSpeed(-6 * dir));
+          });
+          o.draw = (g) => wheels.forEach((q) => {
+            const top = car.getWorldPoint(V(q.dx, 0)), c = q.w.getPosition();
+            zigzag(g, p.X(top.x), p.Y(top.y), p.X(c.x), p.Y(c.y), 6, 3, AMBER);
+          });
+        },
+      ];
+      function build() {
+        p.reset();
+        tasks = []; cells = [];
+        const cols = wide ? 4 : 2, rows = 8 / cols;
+        NAMES.forEach((name, i) => {
+          const o = { x: (i % cols) * (CW + GAP), y: (rows - 1 - Math.floor(i / cols)) * (CH + GAP), name, draw: null };
+          const at = (x, y) => V(o.x + x, o.y + y);
+          p.ground.createFixture(new Chain([at(0, 0), at(CW, 0), at(CW, CH), at(0, CH)], true), { friction: 0.6 });
+          BUILD[i](o, at);
+          cells.push(o);
+        });
+      }
+      p.layout = (W, H) => {
+        const t = below(ctx), aw = W - 24, ah = H - t - 12;
+        const w = Math.min(aw / 25.2, ah / 10.4) >= Math.min(aw / 12.4, ah / 21.2);
+        if (w !== wide) { wide = w; build(); }
+        const cols = wide ? 4 : 2, rows = 8 / cols;
+        p.fit(0, 0, cols * CW + (cols - 1) * GAP, rows * CH + (rows - 1) * GAP, { t });
+      };
+      p.before = () => tasks.forEach((fn) => fn());
+      p.draw = (g) => {
+        for (const o of cells) {
+          g.fillStyle = "rgba(255,255,255,.025)";
+          g.fillRect(p.X(o.x), p.Y(o.y + CH), CW * p.s, CH * p.s);
+        }
+        p.drawWorld();
+        const size = p.s < 30 ? 10 : 11;
+        for (const o of cells) {
+          if (o.draw) o.draw(g);
+          chip(g, o.name, p.X(o.x) + 4, p.Y(o.y + CH) + size / 2 + 8, { align: "left", size });
+        }
+      };
+      p.go();
+    },
+  },
+  {
+    id: "events", title: "碰撞過濾與事件",
+    api: "fixture { filterCategoryBits, filterMaskBits, filterGroupIndex } + world.on(\"pre-solve\", c => c.setEnabled(false))",
+    desc: "分類過濾：每層架子只擋同色的球，白球只碰牆，同色球彼此相撞、異色互穿。單向平台：pre-solve 事件裡判斷球在平台下方就停用這次接觸。畫面同步統計四種接觸事件每秒觸發次數。",
+    hint: "切換「球互穿」比較 groupIndex 的效果・拖曳球",
+    mount(ctx) {
+      let mode = 0, ghost = false;
+      ctx.group(["分類過濾", "單向平台"], 0, (i) => { mode = i; build(); });
+      ctx.toggle("球互穿（groupIndex -1）", false, (v) => {
+        ghost = v;
+        balls.forEach((b) => b.getFixtureList().setFilterGroupIndex(v ? -1 : 0));
+      });
+      const p = lab(ctx);
+      const WALL = 0x20, SHELF = [0x2, 0x4, 0x8], BALL = [0x100, 0x200, 0x400, 0x1000];
+      const BCOL = [COLORS[0], COLORS[1], COLORS[2], INK];
+      let balls = [], rings = [], counts = {}, rates = {}, nextRate = 1, nextSpawn = 0;
+      const bump = (k) => (counts[k] = (counts[k] || 0) + 1);
+      function oneWay(c) {
+        const fa = c.getFixtureA(), fb = c.getFixtureB(), ba = fa.getBody(), bb = fb.getBody();
+        const plat = (ba.getUserData() || {}).oneway ? ba : (bb.getUserData() || {}).oneway ? bb : null;
+        if (!plat) return;
+        const ball = plat === ba ? fb : fa;
+        if (ball.getShape().getType() !== "circle") return;
+        if (plat.getLocalPoint(ball.getBody().getPosition()).y < 0.12 + ball.getShape().getRadius() * 0.9) { c.setEnabled(false); bump("off"); }
+      }
+      function addBall(x, y, vel) {
+        const k = Math.floor(Math.random() * 4);
+        const fd = { density: 1, friction: 0.2, restitution: 0.3, filterGroupIndex: ghost ? -1 : 0 };
+        if (mode === 0) Object.assign(fd, { filterCategoryBits: BALL[k], filterMaskBits: k < 3 ? SHELF[k] | WALL | BALL[k] : WALL | BALL[3] });
+        const b = p.world.createDynamicBody({ position: V(x, y), linearVelocity: vel || V(0, 0) });
+        b.createFixture(new Circle(mode === 0 ? 0.26 : 0.3), fd);
+        b.setUserData({ color: BCOL[k] });
+        balls.push(b);
+        if (balls.length > (mode === 0 ? 90 : 40)) p.kill(balls.shift());
+      }
+      const launch = () => V(rnd(-2, 2), rnd(9, 16));
+      function build() {
+        p.reset();
+        balls = []; rings = []; counts = {};
+        const w = p.world;
+        w.on("begin-contact", (c) => {
+          bump("begin");
+          const m = c.getWorldManifold(null);
+          if (m) for (let i = 0; i < m.pointCount && rings.length < 60; i++) rings.push({ x: m.points[i].x, y: m.points[i].y, t: p.time });
+        });
+        w.on("end-contact", () => bump("end"));
+        w.on("pre-solve", (c) => { bump("pre"); if (mode === 1) oneWay(c); });
+        w.on("post-solve", () => bump("post"));
+        p.ground.createFixture(new Chain([V(0, 0), V(12, 0), V(12, 12), V(0, 12)], true), { friction: 0.3, filterCategoryBits: WALL });
+        if (mode === 0) {
+          [10, 7, 4].forEach((y, i) => {
+            const right = i % 2 === 1;
+            p.ground.createFixture(new Box(5.2, 0.1, V(right ? 6.8 : 5.2, y), right ? 0.06 : -0.06), { friction: 0.2, filterCategoryBits: SHELF[i], userData: { color: BCOL[i] } });
+          });
+          for (let i = 0; i < 30; i++) addBall(rnd(0.5, 11.5), rnd(0.5, 11.5));
+        } else {
+          [[4, 4.5, 0.12], [8, 8.5, -0.12]].forEach(([x, y, a]) => {
+            const b = w.createBody({ position: V(x, y), angle: a });
+            b.createFixture(new Box(2.6, 0.12), { friction: 0.6 });
+            b.setUserData({ color: COLORS[3], oneway: true });
+          });
+          const n = w.createBody({ position: V(9.6, 3.6) });
+          n.createFixture(new Box(1.6, 0.12), { friction: 0.6 });
+          n.setUserData({ color: "#8b93a7" });
+          for (let i = 0; i < 16; i++) addBall(rnd(0.6, 11.4), rnd(0.4, 1.5), launch());
+        }
+      }
+      p.layout = () => p.fit(0, 0, 12, 12, { t: below(ctx) });
+      p.after = () => {
+        if (p.time > nextRate) { nextRate = p.time + 1; rates = counts; counts = {}; }
+        if (p.time > nextSpawn) {
+          if (mode === 0) { nextSpawn = p.time + 0.25; addBall(rnd(0.5, 11.5), 11.5); }
+          else if (balls.length < 40) { nextSpawn = p.time + 0.25; addBall(rnd(0.6, 11.4), 0.5, launch()); }
+        }
+        if (mode === 1) {
+          for (const b of balls) if (b.getPosition().y < 0.7 && b.getLinearVelocity().length() < 0.3) b.setLinearVelocity(launch());
+        }
+      };
+      p.draw = (g) => {
+        p.drawWorld();
+        for (let i = rings.length - 1; i >= 0; i--) {
+          const r = rings[i], age = p.time - r.t;
+          if (age > 0.4) { rings.splice(i, 1); continue; }
+          g.beginPath(); g.arc(p.X(r.x), p.Y(r.y), 3 + age * 25, 0, TAU);
+          g.strokeStyle = `rgba(255,183,3,${1 - age / 0.4})`; g.lineWidth = 1.5; g.stroke();
+        }
+        const fit = p.W;
+        if (mode === 0) {
+          chip(g, "只接住粉紅球", p.X(1.9), p.Y(10.75), { color: BCOL[0], fit });
+          chip(g, "只接住黃球", p.X(10.1), p.Y(7.75), { color: BCOL[1], fit });
+          chip(g, "只接住藍球", p.X(1.9), p.Y(4.75), { color: BCOL[2], fit });
+          chip(g, "白球只碰牆", p.X(10.1), p.Y(1.4), { color: BCOL[3], fit });
+        } else {
+          chip(g, "單向平台：下方穿過、上方站住", p.X(4), p.Y(5.3), { color: COLORS[3], fit });
+          chip(g, "單向平台", p.X(8), p.Y(9.3), { color: COLORS[3], fit });
+          chip(g, "一般平台", p.X(9.6), p.Y(3.05), { fit });
+        }
+        const rows = [["begin-contact", rates.begin], ["end-contact", rates.end], ["pre-solve", rates.pre], ["post-solve", rates.post]];
+        if (mode === 1) rows.push(["setEnabled(false)", rates.off]);
+        if (p.X(0) > 190) {
+          chip(g, "事件／秒", p.X(0) - 10, p.Y(12) + 13, { align: "right", color: MUTED });
+          rows.forEach(([k, v], i) => chip(g, `${k} ${v || 0}`, p.X(0) - 10, p.Y(12) + 36 + i * 22, { align: "right", mono: true, size: 10 }));
+        } else {
+          // Narrow screens: one compact row inside the room instead of a side panel.
+          const short = rows.map(([k, v]) => `${k.split("-")[0].replace("setEnabled(false)", "停用")} ${v || 0}`).join("・");
+          chip(g, "每秒 " + short, p.X(0) + 6, p.Y(12) + 13, { align: "left", size: 10, fit: p.W });
+        }
+      };
+      build();
+      p.go();
+    },
+  },
+  {
+    id: "query", title: "射線與範圍查詢",
+    api: "world.rayCast(p1, p2, (fixture, point, normal, fraction) => …) + world.queryAABB(aabb, cb) + fixture.testPoint(p)",
+    desc: "零重力房間裡的物體四處彈跳，從左下角發射射線：只取最近命中、沿路全部命中、連續反射。AABB 框選示範寬相位查詢只比對外框；滑鼠停在物體上會用 testPoint 精準判斷。",
+    hint: "移動滑鼠瞄準・AABB 模式中查詢框跟著滑鼠",
+    mount(ctx) {
+      let mode = 0, ww = 0;
+      ctx.group(["最近命中", "全部命中", "反射", "AABB 框選"], 0, (i) => { mode = i; });
+      const p = lab(ctx, { gravity: 0, drag: false, cls: "aim" });
+      const O = V(0.8, 0.8);
+      const NOTES = ["回傳 fraction：只留最近的命中", "回傳 1：沿路全部命中", "依命中法線反射，連續 8 次 rayCast", "queryAABB 只比外框，虛線為 fat AABB"];
+      function build(nw) {
+        ww = nw;
+        p.reset(0);
+        p.ground.createFixture(new Chain([V(0, 0), V(ww, 0), V(ww, 12), V(0, 12)], true), { restitution: 1, friction: 0 });
+        [[0.62, 3.4, 0.4, 0.9, 0.5], [0.3, 8.4, -0.3, 1.1, 0.35]].forEach(([fx, y, a, hx, hy]) => {
+          const b = p.world.createBody({ position: V(ww * fx, y), angle: a });
+          b.createFixture(new Box(hx, hy), { restitution: 1 });
+          b.setUserData({ color: "#6b7385" });
+        });
+        const placed = [];
+        for (let i = 0, tries = 0; i < 14 && tries < 400; tries++) {
+          const x = rnd(1.2, ww - 1.2), y = rnd(1.2, 10.8);
+          if (x < 3 && y < 3) continue;
+          if (placed.some((q) => Math.hypot(q.x - x, q.y - y) < 1.6)) continue;
+          if (p.pick(V(x, y))) continue;
+          placed.push({ x, y });
+          const k = i % 3, sp = rnd(1.5, 3), a = rnd(0, TAU);
+          const b = p.world.createDynamicBody({ position: V(x, y), angle: rnd(0, TAU), allowSleep: false, linearVelocity: V(Math.cos(a) * sp, Math.sin(a) * sp), angularVelocity: rnd(-1, 1) });
+          const fd = { density: 1, restitution: 1, friction: 0 };
+          if (k === 0) b.createFixture(new Circle(rnd(0.35, 0.6)), fd);
+          else if (k === 1) b.createFixture(new Box(rnd(0.3, 0.6), rnd(0.25, 0.5)), fd);
+          else {
+            const n = 3 + Math.floor(Math.random() * 4), r = rnd(0.45, 0.65), pts = [];
+            for (let j = 0; j < n; j++) pts.push(V(Math.cos((j / n) * TAU) * r, Math.sin((j / n) * TAU) * r));
+            b.createFixture(new Polygon(pts), fd);
+          }
+          b.setUserData({ color: COLORS[[0, 1, 4][k]] });
+          i++;
+        }
+      }
+      p.layout = (W, H) => {
+        const t = below(ctx), nw = clamp(((W - 24) / Math.max(120, H - t - 46)) * 12, 9, 22);
+        if (Math.abs(nw - ww) > 0.5) build(nw);
+        p.fit(0, 0, ww, 12, { t, b: 34 });
+      };
+      // rayCast reports fixtures in arbitrary order; returning fraction clips the ray to the closest hit so far.
+      const closest = (a, b) => {
+        let hit = null;
+        p.world.rayCast(a, b, (f, point, normal, fraction) => {
+          hit = { f, point: V(point.x, point.y), normal: V(normal.x, normal.y), fraction };
+          return fraction;
+        });
+        return hit;
+      };
+      const outline = (g, b, color = "#ffffff") => {
+        for (let f = b.getFixtureList(); f; f = f.getNext()) { g.beginPath(); p.path(b, f); g.strokeStyle = color; g.lineWidth = 2.5; g.stroke(); }
+      };
+      p.draw = (g) => {
+        p.drawWorld();
+        const ptr = p.ptr(), X = p.X, Y = p.Y;
+        const ang = ptr ? Math.atan2(ptr.y - O.y, ptr.x - O.x) : 0.15 + ((Math.sin(p.time * 0.45) + 1) / 2) * (Math.PI / 2 - 0.3);
+        const d = V(Math.cos(ang), Math.sin(ang)), far = V(O.x + d.x * 40, O.y + d.y * 40);
+        let info = "";
+        if (mode === 0) {
+          const h = closest(O, far);
+          const end = h ? h.point : far;
+          g.beginPath(); g.moveTo(X(O.x), Y(O.y)); g.lineTo(X(end.x), Y(end.y)); g.strokeStyle = AMBER; g.lineWidth = 2; g.stroke();
+          if (h) {
+            if (!h.f.getBody().isStatic()) outline(g, h.f.getBody());
+            g.beginPath(); g.moveTo(X(end.x), Y(end.y)); g.lineTo(X(end.x + h.normal.x * 0.9), Y(end.y + h.normal.y * 0.9));
+            g.strokeStyle = COLORS[3]; g.lineWidth = 2.5; g.stroke();
+            dot(g, X(end.x), Y(end.y), 4.5, AMBER);
+            info = `fraction ${h.fraction.toFixed(3)}・法線 (${h.normal.x.toFixed(2)}, ${h.normal.y.toFixed(2)})`;
+          }
+        } else if (mode === 1) {
+          const hits = [];
+          p.world.rayCast(O, far, (f, point, normal, fraction) => { hits.push({ f, point: V(point.x, point.y), fraction }); return 1; });
+          hits.sort((a, b) => a.fraction - b.fraction);
+          const end = hits.length ? hits[hits.length - 1].point : far;
+          g.beginPath(); g.moveTo(X(O.x), Y(O.y)); g.lineTo(X(end.x), Y(end.y)); g.strokeStyle = "rgba(255,183,3,.75)"; g.lineWidth = 2; g.stroke();
+          hits.forEach((h, i) => {
+            if (!h.f.getBody().isStatic()) outline(g, h.f.getBody(), "rgba(255,255,255,.8)");
+            dot(g, X(h.point.x), Y(h.point.y), 8, AMBER);
+            g.font = font(700, 10, true); g.fillStyle = "#0e1013"; g.textAlign = "center"; g.textBaseline = "middle";
+            g.fillText(String(i + 1), X(h.point.x), Y(h.point.y) + 0.5);
+          });
+          info = `沿路命中 ${hits.length} 次`;
+        } else if (mode === 2) {
+          let a = O, dir = d, n = 0;
+          for (let k = 0; k < 8; k++) {
+            const h = closest(a, V(a.x + dir.x * 40, a.y + dir.y * 40));
+            if (!h) break;
+            g.beginPath(); g.moveTo(X(a.x), Y(a.y)); g.lineTo(X(h.point.x), Y(h.point.y));
+            g.strokeStyle = `rgba(255,183,3,${1 - k / 9})`; g.lineWidth = 2; g.stroke();
+            dot(g, X(h.point.x), Y(h.point.y), 3.5, COLORS[3]);
+            const dn = dir.x * h.normal.x + dir.y * h.normal.y;
+            dir = V(dir.x - 2 * dn * h.normal.x, dir.y - 2 * dn * h.normal.y);
+            a = V(h.point.x + h.normal.x * 1e-3, h.point.y + h.normal.y * 1e-3);
+            n++;
+          }
+          info = `反射 ${n} 次`;
+        } else {
+          const c = ptr || V(ww / 2 + Math.sin(p.time * 0.6) * ww * 0.3, 6 + Math.sin(p.time * 0.9) * 3.5);
+          const box = new AABB(V(c.x - 2, c.y - 1.5), V(c.x + 2, c.y + 1.5));
+          const found = new Set();
+          p.world.queryAABB(box, (f) => { found.add(f); return true; });
+          g.fillStyle = "rgba(255,183,3,.1)"; g.fillRect(X(c.x - 2), Y(c.y + 1.5), 4 * p.s, 3 * p.s);
+          g.strokeStyle = AMBER; g.lineWidth = 2; g.strokeRect(X(c.x - 2), Y(c.y + 1.5), 4 * p.s, 3 * p.s);
+          let n = 0;
+          for (const f of found) {
+            if (f.getShape().getType() === "chain") continue;
+            n++;
+            outline(g, f.getBody());
+            const bb = f.getAABB(0);
+            g.save(); g.setLineDash([4, 3]); g.strokeStyle = "rgba(255,255,255,.7)"; g.lineWidth = 1;
+            g.strokeRect(X(bb.lowerBound.x), Y(bb.upperBound.y), (bb.upperBound.x - bb.lowerBound.x) * p.s, (bb.upperBound.y - bb.lowerBound.y) * p.s);
+            g.restore();
+          }
+          info = `queryAABB 找到 ${n} 個 fixture`;
+        }
+        if (mode !== 3 && ptr) {
+          const b = p.pick(ptr, (b) => !b.isStatic());
+          if (b) { outline(g, b, COLORS[3]); chip(g, "testPoint ✓", X(ptr.x), Y(ptr.y) - 22, { color: COLORS[3], fit: p.W }); }
+        }
+        g.beginPath(); g.arc(X(O.x), Y(O.y), 9, 0, TAU); g.fillStyle = AMBER; g.fill();
+        g.beginPath(); g.arc(X(O.x), Y(O.y), 4, 0, TAU); g.fillStyle = "#0e1013"; g.fill();
+        if (info) chip(g, info, p.X(0) + 6, p.Y(12) + 14, { align: "left" });
+        chip(g, NOTES[mode], 8, p.H - 15, { align: "left", color: MUTED, fit: p.W });
+      };
+      p.go();
+    },
+  },
+  {
+    id: "bullet", title: "子彈與休眠",
+    api: "body.setBullet(true) + world.setContinuousPhysics(v) + world.setAllowSleeping(v)",
+    desc: "小球每一步的位移大於「板厚＋球徑」時，一般剛體可能直接穿過動態薄板（穿隧），setBullet(true) 連對動態物體也做連續碰撞，每球都撞上；關掉連續碰撞，連靜態牆也擋不住。靜止的積木會進入休眠（變暗）停止計算。",
+    hint: "調砲速看兩條射道的命中數・關「連續碰撞」或「休眠」比較",
+    mount(ctx) {
+      let speed = 80, nextFire = 0.3, nextCheck = 6;
+      ctx.slider("砲速", { min: 30, max: 120, step: 5, value: 80, format: (v) => `${v} m/s` }, (v) => { speed = v; });
+      ctx.toggle("連續碰撞", true, (v) => p.world.setContinuousPhysics(v));
+      ctx.toggle("休眠", true, (v) => p.world.setAllowSleeping(v));
+      ctx.button("發射", () => fire(), { primary: true });
+      const p = lab(ctx);
+      const PLATE_X = 11, WALL_X = 19.6;
+      const lanes = [
+        { y0: 5.6, bullet: false, color: COLORS[0], name: "A：一般剛體", tally: [0, 0, 0], pyramid: [] },
+        { y0: 0.3, bullet: true, color: COLORS[2], name: "B：setBullet(true)", tally: [0, 0, 0], pyramid: [] },
+      ];
+      let shots = [];
+      function pyramid(L) {
+        L.pyramid.forEach((b) => p.kill(b));
+        L.pyramid = [];
+        for (let row = 0; row < 4; row++) {
+          for (let k = 0; k < 4 - row; k++) {
+            const pos = V(15.2 + row * 0.3 + k * 0.6, L.y0 + 0.25 + row * 0.5);
+            const b = p.world.createDynamicBody({ position: pos });
+            b.createFixture(new Box(0.25, 0.25), { density: 1, friction: 0.6 });
+            b.setUserData({ color: "#c9a96e", home: pos });
+            L.pyramid.push(b);
+          }
+        }
+      }
+      function build() {
+        p.reset();
+        shots = [];
+        // A tunnelling ball never touches the plate from the front (local x < 0); balls bouncing back off the wall touch it from behind.
+        const mark = (ball, other) => {
+          const u = ball.getUserData();
+          if (u && u.shot && (other.getUserData() || {}).plate && other.getLocalPoint(ball.getPosition()).x < 0) u.shot.hit = true;
+        };
+        p.world.on("begin-contact", (c) => { const a = c.getFixtureA().getBody(), b = c.getFixtureB().getBody(); mark(a, b); mark(b, a); });
+        p.ground.createFixture(new Box(10, 0.15, V(10, 0.15), 0));
+        p.ground.createFixture(new Box(10, 0.15, V(10, 5.45), 0));
+        p.ground.createFixture(new Box(10, 0.15, V(10, 10.75), 0));
+        p.ground.createFixture(new Box(0.15, 5.45, V(-0.15, 5.45), 0));
+        for (const L of lanes) {
+          L.pyramid = [];
+          p.ground.createFixture(new Box(0.05, 1.5, V(WALL_X, L.y0 + 1.5), 0), { userData: { color: "#8b93a7" } });
+          const hinge = V(PLATE_X, L.y0 + 2.5);
+          // Heavy plate + swing limit keep it across the firing line, so a ball past it without a front contact really tunnelled.
+          L.plate = p.world.createDynamicBody({ position: V(PLATE_X, L.y0 + 1.3), angularDamping: 4 });
+          L.plate.createFixture(new Box(0.04, 1.2), { density: 60 });
+          L.plate.setUserData({ color: COLORS[3], plate: true });
+          p.world.createJoint(new RevoluteJoint({ enableLimit: true, lowerAngle: -0.35, upperAngle: 0.35 }, p.ground, L.plate, hinge));
+          pyramid(L);
+        }
+      }
+      function fire() {
+        for (const L of lanes) {
+          const b = p.world.createDynamicBody({ position: V(1.3, L.y0 + 1.5), bullet: L.bullet, linearVelocity: V(speed, 0) });
+          b.createFixture(new Circle(0.12), { density: 4, restitution: 0.2, friction: 0.3 });
+          const shot = { b, L, t: p.time, xmax: 0, hit: false };
+          b.setUserData({ color: L.color, shot });
+          shots.push(shot);
+        }
+      }
+      p.layout = () => p.fit(-0.3, 0, 20.2, 10.9, { t: below(ctx), b: 34 });
+      p.after = () => {
+        if (p.time > nextFire) { nextFire = p.time + 1.2; fire(); }
+        for (let i = shots.length - 1; i >= 0; i--) {
+          const s = shots[i], q = s.b.getPosition();
+          s.xmax = Math.max(s.xmax, q.x);
+          if (p.time - s.t > 1.6 || q.x > 20.6 || q.x < -0.5 || q.y < -1 || q.y > 11.5) {
+            const k = s.xmax > WALL_X + 0.1 ? 2 : s.hit ? 0 : s.xmax > PLATE_X + 0.2 ? 1 : -1;
+            if (k >= 0) s.L.tally[k]++;
+            p.kill(s.b);
+            shots.splice(i, 1);
+          }
+        }
+        if (p.time > nextCheck) {
+          nextCheck = p.time + 6;
+          for (const L of lanes) {
+            if (L.pyramid.some((b) => { const h = b.getUserData().home, q = b.getPosition(); return Math.hypot(q.x - h.x, q.y - h.y) > 0.3; })) pyramid(L);
+          }
+        }
+      };
+      p.draw = (g) => {
+        p.drawWorld();
+        const X = p.X, Y = p.Y, fit = p.W;
+        let awake = 0, asleep = 0;
+        for (let b = p.world.getBodyList(); b; b = b.getNext()) if (b.isDynamic()) b.isAwake() ? awake++ : asleep++;
+        for (const L of lanes) {
+          g.fillStyle = STEEL;
+          g.fillRect(X(0.05), Y(L.y0 + 1.68), 1.15 * p.s, 0.36 * p.s);
+          dot(g, X(0.45), Y(L.y0 + 1.2), Math.max(4, 0.3 * p.s), "#5d6880");
+          chip(g, L.name, X(0.1), Y(L.y0 + 4.45), { align: "left", color: L.color });
+          chip(g, `撞上薄板 ${L.tally[0]}・穿隧 ${L.tally[1]}・穿牆 ${L.tally[2]}`, X(0.1), Y(L.y0 + 3.7), { align: "left", size: 10 });
+          chip(g, "動態薄板", X(PLATE_X), Y(L.y0 + 2.95), { color: COLORS[3], size: 10 });
+          chip(g, "靜態牆", X(WALL_X), Y(L.y0 + 3.45), { size: 10, fit });
+        }
+        let x = 8;
+        x += chip(g, `每步位移 ${(speed / 60).toFixed(2)} m・板厚＋球徑 0.32 m`, x, p.H - 15, { align: "left", color: AMBER }) + 6;
+        chip(g, `醒著 ${awake}・休眠 ${asleep}`, x, p.H - 15, { align: "left" });
+      };
+      build();
+      p.go();
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "world.step(1 / 60, velocityIterations, positionIterations)",
+    desc: "不靠內建迴圈，每格手動呼叫一次 world.step 再用 Canvas 批次繪圖，兩段分開計時；逐級增加剛體數量直到掉到 30 FPS 以下。中間的 kinematic 槳持續攪動，可切換形狀、速度迭代次數與休眠比較成本。",
+    hint: "按「自動加壓」開始・改設定後再測一次",
+    mount(ctx) {
+      ctx.controls.classList.add("bottom");
+      const SHAPES = ["混合", "圓", "方", "多邊形"];
+      let shape = 0, sleep = false, box = null, count = 0, paddle = null;
+      ctx.group(SHAPES, 0, (i) => { shape = i; if (count) spawn(count); });
+      ctx.slider("速度迭代", { min: 1, max: 12, step: 1, value: 8 }, (v) => { p.vel = v; });
+      ctx.toggle("休眠", false, (v) => { sleep = v; p.world.setAllowSleeping(v); });
+      const p = lab(ctx, { perFrame: true, drag: false });
+      // Fill the container with n bodies on a grid sized so they always fit.
+      function spawn(n) {
+        count = n;
+        p.reset();
+        p.world.setAllowSleeping(sleep);
+        const { cwm, chm } = box;
+        p.ground.createFixture(new Box(cwm / 2 + 0.5, 0.25, V(cwm / 2, -0.25), 0));
+        p.ground.createFixture(new Box(0.25, 30, V(-0.25, 30), 0));
+        p.ground.createFixture(new Box(0.25, 30, V(cwm + 0.25, 30), 0));
+        paddle = p.world.createKinematicBody({ position: V(cwm / 2, chm * 0.3), angularVelocity: 1.8 });
+        paddle.createFixture(new Box(cwm * 0.18, 0.12));
+        const spx = clamp(Math.sqrt((box.cw * box.ch * 0.55) / n) * 0.8, 3, 26), gap = (spx * 1.3) / p.s, sz = spx / p.s;
+        const cols = Math.max(1, Math.floor((cwm - 0.3) / gap));
+        const hex = [];
+        for (let k = 0; k < 6; k++) hex.push([Math.cos((k / 6) * TAU) * sz * 0.5, Math.sin((k / 6) * TAU) * sz * 0.5]);
+        for (let i = 0; i < n; i++) {
+          const x = 0.15 + gap / 2 + (i % cols) * gap, y = chm - gap / 2 - Math.floor(i / cols) * gap;
+          const b = p.world.createDynamicBody({ position: V(x, y) });
+          const k = shape ? shape - 1 : i % 3, fd = { density: 1, friction: 0.1, restitution: 0.1 };
+          if (k === 0) b.createFixture(new Circle(sz / 2), fd);
+          else if (k === 1) b.createFixture(new Box(sz * 0.45, sz * 0.45), fd);
+          else b.createFixture(new Polygon(hex.map(([hx, hy]) => V(hx, hy))), fd);
+          b.setUserData(i % 6);
+        }
+      }
+      p.layout = (W, H) => {
+        const x0 = W >= 760 ? 350 : 10, x1 = W - 10, y0 = 10, y1 = H - ctx.controls.offsetHeight - 20;
+        box = { x0, x1, y0, y1, cw: x1 - x0, ch: y1 - y0 };
+        p.s = box.ch / 16; p.ox = x0; p.oy = y1;
+        box.cwm = box.cw / p.s; box.chm = 16;
+        if (count) spawn(count);
+      };
+      // Batched drawing: one Path2D per color, sleeping bodies in a single muted batch, no strokes.
+      p.draw = (g) => {
+        if (!box) return;
+        g.fillStyle = "#151922";
+        g.fillRect(box.x0, box.y0, box.cw, box.ch);
+        if (!paddle) return;
+        const paths = COLORS.map(() => new Path2D()), sleepy = new Path2D();
+        for (let b = p.world.getBodyList(); b; b = b.getNext()) {
+          if (!b.isDynamic()) continue;
+          const path = b.isAwake() ? paths[b.getUserData()] : sleepy;
+          const q = b.getPosition(), a = b.getAngle(), c = Math.cos(a), s = Math.sin(a), sh = b.getFixtureList().getShape();
+          if (sh.getType() === "circle") {
+            const r = sh.getRadius() * p.s, x = p.X(q.x), y = p.Y(q.y);
+            path.moveTo(x + r, y); path.arc(x, y, r, 0, TAU);
+          } else {
+            const vs = sh.m_vertices;
+            for (let k = 0; k < sh.m_count; k++) {
+              const v = vs[k], x = p.X(q.x + c * v.x - s * v.y), y = p.Y(q.y + s * v.x + c * v.y);
+              k ? path.lineTo(x, y) : path.moveTo(x, y);
+            }
+            path.closePath();
+          }
+        }
+        COLORS.forEach((col, i) => { g.fillStyle = col; g.fill(paths[i]); });
+        g.fillStyle = MUTED; g.fill(sleepy);
+        g.fillStyle = "#e8e6df";
+        g.beginPath(); p.path(paddle, paddle.getFixtureList()); g.fill();
+        g.strokeStyle = "#2a2f3a"; g.lineWidth = 3;
+        g.strokeRect(box.x0, box.y0, box.cw, box.ch);
+      };
+      p.go();
+      ctx.ramp({
+        label: "剛體", unit: "個", steps: [100, 250, 500, 1000, 1500, 2000, 3000, 4000, 6000], minFps: 30,
+        apply(n) { spawn(n); },
+        metrics: () => ({
+          接觸: p.world.getContactCount(),
+          物理: `${p.phys.toFixed(1)} ms`,
+          繪圖: `${p.paint.toFixed(1)} ms`,
+          樹高: p.world.getTreeHeight(),
+          模式: `${SHAPES[shape]}・迭代 ${p.vel}${sleep ? "・休眠" : ""}`,
+        }),
+        note: "每格先跑一次 world.step（寬相位、窄相位碰撞與約束求解）再畫 Canvas，兩段分開計時。速度迭代越多越穩也越慢；開「休眠」後靜止的剛體停算；樹高是動態 AABB 樹的深度，影響寬相位查詢成本。手機與內顯的上限通常明顯較低。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

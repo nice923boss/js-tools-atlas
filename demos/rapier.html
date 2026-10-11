@@ -3,472 +3,1588 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Rapier 示範：角色控制器遊樂場</title>
+<title>Rapier 示範：八個場景看懂 WASM 物理引擎與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","note":"物理與角色控制全部由 Rapier（Rust 編譯成 WebAssembly）計算，3D 繪圖使用 three.js 0.186.1"}</script>
-<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"}}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["角色控制器","軟體物理","形狀與地形","關節：Impulse 與 Multibody","感測器與碰撞群組","快照與倒帶","場景查詢","極限測試"],"note":"3D 繪圖使用 three.js 0.186.1，物理全部由 Rapier 0.21.0（Rust 編譯成 WebAssembly）計算"}</script>
 <style>
-  body { background: radial-gradient(circle at 50% 30%, #1b2536 0%, #0b0e14 75%); }
-  #stage { position: fixed; inset: 0; touch-action: none; }
-  #stage canvas { display: block; }
-  .heading { position: fixed; left: 16px; top: 14px; z-index: 40; pointer-events: none; }
-  .heading h1 { margin: 0; font-size: clamp(18px, 4vw, 26px); letter-spacing: .06em; }
-  .heading p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
-  .stats { position: fixed; right: 12px; bottom: 12px; z-index: 40; padding: 5px 10px; border-radius: 999px; font-size: 12px; pointer-events: none; }
-  .bubble {
-    position: fixed; left: 0; top: 0; z-index: 30; pointer-events: none; white-space: nowrap;
-    padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
-    background: var(--accent); color: var(--accent-ink); transform: translate(-50%, -100%);
-    box-shadow: 0 6px 18px rgba(0, 0, 0, .35); transition: opacity .2s;
-  }
-  .bubble[hidden] { display: none; }
-  @media (max-width: 600px) { .heading { top: 58px; } .heading p { max-width: 220px; } .stats { bottom: 46px; } }
+  .sc-scene canvas.gl { position: absolute; left: 0; top: 0; display: block; touch-action: none; }
+  .rp-labels { position: absolute; left: 0; top: 0; pointer-events: none; overflow: hidden; }
+  .rp-lab { font: 600 11px/1.35 var(--font); color: var(--fg); text-align: center; padding: 3px 7px; border-radius: 7px;
+    background: var(--panel); border: 1px solid var(--line); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .rp-lab small { display: block; color: var(--muted); font-weight: 500; font-size: 10.5px; }
+  .rp-lab small:empty { display: none; }
+  .rp-lab small.rp-code { font-family: var(--mono); }
+  .rp-narrow .rp-fine { display: none; }
+  .rp-bubble { font: 600 12px/1.3 var(--font); color: var(--accent-ink); background: var(--accent); padding: 4px 10px; border-radius: 999px;
+    white-space: nowrap; box-shadow: 0 4px 14px rgba(0, 0, 0, .35); }
+  .rp-chip { position: absolute; left: 10px; top: calc(var(--sc-ctl-h, 0px) + 10px); z-index: 105; max-width: min(460px, calc(100% - 20px));
+    padding: 6px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(6px);
+    font: 500 12px/1.5 var(--font); color: var(--fg); pointer-events: none; }
+  .rp-chip b { color: var(--accent); font: 600 12px/1.5 var(--mono); }
+  .rp-chip em { font-style: normal; font-weight: 600; color: var(--accent); }
+  .rp-it { display: inline-block; white-space: nowrap; margin-right: 10px; }
+  .stress-view { position: absolute; inset: 8px; border-radius: 10px; overflow: hidden; background: #07080b; }
+  @media (min-width: 761px) { .stress-view { inset: 8px 8px 8px 350px; } }
 </style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
 </head>
 <body>
-<div id="stage"></div>
-<div class="heading"><h1>角色控制器遊樂場</h1><p>Rapier 運動學角色：自動跨階、爬緩坡、陡坡滑落、推開木箱</p></div>
-<div class="controls">
-  <button class="btn primary" id="rain">球雨 300 顆</button>
-  <button class="btn" id="jump">跳躍</button>
-  <button class="btn" id="reset">重置</button>
-  <button class="btn" id="auto" aria-pressed="true">自動導覽</button>
-</div>
-<div class="bubble" id="bubble" hidden></div>
-<div class="panel stats mono" id="stats">載入中</div>
-<div class="hint">點地面讓角色走過去・WASD 或方向鍵操作・點物體踢飛</div>
-
+<script src="_shared/showcase.js"></script>
 <script type="module">
+// Rapier showcase: eight scenes, each with its own RAPIER.World and three.js renderer.
+// three.js only draws; every position and rotation comes from Rapier (Rust compiled to WebAssembly).
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
-import * as RAPIER from "https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.21.0/dist/rapier.mjs";
+import { ConvexGeometry } from "three/addons/geometries/ConvexGeometry.js";
+import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
 
-await RAPIER.init();
+const RAPIER_URL = "https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.21.0/dist/rapier.mjs";
+let R = null;
+const ready = import(RAPIER_URL).then(async (m) => { await m.init(); R = m; return m; });
+ready.catch(() => {}); // the scene that awaits it reports the error
+async function boot(ctx) {
+  if (!R) {
+    const st = ctx.status("載入 Rapier WebAssembly…");
+    try { await ready; } finally { st.done(); }
+  }
+  return ctx.active;
+}
+let vhacdDesc = null, vhacdMs = 0; // convex decomposition is computed once and reused by later mounts
 
-const STEP = 1 / 60;
-const DEG = Math.PI / 180;
-const CHAR = { r: 0.3, hh: 0.35, speed: 3.2, jump: 6.5, gravity: 18 };
-const START = { x: 0, y: 1.2, z: 5 };
-const MAX_BALLS = 700;
+const { h } = Showcase;
 const PALETTE = [0xf7df1e, 0x4cc9f0, 0xf72585, 0x7bd389, 0xff8c42, 0x9d8cff];
+const HEX = PALETTE.map((c) => "#" + c.toString(16).padStart(6, "0"));
+const STEP = 1 / 60, DEG = Math.PI / 180;
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const std = (color, extra) => new THREE.MeshStandardMaterial({ color, roughness: 0.55, ...extra });
+const ZERO = { x: 0, y: 0, z: 0 };
 
-// --- three.js scene ---------------------------------------------------------------------
-const stage = document.getElementById("stage");
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.shadowMap.enabled = true;
-stage.appendChild(renderer.domElement);
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0b0e14);
-scene.fog = new THREE.Fog(0x0b0e14, 16, 34);
-const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.maxPolarAngle = Math.PI * 0.46;
-controls.minDistance = 5;
-controls.maxDistance = 26;
-controls.enablePan = false;
-
-scene.add(new THREE.HemisphereLight(0xdfe9ff, 0x1a1f2a, 1.3));
-const sun = new THREE.DirectionalLight(0xffffff, 2.4);
-sun.position.set(6, 12, 7);
-sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-Object.assign(sun.shadow.camera, { left: -11, right: 11, top: 11, bottom: -11, near: 1, far: 40 });
-sun.shadow.bias = -0.0006;
-scene.add(sun);
-
-// --- Rapier world -----------------------------------------------------------------------
-const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
-world.timestep = STEP;
-
-// Static level geometry: every piece is a Rapier cuboid collider plus a matching mesh.
-function addStatic(hx, hy, hz, pos, rotZ, rotX, color) {
-  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(rotX || 0, 0, rotZ || 0));
-  const body = world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(pos[0], pos[1], pos[2]).setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }));
-  world.createCollider(RAPIER.ColliderDesc.cuboid(hx, hy, hz).setFriction(0.8), body);
-  if (color === null) return;
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2), new THREE.MeshStandardMaterial({ color, roughness: 0.8 }));
-  mesh.position.set(pos[0], pos[1], pos[2]);
-  mesh.quaternion.copy(q);
-  mesh.castShadow = mesh.receiveShadow = true;
-  scene.add(mesh);
-}
-
-// Ground
-addStatic(14, 0.5, 14, [0, -0.5, 0], 0, 0, null);
-const groundMesh = new THREE.Mesh(new THREE.PlaneGeometry(90, 90), new THREE.MeshStandardMaterial({ color: 0x1c2432, roughness: 0.95 }));
-groundMesh.rotation.x = -Math.PI / 2;
-groundMesh.receiveShadow = true;
-scene.add(groundMesh);
-const grid = new THREE.GridHelper(28, 28, 0x34425a, 0x263043);
-grid.position.y = 0.003;
-scene.add(grid);
-
-// Low rim around the arena keeps rolling balls on the ground.
-for (const s of [-1, 1]) {
-  addStatic(10.2, 0.18, 0.2, [0, 0.18, s * 10], 0, 0, 0x2b3854);
-  addStatic(0.2, 0.18, 10.2, [s * 10, 0.18, 0], 0, 0, 0x2b3854);
-}
-
-// Mesa: top at y = 1.2, x in [-2, 2], z in [-4.5, -1.5]
-const MESA_H = 1.2;
-addStatic(2, MESA_H / 2, 1.5, [0, MESA_H / 2, -3], 0, 0, 0x3a4860);
-// Stairs rising toward +x along the mesa's west side: 6 steps of 0.2 m
-for (let i = 0; i < 6; i++) {
-  const top = (i + 1) * 0.2;
-  addStatic(0.25, top / 2, 1, [-4.75 + i * 0.5, top / 2, -3], 0, 0, i % 2 ? 0x5b6d8c : 0x4f6080);
-}
-// Gentle ramp (20 degrees) descending toward +x from the mesa's east edge
-{
-  const a = 20 * DEG, len = MESA_H / Math.sin(a), run = MESA_H / Math.tan(a);
-  const mx = 2 + run / 2, my = MESA_H / 2;
-  addStatic(len / 2, 0.1, 1.5, [mx - Math.sin(a) * 0.1, my - Math.cos(a) * 0.1, -3], -a, 0, 0x2f7a5f);
-}
-// Steep ramp (55 degrees) on the mesa's south face, rising toward -z
-{
-  const a = 55 * DEG, len = MESA_H / Math.sin(a), run = MESA_H / Math.tan(a);
-  const mz = -1.5 + run / 2, my = MESA_H / 2;
-  addStatic(1, 0.1, len / 2, [0, my - Math.cos(a) * 0.1, mz - Math.sin(a) * 0.1], 0, a, 0x93304f);
-}
-
-// Floating labels drawn with canvas textures.
-function label(text, color, pos, scale = 1) {
-  const c = document.createElement("canvas");
-  const g = c.getContext("2d");
-  const font = "700 44px 'Noto Sans TC', 'Microsoft JhengHei', 'PingFang TC', sans-serif";
-  g.font = font;
-  const w = Math.ceil(g.measureText(text).width) + 48;
-  c.width = w; c.height = 76;
-  g.font = font;
-  g.fillStyle = "rgba(10, 13, 20, 0.82)";
-  g.beginPath(); g.roundRect(2, 2, w - 4, 72, 36); g.fill();
-  g.strokeStyle = color; g.lineWidth = 4; g.stroke();
-  g.fillStyle = color; g.textBaseline = "middle"; g.textAlign = "center";
-  g.fillText(text, w / 2, 40);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthWrite: false }));
-  s.scale.set((w / 76) * 0.42 * scale, 0.42 * scale, 1);
-  s.position.set(pos[0], pos[1], pos[2]);
-  scene.add(s);
-}
-label("階梯：自動跨階", "#9fb6dd", [-3.5, 2.0, -3]);
-label("緩坡 20°：可攀爬", "#7bd389", [4.1, 1.6, -3]);
-label("陡坡 55°：會滑落", "#f72585", [0, 2.15, -1.2]);
-label("可推動的木箱", "#ff8c42", [0, 2.3, 1.6]);
-
-// --- dynamic bodies ---------------------------------------------------------------------
-const CRATE = 0.25;
-const crateMesh = new THREE.InstancedMesh(
-  new RoundedBoxGeometry(CRATE * 2, CRATE * 2, CRATE * 2, 2, 0.04),
-  new THREE.MeshStandardMaterial({ roughness: 0.55 }),
-  12,
-);
-crateMesh.castShadow = crateMesh.receiveShadow = true;
-scene.add(crateMesh);
-let crates = [];
-
-const ballMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 18, 12), new THREE.MeshStandardMaterial({ roughness: 0.3, metalness: 0.05 }), MAX_BALLS);
-ballMesh.castShadow = ballMesh.receiveShadow = true;
-ballMesh.count = 0;
-scene.add(ballMesh);
-let balls = [];       // { body, r, color }
-let ballsDirty = true;
-let rainQueue = 0;
-
-function buildCrates() {
-  for (const b of crates) world.removeRigidBody(b);
-  crates = [];
-  const col = new THREE.Color();
-  // A 3 x 3 wall plus a small stack, standing across the patrol path.
-  for (let y = 0; y < 3; y++) for (let z = 0; z < 3; z++) {
-    const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(0, CRATE + y * CRATE * 2.02, 1.0 + z * CRATE * 2.02));
-    world.createCollider(RAPIER.ColliderDesc.cuboid(CRATE, CRATE, CRATE).setDensity(1.6).setFriction(0.7), body);
-    crates.push(body);
-  }
-  for (let i = 0; i < 3; i++) {
-    const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(-5.5, CRATE + i * CRATE * 2.02, 2.6));
-    world.createCollider(RAPIER.ColliderDesc.cuboid(CRATE, CRATE, CRATE).setDensity(1.6).setFriction(0.7), body);
-    crates.push(body);
-  }
-  crates.forEach((_, i) => crateMesh.setColorAt(i, col.setHSL(0.07 + (i % 3) * 0.015, 0.75, 0.52 + (i % 2) * 0.06)));
-  crateMesh.instanceColor.needsUpdate = true;
-}
-
-function addBall(x, y, z) {
-  if (balls.length >= MAX_BALLS) removeBall(0);
-  const r = 0.12 + Math.random() * 0.12;
-  const body = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(x, y, z));
-  world.createCollider(RAPIER.ColliderDesc.ball(r).setDensity(0.8).setRestitution(0.45).setFriction(0.5), body);
-  balls.push({ body, r, color: PALETTE[(Math.random() * PALETTE.length) | 0] });
-  ballsDirty = true;
-}
-function removeBall(i) {
-  world.removeRigidBody(balls[i].body);
-  balls.splice(i, 1);
-  ballsDirty = true;
-}
-function clearBalls() { while (balls.length) removeBall(balls.length - 1); }
-
-// --- kinematic character controller -----------------------------------------------------
-const charBody = world.createRigidBody(RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(START.x, START.y, START.z));
-const charCol = world.createCollider(RAPIER.ColliderDesc.capsule(CHAR.hh, CHAR.r), charBody);
-const cc = world.createCharacterController(0.02);
-cc.enableAutostep(0.3, 0.15, true);          // climb steps up to 0.3 m
-cc.enableSnapToGround(0.3);                   // stick to the ground when walking down steps or ramps
-cc.setMaxSlopeClimbAngle(40 * DEG);           // the 20 degree ramp is fine, the 55 degree one is not
-cc.setMinSlopeSlideAngle(40 * DEG);
-cc.setApplyImpulsesToDynamicBodies(true);     // walking into crates and balls pushes them
-cc.setCharacterMass(5);
-
-const hero = new THREE.Group();
-{
-  const bodyM = new THREE.Mesh(new THREE.CapsuleGeometry(CHAR.r, CHAR.hh * 2, 8, 20), new THREE.MeshStandardMaterial({ color: 0xf7df1e, roughness: 0.35 }));
-  const visor = new THREE.Mesh(new THREE.CapsuleGeometry(0.1, 0.3, 4, 12), new THREE.MeshStandardMaterial({ color: 0x14161c, roughness: 0.2, metalness: 0.4 }));
-  visor.rotation.z = Math.PI / 2;
-  visor.position.set(0, 0.22, CHAR.r - 0.04);
-  bodyM.castShadow = visor.castShadow = true;
-  hero.add(bodyM, visor);
-}
-scene.add(hero);
-
-const marker = new THREE.Mesh(new THREE.RingGeometry(0.22, 0.32, 40), new THREE.MeshBasicMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0.9, side: THREE.DoubleSide }));
-marker.rotation.x = -Math.PI / 2;
-marker.visible = false;
-scene.add(marker);
-
-// Patrol route used by the auto tour; each stop shows a speech bubble.
-const ROUTE = [
-  { p: [-6.0, -3.0], say: "走向階梯" },
-  { p: [0.0, -3.0], say: "自動跨上階梯" },
-  { p: [6.2, -3.0], say: "走下 20° 緩坡" },
-  { p: [5.0, 1.8], say: "" },
-  { p: [-4.0, 1.8], say: "推開木箱" },
-  { p: [0.0, 0.6], say: "" },
-  { p: [0.0, -2.6], say: "挑戰 55° 陡坡", steep: true },
-  { p: [-4.0, 0.2], say: "" },
-];
-let auto = true, routeIdx = 0, best = Infinity, bestAt = 0;
-let target = null;           // manual walk target {x, z}
-let vy = 0, grounded = false, jumpReq = false;
-const vel = new THREE.Vector2();
-let facing = 0, simTime = 0;
-let bubbleText = "", bubbleUntil = 0;
-const keys = new Set();
-
-function say(text, secs = 2.2) { bubbleText = text; bubbleUntil = simTime + secs; }
-
-function desiredDir() {
-  // Keyboard input, relative to the camera heading.
-  let kx = 0, kz = 0;
-  if (keys.has("KeyW") || keys.has("ArrowUp")) kz -= 1;
-  if (keys.has("KeyS") || keys.has("ArrowDown")) kz += 1;
-  if (keys.has("KeyA") || keys.has("ArrowLeft")) kx -= 1;
-  if (keys.has("KeyD") || keys.has("ArrowRight")) kx += 1;
-  if (kx || kz) {
-    const yaw = Math.atan2(camera.position.x - controls.target.x, camera.position.z - controls.target.z);
-    const c = Math.cos(yaw), s = Math.sin(yaw);
-    const v = new THREE.Vector2(kx * c + kz * s, -kx * s + kz * c);
-    return v.normalize();
-  }
-  const p = charBody.translation();
-  let goal = target;
-  if (auto) {
-    const stop = ROUTE[routeIdx];
-    goal = { x: stop.p[0], z: stop.p[1] };
-    const d = Math.hypot(goal.x - p.x, goal.z - p.z);
-    if (d < best - 0.08) { best = d; bestAt = simTime; }
-    const stuck = simTime - bestAt > (stop.steep ? 2.0 : 2.5);
-    if (d < 0.45 || stuck) {
-      if (stop.steep && stuck) say("太陡了，爬不上去", 3.2);
-      routeIdx = (routeIdx + 1) % ROUTE.length;
-      best = Infinity; bestAt = simTime;
-      if (ROUTE[routeIdx].say && simTime > bubbleUntil - 0.5) say(ROUTE[routeIdx].say);
-      if (stop.steep && stuck) jumpReq = true;
-    }
-  }
-  if (!goal) return new THREE.Vector2();
-  const dx = goal.x - p.x, dz = goal.z - p.z, d = Math.hypot(dx, dz);
-  if (d < 0.2) { if (!auto) { target = null; marker.visible = false; } return new THREE.Vector2(); }
-  return new THREE.Vector2(dx / d, dz / d).multiplyScalar(Math.min(1, d / 0.6));
-}
-
-function stepCharacter(dt) {
-  const dir = desiredDir();
-  vel.lerp(dir.multiplyScalar(CHAR.speed), grounded ? 0.25 : 0.06);
-  vy -= CHAR.gravity * dt;
-  if (jumpReq && grounded) { vy = CHAR.jump; }
-  jumpReq = false;
-  const want = { x: vel.x * dt, y: vy * dt, z: vel.y * dt };
-  cc.computeColliderMovement(charCol, want);
-  const mv = cc.computedMovement();
-  const p = charBody.translation();
-  charBody.setNextKinematicTranslation({ x: p.x + mv.x, y: p.y + mv.y, z: p.z + mv.z });
-  grounded = cc.computedGrounded();
-  if (grounded && vy < 0) vy = -0.5;
-  if (vy > 0 && mv.y < want.y * 0.5) vy = 0;   // bumped the head
-  if (vel.lengthSq() > 0.05) facing = Math.atan2(vel.x, vel.y);
-  if (p.y < -8) resetCharacter();
-}
-
-function resetCharacter() {
-  charBody.setTranslation(START, true);
-  charBody.setNextKinematicTranslation(START);
-  vy = 0; vel.set(0, 0);
-}
-
-function rain(n) { rainQueue += n; }
-
-function resetAll() {
-  clearBalls();
-  buildCrates();
-  resetCharacter();
-  routeIdx = 0; best = Infinity; bestAt = simTime;
-  target = null; marker.visible = false;
-  rain(100);
-  say(ROUTE[0].say);
-}
-
-// --- input ------------------------------------------------------------------------------
-const autoBtn = document.getElementById("auto");
-function setAuto(on) {
-  auto = on;
-  autoBtn.setAttribute("aria-pressed", String(on));
-  if (on) { target = null; marker.visible = false; best = Infinity; bestAt = simTime; }
-}
-autoBtn.addEventListener("click", () => setAuto(!auto));
-document.getElementById("rain").addEventListener("click", () => rain(300));
-document.getElementById("jump").addEventListener("click", () => { jumpReq = true; });
-document.getElementById("reset").addEventListener("click", resetAll);
-
-addEventListener("keydown", (e) => {
-  if (e.code === "Space") { e.preventDefault(); jumpReq = true; return; }
-  if (/^(Key[WASD]|Arrow)/.test(e.code)) { e.preventDefault(); keys.add(e.code); setAuto(false); target = null; marker.visible = false; }
-});
-addEventListener("keyup", (e) => keys.delete(e.code));
-addEventListener("blur", () => keys.clear());
-
-// Clicks are resolved with Rapier's own ray cast against the colliders.
-const ndc = new THREE.Vector2(), tray = new THREE.Raycaster();
-let down = null;
-renderer.domElement.addEventListener("pointerdown", (e) => { down = [e.clientX, e.clientY]; });
-renderer.domElement.addEventListener("pointerup", (e) => {
-  if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return;
-  ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
-  tray.setFromCamera(ndc, camera);
-  const o = tray.ray.origin, d = tray.ray.direction;
-  const hit = world.castRay(new RAPIER.Ray({ x: o.x, y: o.y, z: o.z }, { x: d.x, y: d.y, z: d.z }), 100, true, undefined, undefined, charCol);
-  if (!hit) return;
-  const body = hit.collider.parent();
-  if (body && body.isDynamic()) {
-    const k = body.mass() * 7;
-    body.applyImpulse({ x: d.x * k, y: Math.abs(d.y) * k * 0.4 + body.mass() * 2, z: d.z * k }, true);
-    return;
-  }
-  const t = hit.timeOfImpact;
-  target = { x: o.x + d.x * t, z: o.z + d.z * t };
-  marker.position.set(target.x, o.y + d.y * t + 0.03, target.z);
-  marker.visible = true;
-  setAuto(false);
-});
-
-const CENTER = new THREE.Vector3(0, 0.6, -1);
-let camDist = 13;
-function resize() {
-  const w = innerWidth, h = innerHeight;
-  renderer.setSize(w, h);
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
-  // Portrait screens need the camera further back to fit the playground.
-  camDist = 13 / Math.min(1, camera.aspect * 1.2);
-  const dir = new THREE.Vector3(0.42, 0.62, 0.66).normalize();
-  camera.position.copy(controls.target).addScaledVector(dir, camDist);
-  controls.update();
-}
-
-// --- loop -------------------------------------------------------------------------------
-const m4 = new THREE.Matrix4(), pos = new THREE.Vector3(), quat = new THREE.Quaternion(), scl = new THREE.Vector3(), colr = new THREE.Color();
-const bubble = document.getElementById("bubble");
-const statsEl = document.getElementById("stats");
-const tmp = new THREE.Vector3(), prevTarget = new THREE.Vector3();
-let last = performance.now(), acc = 0, frameNo = 0;
-
-function frame(now) {
-  const dt = Math.min(0.1, (now - last) / 1000);
-  last = now;
-  acc += dt;
-  let n = 0;
-  while (acc >= STEP && n < 3) {
-    for (let i = 0; i < 12 && rainQueue > 0; i++, rainQueue--) {
-      addBall((Math.random() - 0.5) * 14, 7 + Math.random() * 4, (Math.random() - 0.5) * 12 - 0.5);
-    }
-    stepCharacter(STEP);
-    world.step();
-    simTime += STEP;
-    acc -= STEP;
-    n++;
-  }
-  if (n === 3) acc = 0;
-
-  // Drop balls that rolled off the edge of the world.
-  for (let i = balls.length - 1; i >= 0; i--) if (balls[i].body.translation().y < -6) removeBall(i);
-
-  crates.forEach((b, i) => {
-    const t = b.translation(), r = b.rotation();
-    crateMesh.setMatrixAt(i, m4.compose(pos.set(t.x, t.y, t.z), quat.set(r.x, r.y, r.z, r.w), scl.set(1, 1, 1)));
+// ---------- three.js stage ----------
+function disposeAll(root, extra) {
+  const seen = new Set();
+  const free = (x) => { if (x && !seen.has(x) && typeof x.dispose === "function") { seen.add(x); x.dispose(); } };
+  const freeMat = (m) => { if (!m) return; for (const v of Object.values(m)) if (v && v.isTexture) free(v); free(m); };
+  root.traverse((o) => {
+    free(o.geometry);
+    [].concat(o.material || []).forEach(freeMat);
+    if (o.isInstancedMesh) free(o);
   });
-  crateMesh.count = crates.length;
-  crateMesh.instanceMatrix.needsUpdate = true;
-  crateMesh.computeBoundingSphere();
-
-  balls.forEach((b, i) => {
-    const t = b.body.translation(), r = b.body.rotation();
-    ballMesh.setMatrixAt(i, m4.compose(pos.set(t.x, t.y, t.z), quat.set(r.x, r.y, r.z, r.w), scl.setScalar(b.r)));
-    if (ballsDirty) ballMesh.setColorAt(i, colr.setHex(b.color));
-  });
-  ballMesh.count = balls.length;
-  ballMesh.instanceMatrix.needsUpdate = true;
-  if (ballsDirty && ballMesh.instanceColor) ballMesh.instanceColor.needsUpdate = true;
-  ballsDirty = false;
-  ballMesh.computeBoundingSphere();
-
-  const cp = charBody.translation();
-  hero.position.set(cp.x, cp.y, cp.z);
-  let dy = facing - hero.rotation.y;
-  dy = Math.atan2(Math.sin(dy), Math.cos(dy));
-  hero.rotation.y += dy * 0.2;
-  marker.material.opacity = 0.55 + 0.35 * Math.sin(now / 160);
-
-  // Camera target sits between the playground center and the character.
-  prevTarget.copy(controls.target);
-  tmp.set(cp.x, cp.y, cp.z).lerp(CENTER, 0.55);
-  controls.target.lerp(tmp, 0.06);
-  camera.position.add(tmp.subVectors(controls.target, prevTarget));
-  controls.update();
-  renderer.render(scene, camera);
-
-  if (simTime < bubbleUntil) {
-    tmp.set(cp.x, cp.y + 1.0, cp.z).project(camera);
-    bubble.style.left = ((tmp.x + 1) / 2) * innerWidth + "px";
-    bubble.style.top = ((1 - tmp.y) / 2) * innerHeight + "px";
-    bubble.textContent = bubbleText;
-    bubble.hidden = false;
-  } else bubble.hidden = true;
-
-  if (frameNo++ % 10 === 0) {
-    statsEl.textContent = "剛體 " + (balls.length + crates.length + 1) + " 個・角色" + (grounded ? "著地" : "騰空");
-  }
-  requestAnimationFrame(frame);
+  for (const x of extra) (x && x.isMaterial ? freeMat : free)(x);
 }
 
-addEventListener("resize", resize);
-controls.target.copy(CENTER);
-resize();
-resetAll();
-requestAnimationFrame(frame);
+function stage(ctx, o = {}) {
+  const host = o.host || ctx.el;
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = o.exposure ?? 1;
+  if (o.shadows) { renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; }
+  const canvas = renderer.domElement;
+  canvas.className = "gl";
+  host.append(canvas);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(o.bg ?? 0x0e1013);
+  const fov = o.fov ?? 45;
+  const camera = new THREE.PerspectiveCamera(fov, 1, 0.1, o.far ?? 300);
+  camera.position.set(...(o.pos || [0, 2, 8]));
+  let controls = null;
+  if (o.orbit !== false) {
+    controls = new OrbitControls(camera, canvas);
+    controls.target.set(...(o.target || [0, 0, 0]));
+    controls.enableDamping = true;
+    controls.enablePan = false;
+    Object.assign(controls, o.orbit || {});
+  }
+  let labels = null;
+  if (o.labels) {
+    labels = new CSS2DRenderer();
+    labels.domElement.className = "rp-labels";
+    host.append(labels.domElement);
+  }
+  const frameFns = [], sizeFns = [], extra = [];
+  const S = {
+    renderer, scene, camera, controls, canvas, host, width: 1, height: 1, availH: 1, full: 1,
+    render: () => renderer.render(scene, camera),
+    onFrame(fn) { frameFns.push(fn); },
+    onSize(fn) { sizeFns.push(fn); fn(S.width, S.height); },
+    own(...xs) { extra.push(...xs); return xs[0]; },
+  };
+  if (labels) S.onSize((w) => labels.domElement.classList.toggle("rp-narrow", w < 560)); // narrow stages hide secondary label lines
+  let lastKey = "";
+  const fit = () => {
+    const w = Math.max(1, host.clientWidth), hh = Math.max(1, host.clientHeight);
+    const top = parseFloat(ctx.el.style.getPropertyValue("--sc-ctl-h")) || 0;
+    const bot = parseFloat(ctx.el.style.getPropertyValue("--sc-ctl-b")) || 0;
+    const key = `${w}x${hh}:${top}:${bot}`;
+    if (key === lastKey) return;
+    lastKey = key;
+    const d = Math.max(-hh * 0.4, Math.min(hh * 0.4, top - bot));
+    S.width = w; S.height = hh; S.full = hh + Math.abs(d); S.availH = hh - Math.abs(d);
+    renderer.setSize(w, hh);
+    if (labels) labels.setSize(w, hh);
+    camera.aspect = w / S.full;
+    camera.fov = o.portraitFov && w < hh ? o.portraitFov : fov;
+    if (d) camera.setViewOffset(w, S.full, 0, d < 0 ? -d : 0, w, hh); else camera.clearViewOffset();
+    camera.updateProjectionMatrix();
+    for (const fn of sizeFns) fn(w, hh);
+  };
+  fit();
+  const timer = new THREE.Timer();
+  ctx.raf((t) => {
+    fit();
+    timer.update(t);
+    const dt = Math.max(0, Math.min(timer.getDelta(), 0.1)), time = timer.getElapsed();
+    for (const fn of frameFns) fn(dt, time);
+    if (controls) controls.update(dt);
+    S.render();
+    if (labels) labels.render(scene, camera);
+  });
+  ctx.onCleanup(() => {
+    if (controls) controls.dispose();
+    timer.dispose();
+    disposeAll(scene, extra);
+    renderer.dispose();
+    renderer.forceContextLoss(); // WEBGL_lose_context: frees the GL context right away
+    canvas.remove();
+    if (labels) labels.domElement.remove();
+  });
+  return S;
+}
+
+// Camera distance that fits a halfW x halfH box into the visible (uncovered) part of the view.
+function fitDistance(S, halfW, halfH, margin = 1.12) {
+  const tanV = Math.tan(THREE.MathUtils.degToRad(S.camera.fov) / 2);
+  return Math.max((halfH * S.full) / (S.availH * tanV), halfW / (tanV * S.camera.aspect)) * margin;
+}
+const setNdc = (S, e, v) => {
+  const r = S.canvas.getBoundingClientRect();
+  return v.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+};
+// Click/tap that is not the end of an orbit drag.
+function onTap(ctx, el, fn) {
+  let d = null;
+  ctx.on(el, "pointerdown", (e) => { d = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+  ctx.on(el, "pointerup", (e) => {
+    if (d && performance.now() - d.t < 300 && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6) fn(e);
+    d = null;
+  });
+}
+// CSS2D label. o.color tints it, o.fine hides the whole label on narrow stages, o.fineSub only the second line.
+function label(title, sub = "", o = {}) {
+  const t = h("span", { text: title });
+  const s = h("small", { text: sub, class: [o.fineSub ? "rp-fine" : "", o.codeSub ? "rp-code" : ""].join(" ").trim() || null });
+  const box = h("div", { class: "rp-lab" + (o.fine ? " rp-fine" : "") }, t, s);
+  if (o.color) { box.style.borderColor = o.color; t.style.color = o.color; }
+  const obj = new CSS2DObject(box);
+  let lt = title, ls = sub;
+  obj.userData.title = (x) => { if (x !== lt) { lt = x; t.textContent = x; } };
+  obj.userData.sub = (x) => { if (x !== ls) { ls = x; s.textContent = x; } };
+  return obj;
+}
+function chip(ctx, html) {
+  const el = h("div", { class: "rp-chip" });
+  el.innerHTML = html;
+  ctx.el.append(el);
+  let last = html;
+  return (next) => { if (next !== last) { last = next; el.innerHTML = next; } };
+}
+const it = (html) => `<span class="rp-it">${html}</span>`;
+// Smooth camera moves between framed views; re-frames on resize.
+function camRig(S) {
+  let cur = null, k = 1;
+  const p0 = new THREE.Vector3(), t0 = new THREE.Vector3(), p1 = new THREE.Vector3(), t1 = new THREE.Vector3();
+  const goal = () => { t1.set(...cur.t); p1.set(...cur.d).normalize().multiplyScalar(fitDistance(S, cur.hw, cur.hh)).add(t1); };
+  S.onSize(() => { if (!cur) return; goal(); if (k >= 1) { S.camera.position.copy(p1); S.controls.target.copy(t1); } });
+  S.onFrame((dt) => {
+    if (k >= 1) return;
+    k = Math.min(1, k + dt / 1.2);
+    const e = k * k * (3 - 2 * k);
+    S.camera.position.lerpVectors(p0, p1, e);
+    S.controls.target.lerpVectors(t0, t1, e);
+  });
+  return (view, instant) => {
+    cur = view; goal();
+    if (instant) { k = 1; S.camera.position.copy(p1); S.controls.target.copy(t1); }
+    else { k = 0; p0.copy(S.camera.position); t0.copy(S.controls.target); }
+  };
+}
+function lights(S, { shadow = 6, pos = [4, 9, 5], hemi = 1.3, sun = 2.4 } = {}) {
+  S.scene.add(new THREE.HemisphereLight(0xfff4e6, 0x20232c, hemi));
+  const d = new THREE.DirectionalLight(0xffffff, sun);
+  d.position.set(...pos);
+  if (shadow) {
+    d.castShadow = true;
+    d.shadow.mapSize.set(2048, 2048);
+    Object.assign(d.shadow.camera, { left: -shadow, right: shadow, top: shadow, bottom: -shadow, near: 0.5, far: 60 });
+    d.shadow.bias = -0.0005;
+  }
+  S.scene.add(d);
+  return d;
+}
+function floor(S, w, d, color, x = 0) {
+  const m = new THREE.Mesh(S.own(new THREE.PlaneGeometry(w, d)), S.own(std(color, { roughness: 0.9 })));
+  m.rotation.x = -Math.PI / 2;
+  m.position.x = x;
+  m.receiveShadow = true;
+  S.scene.add(m);
+  return m;
+}
+function shadowed(geo, mat) { const m = new THREE.Mesh(geo, mat); m.castShadow = m.receiveShadow = true; return m; }
+function instanced(S, geo, mat, cap) {
+  const im = new THREE.InstancedMesh(S.own(geo), S.own(mat), cap);
+  im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  im.frustumCulled = false;
+  im.castShadow = im.receiveShadow = true;
+  im.count = 0;
+  im.setColorAt(0, new THREE.Color());
+  S.scene.add(im);
+  return im;
+}
+const segSet = (wrap, i) => [...wrap.children].forEach((b, j) => b.setAttribute("aria-pressed", String(j === i)));
+
+// ---------- Rapier glue ----------
+function physWorld(ctx) {
+  const world = new R.World({ x: 0, y: -9.81, z: 0 });
+  world.timestep = STEP;
+  ctx.onCleanup(() => world.free());
+  return world;
+}
+function qE(x, y, z) { const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(x, y, z)); return { x: q.x, y: q.y, z: q.z, w: q.w }; }
+const _m4 = new THREE.Matrix4(), _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
+function setInst(im, i, body, scale = 1) {
+  const t = body.translation(), r = body.rotation();
+  im.setMatrixAt(i, _m4.compose(_p.set(t.x, t.y, t.z), _q.set(r.x, r.y, r.z, r.w), _s.setScalar(scale)));
+}
+function syncMesh(mesh, body) {
+  const t = body.translation(), r = body.rotation();
+  mesh.position.set(t.x, t.y, t.z);
+  mesh.quaternion.set(r.x, r.y, r.z, r.w);
+}
+// Orient a unit-height cylinder mesh (or instance) from point a to point b.
+const _up = new THREE.Vector3(0, 1, 0), _a = new THREE.Vector3(), _b = new THREE.Vector3();
+function beam(a, b) {
+  _a.set(a.x, a.y, a.z); _b.set(b.x, b.y, b.z).sub(_a);
+  const len = Math.max(1e-4, _b.length());
+  _q.setFromUnitVectors(_up, _b.divideScalar(len));
+  _p.copy(_a).addScaledVector(_b, len / 2);
+  return _m4.compose(_p, _q, _s.set(1, len, 1));
+}
+// Fixed 60 Hz stepping with at most maxSub steps per frame. P.world is read every step, so it can be swapped.
+function fixedLoop(S, P) {
+  let acc = 0;
+  P.ms = 0; P.steps = 0;
+  S.onFrame((dt) => {
+    if (P.paused) { acc = 0; return; }
+    acc += dt;
+    const max = P.maxSub || 3;
+    let n = 0;
+    while (acc >= STEP && n < max && !P.paused) {
+      if (P.before) P.before();
+      const t0 = performance.now();
+      P.world.step(P.eq);
+      P.ms += (performance.now() - t0 - P.ms) * 0.1;
+      P.steps++;
+      if (P.after) P.after();
+      acc -= STEP; n++;
+    }
+    if (n === max) acc = 0;
+  });
+}
+function torusData() {
+  const Rm = 0.55, rm = 0.17, nu = 20, nv = 10, v = [], idx = [];
+  for (let i = 0; i < nu; i++) for (let k = 0; k < nv; k++) {
+    const u = (i / nu) * Math.PI * 2, w = (k / nv) * Math.PI * 2;
+    v.push((Rm + rm * Math.cos(w)) * Math.cos(u), rm * Math.sin(w), (Rm + rm * Math.cos(w)) * Math.sin(u));
+  }
+  for (let i = 0; i < nu; i++) for (let k = 0; k < nv; k++) {
+    const a = i * nv + k, b = ((i + 1) % nu) * nv + k, c = ((i + 1) % nu) * nv + ((k + 1) % nv), d = i * nv + ((k + 1) % nv);
+    idx.push(a, d, b, b, d, c);
+  }
+  return { verts: new Float32Array(v), idx: new Uint32Array(idx) };
+}
+
+Showcase.run({ scenes: [
+  {
+    id: "character", title: "角色控制器",
+    api: "world.createCharacterController(0.02)・controller.computeColliderMovement(collider, move)・enableAutostep・setMaxSlopeClimbAngle",
+    desc: "運動學角色每一步都交給 Rapier 的角色控制器算出能走多遠：30 cm 以內的台階自動跨上、20° 緩坡照走、55° 陡坡會滑下來，走路時還會推開木箱與球。",
+    hint: "點地面讓角色走過去・WASD 或方向鍵操作・空白鍵跳・點物體踢飛",
+    async mount(ctx) {
+      if (!(await boot(ctx))) return;
+      const S = stage(ctx, { shadows: true, portraitFov: 55, bg: 0x0b0e14, far: 140, labels: true,
+        orbit: { maxPolarAngle: Math.PI * 0.46, minDistance: 5, maxDistance: 60 } });
+      S.scene.fog = new THREE.Fog(0x0b0e14, 16, 34);
+      S.scene.add(new THREE.HemisphereLight(0xdfe9ff, 0x1a1f2a, 1.3));
+      const sun = new THREE.DirectionalLight(0xffffff, 2.4);
+      sun.position.set(6, 12, 7);
+      sun.castShadow = true;
+      sun.shadow.mapSize.set(2048, 2048);
+      Object.assign(sun.shadow.camera, { left: -11, right: 11, top: 11, bottom: -11, near: 1, far: 40 });
+      sun.shadow.bias = -0.0006;
+      S.scene.add(sun);
+      const CENTER = new THREE.Vector3(0, 0.6, -1);
+      camRig(S)({ t: [0, 0.6, -1], d: [0.42, 0.62, 0.66], hw: 6, hh: 4.6 }, true);
+      const world = physWorld(ctx);
+      const CHAR = { r: 0.3, hh: 0.35, speed: 3.2, jump: 6.5, gravity: 18 }, START = { x: 0, y: 1.2, z: 5 }, MAX_BALLS = 700;
+
+      // Static level: one fixed body, every piece is a cuboid collider plus a matching mesh.
+      const ground = world.createRigidBody(R.RigidBodyDesc.fixed());
+      const mats = new Map();
+      const addStatic = (hx, hy, hz, pos, rotZ, rotX, color) => {
+        const q = qE(rotX, 0, rotZ);
+        world.createCollider(R.ColliderDesc.cuboid(hx, hy, hz).setTranslation(pos[0], pos[1], pos[2]).setRotation(q).setFriction(0.8), ground);
+        if (color == null) return;
+        if (!mats.has(color)) mats.set(color, std(color, { roughness: 0.8 }));
+        const m = shadowed(new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2), mats.get(color));
+        m.position.set(...pos);
+        m.quaternion.set(q.x, q.y, q.z, q.w);
+        S.scene.add(m);
+      };
+      addStatic(14, 0.5, 14, [0, -0.5, 0], 0, 0, null);
+      const gm = new THREE.Mesh(new THREE.PlaneGeometry(90, 90), std(0x1c2432, { roughness: 0.95 }));
+      gm.rotation.x = -Math.PI / 2;
+      gm.receiveShadow = true;
+      S.scene.add(gm);
+      const grid = new THREE.GridHelper(28, 28, 0x34425a, 0x263043);
+      grid.position.y = 0.003;
+      S.scene.add(grid);
+      for (const s of [-1, 1]) {
+        addStatic(10.2, 0.18, 0.2, [0, 0.18, s * 10], 0, 0, 0x2b3854);
+        addStatic(0.2, 0.18, 10.2, [s * 10, 0.18, 0], 0, 0, 0x2b3854);
+      }
+      const MESA_H = 1.2;
+      addStatic(2, MESA_H / 2, 1.5, [0, MESA_H / 2, -3], 0, 0, 0x3a4860);
+      for (let i = 0; i < 6; i++) {
+        const top = (i + 1) * 0.2;
+        addStatic(0.25, top / 2, 1, [-4.75 + i * 0.5, top / 2, -3], 0, 0, i % 2 ? 0x5b6d8c : 0x4f6080);
+      }
+      {
+        const a = 20 * DEG, len = MESA_H / Math.sin(a), run = MESA_H / Math.tan(a);
+        addStatic(len / 2, 0.1, 1.5, [2 + run / 2 - Math.sin(a) * 0.1, MESA_H / 2 - Math.cos(a) * 0.1, -3], -a, 0, 0x2f7a5f);
+      }
+      {
+        const a = 55 * DEG, len = MESA_H / Math.sin(a), run = MESA_H / Math.tan(a);
+        addStatic(1, 0.1, len / 2, [0, MESA_H / 2 - Math.cos(a) * 0.1, -1.5 + run / 2 - Math.sin(a) * 0.1], 0, a, 0x93304f);
+      }
+      for (const [t, sub, color, p, code] of [
+        ["階梯：自動跨階", "每階 20 cm・autostep 上限 30 cm", "#9fb6dd", [-3.5, 2.0, -3]],
+        ["緩坡 20°：可攀爬", "maxSlopeClimbAngle 40°", "#7bd389", [4.1, 1.6, -3], true],
+        ["陡坡 55°：會滑落", "超過 40° 就滑下來", "#f72585", [0, 2.15, -1.2]],
+        ["可推動的木箱", "applyImpulsesToDynamicBodies", "#ff8c42", [0, 2.3, 1.6], true],
+      ]) {
+        const l = label(t, sub, { color, fineSub: true, codeSub: code });
+        l.position.set(...p);
+        S.scene.add(l);
+      }
+
+      // Dynamic crates and balls, drawn with two InstancedMeshes.
+      const CRATE = 0.25, col = new THREE.Color();
+      const crateIm = instanced(S, new RoundedBoxGeometry(CRATE * 2, CRATE * 2, CRATE * 2, 2, 0.04), std(0xffffff), 12);
+      const ballIm = instanced(S, new THREE.SphereGeometry(1, 18, 12), std(0xffffff, { roughness: 0.3, metalness: 0.05 }), MAX_BALLS);
+      let crates = [], balls = [], rainQ = 0, ballsDirty = true;
+      function buildCrates() {
+        for (const b of crates) world.removeRigidBody(b);
+        crates = [];
+        const mk = (x, y, z) => {
+          const b = world.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(x, y, z));
+          world.createCollider(R.ColliderDesc.cuboid(CRATE, CRATE, CRATE).setDensity(1.6).setFriction(0.7), b);
+          crates.push(b);
+        };
+        for (let y = 0; y < 3; y++) for (let z = 0; z < 3; z++) mk(0, CRATE + y * CRATE * 2.02, 1.0 + z * CRATE * 2.02);
+        for (let i = 0; i < 3; i++) mk(-5.5, CRATE + i * CRATE * 2.02, 2.6);
+        crates.forEach((_, i) => crateIm.setColorAt(i, col.setHSL(0.07 + (i % 3) * 0.015, 0.75, 0.52 + (i % 2) * 0.06)));
+        crateIm.count = crates.length;
+        crateIm.instanceColor.needsUpdate = true;
+      }
+      function removeBall(i) { world.removeRigidBody(balls[i].body); balls.splice(i, 1); ballsDirty = true; }
+      function addBall(x, y, z) {
+        if (balls.length >= MAX_BALLS) removeBall(0);
+        const r = 0.12 + Math.random() * 0.12;
+        const body = world.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(x, y, z));
+        world.createCollider(R.ColliderDesc.ball(r).setDensity(0.8).setRestitution(0.45).setFriction(0.5), body);
+        balls.push({ body, r, color: PALETTE[(Math.random() * PALETTE.length) | 0] });
+        ballsDirty = true;
+      }
+
+      // Kinematic character: the controller resolves each desired move against the colliders.
+      const charBody = world.createRigidBody(R.RigidBodyDesc.kinematicPositionBased().setTranslation(START.x, START.y, START.z));
+      const charCol = world.createCollider(R.ColliderDesc.capsule(CHAR.hh, CHAR.r), charBody);
+      const cc = world.createCharacterController(0.02);
+      ctx.onCleanup(() => world.removeCharacterController(cc));
+      cc.enableAutostep(0.3, 0.15, true);      // climb steps up to 0.3 m
+      cc.enableSnapToGround(0.3);               // stick to the ground on the way down
+      cc.setMaxSlopeClimbAngle(40 * DEG);       // 20 degrees is fine, 55 degrees is not
+      cc.setMinSlopeSlideAngle(40 * DEG);
+      cc.setApplyImpulsesToDynamicBodies(true); // walking into crates and balls pushes them
+      cc.setCharacterMass(5);
+
+      const hero = new THREE.Group();
+      const visor = shadowed(new THREE.CapsuleGeometry(0.1, 0.3, 4, 12), std(0x14161c, { roughness: 0.2, metalness: 0.4 }));
+      visor.rotation.z = Math.PI / 2;
+      visor.position.set(0, 0.22, CHAR.r - 0.04);
+      hero.add(shadowed(new THREE.CapsuleGeometry(CHAR.r, CHAR.hh * 2, 8, 20), std(0xf7df1e, { roughness: 0.35 })), visor);
+      const bubbleEl = h("div", { class: "rp-bubble" });
+      const bubble = new CSS2DObject(bubbleEl);
+      bubble.center.set(0.5, 1);
+      bubble.position.y = 0.95;
+      bubble.visible = false;
+      hero.add(bubble);
+      S.scene.add(hero);
+      const marker = new THREE.Mesh(new THREE.RingGeometry(0.22, 0.32, 40), new THREE.MeshBasicMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0.9, side: THREE.DoubleSide }));
+      marker.rotation.x = -Math.PI / 2;
+      marker.visible = false;
+      S.scene.add(marker);
+
+      const ROUTE = [
+        { p: [-6.0, -3.0], say: "走向階梯" },
+        { p: [0.0, -3.0], say: "自動跨上階梯" },
+        { p: [6.2, -3.0], say: "走下 20° 緩坡" },
+        { p: [5.0, 1.8], say: "" },
+        { p: [-4.0, 1.8], say: "推開木箱" },
+        { p: [0.0, 0.6], say: "" },
+        { p: [0.0, -2.6], say: "挑戰 55° 陡坡", steep: true },
+        { p: [-4.0, 0.2], say: "" },
+      ];
+      let auto = true, routeIdx = 0, best = Infinity, bestAt = 0, target = null;
+      let vy = 0, grounded = false, jumpReq = false, facing = 0, simTime = 0, bubbleText = "", bubbleUntil = 0;
+      const vel = new THREE.Vector2(), keys = new Set();
+      const say = (text, secs = 2.2) => { bubbleText = text; bubbleUntil = simTime + secs; };
+
+      function desiredDir() {
+        let kx = 0, kz = 0;
+        if (keys.has("KeyW") || keys.has("ArrowUp")) kz -= 1;
+        if (keys.has("KeyS") || keys.has("ArrowDown")) kz += 1;
+        if (keys.has("KeyA") || keys.has("ArrowLeft")) kx -= 1;
+        if (keys.has("KeyD") || keys.has("ArrowRight")) kx += 1;
+        if (kx || kz) { // keyboard input is relative to the camera heading
+          const yaw = Math.atan2(S.camera.position.x - S.controls.target.x, S.camera.position.z - S.controls.target.z);
+          const c = Math.cos(yaw), s = Math.sin(yaw);
+          return new THREE.Vector2(kx * c + kz * s, -kx * s + kz * c).normalize();
+        }
+        const p = charBody.translation();
+        let goal = target;
+        if (auto) {
+          const stop = ROUTE[routeIdx];
+          goal = { x: stop.p[0], z: stop.p[1] };
+          const d = Math.hypot(goal.x - p.x, goal.z - p.z);
+          if (d < best - 0.08) { best = d; bestAt = simTime; }
+          const stuck = simTime - bestAt > (stop.steep ? 2.0 : 2.5);
+          if (d < 0.45 || stuck) {
+            if (stop.steep && stuck) say("太陡了，爬不上去", 3.2);
+            routeIdx = (routeIdx + 1) % ROUTE.length;
+            best = Infinity; bestAt = simTime;
+            if (ROUTE[routeIdx].say && simTime > bubbleUntil - 0.5) say(ROUTE[routeIdx].say);
+            if (stop.steep && stuck) jumpReq = true;
+          }
+        }
+        if (!goal) return new THREE.Vector2();
+        const dx = goal.x - p.x, dz = goal.z - p.z, d = Math.hypot(dx, dz);
+        if (d < 0.2) { if (!auto) { target = null; marker.visible = false; } return new THREE.Vector2(); }
+        return new THREE.Vector2(dx / d, dz / d).multiplyScalar(Math.min(1, d / 0.6));
+      }
+      function resetCharacter() {
+        charBody.setTranslation(START, true);
+        charBody.setNextKinematicTranslation(START);
+        vy = 0; vel.set(0, 0);
+      }
+      function stepCharacter(dt) {
+        vel.lerp(desiredDir().multiplyScalar(CHAR.speed), grounded ? 0.25 : 0.06);
+        vy -= CHAR.gravity * dt;
+        if (jumpReq && grounded) vy = CHAR.jump;
+        jumpReq = false;
+        const want = { x: vel.x * dt, y: vy * dt, z: vel.y * dt };
+        cc.computeColliderMovement(charCol, want);
+        const mv = cc.computedMovement(), p = charBody.translation();
+        charBody.setNextKinematicTranslation({ x: p.x + mv.x, y: p.y + mv.y, z: p.z + mv.z });
+        grounded = cc.computedGrounded();
+        if (grounded && vy < 0) vy = -0.5;
+        if (vy > 0 && mv.y < want.y * 0.5) vy = 0; // bumped the head
+        if (vel.lengthSq() > 0.05) facing = Math.atan2(vel.x, vel.y);
+        if (p.y < -8) resetCharacter();
+      }
+      const setAuto = (on) => {
+        auto = on;
+        autoBtn.setAttribute("aria-pressed", String(on));
+        if (on) { target = null; marker.visible = false; best = Infinity; bestAt = simTime; }
+      };
+      function resetAll() {
+        while (balls.length) removeBall(balls.length - 1);
+        buildCrates();
+        resetCharacter();
+        routeIdx = 0; best = Infinity; bestAt = simTime;
+        target = null; marker.visible = false;
+        rainQ += 100;
+        say(ROUTE[0].say);
+      }
+
+      ctx.button("球雨 300 顆", () => { rainQ += 300; }, { primary: true });
+      ctx.button("跳躍", () => { jumpReq = true; });
+      ctx.button("重置", resetAll);
+      const autoBtn = ctx.toggle("自動導覽", true, (v) => setAuto(v));
+      ctx.on(window, "keydown", (e) => {
+        const el = e.target && e.target.closest ? e.target : null;
+        if (el && el.closest("input, select, textarea, [role=tab]")) return;
+        if (e.code === "Space") { if (el && el.closest("button")) return; e.preventDefault(); jumpReq = true; return; }
+        if (/^(Key[WASD]|Arrow(Up|Down|Left|Right))$/.test(e.code)) { e.preventDefault(); keys.add(e.code); setAuto(false); target = null; marker.visible = false; }
+      });
+      ctx.on(window, "keyup", (e) => keys.delete(e.code));
+      ctx.on(window, "blur", () => keys.clear());
+      // Clicks are resolved with Rapier's own ray cast against the colliders.
+      const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+      onTap(ctx, S.canvas, (e) => {
+        ray.setFromCamera(setNdc(S, e, ndc), S.camera);
+        const o = ray.ray.origin, d = ray.ray.direction;
+        const hit = world.castRay(new R.Ray({ x: o.x, y: o.y, z: o.z }, { x: d.x, y: d.y, z: d.z }), 100, true, undefined, undefined, charCol);
+        if (!hit) return;
+        const body = hit.collider.parent();
+        if (body && body.isDynamic()) {
+          const k = body.mass() * 7;
+          body.applyImpulse({ x: d.x * k, y: Math.abs(d.y) * k * 0.4 + body.mass() * 2, z: d.z * k }, true);
+          return;
+        }
+        const t = hit.timeOfImpact;
+        target = { x: o.x + d.x * t, z: o.z + d.z * t };
+        marker.position.set(target.x, o.y + d.y * t + 0.03, target.z);
+        marker.visible = true;
+        setAuto(false);
+      });
+
+      const P = {
+        world, maxSub: 3,
+        before() {
+          for (let i = 0; i < 12 && rainQ > 0; i++, rainQ--) addBall((Math.random() - 0.5) * 14, 7 + Math.random() * 4, (Math.random() - 0.5) * 12 - 0.5);
+          stepCharacter(STEP);
+        },
+        after() { simTime += STEP; },
+      };
+      fixedLoop(S, P);
+      const setChip = chip(ctx, "");
+      const tmp = new THREE.Vector3(), prevT = new THREE.Vector3();
+      let frameNo = 0;
+      S.onFrame((dt, time) => {
+        for (let i = balls.length - 1; i >= 0; i--) if (balls[i].body.translation().y < -6) removeBall(i);
+        crates.forEach((b, i) => setInst(crateIm, i, b));
+        crateIm.instanceMatrix.needsUpdate = true;
+        balls.forEach((b, i) => { setInst(ballIm, i, b.body, b.r); if (ballsDirty) ballIm.setColorAt(i, col.setHex(b.color)); });
+        ballIm.count = balls.length;
+        ballIm.instanceMatrix.needsUpdate = true;
+        if (ballsDirty) { ballIm.instanceColor.needsUpdate = true; ballsDirty = false; }
+        const cp = charBody.translation();
+        hero.position.set(cp.x, cp.y, cp.z);
+        let dy = facing - hero.rotation.y;
+        dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+        hero.rotation.y += dy * 0.2;
+        marker.material.opacity = 0.55 + 0.35 * Math.sin(time * 6.25);
+        bubble.visible = simTime < bubbleUntil && !!bubbleText;
+        if (bubble.visible && bubbleEl.textContent !== bubbleText) bubbleEl.textContent = bubbleText;
+        // The orbit target drifts toward a point between the arena center and the character.
+        prevT.copy(S.controls.target);
+        tmp.set(cp.x, cp.y, cp.z).lerp(CENTER, 0.55);
+        S.controls.target.lerp(tmp, 0.06);
+        S.camera.position.add(tmp.subVectors(S.controls.target, prevT));
+        const fd = S.camera.position.distanceTo(S.controls.target);
+        S.scene.fog.near = fd * 1.2;
+        S.scene.fog.far = fd * 2.6;
+        if (frameNo++ % 10 === 0) {
+          setChip(it(`剛體 <b>${balls.length + crates.length + 1}</b> 個`) + it(`角色${grounded ? "著地" : "騰空"}`) + it(`物理 <b>${P.ms.toFixed(2)}</b> ms／步`));
+        }
+      });
+      resetAll();
+    },
+  },
+  {
+    id: "soft", title: "軟體物理",
+    api: "SoftBodyDesc.cuboid / sphere / cloth・desc.setSoftness(hz, damping)・desc.setVolumeFactor(v)・world.cutSoftBody(body, plane)",
+    desc: "Rapier 的軟體模擬：左邊三塊果凍只差在剛度頻率，右邊三顆氣球只差在充氣倍率，中間布料四角固定，可以沿平面剪開成好幾片。",
+    hint: "點果凍或氣球戳一下・按「剪開布料」剪兩刀・自動輪播會定時重來",
+    async mount(ctx) {
+      if (!(await boot(ctx))) return;
+      const S = stage(ctx, { shadows: true, fov: 42, bg: 0x0d1015, labels: true, orbit: { maxPolarAngle: Math.PI * 0.48, minDistance: 3, maxDistance: 40 } });
+      lights(S, { shadow: 7, pos: [3, 9, 6] });
+      floor(S, 14, 8, 0x1f2633);
+      camRig(S)({ t: [0, 1.2, 0], d: [0, 0.45, 1], hw: 5.4, hh: 2.4 }, true);
+      const world = physWorld(ctx);
+      world.createCollider(R.ColliderDesc.cuboid(10, 0.5, 10).setTranslation(0, -0.5, 0), world.createRigidBody(R.RigidBodyDesc.fixed()));
+      const SB = R.SoftBodyDesc;
+      const JELLY = [[-4.6, 2, 0x7bd389], [-3.4, 6, 0xff8c42], [-2.2, 20, 0xf72585]];
+      const BALLOON = [[2.2, 0.8, 0x4cc9f0], [3.4, 1.15, 0x9d8cff], [4.6, 1.5, 0xf7df1e]];
+      const softMats = [...JELLY, ...BALLOON].map((s) => S.own(std(s[2], { side: THREE.DoubleSide, roughness: 0.35 })));
+      const clothMat = S.own(std(0xe8ecf3, { side: THREE.DoubleSide, roughness: 0.8 }));
+      const matOf = new Map(); // jelly and balloon bodies; anything else is cloth
+      let softs = [];
+      function dropSofts() {
+        for (const b of softs) { world.removeSoftBody(b); matOf.delete(b); }
+        softs = [
+          ...JELLY.map(([x, f]) => world.createSoftBody(SB.cuboid({ x, y: 1.0, z: 0 }, { x: 0.35, y: 0.35, z: 0.35 }, 4, 4, 4).setSoftness(f, 0.25))),
+          ...BALLOON.map(([x, v]) => world.createSoftBody(SB.sphere({ x, y: 1.2, z: 0 }, 0.38, 2).setVolumeFactor(v).setSoftness(30, 0.3))),
+        ];
+        softs.forEach((b, i) => matOf.set(b, softMats[i]));
+      }
+      const N = 14, CW = 2.6, CY = 1.9, cd = CW / (N - 1);
+      const clothBodies = () => { const a = []; world.forEachSoftBody((b) => { if (!matOf.has(b)) a.push(b); }); return a; };
+      const postMat = std(0x5b6d8c, { roughness: 0.5 });
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+        const m = shadowed(new THREE.CylinderGeometry(0.035, 0.035, CY, 10), postMat);
+        m.position.set((sx * CW) / 2, CY / 2, (sz * CW) / 2);
+        S.scene.add(m);
+      }
+      const ballGeo = S.own(new THREE.SphereGeometry(0.22, 20, 14)), ballMat = S.own(std(0xc8d3e6, { roughness: 0.25, metalness: 0.6 }));
+      const balls = [0, 1, 2, 3, 4].map(() => {
+        const b = world.createRigidBody(R.RigidBodyDesc.dynamic());
+        world.createCollider(R.ColliderDesc.ball(0.22).setDensity(1.5).setRestitution(0.3), b);
+        const m = shadowed(ballGeo, ballMat);
+        m.userData.body = b;
+        S.scene.add(m);
+        return { b, m };
+      });
+      const T = [4, 6.5, 11]; // auto timeline: first cut, second cut, rebuild
+      let cuts = 0, t0 = 0, simT = 0, auto = true;
+      const cutBtn = ctx.button("剪開布料", () => { setAuto(false); if (cuts < 2) cut(cuts); else restart(); }, { primary: true });
+      const autoBtn = ctx.toggle("自動輪播", true, (v) => { auto = v; if (v) t0 = simT - T[cuts] + 1.5; });
+      const setAuto = (v) => { auto = v; autoBtn.setAttribute("aria-pressed", String(v)); };
+      const updateBtn = () => { cutBtn.textContent = ["剪開布料", "再剪一刀", "重新開始"][cuts]; };
+      function buildCloth() {
+        for (const b of clothBodies()) world.removeSoftBody(b);
+        world.createSoftBody(SB.cloth({ x: -CW / 2, y: CY, z: -CW / 2 }, { x: cd, y: 0, z: 0 }, { x: 0, y: 0, z: cd }, N, N)
+          .setPinnedParticles([0, N - 1, N * (N - 1), N * N - 1]).setSoftness(30, 0.5));
+        balls.forEach(({ b }, i) => {
+          const a = (i / 5) * Math.PI * 2;
+          b.setTranslation({ x: 0.55 * Math.cos(a), y: 3 + i * 0.35, z: 0.55 * Math.sin(a) }, true);
+          b.setLinvel(ZERO, true);
+          b.setAngvel(ZERO, true);
+        });
+        cuts = 0; t0 = simT;
+        updateBtn();
+      }
+      const restart = () => { buildCloth(); dropSofts(); };
+      const flash = new THREE.Mesh(S.own(new THREE.PlaneGeometry(3.2, 2.4)), S.own(new THREE.MeshBasicMaterial({ color: 0xf72585, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false })));
+      flash.position.set(0, 1.4, 0);
+      flash.visible = false;
+      S.scene.add(flash);
+      let flashT = 0;
+      function cut(axis) {
+        // three points span the cutting plane: x = 0 for the first cut, z = 0 for the second
+        const pts = axis === 0
+          ? [{ x: 0, y: CY + 8, z: -6 }, { x: 0, y: CY - 8, z: -6 }, { x: 0, y: CY, z: 6 }]
+          : [{ x: -6, y: CY + 8, z: 0 }, { x: -6, y: CY - 8, z: 0 }, { x: 6, y: CY, z: 0 }];
+        for (const b of clothBodies()) { const ev = world.cutSoftBody(b, pts); if (ev) ev.free(); }
+        flash.rotation.y = axis === 0 ? Math.PI / 2 : 0;
+        flashT = 0.6;
+        flash.visible = true;
+        cuts++;
+        updateBtn();
+      }
+      const jl = label("果凍 2／6／20 Hz", "", { color: HEX[3], fineSub: true });
+      jl.position.set(-3.4, 1.95, 0);
+      const bl = label("氣球 ×0.8／1.15／1.5", "", { color: HEX[1], fineSub: true });
+      bl.position.set(3.4, 2.05, 0);
+      const cl = label("布料", "四角固定");
+      cl.position.set(0, 2.6, -1.35);
+      S.scene.add(jl, bl, cl);
+
+      // Each soft body gets a mesh built from its boundary triangles; cutting changes the topology.
+      const meshes = new Map();
+      function syncSoft() {
+        const seen = new Set();
+        world.forEachSoftBody((b) => {
+          seen.add(b);
+          let m = meshes.get(b);
+          const topo = b.topologyVersion(), n = b.numParticles(), pos = b.particlePositions();
+          if (!m || m.topo !== topo || m.n !== n) {
+            const g = new THREE.BufferGeometry();
+            const attr = new THREE.BufferAttribute(new Float32Array(pos), 3);
+            attr.setUsage(THREE.DynamicDrawUsage);
+            g.setAttribute("position", attr);
+            g.setIndex(new THREE.BufferAttribute(new Uint32Array(b.boundary()), 1));
+            if (!m) {
+              m = { mesh: shadowed(g, matOf.get(b) || clothMat) };
+              m.mesh.userData.soft = b;
+              S.scene.add(m.mesh);
+              meshes.set(b, m);
+            } else { m.mesh.geometry.dispose(); m.mesh.geometry = g; }
+            m.topo = topo; m.n = n;
+          } else {
+            const attr = m.mesh.geometry.attributes.position;
+            attr.array.set(pos);
+            attr.needsUpdate = true;
+          }
+          m.mesh.geometry.computeVertexNormals();
+          m.mesh.geometry.computeBoundingSphere();
+        });
+        for (const [b, m] of meshes) if (!seen.has(b)) { S.scene.remove(m.mesh); m.mesh.geometry.dispose(); meshes.delete(b); }
+      }
+
+      const rc = new THREE.Raycaster(), ndc = new THREE.Vector2();
+      onTap(ctx, S.canvas, (e) => {
+        rc.setFromCamera(setNdc(S, e, ndc), S.camera);
+        const hit = rc.intersectObjects([...[...meshes.values()].map((m) => m.mesh), ...balls.map((x) => x.m)], false)[0];
+        if (!hit) return;
+        const d = rc.ray.direction, sb = hit.object.userData.soft, rb = hit.object.userData.body;
+        if (sb) {
+          const k = 0.3 * sb.mass();
+          sb.applyImpulseAtPoint({ x: d.x * k, y: (d.y + 0.5) * k, z: d.z * k }, { x: hit.point.x, y: hit.point.y, z: hit.point.z }, 0.35, true);
+        } else if (rb) {
+          const m = rb.mass();
+          rb.applyImpulse({ x: d.x * m * 4, y: m * 5, z: d.z * m * 4 }, true);
+        }
+      });
+
+      const P = {
+        world, maxSub: 2,
+        after() {
+          simT += STEP;
+          if (!auto) return;
+          if (simT - t0 > T[cuts]) { if (cuts < 2) cut(cuts); else restart(); }
+        },
+      };
+      fixedLoop(S, P);
+      const setChip = chip(ctx, "");
+      let frameNo = 0;
+      S.onFrame((dt) => {
+        syncSoft();
+        for (const { b, m } of balls) syncMesh(m, b);
+        if (flashT > 0) {
+          flashT -= dt;
+          flash.material.opacity = Math.max(0, flashT / 0.6) * 0.45;
+          if (flashT <= 0) flash.visible = false;
+        }
+        if (frameNo++ % 10) return;
+        const hs = softs.slice(0, 3).map((b) => {
+          const p = b.particlePositions();
+          let lo = 9, hi = -9;
+          for (let i = 1; i < p.length; i += 3) { lo = Math.min(lo, p[i]); hi = Math.max(hi, p[i]); }
+          return Math.round(((hi - lo) / 0.7) * 100);
+        });
+        jl.userData.sub(`高度 ${hs.join("／")} %`);
+        bl.userData.sub(`體積 ${softs.slice(3).map((b) => b.volume().toFixed(2)).join("／")} m³`);
+        let nSoft = 0, nPart = 0;
+        world.forEachSoftBody((b) => { nSoft++; nPart += b.numParticles(); });
+        const pieces = nSoft - softs.length;
+        cl.userData.sub(pieces > 1 ? `已剪成 ${pieces} 片` : "四角固定");
+        setChip(it(`軟體 <b>${nSoft}</b> 個`) + it(`粒子 <b>${nPart}</b> 顆`) + it(`布料 <b>${pieces}</b> 片`) + it(`物理 <b>${P.ms.toFixed(1)}</b> ms／步`));
+      });
+      dropSofts();
+      buildCloth();
+      syncSoft();
+    },
+  },
+  {
+    id: "shapes", title: "形狀與地形",
+    api: "ColliderDesc.convexDecomposition(vertices, indices)・ColliderDesc.convexHull(points)・ColliderDesc.heightfield(rows, cols, heights, scale)",
+    desc: "同一個甜甜圈網格兩種碰撞形狀：左邊用 VHACD 凸分解拆成多塊凸包，保留中間的洞，能套進柱子；右邊只算單一凸包，洞被填平，只會撞上柱頂再滑落。地面是 33×33 個取樣點的高度場，上面持續落下球、方塊、圓角方塊、膠囊、圓柱、圓錐與凸包岩石。",
+    hint: "按「重新套圈」再丟一次・切換「顯示凸包」看碰撞形狀・拖曳旋轉視角",
+    async mount(ctx) {
+      if (!(await boot(ctx))) return;
+      const torus = torusData();
+      if (!vhacdDesc) {
+        const st = ctx.status("計算 VHACD 凸分解…");
+        await ctx.frame(2);
+        if (!ctx.active) return;
+        const t0 = performance.now();
+        vhacdDesc = R.ColliderDesc.convexDecomposition(torus.verts, torus.idx);
+        vhacdMs = performance.now() - t0;
+        st.done();
+      }
+      const S = stage(ctx, { shadows: true, fov: 42, bg: 0x0c0f14, labels: true, orbit: { maxPolarAngle: Math.PI * 0.47, minDistance: 4, maxDistance: 40 } });
+      lights(S, { shadow: 8, pos: [5, 10, 6] });
+      camRig(S)({ t: [0, 0.8, 0], d: [0, 0.62, 1], hw: 7.2, hh: 3.4 }, true);
+      const world = physWorld(ctx);
+      const fixed = world.createRigidBody(R.RigidBodyDesc.fixed());
+
+      // Heightfield: heights[ix * (rows + 1) + iz], flattened around the two poles.
+      const NR = 32, NC = 32, SX = 14, SZ = 10, POLES = [-2.6, 2.6], PZ = 2.2;
+      const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+      const hfn = (x, z) => {
+        const d = Math.min(...POLES.map((px) => Math.hypot(x - px, z - PZ)));
+        return (0.45 + 0.35 * Math.sin(0.9 * x) * Math.cos(0.8 * z) + 0.25 * Math.sin(0.45 * x + 0.7 * z)) * smooth(0.9, 1.8, d);
+      };
+      const H = new Float32Array((NR + 1) * (NC + 1));
+      for (let ix = 0; ix <= NC; ix++) for (let iz = 0; iz <= NR; iz++) H[ix * (NR + 1) + iz] = hfn(-SX / 2 + (ix * SX) / NC, -SZ / 2 + (iz * SZ) / NR);
+      world.createCollider(R.ColliderDesc.heightfield(NR, NC, H, { x: SX, y: 1, z: SZ }).setFriction(0.8), fixed);
+      const tg = new THREE.PlaneGeometry(SX, SZ, NC, NR).rotateX(-Math.PI / 2);
+      const pa = tg.attributes.position, vc = new Float32Array(pa.count * 3), c0 = new THREE.Color(0x1c2635), c1 = new THREE.Color(0x3b6b5a), cc = new THREE.Color();
+      for (let i = 0; i < pa.count; i++) {
+        const y = hfn(pa.getX(i), pa.getZ(i));
+        pa.setY(i, y);
+        cc.lerpColors(c0, c1, clamp(y, 0, 1)).toArray(vc, i * 3);
+      }
+      tg.setAttribute("color", new THREE.BufferAttribute(vc, 3));
+      tg.computeVertexNormals();
+      const terrain = new THREE.Mesh(tg, new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.9 }));
+      terrain.receiveShadow = true;
+      S.scene.add(terrain);
+      const poleMat = std(0x9fb6dd, { roughness: 0.4 });
+      for (const px of POLES) {
+        world.createCollider(R.ColliderDesc.cylinder(0.6, 0.25).setTranslation(px, 0.6, PZ), fixed);
+        const m = shadowed(new THREE.CylinderGeometry(0.25, 0.25, 1.2, 28), poleMat);
+        m.position.set(px, 0.6, PZ);
+        S.scene.add(m);
+      }
+
+      // Two rings from the same torus mesh: VHACD compound on the left, single convex hull on the right.
+      const hullDesc = R.ColliderDesc.convexHull(torus.verts);
+      const smoothGeo = S.own(new THREE.TorusGeometry(0.55, 0.17, 12, 32).rotateX(Math.PI / 2));
+      const pts = (v) => { const a = []; for (let j = 0; j < v.length; j += 3) a.push(new THREE.Vector3(v[j], v[j + 1], v[j + 2])); return a; };
+      let parts = 0;
+      const tori = POLES.map((px, k) => {
+        const body = world.createRigidBody(R.RigidBodyDesc.dynamic());
+        const c = world.createCollider(k ? hullDesc : vhacdDesc, body);
+        const group = new THREE.Group(), hullView = new THREE.Group();
+        const smoothM = shadowed(smoothGeo, std(k ? 0xf72585 : 0xf7df1e, { roughness: 0.35 }));
+        if (!k) {
+          const sh = c.shape;
+          parts = sh.shapes.length;
+          sh.shapes.forEach((part, i) => {
+            const m = shadowed(new ConvexGeometry(pts(part.vertices)), std(PALETTE[i % 6], { roughness: 0.5 }));
+            const t = sh.positions[i], r = sh.rotations[i];
+            m.position.set(t.x, t.y, t.z);
+            m.quaternion.set(r.x, r.y, r.z, r.w);
+            hullView.add(m);
+          });
+        } else {
+          hullView.add(shadowed(new ConvexGeometry(pts(c.shape.vertices)), std(0xf72585, { roughness: 0.4 })));
+        }
+        group.add(smoothM, hullView);
+        S.scene.add(group);
+        const l = label(k ? "單一凸包" : `VHACD 凸分解 ${parts} 塊`, "落下中", { color: k ? HEX[2] : HEX[0] });
+        l.position.set(px, 2.5, PZ);
+        S.scene.add(l);
+        return { px, body, group, smoothM, hullView, label: l };
+      });
+      const setHull = (v) => tori.forEach((t) => { t.smoothM.visible = !v; t.hullView.visible = v; });
+      setHull(true);
+      const dropTori = () => {
+        for (const t of tori) {
+          t.body.setTranslation({ x: t.px + 0.05, y: 3.2, z: PZ }, true);
+          t.body.setRotation(qE(0.08, 0, 0), true);
+          t.body.setLinvel(ZERO, true);
+          t.body.setAngvel(ZERO, true);
+        }
+        n = 0;
+      };
+
+      // Primitive shapes rain onto the heightfield.
+      const rocks = [0, 1, 2].map(() => {
+        const a = [];
+        for (let i = 0; i < 14; i++) { const v = new THREE.Vector3().randomDirection().multiplyScalar(rand(0.18, 0.32)); v.y *= 0.7; a.push(v); }
+        return a;
+      });
+      const SHAPES = [
+        [new THREE.SphereGeometry(0.25, 20, 14), R.ColliderDesc.ball(0.25)],
+        [new THREE.BoxGeometry(0.44, 0.44, 0.44), R.ColliderDesc.cuboid(0.22, 0.22, 0.22)],
+        [new RoundedBoxGeometry(0.48, 0.48, 0.48, 3, 0.06), R.ColliderDesc.roundCuboid(0.18, 0.18, 0.18, 0.06)],
+        [new THREE.CapsuleGeometry(0.14, 0.4, 6, 14), R.ColliderDesc.capsule(0.2, 0.14)],
+        [new THREE.CylinderGeometry(0.2, 0.2, 0.4, 20), R.ColliderDesc.cylinder(0.2, 0.2)],
+        [new THREE.ConeGeometry(0.22, 0.5, 20), R.ColliderDesc.cone(0.25, 0.22)],
+        ...rocks.map((a) => [new ConvexGeometry(a), R.ColliderDesc.convexHull(new Float32Array(a.flatMap((p) => [p.x, p.y, p.z])))]),
+      ].map(([geo, desc]) => ({ geo: S.own(geo), desc: desc.setFriction(0.7) }));
+      const dropMats = PALETTE.map((c) => S.own(std(c, { roughness: 0.45 })));
+      const drops = [];
+      let dropN = 0, n = 0;
+      function dropOne(y = 5) {
+        if (drops.length >= 70) { const o = drops.shift(); world.removeRigidBody(o.body); S.scene.remove(o.mesh); }
+        const k = dropN++ % SHAPES.length;
+        const body = world.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(rand(-6, 6), y, rand(-4.5, 0)).setRotation(qE(rand(0, 3), rand(0, 3), 0)));
+        world.createCollider(SHAPES[k].desc, body);
+        const mesh = shadowed(SHAPES[k].geo, dropMats[dropN % 6]);
+        S.scene.add(mesh);
+        drops.push({ body, mesh });
+      }
+      for (let i = 0; i < 16; i++) dropOne(1.6 + i * 0.35);
+      dropTori();
+
+      ctx.button("重新套圈", dropTori, { primary: true });
+      ctx.toggle("顯示凸包", true, setHull);
+      const P = {
+        world, maxSub: 3,
+        after() {
+          n++;
+          if (n % 21 === 0) dropOne();
+          if (n >= 360) dropTori();
+        },
+      };
+      fixedLoop(S, P);
+      const setChip = chip(ctx, "");
+      let frameNo = 0;
+      S.onFrame(() => {
+        for (const t of tori) syncMesh(t.group, t.body);
+        for (let i = drops.length - 1; i >= 0; i--) {
+          const o = drops[i];
+          if (o.body.translation().y < -5) { world.removeRigidBody(o.body); S.scene.remove(o.mesh); drops.splice(i, 1); }
+          else syncMesh(o.mesh, o.body);
+        }
+        if (frameNo++ % 10) return;
+        for (const t of tori) {
+          const p = t.body.translation(), v = t.body.linvel();
+          const dist = Math.hypot(p.x - t.px, p.z - PZ), sp = Math.hypot(v.x, v.y, v.z);
+          t.label.userData.sub(sp > 0.4 ? "落下中" : dist < 0.3 && p.y < 1 ? "套進柱子" : p.y > 1.1 ? "卡在柱頂" : "沒套進");
+        }
+        setChip(it(`VHACD <b>${parts}</b> 塊・<b>${vhacdMs.toFixed(0)}</b> ms（只算一次）`) + it(`高度場 <b>33×33</b>`) + it(`剛體 <b>${drops.length + 2}</b>`) + it(`物理 <b>${P.ms.toFixed(2)}</b> ms／步`));
+      });
+    },
+  },
+  {
+    id: "joints", title: "關節：Impulse 與 Multibody",
+    api: "JointData.revolute(anchor1, anchor2, axis)・world.createImpulseJoint / createMultibodyJoint・joint.configureMotorVelocity(v, factor)",
+    desc: "兩條一模一樣的 10 節鏈子，末端掛同樣的重物：左邊 Impulse 關節靠迭代修正，重物越重越會被拉長；右邊 Multibody 關節用約化座標求解，長度不變。下方的曲柄滑塊由馬達轉輪、連桿與滑軌關節組成閉迴路。",
+    hint: "拖動「末端質量」看鏈子被拉長多少・「馬達轉速」控制曲柄",
+    async mount(ctx) {
+      if (!(await boot(ctx))) return;
+      const S = stage(ctx, { shadows: true, fov: 42, bg: 0x0d1015, labels: true, orbit: { maxPolarAngle: Math.PI * 0.55, minDistance: 4, maxDistance: 40 } });
+      lights(S, { shadow: 6, pos: [3, 10, 7] });
+      floor(S, 15, 5, 0x1a202b);
+      camRig(S)({ t: [0, 2.5, 0.4], d: [0, 0.3, 1], hw: 6.7, hh: 2.9 }, true);
+      const world = physWorld(ctx);
+      const L = 0.3, NB = 10, Y0 = 4.6;
+      let endMass = 10;
+      const beamM = shadowed(new THREE.BoxGeometry(7.4, 0.12, 0.25), std(0x3a4860, { roughness: 0.7 }));
+      beamM.position.set(0, Y0 + 0.14, 0);
+      S.scene.add(beamM);
+      const linkGeo = S.own(new THREE.BoxGeometry(0.26, 0.08, 0.08)), endGeo = S.own(new THREE.SphereGeometry(0.3, 24, 16));
+      const chains = [[-3.2, 1, false, 0], [3.2, -1, true, 1]].map(([x, dir, mb, ci]) => {
+        const anchor = world.createRigidBody(R.RigidBodyDesc.fixed().setTranslation(x, Y0, 0));
+        const mat = S.own(std(PALETTE[ci], { roughness: 0.4 }));
+        const meshes = [];
+        for (let i = 0; i < NB; i++) { const m = shadowed(i === NB - 1 ? endGeo : linkGeo, mat); S.scene.add(m); meshes.push(m); }
+        const l = label(mb ? "Multibody 關節" : "Impulse 關節", "", { color: HEX[ci] });
+        l.position.set(x, 0.3, 0); // under the resting pendulum, clear of the chip
+        S.scene.add(l);
+        return { x, dir, mb, anchor, meshes, label: l, bodies: [], max: 0 };
+      });
+      // Chain links only collide with group 2, which nothing belongs to, so the two chains never touch.
+      function build(c) {
+        for (const b of c.bodies) world.removeRigidBody(b);
+        c.bodies = []; c.max = 0;
+        let prev = c.anchor;
+        for (let i = 0; i < NB; i++) {
+          const last = i === NB - 1;
+          const b = world.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(c.x + c.dir * (i + 0.5) * L, Y0, 0));
+          world.createCollider((last ? R.ColliderDesc.ball(0.3).setDensity(endMass / 0.1131) : R.ColliderDesc.cuboid(0.13, 0.04, 0.04).setDensity(100)).setCollisionGroups(0x00010002), b);
+          const jd = R.JointData.revolute({ x: i ? (c.dir * L) / 2 : 0, y: 0, z: 0 }, { x: (-c.dir * L) / 2, y: 0, z: 0 }, { x: 0, y: 0, z: 1 });
+          if (c.mb) world.createMultibodyJoint(jd, prev, b, true); else world.createImpulseJoint(jd, prev, b, true);
+          c.bodies.push(b);
+          prev = b;
+        }
+      }
+      chains.forEach(build);
+
+      // Crank-slider: motorized wheel, connecting rod, piston on a prismatic rail. A closed loop of impulse joints.
+      const W = { x: -0.8, y: 0.9, z: 1.2 }, CR = 0.45, ROD = 1.6, NOCOL = 0x00010000;
+      const ground = world.createRigidBody(R.RigidBodyDesc.fixed());
+      const wheel = world.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(W.x, W.y, W.z));
+      world.createCollider(R.ColliderDesc.cylinder(0.08, 0.6).setRotation({ x: Math.SQRT1_2, y: 0, z: 0, w: Math.SQRT1_2 }).setDensity(2).setCollisionGroups(NOCOL), wheel);
+      const motor = world.createImpulseJoint(R.JointData.revolute({ x: W.x, y: W.y, z: W.z }, ZERO, { x: 0, y: 0, z: 1 }), ground, wheel, true);
+      motor.configureMotorVelocity(4, 50);
+      const rod = world.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(W.x + CR + ROD / 2, W.y, W.z + 0.12));
+      world.createCollider(R.ColliderDesc.cuboid(ROD / 2, 0.05, 0.05).setCollisionGroups(NOCOL), rod);
+      world.createImpulseJoint(R.JointData.revolute({ x: CR, y: 0, z: 0.12 }, { x: -ROD / 2, y: 0, z: 0 }, { x: 0, y: 0, z: 1 }), wheel, rod, true);
+      const piston = world.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(W.x + CR + ROD, W.y, W.z + 0.12));
+      world.createCollider(R.ColliderDesc.cuboid(0.2, 0.15, 0.15).setCollisionGroups(NOCOL), piston);
+      world.createImpulseJoint(R.JointData.revolute({ x: ROD / 2, y: 0, z: 0 }, ZERO, { x: 0, y: 0, z: 1 }), rod, piston, true);
+      const pj = R.JointData.prismatic({ x: W.x, y: W.y, z: W.z + 0.12 }, ZERO, { x: 1, y: 0, z: 0 });
+      pj.limitsEnabled = true;
+      pj.limits = [-5, 5];
+      world.createImpulseJoint(pj, ground, piston, true);
+      const wheelG = new THREE.Group();
+      wheelG.add(shadowed(new THREE.CylinderGeometry(0.6, 0.6, 0.16, 40).rotateX(Math.PI / 2), std(0x9d8cff, { roughness: 0.45 })));
+      const spoke = shadowed(new THREE.BoxGeometry(1.12, 0.1, 0.06), std(0x2a2f3a));
+      spoke.position.z = 0.1;
+      const pin = shadowed(new THREE.CylinderGeometry(0.06, 0.06, 0.2, 16).rotateX(Math.PI / 2), std(0xdfe9ff, { metalness: 0.6, roughness: 0.3 }));
+      pin.position.set(CR, 0, 0.12);
+      wheelG.add(spoke, pin);
+      const rodM = shadowed(new THREE.BoxGeometry(ROD, 0.1, 0.1), std(0xff8c42, { roughness: 0.4 }));
+      const pistonM = shadowed(new THREE.BoxGeometry(0.4, 0.3, 0.3), std(0x7bd389, { roughness: 0.4 }));
+      const rail = shadowed(new THREE.BoxGeometry(1.7, 0.06, 0.36), std(0x3a4860, { roughness: 0.7 }));
+      rail.position.set(W.x + 1.6, W.y - 0.18, W.z + 0.12);
+      const stand = shadowed(new THREE.BoxGeometry(0.14, W.y, 0.14), std(0x3a4860, { roughness: 0.7 }));
+      stand.position.set(W.x, W.y / 2, W.z - 0.12);
+      S.scene.add(wheelG, rodM, pistonM, rail, stand);
+      const crankL = label("曲柄滑塊（閉迴路）", "量測中", { fineSub: true });
+      crankL.position.set(W.x + 1.6, W.y + 1.6, W.z + 0.12);
+      S.scene.add(crankL);
+
+      ctx.slider("末端質量", { min: 2, max: 30, step: 1, value: 10, format: (v) => `${v} kg` }, (v) => { endMass = v; chains.forEach(build); n = 0; });
+      ctx.slider("馬達轉速", { min: 0, max: 10, step: 0.5, value: 4, format: (v) => `${v} rad/s` }, (v) => { motor.configureMotorVelocity(v, 50); wheel.wakeUp(); });
+      let n = 0, sN = 0, lo = 9, hi = -9, stroke = null;
+      const P = {
+        world, maxSub: 3,
+        after() {
+          for (const c of chains) {
+            const e = c.bodies[NB - 1].translation();
+            c.max = Math.max(c.max, Math.hypot(e.x - c.x, e.y - Y0, e.z) - (NB - 0.5) * L);
+          }
+          const px = piston.translation().x - W.x;
+          lo = Math.min(lo, px); hi = Math.max(hi, px);
+          if (++sN % 180 === 0) { stroke = [lo, hi]; lo = 9; hi = -9; }
+          if (++n >= 420) { n = 0; chains.forEach(build); } // drop the chains again every 7 s
+        },
+      };
+      fixedLoop(S, P);
+      const setChip = chip(ctx, "");
+      let frameNo = 0;
+      S.onFrame(() => {
+        for (const c of chains) c.bodies.forEach((b, i) => syncMesh(c.meshes[i], b));
+        syncMesh(wheelG, wheel);
+        syncMesh(rodM, rod);
+        syncMesh(pistonM, piston);
+        if (frameNo++ % 10) return;
+        for (const c of chains) c.label.userData.sub(`最大拉長 ${(Math.max(0, c.max) * 100).toFixed(1)} cm`);
+        crankL.userData.sub(!stroke ? "量測中" : stroke[1] - stroke[0] < 0.02 ? "馬達停止" : `行程 ${stroke[0].toFixed(2)} 至 ${stroke[1].toFixed(2)} m（理論 1.15 至 2.05）`);
+        const lm = chains[0].bodies[0].mass();
+        setChip(it(`末端 <b>${endMass}</b> kg`) + it(`每節 <b>${lm.toFixed(2)}</b> kg`) + it(`質量比 <b>${Math.round(endMass / lm)}:1</b>`) + it(`物理 <b>${P.ms.toFixed(2)}</b> ms／步`));
+      });
+    },
+  },
+  {
+    id: "sensors", title: "感測器與碰撞群組",
+    api: "ColliderDesc.setSensor(true)・setCollisionGroups((member << 16) | filter)・new EventQueue(true)・drainCollisionEvents / drainContactForceEvents",
+    desc: "三色球落進分類機：上層板只和黃球碰撞，中層板只和藍球碰撞，粉球兩層都穿過去；底部三個感測區用碰撞事件計數，層板用接觸力事件回報受力。關掉碰撞群組後層板擋下所有球，全部擠到同一邊。",
+    hint: "切換「碰撞群組」比較分類結果・按「清空重來」重新計數",
+    async mount(ctx) {
+      if (!(await boot(ctx))) return;
+      const S = stage(ctx, { shadows: true, fov: 40, bg: 0x0c0f14, labels: true,
+        orbit: { maxPolarAngle: Math.PI * 0.6, minDistance: 4, maxDistance: 40, minAzimuthAngle: -1.1, maxAzimuthAngle: 1.1 } });
+      lights(S, { shadow: 8, pos: [3, 12, 8] });
+      camRig(S)({ t: [0, 3.2, 0], d: [0, 0.1, 1], hw: 3.6, hh: 5.25 }, true);
+      const world = physWorld(ctx);
+      const eq = new R.EventQueue(true);
+      ctx.onCleanup(() => eq.free());
+      const st = world.createRigidBody(R.RigidBodyDesc.fixed());
+      const grp = (member, filter) => (member << 16) | filter;
+      const wallMat = std(0x26303f, { roughness: 0.8 }), backMat = std(0x141a24, { roughness: 0.95 });
+      const wall = (hx, hy, hz, x, y, z, mat) => {
+        world.createCollider(R.ColliderDesc.cuboid(hx, hy, hz).setTranslation(x, y, z).setCollisionGroups(grp(1, 0xffff)), st);
+        if (!mat) return;
+        const m = shadowed(new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2), mat);
+        m.position.set(x, y, z);
+        S.scene.add(m);
+      };
+      wall(3.2, 0.1, 0.6, 0, -0.1, 0, wallMat);
+      wall(0.1, 4, 0.6, -3.1, 3.9, 0, wallMat);
+      wall(0.1, 4, 0.6, 3.1, 3.9, 0, wallMat);
+      wall(3.2, 4, 0.05, 0, 3.9, -0.55, backMat);
+      wall(3.2, 4, 0.05, 0, 3.9, 0.55, null); // invisible front glass
+      wall(0.05, 0.45, 0.5, -1, 0.45, 0, wallMat);
+      wall(0.05, 0.45, 0.5, 1, 0.45, 0, wallMat);
+      // Ball colours 1 yellow, 2 blue, 3 pink use group bits 1 to 3. Shelf A is bit 4, shelf B bit 5, bin sensors bit 8.
+      const shelves = [{ bit: 4, color: 1, y: 4.9, tilt: 0.2 }, { bit: 5, color: 2, y: 3.0, tilt: -0.2 }].map((d) => {
+        const x = d.tilt > 0 ? -0.35 : 0.35, q = { x: 0, y: 0, z: Math.sin(-d.tilt / 2), w: Math.cos(-d.tilt / 2) };
+        const col = world.createCollider(R.ColliderDesc.cuboid(2.55, 0.06, 0.5).setTranslation(x, d.y, 0).setRotation(q)
+          .setActiveEvents(R.ActiveEvents.CONTACT_FORCE_EVENTS).setContactForceEventThreshold(3), st);
+        const mat = std(PALETTE[d.color - 1], { roughness: 0.4 });
+        const mesh = shadowed(new THREE.BoxGeometry(5.1, 0.12, 1.0), mat);
+        mesh.position.set(x, d.y, 0);
+        mesh.quaternion.set(q.x, q.y, q.z, q.w);
+        S.scene.add(mesh);
+        const l = label("", "", { fineSub: true, codeSub: true });
+        l.position.set(d.tilt > 0 ? -1.9 : 1.9, d.y + 0.85, 0.6);
+        S.scene.add(l);
+        return { ...d, col, mat, label: l, flash: 0 };
+      });
+      const shelfOf = new Map(shelves.map((s) => [s.col.handle, s]));
+      const hex4 = (v) => "0x" + v.toString(16).toUpperCase().padStart(4, "0");
+      function setGroups(on) {
+        for (const s of shelves) {
+          const filter = on ? 1 << s.color : 0b1110;
+          s.col.setCollisionGroups(grp(1 << s.bit, filter));
+          s.mat.color.setHex(on ? PALETTE[s.color - 1] : 0x8a93a6);
+          s.label.userData.title(on ? `只擋${["", "黃", "藍"][s.color]}球` : "擋全部");
+          s.label.userData.sub(`成員 ${hex4(1 << s.bit)}・過濾 ${hex4(filter)}`);
+        }
+      }
+      setGroups(true);
+      const BIN_X = [-2, 0, 2], BIN_WANT = [2, 3, 1];
+      const bins = BIN_X.map((x, i) => {
+        const col = world.createCollider(R.ColliderDesc.cuboid(0.95, 0.4, 0.5).setTranslation(x, 0.4, 0).setSensor(true)
+          .setActiveEvents(R.ActiveEvents.COLLISION_EVENTS).setCollisionGroups(grp(1 << 8, 0b1110)), st);
+        const mat = new THREE.MeshBasicMaterial({ color: PALETTE[BIN_WANT[i] - 1], transparent: true, opacity: 0.12, depthWrite: false });
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.8, 1.0), mat);
+        mesh.position.set(x, 0.4, 0);
+        S.scene.add(mesh);
+        const l = label(["藍球區", "粉球區", "黃球區"][i], "正確 0／0", { color: HEX[BIN_WANT[i] - 1] });
+        l.element.style.padding = "3px 4px"; // three bins sit 2 m apart; keeps 600 px stages from overlapping
+        l.position.set(x, -0.42, 0.6);
+        S.scene.add(l);
+        return { col, mat, label: l, ok: 0, all: 0, flash: 0 };
+      });
+      const binOf = new Map(bins.map((b, i) => [b.col.handle, i]));
+
+      const MAXB = 80, col = new THREE.Color();
+      const ballIm = instanced(S, new THREE.SphereGeometry(0.15, 16, 12), std(0xffffff, { roughness: 0.35 }), MAXB);
+      const balls = [], byHandle = new Map();
+      let spawned = 0, dirty = true, events = 0, peakF = 0, n = 0;
+      function removeBall(o) { byHandle.delete(o.handle); world.removeRigidBody(o.body); dirty = true; }
+      function spawn() {
+        if (balls.length >= MAXB) removeBall(balls.shift());
+        const color = 1 + (spawned++ % 3);
+        const body = world.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(rand(-0.8, 0.8), 7.4, rand(-0.2, 0.2)));
+        const c = world.createCollider(R.ColliderDesc.ball(0.15).setRestitution(0.3).setFriction(0.3)
+          .setCollisionGroups(grp(1 << color, 1 | 0b1110 | (1 << 4) | (1 << 5) | (1 << 8))), body);
+        const o = { body, color, handle: c.handle };
+        balls.push(o);
+        byHandle.set(c.handle, o);
+        dirty = true;
+      }
+      const resetCounts = () => { for (const b of bins) { b.ok = 0; b.all = 0; } events = 0; peakF = 0; };
+      ctx.toggle("碰撞群組", true, (v) => { setGroups(v); resetCounts(); for (const o of balls) o.body.wakeUp(); });
+      ctx.button("清空重來", () => { while (balls.length) removeBall(balls.pop()); resetCounts(); });
+      const P = {
+        world, eq, maxSub: 3,
+        after() {
+          eq.drainCollisionEvents((h1, h2, started) => {
+            if (!started) return;
+            const bi = binOf.get(h1) ?? binOf.get(h2), ball = byHandle.get(h1) ?? byHandle.get(h2);
+            if (bi === undefined || !ball) return;
+            const b = bins[bi];
+            b.all++;
+            if (ball.color === BIN_WANT[bi]) b.ok++;
+            b.flash = 1;
+            events++;
+          });
+          eq.drainContactForceEvents((e) => {
+            const s = shelfOf.get(e.collider1()) || shelfOf.get(e.collider2());
+            if (s) s.flash = 1;
+            peakF = Math.max(peakF, e.maxForceMagnitude());
+          });
+          peakF *= 0.995;
+          if (++n % 8 === 0) spawn();
+        },
+      };
+      fixedLoop(S, P);
+      const setChip = chip(ctx, "");
+      let frameNo = 0;
+      S.onFrame((dt) => {
+        balls.forEach((o, i) => { setInst(ballIm, i, o.body); if (dirty) ballIm.setColorAt(i, col.setHex(PALETTE[o.color - 1])); });
+        ballIm.count = balls.length;
+        ballIm.instanceMatrix.needsUpdate = true;
+        if (dirty) { ballIm.instanceColor.needsUpdate = true; dirty = false; }
+        for (const s of shelves) { s.flash = Math.max(0, s.flash - dt * 4); s.mat.emissive.copy(s.mat.color).multiplyScalar(s.flash * 0.5); }
+        for (const b of bins) { b.flash = Math.max(0, b.flash - dt * 3); b.mat.opacity = 0.12 + b.flash * 0.3; }
+        if (frameNo++ % 10) return;
+        let ok = 0, all = 0;
+        for (const b of bins) { ok += b.ok; all += b.all; b.label.userData.sub(`正確 ${b.ok}／${b.all}`); }
+        setChip(it(`球 <b>${balls.length}</b> 顆`) + it(`分類正確 <b>${all ? Math.round((ok / all) * 100) : 0}%</b>`) + it(`感測事件 <b>${events}</b>`) + it(`層板受力峰值 <b>${peakF.toFixed(1)}</b> N`));
+      });
+    },
+  },
+  {
+    id: "snapshot", title: "快照與倒帶",
+    api: "world.takeSnapshot()・World.restoreSnapshot(bytes)・world.getRigidBody(handle)",
+    desc: "先錄 5 秒，每 6 步把整個世界存成一份快照。倒帶後從撞擊前的快照還原再跑一次，結果與錄影完全一致（決定性模擬）；改變球速重播時，半透明的方塊是原本的結果，可以看到分歧。",
+    hint: "拖曳時間軸回看錄影・按「從這裡還原」從最近的快照重跑・切換重播模式",
+    async mount(ctx) {
+      if (!(await boot(ctx))) return;
+      const S = stage(ctx, { shadows: true, fov: 42, bg: 0x0d1015, orbit: { maxPolarAngle: Math.PI * 0.48, minDistance: 3, maxDistance: 40 } });
+      lights(S, { shadow: 7, pos: [3, 9, 6] });
+      floor(S, 20, 12, 0x1a1f29);
+      camRig(S)({ t: [0.6, 0.8, 0], d: [0.15, 0.5, 1], hw: 6.2, hh: 2.8 }, true);
+      let world = new R.World({ x: 0, y: -9.81, z: 0 });
+      world.timestep = STEP;
+      ctx.onCleanup(() => world.free());
+      world.createCollider(R.ColliderDesc.cuboid(10, 0.5, 6).setTranslation(0, -0.5, 0), world.createRigidBody(R.RigidBodyDesc.fixed()));
+      const H = []; // body handles stay valid in restored worlds
+      for (let k = 0; k < 4; k++) for (const x of [0.75, 1.25, 1.75]) for (const z of [-0.75, -0.25, 0.25, 0.75]) {
+        const b = world.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(x, 0.25 + k * 0.5, z));
+        world.createCollider(R.ColliderDesc.cuboid(0.25, 0.25, 0.25).setFriction(0.6), b);
+        H.push(b.handle);
+      }
+      const ball = world.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(-6, 0.45, 0.2).setLinvel(10, 0, 0));
+      world.createCollider(R.ColliderDesc.ball(0.45).setDensity(6), ball);
+      H.push(ball.handle);
+      const NB = 48, NS = 300, EVERY = 6, col = new THREE.Color();
+      const boxIm = instanced(S, new RoundedBoxGeometry(0.5, 0.5, 0.5, 2, 0.03), std(0xffffff), NB);
+      boxIm.count = NB;
+      for (let i = 0; i < NB; i++) boxIm.setColorAt(i, col.setHex(PALETTE[Math.floor(i / 12)]));
+      const ghostMat = S.own(new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.13, depthWrite: false }));
+      const ghostIm = new THREE.InstancedMesh(S.own(new THREE.BoxGeometry(0.5, 0.5, 0.5)), ghostMat, NB);
+      ghostIm.frustumCulled = false;
+      const ballM = shadowed(new THREE.SphereGeometry(0.45, 28, 18), std(0xf72585, { roughness: 0.3, metalness: 0.2 }));
+      const ghostBall = new THREE.Mesh(new THREE.SphereGeometry(0.45, 20, 14), ghostMat);
+      S.scene.add(ghostIm, ballM, ghostBall);
+      const read = () => {
+        const a = new Float32Array(H.length * 7);
+        H.forEach((hd, i) => { const b = world.getRigidBody(hd), t = b.translation(), r = b.rotation(); a.set([t.x, t.y, t.z, r.x, r.y, r.z, r.w], i * 7); });
+        return a;
+      };
+      const show = (a, im, bm) => {
+        for (let i = 0; i < NB; i++) { const o = i * 7; im.setMatrixAt(i, _m4.compose(_p.set(a[o], a[o + 1], a[o + 2]), _q.set(a[o + 3], a[o + 4], a[o + 5], a[o + 6]), _s.set(1, 1, 1))); }
+        im.instanceMatrix.needsUpdate = true;
+        const o = NB * 7;
+        bm.position.set(a[o], a[o + 1], a[o + 2]);
+        bm.quaternion.set(a[o + 3], a[o + 4], a[o + 5], a[o + 6]);
+      };
+      const rec = [read()], snaps = [];
+      let phase = "record", step = 0, mode = 0, err = 0, hold = 0, auto = true, rw = 0, rwFrom = 0, rwTo = 0, replays = 0;
+      let takeMs = 0, bytes = 0, restoreMs = 0, cur = rec[0];
+      function restoreAt(k) {
+        const t0 = performance.now();
+        const w2 = R.World.restoreSnapshot(snaps[k]);
+        restoreMs = performance.now() - t0;
+        w2.timestep = STEP;
+        world.free();
+        world = w2;
+        step = k * EVERY; err = 0; replays++;
+        if (mode === 1) { // same snapshot, ball turned 12 degrees and 25 % faster
+          const b = world.getRigidBody(H[NB]), v = b.linvel(), a = 12 * DEG;
+          b.setLinvel({ x: (v.x * Math.cos(a) - v.z * Math.sin(a)) * 1.25, y: v.y, z: (v.x * Math.sin(a) + v.z * Math.cos(a)) * 1.25 }, true);
+        }
+        phase = "replay";
+        cur = read();
+      }
+      const startRewind = (to) => { rwFrom = step; rwTo = to; rw = 0; phase = "rewind"; };
+      const recorded = () => rec.length > NS;
+      const setAuto = (v) => { auto = v; autoBtn.setAttribute("aria-pressed", String(v)); };
+
+      const slider = ctx.slider("時間軸", { min: 0, max: NS, step: 1, value: 0, format: (v) => `${(v / 60).toFixed(1)} s` }, (v) => {
+        if (!recorded()) return;
+        setAuto(false);
+        phase = "scrub"; step = v; cur = rec[v];
+      });
+      const sliderOut = slider.parentElement.querySelector("output");
+      slider.disabled = true;
+      ctx.button("從這裡還原", () => { if (!recorded()) return; setAuto(false); restoreAt(Math.min(snaps.length - 1, Math.floor(step / EVERY))); }, { primary: true });
+      const modeSeg = ctx.group(["原樣重播", "改變球速"], 0, (i) => { mode = i; if (recorded()) startRewind(24); });
+      const autoBtn = ctx.toggle("自動輪播", true, (v) => { auto = v; hold = 0; });
+
+      const P = {
+        maxSub: 3,
+        get world() { return world; },
+        get paused() { return phase !== "record" && phase !== "replay"; },
+        before() {
+          if (phase !== "record" || step % EVERY) return;
+          const t0 = performance.now();
+          const s = world.takeSnapshot();
+          takeMs += performance.now() - t0;
+          bytes += s.length;
+          snaps.push(s);
+        },
+        after() {
+          step++;
+          cur = read();
+          if (phase === "record") rec.push(cur);
+          else {
+            const base = rec[step];
+            for (let i = 0; i < cur.length; i++) if (i % 7 < 3) err = Math.max(err, Math.abs(cur[i] - base[i]));
+          }
+          if (step >= NS) { phase = "done"; hold = 0; slider.disabled = false; }
+        },
+      };
+      fixedLoop(S, P);
+      const setChip = chip(ctx, "");
+      let frameNo = 0, shown = -1;
+      S.onFrame((dt) => {
+        if (phase === "done") {
+          hold += dt;
+          if (auto && hold > 1.5) { if (replays) { mode = 1 - mode; segSet(modeSeg, mode); } startRewind(24); }
+        }
+        if (phase === "rewind") {
+          rw = Math.min(1, rw + dt / 1.1);
+          const e = rw * rw * (3 - 2 * rw);
+          step = Math.round(rwFrom + (rwTo - rwFrom) * e);
+          cur = rec[step];
+          if (rw >= 1) restoreAt(rwTo / EVERY);
+        }
+        show(cur, boxIm, ballM);
+        const ghost = mode === 1 && replays > 0 && (phase === "replay" || phase === "done");
+        ghostIm.visible = ghostBall.visible = ghost;
+        if (ghost) show(rec[step], ghostIm, ghostBall);
+        if (phase !== "scrub" && shown !== step) { shown = step; slider.value = step; sliderOut.textContent = `${(step / 60).toFixed(1)} s`; }
+        if (frameNo++ % 6) return;
+        const name = { record: "錄製中", done: "播完", rewind: "倒帶中", replay: mode ? "改變球速重播" : "原樣重播", scrub: "回看錄影" }[phase];
+        const errHtml = !replays || phase === "scrub" || phase === "rewind" || phase === "record" ? ""
+          : mode === 0 ? it(`與錄影誤差 <b>${(err * 1000).toFixed(3)}</b> mm${err === 0 ? "（完全一致）" : ""}`)
+          : it(`與原本最多偏離 <b>${err.toFixed(2)}</b> m`);
+        setChip(it(`<em>${name}</em> <b>${(step / 60).toFixed(2)}</b> s`) + it(`快照 <b>${snaps.length}</b> 份，每份 <b>${snaps.length ? (bytes / snaps.length / 1024).toFixed(0) : 0}</b> KB`)
+          + it(`存 <b>${snaps.length ? (takeMs / snaps.length).toFixed(2) : "0"}</b> ms・還原 <b>${restoreMs.toFixed(1)}</b> ms`) + errHtml);
+      });
+    },
+  },
+  {
+    id: "queries", title: "場景查詢",
+    api: "world.castRayAndGetNormal(ray, maxToi, solid)・world.castShape(pos, rot, vel, shape, …)・world.intersectionsWithShape(pos, rot, shape, cb)・world.projectPoint(point, solid)",
+    desc: "不用推進模擬也能向物理世界提問：雷射用射線加法向量在鏡面與牆之間反射，球形掃掠算出往前還能走多遠，方形探針列出重疊的物體，黃點投影到最近的表面。旋轉門與木箱會動，查詢結果每格更新。",
+    hint: "點地面把雷射對準那裡・拖曳旋轉視角",
+    async mount(ctx) {
+      if (!(await boot(ctx))) return;
+      const S = stage(ctx, { shadows: true, fov: 42, bg: 0x0b0d12, labels: true, orbit: { maxPolarAngle: Math.PI * 0.45, minDistance: 4, maxDistance: 40 } });
+      lights(S, { shadow: 8, pos: [4, 11, 6], sun: 2 });
+      floor(S, 13, 9, 0x161b24);
+      camRig(S)({ t: [0, 0.4, 0.3], d: [0, 1.1, 1], hw: 6.4, hh: 4.0 }, true);
+      const world = physWorld(ctx);
+      const fixed = world.createRigidBody(R.RigidBodyDesc.fixed());
+      const floorCol = world.createCollider(R.ColliderDesc.cuboid(6.5, 0.5, 4.5).setTranslation(0, -0.5, 0), fixed); // excluded from every query
+      const reflect = new Set(); // collider handles that bounce the laser
+      const rimMat = std(0x2b3854, { roughness: 0.7 }), mirMat = std(0xbfe6ff, { roughness: 0.1, metalness: 0.85, emissive: 0x0f2a3a });
+      const box = (hx, hy, hz, x, y, z, ry, mat) => {
+        const q = qE(0, ry, 0);
+        const c = world.createCollider(R.ColliderDesc.cuboid(hx, hy, hz).setTranslation(x, y, z).setRotation(q), fixed);
+        const m = shadowed(new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2), mat);
+        m.position.set(x, y, z);
+        m.quaternion.set(q.x, q.y, q.z, q.w);
+        S.scene.add(m);
+        return c;
+      };
+      for (const [hx, hz, x, z] of [[6.3, 0.1, 0, -4.3], [6.3, 0.1, 0, 4.3], [0.1, 4.2, -6.2, 0], [0.1, 4.2, 6.2, 0]]) reflect.add(box(hx, 0.4, hz, x, 0.4, z, 0, rimMat).handle);
+      for (const [x, z, a] of [[-1.8, -2.6, 30], [2.8, -2.2, -40], [3.6, 1.6, 70]]) reflect.add(box(0.9, 0.5, 0.08, x, 0.5, z, a * DEG, mirMat).handle);
+      const cylMat = std(0x9d8cff, { roughness: 0.45 });
+      for (const [x, z] of [[-3.2, 0.6], [0.4, 2.6]]) {
+        world.createCollider(R.ColliderDesc.cylinder(0.5, 0.45).setTranslation(x, 0.5, z), fixed);
+        const m = shadowed(new THREE.CylinderGeometry(0.45, 0.45, 1, 28), cylMat);
+        m.position.set(x, 0.5, z);
+        S.scene.add(m);
+      }
+      const turn = world.createRigidBody(R.RigidBodyDesc.kinematicPositionBased().setTranslation(1, 0.5, -0.4));
+      world.createCollider(R.ColliderDesc.cuboid(1.2, 0.3, 0.08), turn);
+      const turnG = new THREE.Group();
+      turnG.add(shadowed(new THREE.BoxGeometry(2.4, 0.6, 0.16), std(0xff8c42, { roughness: 0.5 })), shadowed(new THREE.CylinderGeometry(0.12, 0.12, 1.1, 16), std(0x5b6d8c)));
+      S.scene.add(turnG);
+      const crateMat = std(0xf7df1e, { roughness: 0.5 }), crateGeo = S.own(new RoundedBoxGeometry(0.6, 0.6, 0.6, 2, 0.04));
+      const crates = [[1.0, 1.0], [2.4, 0.6], [-2.4, -1.2], [0.0, -2.2]].map(([x, z]) => {
+        const b = world.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(x, 0.3, z));
+        world.createCollider(R.ColliderDesc.cuboid(0.3, 0.3, 0.3).setFriction(0.6), b);
+        const m = shadowed(crateGeo, crateMat);
+        S.scene.add(m);
+        return { b, m, x, z };
+      });
+      const resetCrates = () => crates.forEach((c) => {
+        c.b.setTranslation({ x: c.x, y: 0.3, z: c.z }, true);
+        c.b.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+        c.b.setLinvel(ZERO, true);
+        c.b.setAngvel(ZERO, true);
+      });
+
+      // Visuals for the four queries.
+      const L0 = { x: -5.6, y: 0.5, z: -3.6 };
+      const emitter = shadowed(new THREE.BoxGeometry(0.3, 0.3, 0.3), std(0xf72585, { emissive: 0x5a0c2c }));
+      emitter.position.set(L0.x, L0.y, L0.z);
+      S.scene.add(emitter);
+      const basic = (c, extra) => S.own(new THREE.MeshBasicMaterial({ color: c, ...extra }));
+      const segIm = new THREE.InstancedMesh(S.own(new THREE.CylinderGeometry(0.03, 0.03, 1, 8)), basic(0xff3d8b), 9);
+      const dotIm = new THREE.InstancedMesh(S.own(new THREE.SphereGeometry(0.08, 12, 8)), basic(0xffd1e3), 9);
+      const markIm = new THREE.InstancedMesh(S.own(new THREE.ConeGeometry(0.12, 0.26, 12).rotateX(Math.PI)), basic(0xf72585), 8);
+      for (const im of [segIm, dotIm, markIm]) { im.frustumCulled = false; im.count = 0; S.scene.add(im); }
+      const ghost = (c, o) => S.own(new THREE.MeshStandardMaterial({ color: c, transparent: true, opacity: o, roughness: 0.3, depthWrite: false }));
+      const C0 = { x: 5.2, y: 0.45, z: 3.4 }, ID = { x: 0, y: 0, z: 0, w: 1 }, ballShape = new R.Ball(0.35), probeShape = new R.Cuboid(0.6, 0.4, 0.6);
+      const sGeo = S.own(new THREE.SphereGeometry(0.35, 24, 16)), okMat = ghost(0x7bd389, 0.5), hitMat = ghost(0xf72585, 0.55);
+      const sStart = new THREE.Mesh(sGeo, okMat), sEnd = new THREE.Mesh(sGeo, okMat);
+      sStart.position.set(C0.x, C0.y, C0.z);
+      const sTube = new THREE.Mesh(S.own(new THREE.CylinderGeometry(0.35, 0.35, 1, 24, 1, true)), ghost(0x7bd389, 0.14));
+      const probeMat = ghost(0x4cc9f0, 0.16), edgeMat = S.own(new THREE.LineBasicMaterial({ color: 0x4cc9f0 }));
+      const probeG = new THREE.Group();
+      probeG.add(new THREE.Mesh(S.own(new THREE.BoxGeometry(1.2, 0.8, 1.2)), probeMat), new THREE.LineSegments(S.own(new THREE.EdgesGeometry(new THREE.BoxGeometry(1.2, 0.8, 1.2))), edgeMat));
+      const pDot = new THREE.Mesh(S.own(new THREE.SphereGeometry(0.09, 16, 12)), basic(0xf7df1e));
+      const qDot = new THREE.Mesh(S.own(new THREE.SphereGeometry(0.07, 16, 12)), basic(0xffffff));
+      const pLine = new THREE.Mesh(S.own(new THREE.CylinderGeometry(0.015, 0.015, 1, 6)), basic(0xf7df1e));
+      for (const m of [sTube, pLine]) m.matrixAutoUpdate = false;
+      S.scene.add(sStart, sEnd, sTube, probeG, pDot, qDot, pLine);
+      const lab = (t, sub, p, color) => { const l = label(t, sub, { fineSub: true, codeSub: true, color }); if (p) l.position.set(...p); S.scene.add(l); return l; };
+      const laserL = lab("射線反射", "castRayAndGetNormal", [L0.x + 0.3, 1.25, L0.z + 0.2], HEX[2]);
+      const sweepL = lab("形狀掃掠", "castShape", [C0.x - 1.3, 1.25, C0.z - 0.3], HEX[3]);
+      const probeL = lab("重疊查詢", "intersectionsWithShape", null, HEX[1]);
+      const projL = lab("最近點投影", "projectPoint", null, HEX[0]);
+
+      let bounces = 0;
+      function laser(dir) {
+        let o = { ...L0 }, d = { ...dir }, n = 0, hits = 0;
+        bounces = 0;
+        for (; n < 9; n++) { // at most 9 segments
+          const hit = world.castRayAndGetNormal(new R.Ray(o, d), 30, true, undefined, undefined, floorCol);
+          const toi = hit ? hit.timeOfImpact : 30;
+          const e = { x: o.x + d.x * toi, y: o.y + d.y * toi, z: o.z + d.z * toi };
+          segIm.setMatrixAt(n, beam(o, e));
+          if (!hit) { n++; break; }
+          dotIm.setMatrixAt(hits++, _m4.makeTranslation(e.x, e.y, e.z));
+          if (!reflect.has(hit.collider.handle)) { n++; break; } // only mirrors and walls reflect
+          const nn = hit.normal, dn = d.x * nn.x + d.y * nn.y + d.z * nn.z;
+          d = { x: d.x - 2 * dn * nn.x, y: d.y - 2 * dn * nn.y, z: d.z - 2 * dn * nn.z };
+          o = { x: e.x + nn.x * 1e-3, y: e.y + nn.y * 1e-3, z: e.z + nn.z * 1e-3 };
+          bounces++;
+        }
+        segIm.count = n; dotIm.count = hits;
+        segIm.instanceMatrix.needsUpdate = dotIm.instanceMatrix.needsUpdate = true;
+      }
+      let aimDir = null, aimUntil = 0, clock = 0;
+      const rc = new THREE.Raycaster(), ndc = new THREE.Vector2(), plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.5), hp = new THREE.Vector3();
+      onTap(ctx, S.canvas, (e) => {
+        rc.setFromCamera(setNdc(S, e, ndc), S.camera);
+        if (!rc.ray.intersectPlane(plane, hp)) return;
+        const dx = hp.x - L0.x, dz = hp.z - L0.z, l = Math.hypot(dx, dz);
+        if (l < 0.3) return;
+        aimDir = { x: dx / l, y: 0, z: dz / l };
+        aimUntil = clock + 5;
+      });
+
+      let ang = 0, n = 0;
+      const P = {
+        world, maxSub: 3,
+        before() { ang += 0.6 * STEP; turn.setNextKinematicRotation(qE(0, ang, 0)); },
+        after() { if (++n % 900 === 0) resetCrates(); },
+      };
+      fixedLoop(S, P);
+      world.step(); // build the query structures before the first frame
+      const setChip = chip(ctx, "");
+      const us = { ray: 0, shape: 0, over: 0, proj: 0 };
+      const timeIt = (k, fn) => { const t0 = performance.now(); for (let i = 0; i < 50; i++) fn(); us[k] = (performance.now() - t0) * 20; }; // 50 calls, result in microseconds per call
+      let frameNo = 0;
+      S.onFrame((dt, time) => {
+        clock = time;
+        syncMesh(turnG, turn);
+        for (const c of crates) syncMesh(c.m, c.b);
+        // 1. laser: ray cast with surface normal, reflected up to 8 times
+        const a = 0.28 + 0.14 * Math.sin(time * 0.3); // sweeps across the first mirror
+        const dir = time < aimUntil && aimDir ? aimDir : { x: Math.cos(a), y: 0, z: Math.sin(a) };
+        laser(dir);
+        laserL.userData.title(`射線反射 ${bounces} 次`);
+        // 2. sweep a ball and stop at the first contact
+        const b = 0.45 + 0.4 * Math.sin(time * 0.4 + 1), sd = { x: -Math.cos(b), y: 0, z: -Math.sin(b) };
+        const sh = world.castShape(C0, ID, sd, ballShape, 0, 12, true, undefined, undefined, floorCol);
+        const toi = sh ? (sh.time_of_impact ?? sh.toi) : 12;
+        const end = { x: C0.x + sd.x * toi, y: C0.y, z: C0.z + sd.z * toi };
+        sEnd.position.set(end.x, end.y, end.z);
+        sEnd.material = sh ? hitMat : okMat;
+        sTube.matrix.copy(beam(C0, end));
+        sweepL.userData.title(sh ? `掃掠：可走 ${toi.toFixed(2)} m` : "掃掠：12 m 內無障礙");
+        // 3. overlap test with a box probe
+        const pp = { x: -1.8 + 1.3 * Math.cos(time * 0.5), y: 0.45, z: 0.6 + 1.3 * Math.sin(time * 0.5) }, pr = qE(0, time * 0.5, 0);
+        probeG.position.set(pp.x, pp.y, pp.z);
+        probeG.quaternion.set(pr.x, pr.y, pr.z, pr.w);
+        let over = 0;
+        world.intersectionsWithShape(pp, pr, probeShape, (c) => {
+          over++;
+          if (over <= 8) { const t = c.translation(); markIm.setMatrixAt(over - 1, _m4.makeTranslation(t.x, 1.35 + 0.08 * Math.sin(time * 6), t.z)); }
+          return true;
+        }, undefined, undefined, floorCol);
+        markIm.count = Math.min(8, over);
+        markIm.instanceMatrix.needsUpdate = true;
+        edgeMat.color.setHex(over ? 0xf72585 : 0x4cc9f0);
+        probeL.position.set(pp.x, 1.45, pp.z);
+        probeL.userData.title(over ? `重疊 ${over} 個物體` : "沒有重疊");
+        // 4. project a wandering point onto the nearest surface
+        const q = { x: 2.2 + 1.5 * Math.sin(time * 0.5), y: 0.5 + 0.25 * Math.sin(time * 0.9), z: 0.6 + 1.0 * Math.sin(time * 0.7) };
+        const proj = world.projectPoint(q, false, undefined, undefined, floorCol);
+        pDot.position.set(q.x, q.y, q.z);
+        if (proj) {
+          const p = proj.point;
+          qDot.position.set(p.x, p.y, p.z);
+          pLine.matrix.copy(beam(q, p));
+          projL.userData.title(proj.isInside ? "點在物體內部" : `最近表面 ${Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z).toFixed(2)} m`);
+        }
+        qDot.visible = pLine.visible = !!proj;
+        projL.position.set(q.x, 1.3, q.z);
+        if (frameNo++ % 30 === 0) {
+          const ray = new R.Ray(L0, dir);
+          timeIt("ray", () => world.castRayAndGetNormal(ray, 30, true, undefined, undefined, floorCol));
+          timeIt("shape", () => world.castShape(C0, ID, sd, ballShape, 0, 12, true, undefined, undefined, floorCol));
+          timeIt("over", () => world.intersectionsWithShape(pp, pr, probeShape, () => true, undefined, undefined, floorCol));
+          timeIt("proj", () => world.projectPoint(q, false, undefined, undefined, floorCol));
+          setChip(it("每次查詢平均") + it(`射線 <b>${us.ray.toFixed(1)}</b> µs`) + it(`掃掠 <b>${us.shape.toFixed(1)}</b> µs`) + it(`重疊 <b>${us.over.toFixed(1)}</b> µs`) + it(`投影 <b>${us.proj.toFixed(1)}</b> µs`));
+        }
+      });
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "world.step()・world.profilerEnabled = true・world.timingBroadPhase() / timingNarrowPhase() / timingSolver()・world.numSolverIterations",
+    desc: "把方塊與球持續倒進透明容器，逐級加量直到物理拖慢畫面；可切換求解器迭代次數與睡眠，Rapier 內建的效能計時器拆出寬相、窄相、求解各花多少時間。",
+    hint: "按「自動加壓」開始，可切換迭代次數與睡眠",
+    async mount(ctx) {
+      if (!(await boot(ctx))) return;
+      ctx.html(`<div class="stress-view"></div>`);
+      const host = ctx.$(".stress-view");
+      ctx.controls.classList.add("bottom");
+      const S = stage(ctx, { host, fov: 48, bg: 0x07080b, orbit: { autoRotate: true, autoRotateSpeed: 0.4, minDistance: 6, maxDistance: 40, maxPolarAngle: Math.PI * 0.48 } });
+      lights(S, { shadow: 0, pos: [4, 12, 6], hemi: 1.4, sun: 2.2 });
+      const rig = camRig(S);
+      // frame the container plus the expected pile height (mean body volume 0.034 m3, about 60 % packing)
+      const frame = (n, instant) => { const hp = (n * 0.034) / (81 * 0.6); rig({ t: [0, 1.6 + hp * 0.5, 0], d: [0, 0.75, 1], hw: 5.2, hh: 3.2 + hp * 0.5 }, instant); };
+      frame(0, true);
+      const world = physWorld(ctx);
+      world.profilerEnabled = true;
+      const HB = 4.5, st = world.createRigidBody(R.RigidBodyDesc.fixed());
+      world.createCollider(R.ColliderDesc.cuboid(HB + 1, 0.5, HB + 1).setTranslation(0, -0.5, 0), st);
+      for (const [x, z, hx, hz] of [[HB + 0.25, 0, 0.25, HB], [-HB - 0.25, 0, 0.25, HB], [0, HB + 0.25, HB, 0.25], [0, -HB - 0.25, HB, 0.25]]) {
+        world.createCollider(R.ColliderDesc.cuboid(hx, 8, hz).setTranslation(x, 8, z), st);
+      }
+      floor(S, HB * 2, HB * 2, 0x161b24);
+      const cage = new THREE.LineSegments(S.own(new THREE.EdgesGeometry(new THREE.BoxGeometry(HB * 2, 7, HB * 2))), S.own(new THREE.LineBasicMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0.45 })));
+      cage.position.y = 3.5;
+      S.scene.add(cage);
+      const CAP = 8000;
+      const ims = [new THREE.BoxGeometry(0.34, 0.34, 0.34), new THREE.SphereGeometry(0.18, 12, 8)].map((g) => {
+        const im = instanced(S, g, std(0xffffff, { roughness: 0.45 }), CAP);
+        im.castShadow = im.receiveShadow = false;
+        return im;
+      });
+      const descs = [R.ColliderDesc.cuboid(0.17, 0.17, 0.17), R.ColliderDesc.ball(0.18)];
+      const all = [], lists = [[], []], col = new THREE.Color();
+      const paint = (r) => ims[r.kind].setColorAt(r.idx, col.setHex(PALETTE[r.idx % 6]).multiplyScalar(r.asleep ? 0.3 : 1));
+      const add = (x, y, z) => {
+        const kind = all.length % 3 === 2 ? 1 : 0; // two boxes per sphere
+        const body = world.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(x, y, z).setRotation(qE(rand(0, 3), rand(0, 3), 0)));
+        world.createCollider(descs[kind], body);
+        const r = { body, kind, idx: lists[kind].length, asleep: false };
+        lists[kind].push(body);
+        all.push(r);
+        paint(r);
+      };
+      let ms = 0, awake = 0, sleepOn = true;
+      const prof = { b: 0, n: 0, s: 0 };
+      S.onFrame(() => {
+        if (!sleepOn) for (const r of all) r.body.wakeUp();
+        const t0 = performance.now();
+        world.step(); // exactly one step per frame, so a slow step shows up as a low FPS
+        ms += (performance.now() - t0 - ms) * 0.15;
+        prof.b += (world.timingBroadPhase() - prof.b) * 0.15;
+        prof.n += (world.timingNarrowPhase() - prof.n) * 0.15;
+        prof.s += (world.timingSolver() - prof.s) * 0.15;
+        awake = 0;
+        let recolor = false;
+        for (const r of all) {
+          const s = r.body.isSleeping();
+          if (!s) awake++;
+          if (s !== r.asleep) { r.asleep = s; paint(r); recolor = true; }
+          setInst(ims[r.kind], r.idx, r.body);
+        }
+        for (const im of ims) { im.instanceMatrix.needsUpdate = true; if (recolor) im.instanceColor.needsUpdate = true; }
+      });
+      ctx.group(["迭代 1", "迭代 4（預設）", "迭代 8"], 1, (i) => { world.numSolverIterations = [1, 4, 8][i]; });
+      ctx.toggle("允許睡眠", true, (v) => { sleepOn = v; });
+      ctx.ramp({
+        label: "剛體數", unit: "個",
+        steps: [250, 500, 1000, 2000, 3000, 4000, 6000, 8000],
+        minFps: 30,
+        apply(n) {
+          while (all.length > n) { const r = all.pop(); world.removeRigidBody(r.body); lists[r.kind].pop(); }
+          let top = 0;
+          for (const r of all) top = Math.max(top, r.body.translation().y);
+          // new bodies go on a 0.5 m lattice above the current pile, 289 per layer
+          for (let k = 0, need = n - all.length; k < need; k++) {
+            const s = ((k % 289) * 97) % 289, layer = Math.floor(k / 289); // 97 is coprime to 289: spreads a partial layer over the floor
+            add(-4 + (s % 17) * 0.5 + rand(-0.04, 0.04), top + 0.6 + layer * 0.5, -4 + Math.floor(s / 17) * 0.5 + rand(-0.04, 0.04));
+          }
+          ims[0].count = lists[0].length;
+          ims[1].count = lists[1].length;
+          for (const im of ims) im.instanceColor.needsUpdate = true;
+          frame(n);
+        },
+        metrics: () => ({
+          物理每步: `${ms.toFixed(1)} ms`, 寬相: `${prof.b.toFixed(1)} ms`, 窄相: `${prof.n.toFixed(1)} ms`,
+          求解: `${prof.s.toFixed(1)} ms`, 醒著: awake,
+        }),
+        note: "每格只跑一次 world.step() 並量 JS 端耗時，物理一慢 FPS 就跟著掉。寬相找出可能相撞的配對，窄相計算實際接觸點，求解器依迭代次數反覆修正接觸；開啟睡眠時靜止的物體（變暗）不參與求解，關掉可看全部醒著的成本。繪圖只用兩個 InstancedMesh，但每個剛體每格都要跨 WASM 讀取位置與旋轉。實測對照（Node v24.17.0，同一個容器、方塊與球 2:1，cannon-es 用 SAP、10 次迭代並開睡眠，Rapier 用預設值，300 步平均）：250 個 0.91 對 0.47 ms、500 個 2.66 對 0.31 ms、1000 個 21.67 對 2.74 ms、2000 個 108.36 對 11.35 ms，Rapier 快 1.9 到 9.5 倍；另一輪實測為 2.6 到 18.9 倍，數字隨機器與每次執行而變。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

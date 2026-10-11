@@ -3,355 +3,1652 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>JoltPhysics.js 示範：鐵球拆城堡</title>
+<title>JoltPhysics.js 示範：八個場景看懂 Jolt 物理引擎與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","note":"七百多塊磚的堆疊、碰撞與擺錘約束全部由 Jolt Physics（C++ 編譯成 WebAssembly）計算，3D 繪圖使用 three.js 0.186.1"}</script>
-<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"}}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["鐵球拆城堡","形狀圖鑑","約束與馬達","角色控制器","輪式車輛","軟體與氣球","輸送帶與射線","極限測試"],"note":"Jolt Physics（《地平線 西域禁地》使用的物理引擎）編譯成 WebAssembly 的 JoltPhysics.js 1.1.0；本頁載入單執行緒的 wasm-compat 版，多執行緒版需要伺服器送出 COOP／COEP 標頭才能啟用 SharedArrayBuffer。八個場景共用同一份 WASM 實例，3D 繪圖使用 three.js 0.186.1"}</script>
 <style>
-  body { background: radial-gradient(circle at 50% 30%, #1d2233 0%, #0b0e14 75%); }
-  #stage { position: fixed; inset: 0; touch-action: none; }
-  #stage canvas { display: block; }
-  .heading { position: fixed; left: 16px; top: 14px; z-index: 40; pointer-events: none; }
-  .heading h1 { margin: 0; font-size: clamp(18px, 4vw, 26px); letter-spacing: .06em; }
-  .heading p { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
-  .stats { position: fixed; right: 12px; bottom: 12px; z-index: 40; padding: 5px 10px; border-radius: 999px; font-size: 12px; pointer-events: none; }
-  @media (max-width: 600px) { .heading { top: 58px; } .heading p { max-width: 150px; } .stats { bottom: 46px; } }
+  .sc-scene canvas.jp-gl { position: absolute; left: 0; top: 0; display: block; touch-action: none; }
+  .jp-labels { position: absolute; left: 0; top: 0; pointer-events: none; }
+  .jp-lab { font: 600 12px/1.35 var(--font); font-variant-numeric: tabular-nums; color: var(--fg); text-align: center; padding: 3px 8px;
+    border-radius: 7px; background: var(--panel); border: 1px solid var(--line); white-space: nowrap; }
+  .jp-lab small { display: block; color: var(--muted); font: 500 10.5px/1.35 var(--mono); }
+  .jp-lab small.zh { font-family: var(--font); }
+  .jp-compact .jp-lab small:not(.zh) { display: none; }
+  .jp-chip { position: absolute; left: 10px; top: calc(var(--sc-ctl-h, 0px) + 10px); z-index: 105; max-width: min(460px, calc(100% - 20px));
+    padding: 6px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(6px);
+    font: 500 12px/1.5 var(--font); color: var(--fg); pointer-events: none; }
+  .jp-chip b { color: var(--accent); font: 600 12px/1.5 var(--mono); }
+  .jp-chip em { font-style: normal; color: var(--accent); font-weight: 600; }
+  .jp-legend { position: absolute; right: 10px; bottom: calc(var(--sc-ctl-b, 0px) + 10px); z-index: 105; display: flex; flex-wrap: wrap; gap: 4px 12px;
+    max-width: calc(100% - 20px); padding: 5px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line);
+    font: 500 11.5px/1.4 var(--font); color: var(--fg); pointer-events: none; }
+  .jp-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .jp-legend i { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .jp-compact .jp-legend span:not(.keep) { display: none; }
+  .jp-compact .jp-legend:not(:has(.keep)) { display: none; }
+  .jp-compact .jp-legend { bottom: calc(var(--sc-ctl-b, 0px) + 44px); }
+  .jp-view { position: absolute; inset: 8px; border-radius: 10px; overflow: hidden; background: #07080b; }
+  @media (min-width: 761px) { .jp-view { inset: 8px 8px 8px 350px; } }
 </style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
 </head>
 <body>
-<div id="stage"></div>
-<div class="heading"><h1>鐵球拆城堡</h1><p>《地平線 西域禁地》採用的 Jolt 物理引擎，七百多塊磚同時碰撞堆疊</p></div>
-<div class="controls">
-  <button class="btn primary" id="swing">放下擺錘</button>
-  <button class="btn" id="shoot">連發重球</button>
-  <button class="btn" id="reset">重置</button>
-  <button class="btn" id="auto" aria-pressed="true">自動</button>
-</div>
-<div class="panel stats mono" id="stats">載入中</div>
-<div class="hint">點畫面朝該處發射重球・拖曳旋轉視角</div>
-
+<script src="_shared/showcase.js"></script>
 <script type="module">
+// JoltPhysics.js showcase: eight scenes on one shared Jolt WASM instance, rendered with three.js.
+// Every scene builds its own PhysicsSystem (JoltInterface) and frees it with J.destroy on unmount;
+// every renderer is released with dispose() + forceContextLoss().
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
+import { ConvexGeometry } from "three/addons/geometries/ConvexGeometry.js";
+import { CSS2DRenderer, CSS2DObject } from "three/addons/renderers/CSS2DRenderer.js";
+import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 import initJolt from "https://cdn.jsdelivr.net/npm/jolt-physics@1.1.0/dist/jolt-physics.wasm-compat.js";
 
-const Jolt = await initJolt();
+const { h } = Showcase;
+const PALETTE = [0xf7df1e, 0x4cc9f0, 0xf72585, 0x7bd389, 0xff8c42, 0x9d8cff];
+const UP = new THREE.Vector3(0, 1, 0), DOWN = new THREE.Vector3(0, -1, 0);
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+function rng(seed) { let s = seed % 2147483647 || 1; return () => (s = (s * 16807) % 2147483647) / 2147483647; }
+const ema = (prev, v) => (prev ? prev * 0.9 + v * 0.1 : v);
+const deg = (r) => (r * 180) / Math.PI;
+const qy = (a) => [0, Math.sin(a / 2), 0, Math.cos(a / 2)];
+const qx = (a) => [Math.sin(a / 2), 0, 0, Math.cos(a / 2)];
+const qz = (a) => [0, 0, Math.sin(a / 2), Math.cos(a / 2)];
 
-const BRICK = { hx: 0.33, hy: 0.17, hz: 0.16 };
-const RING_N = 14;
-// Radius where the inner corners of neighbouring bricks just clear each other.
-const RING_R = BRICK.hx / Math.tan(Math.PI / RING_N) + BRICK.hz + 0.03;
-const TOWERS = [
-  { x: -4.7, layers: 15, colors: [0x4cc9f0, 0x2b6cb0] },
-  { x: 0, layers: 22, colors: [0xf7df1e, 0xff8c42] },
-  { x: 4.7, layers: 15, colors: [0xf72585, 0x9d8cff] },
-];
-const PIVOT = new THREE.Vector3(0, 13, 0);
-const ROPE = 9;
-const SWING_START = 60 * Math.PI / 180;
-// Launch speed along the arc: same energy as releasing from rest at 76 degrees, but reaches the towers sooner.
-const SWING_V0 = Math.sqrt(2 * 9.81 * ROPE * (Math.cos(SWING_START) - Math.cos(76 * Math.PI / 180)));
-const WRECK_R = 0.9;
-const MAX_SHOTS = 24;
+// ---------- one shared WASM instance ----------
 const L_STATIC = 0, L_MOVING = 1;
-
-// --- three.js scene ---------------------------------------------------------------------
-const stage = document.getElementById("stage");
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.shadowMap.enabled = true;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-stage.appendChild(renderer.domElement);
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0d1018);
-scene.fog = new THREE.Fog(0x0d1018, 28, 60);
-const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 200);
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
-controls.maxPolarAngle = Math.PI * 0.48;
-controls.minDistance = 8;
-controls.maxDistance = 45;
-controls.enablePan = false;
-
-scene.add(new THREE.HemisphereLight(0xe4ecff, 0x1b1f2b, 1.4));
-const sun = new THREE.DirectionalLight(0xfff4e0, 2.6);
-sun.position.set(9, 18, 12);
-sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-Object.assign(sun.shadow.camera, { left: -14, right: 14, top: 16, bottom: -10, near: 1, far: 60 });
-sun.shadow.bias = -0.0005;
-scene.add(sun);
-
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(160, 160), new THREE.MeshStandardMaterial({ color: 0x1a2030, roughness: 0.95 }));
-ground.rotation.x = -Math.PI / 2;
-ground.receiveShadow = true;
-scene.add(ground);
-const grid = new THREE.GridHelper(40, 40, 0x323c54, 0x242c3e);
-grid.position.y = 0.003;
-scene.add(grid);
-
-// --- Jolt world -------------------------------------------------------------------------
-const settings = new Jolt.JoltSettings();
-const pairFilter = new Jolt.ObjectLayerPairFilterTable(2);
-pairFilter.EnableCollision(L_STATIC, L_MOVING);
-pairFilter.EnableCollision(L_MOVING, L_MOVING);
-const bpInterface = new Jolt.BroadPhaseLayerInterfaceTable(2, 2);
-bpInterface.MapObjectToBroadPhaseLayer(L_STATIC, new Jolt.BroadPhaseLayer(0));
-bpInterface.MapObjectToBroadPhaseLayer(L_MOVING, new Jolt.BroadPhaseLayer(1));
-settings.mObjectLayerPairFilter = pairFilter;
-settings.mBroadPhaseLayerInterface = bpInterface;
-settings.mObjectVsBroadPhaseLayerFilter = new Jolt.ObjectVsBroadPhaseLayerFilterTable(bpInterface, 2, pairFilter, 2);
-const jolt = new Jolt.JoltInterface(settings);
-Jolt.destroy(settings);
-const physics = jolt.GetPhysicsSystem();
-const bi = physics.GetBodyInterface();
-
-const tmpV = new Jolt.Vec3(0, 0, 0), zeroV = new Jolt.Vec3(0, 0, 0);
-function createBody(shape, pos, quat, motion, layer, tune) {
-  const p = new Jolt.RVec3(pos.x, pos.y, pos.z);
-  const q = new Jolt.Quat(quat.x, quat.y, quat.z, quat.w);
-  const bcs = new Jolt.BodyCreationSettings(shape, p, q, motion, layer);
-  if (tune) tune(bcs);
-  const body = bi.CreateBody(bcs);
-  Jolt.destroy(bcs); Jolt.destroy(p); Jolt.destroy(q);
-  return body;
-}
-const IDENT = new THREE.Quaternion();
-function addStatic(hx, hy, hz, pos, color) {
-  const body = createBody(new Jolt.BoxShape(new Jolt.Vec3(hx, hy, hz), 0.05, null), pos, IDENT, Jolt.EMotionType_Static, L_STATIC);
-  bi.AddBody(body.GetID(), Jolt.EActivation_DontActivate);
-  if (color === null) return body;
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2), new THREE.MeshStandardMaterial({ color, roughness: 0.55, metalness: 0.3 }));
-  mesh.position.copy(pos);
-  mesh.castShadow = mesh.receiveShadow = true;
-  scene.add(mesh);
-  return body;
-}
-
-addStatic(40, 0.5, 40, new THREE.Vector3(0, -0.5, 0), null);
-// Crane: mast behind the middle tower and a jib reaching over it. The pendulum hangs from the jib tip.
-addStatic(0.35, 7.2, 0.35, new THREE.Vector3(0, 7.2, -6), 0xff8c42);
-const jib = addStatic(0.28, 0.28, 3.4, new THREE.Vector3(0, PIVOT.y + 0.5, -2.9), 0xff8c42);
-addStatic(0.6, 0.45, 0.6, new THREE.Vector3(0, PIVOT.y + 1.2, -6), 0x3b465e);
-
-// --- bricks -----------------------------------------------------------------------------
-const brickShape = new Jolt.BoxShape(new Jolt.Vec3(BRICK.hx, BRICK.hy, BRICK.hz), 0.04, null);
-brickShape.AddRef(); // shared by every brick, keep it alive across resets
-const layout = [];
-for (const t of TOWERS) {
-  for (let l = 0; l < t.layers; l++) {
-    const top = l === t.layers - 1;
-    for (let i = 0; i < RING_N; i++) {
-      if (top && i % 2) continue; // crenellated top layer
-      const a = (i + (l % 2) * 0.5) * (Math.PI * 2 / RING_N);
-      const pos = new THREE.Vector3(t.x + Math.cos(a) * RING_R, BRICK.hy + l * (BRICK.hy * 2 + 0.002), Math.sin(a) * RING_R);
-      const quat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2 - a);
-      const color = new THREE.Color(t.colors[l % 2]).offsetHSL(0, 0, (Math.random() - 0.5) * 0.08);
-      layout.push({ pos, quat, color });
-    }
+let J = null, joltP = null, HEAP_OK = null;
+async function boot(ctx) {
+  if (!J) {
+    const s = ctx.status("載入 JoltPhysics.js（單執行緒 WebAssembly 版）…");
+    try { J = await (joltP ??= initJolt()); }
+    catch (e) { joltP = null; s.error("JoltPhysics.js 載入失敗：" + (e?.message || e)); throw e; }
+    s.done();
   }
+  if (!ctx.active) throw new DOMException("Scene unmounted", "AbortError");
 }
-const brickMesh = new THREE.InstancedMesh(new RoundedBoxGeometry(BRICK.hx * 2, BRICK.hy * 2, BRICK.hz * 2, 2, 0.035), new THREE.MeshStandardMaterial({ roughness: 0.6 }), layout.length);
-brickMesh.castShadow = brickMesh.receiveShadow = true;
-layout.forEach((b, i) => brickMesh.setColorAt(i, b.color));
-scene.add(brickMesh);
-let bricks = [];
+// Jolt reserves a fixed 128 MB WASM heap; the allocator reports total and free bytes.
+const MB = 1048576;
+const memTotal = () => J.JoltInterface.prototype.sGetTotalMemory() / MB;
+const memUsed = () => memTotal() - J.JoltInterface.prototype.sGetFreeMemory() / MB;
+const heapText = () => `${memUsed().toFixed(1)}／${memTotal().toFixed(0)} MB`;
+const heapHtml = () => `<b>${memUsed().toFixed(1)}</b>／${memTotal().toFixed(0)} MB`;
 
-const m4 = new THREE.Matrix4(), v3 = new THREE.Vector3(), q4 = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1);
-function buildBricks() {
-  for (const b of bricks) { bi.RemoveBody(b.GetID()); bi.DestroyBody(b.GetID()); }
-  bricks = layout.map((b, i) => {
-    const body = createBody(brickShape, b.pos, b.quat, Jolt.EMotionType_Dynamic, L_MOVING, (s) => { s.mFriction = 0.7; });
-    // Towers start asleep, so they stand perfectly still until something hits them.
-    bi.AddBody(body.GetID(), Jolt.EActivation_DontActivate);
-    brickMesh.setMatrixAt(i, m4.compose(b.pos, b.quat, ONE));
-    return body;
+// Body memory layout in this build: center of mass (3 floats, padded) then rotation quaternion x, y, z, w.
+// Checked once against known values; if it ever differs, every read falls back to the API getters.
+function checkLayout(bi) {
+  const want = [1.5, 2.5, 3.5, 0, 0.18257419, 0.36514837, 0.54772256, 0.73029674];
+  const c = new J.BodyCreationSettings(new J.SphereShape(0.1, null), new J.RVec3(1.5, 2.5, 3.5),
+    new J.Quat(want[4], want[5], want[6], want[7]), J.EMotionType_Dynamic, L_MOVING);
+  const b = bi.CreateBody(c);
+  J.destroy(c);
+  const F = J.HEAPF32, p = J.getPointer(b) >> 2;
+  let ok = true;
+  for (const i of [0, 1, 2, 4, 5, 6, 7]) ok &&= Math.abs(F[p + i] - want[i]) < 1e-4;
+  bi.DestroyBody(b.GetID());
+  return ok;
+}
+// Writes a column-major 4x4 (three.js order) for the body origin = COM - R * shapeCOM.
+function heapMatrix(e, F, p, c, k = 0) {
+  const x = F[p + 4], y = F[p + 5], z = F[p + 6], w = F[p + 7];
+  const x2 = x + x, y2 = y + y, z2 = z + z, xx = x * x2, xy = x * y2, xz = x * z2, yy = y * y2, yz = y * z2, zz = z * z2, wx = w * x2, wy = w * y2, wz = w * z2;
+  const m0 = 1 - (yy + zz), m1 = xy + wz, m2 = xz - wy, m4 = xy - wz, m5 = 1 - (xx + zz), m6 = yz + wx, m8 = xz + wy, m9 = yz - wx, m10 = 1 - (xx + yy);
+  let tx = F[p], ty = F[p + 1], tz = F[p + 2];
+  if (c) { tx -= m0 * c[0] + m4 * c[1] + m8 * c[2]; ty -= m1 * c[0] + m5 * c[1] + m9 * c[2]; tz -= m2 * c[0] + m6 * c[1] + m10 * c[2]; }
+  e[k] = m0; e[k + 1] = m1; e[k + 2] = m2; e[k + 3] = 0;
+  e[k + 4] = m4; e[k + 5] = m5; e[k + 6] = m6; e[k + 7] = 0;
+  e[k + 8] = m8; e[k + 9] = m9; e[k + 10] = m10; e[k + 11] = 0;
+  e[k + 12] = tx; e[k + 13] = ty; e[k + 14] = tz; e[k + 15] = 1;
+}
+const tmp8 = new Float32Array(8);
+function apiFloats(b) {
+  const c = b.GetCenterOfMassPosition(); tmp8[0] = c.GetX(); tmp8[1] = c.GetY(); tmp8[2] = c.GetZ();
+  const q = b.GetRotation(); tmp8[4] = q.GetX(); tmp8[5] = q.GetY(); tmp8[6] = q.GetZ(); tmp8[7] = q.GetW();
+  return tmp8;
+}
+function bodyMatrix(r, e, k = 0) {
+  if (HEAP_OK) heapMatrix(e, J.HEAPF32, r.p, r.c, k);
+  else heapMatrix(e, apiFloats(r.b), 0, r.c, k);
+}
+
+// One PhysicsSystem per scene: two object layers (static / moving), pooled Vec3 / RVec3 / Quat
+// arguments, shape reference counting and a fixed 60 Hz step.
+function physics(ctx, o = {}) {
+  const st = new J.JoltSettings();
+  if (o.maxContacts) st.mMaxContactConstraints = o.maxContacts;
+  const pf = new J.ObjectLayerPairFilterTable(2);
+  pf.EnableCollision(L_STATIC, L_MOVING); pf.EnableCollision(L_MOVING, L_MOVING);
+  const bp = new J.BroadPhaseLayerInterfaceTable(2, 2);
+  for (const l of [L_STATIC, L_MOVING]) { const b = new J.BroadPhaseLayer(l); bp.MapObjectToBroadPhaseLayer(l, b); J.destroy(b); }
+  st.mObjectLayerPairFilter = pf;
+  st.mBroadPhaseLayerInterface = bp;
+  st.mObjectVsBroadPhaseLayerFilter = new J.ObjectVsBroadPhaseLayerFilterTable(bp, 2, pf, 2);
+  const jolt = new J.JoltInterface(st);
+  J.destroy(st);
+  const ps = jolt.GetPhysicsSystem(), bi = ps.GetBodyInterface();
+  HEAP_OK ??= checkLayout(bi);
+  const pool = [], kept = [], owned = [], stepFns = [], bodies = new Set();
+  const ring = (make, n) => { const a = Array.from({ length: n }, make); pool.push(...a); let i = 0; return () => a[(i = (i + 1) % n)]; };
+  const nV = ring(() => new J.Vec3(0, 0, 0), 8), nR = ring(() => new J.RVec3(0, 0, 0), 4), nQ = ring(() => new J.Quat(0, 0, 0, 1), 4);
+  const MOTION = { static: J.EMotionType_Static, kinematic: J.EMotionType_Kinematic, dynamic: J.EMotionType_Dynamic };
+  let acc = 0;
+  const P = {
+    jolt, ps, bi, bodies, ms: 0,
+    V(x = 0, y = 0, z = 0) { const v = nV(); v.Set(x, y, z); return v; },
+    R(x = 0, y = 0, z = 0) { const v = nR(); v.Set(x, y, z); return v; },
+    Q(x = 0, y = 0, z = 0, w = 1) { const q = nQ(); q.Set(x, y, z, w); return q; },
+    // AddRef now, Release after the world is gone (shapes shared by many bodies, soft body settings).
+    keep(x) { x.AddRef(); kept.push(x); return x; },
+    made(settings) {
+      const res = settings.Create();
+      if (!res.IsValid()) { J.destroy(res); J.destroy(settings); throw new Error("Jolt 形狀建立失敗"); }
+      const s = res.Get();
+      s.AddRef(); kept.push(s);
+      J.destroy(res); J.destroy(settings);
+      return s;
+    },
+    body(shape, pos, opt = {}) {
+      const motion = opt.motion || "dynamic", q = opt.q || [0, 0, 0, 1];
+      const c = new J.BodyCreationSettings(shape, P.R(...pos), P.Q(...q), MOTION[motion], motion === "static" ? L_STATIC : L_MOVING);
+      if (opt.mass) { c.mOverrideMassProperties = J.EOverrideMassProperties_CalculateInertia; c.mMassPropertiesOverride.mMass = opt.mass; }
+      // MeshShape has no volume, so a kinematic mesh body gets explicit box mass properties
+      if (opt.boxInertia) { c.mOverrideMassProperties = J.EOverrideMassProperties_MassAndInertiaProvided; c.mMassPropertiesOverride.SetMassAndInertiaOfSolidBox(P.V(...opt.boxInertia), 1000); }
+      if (opt.friction != null) c.mFriction = opt.friction;
+      if (opt.restitution != null) c.mRestitution = opt.restitution;
+      if (opt.damping) { c.mLinearDamping = opt.damping[0]; c.mAngularDamping = opt.damping[1]; }
+      if (opt.ccd) c.mMotionQuality = J.EMotionQuality_LinearCast;
+      if (opt.sleep === false) c.mAllowSleeping = false;
+      const b = bi.CreateBody(c);
+      J.destroy(c);
+      bi.AddBody(b.GetID(), motion === "static" || opt.asleep ? J.EActivation_DontActivate : J.EActivation_Activate);
+      const m = shape.GetCenterOfMass(), cx = m.GetX(), cy = m.GetY(), cz = m.GetZ();
+      const r = { b, id: b.GetID().GetIndexAndSequenceNumber(), p: J.getPointer(b) >> 2, c: cx || cy || cz ? [cx, cy, cz] : null,
+        mesh: opt.mesh || null, dyn: motion !== "static", data: opt.data };
+      if (r.mesh) { r.mesh.matrixAutoUpdate = false; P.sync(r); }
+      bodies.add(r);
+      return r;
+    },
+    sync(r) { bodyMatrix(r, r.mesh.matrix.elements); r.mesh.matrixWorldNeedsUpdate = true; },
+    syncAll() { for (const r of bodies) if (r.dyn && r.mesh) P.sync(r); },
+    pos(r, v) {
+      if (HEAP_OK) { const F = J.HEAPF32; return v.set(F[r.p], F[r.p + 1], F[r.p + 2]); }
+      const c = r.b.GetCenterOfMassPosition(); return v.set(c.GetX(), c.GetY(), c.GetZ());
+    },
+    quat(r, q) {
+      if (HEAP_OK) { const F = J.HEAPF32; return q.set(F[r.p + 4], F[r.p + 5], F[r.p + 6], F[r.p + 7]); }
+      const a = r.b.GetRotation(); return q.set(a.GetX(), a.GetY(), a.GetZ(), a.GetW());
+    },
+    // Teleport a body (origin position) and zero its velocity; asleep unless wake is set.
+    place(r, pos, q = [0, 0, 0, 1], wake = false) {
+      bi.SetPositionAndRotation(r.b.GetID(), P.R(...pos), P.Q(...q), J.EActivation_DontActivate);
+      bi.SetLinearAndAngularVelocity(r.b.GetID(), P.V(), P.V());
+      if (wake) bi.ActivateBody(r.b.GetID()); else bi.DeactivateBody(r.b.GetID());
+    },
+    remove(r) { bi.RemoveBody(r.b.GetID()); bi.DestroyBody(r.b.GetID()); bodies.delete(r); },
+    own(fn) { owned.push(fn); },
+    onStep(fn) { stepFns.push(fn); },
+    step(dt) {
+      acc = Math.min(acc + dt, 3 / 60);
+      let n = 0;
+      const t0 = performance.now();
+      while (acc >= 1 / 60 - 1e-6) {
+        for (const fn of stepFns) fn(1 / 60);
+        jolt.Step(1 / 60, 1);
+        acc -= 1 / 60; n++;
+      }
+      if (n) P.ms = ema(P.ms, (performance.now() - t0) / n);
+      return n;
+    },
+  };
+  ctx.onCleanup(() => {
+    for (let i = owned.length - 1; i >= 0; i--) owned[i]();
+    J.destroy(jolt);            // frees every body, constraint and the broad phase tables
+    for (const s of kept) s.Release();
+    for (const x of pool) J.destroy(x);
   });
-  brickMesh.instanceMatrix.needsUpdate = true;
+  return P;
 }
 
-// --- wrecking ball on a point constraint --------------------------------------------------
-const wreckStart = new THREE.Vector3(-Math.sin(SWING_START) * ROPE, PIVOT.y - Math.cos(SWING_START) * ROPE, 0);
-const wreckShape = new Jolt.SphereShape(WRECK_R, null);
-const wreck = createBody(wreckShape, wreckStart, IDENT, Jolt.EMotionType_Dynamic, L_MOVING, (s) => {
-  s.mOverrideMassProperties = Jolt.EOverrideMassProperties_CalculateInertia;
-  s.mMassPropertiesOverride.mMass = 14000;
-  s.mMotionQuality = Jolt.EMotionQuality_LinearCast;
-  s.mAngularDamping = 0.4;
-});
-bi.AddBody(wreck.GetID(), Jolt.EActivation_Activate);
-{
-  const cs = new Jolt.PointConstraintSettings();
-  const p = new Jolt.RVec3(PIVOT.x, PIVOT.y, PIVOT.z);
-  cs.mPoint1 = p;
-  cs.mPoint2 = p;
-  physics.AddConstraint(cs.Create(jib, wreck));
-  Jolt.destroy(cs); Jolt.destroy(p);
-}
-const wreckMesh = new THREE.Mesh(new THREE.SphereGeometry(WRECK_R, 40, 24), new THREE.MeshStandardMaterial({ color: 0x2b2f38, metalness: 0.85, roughness: 0.3 }));
-wreckMesh.castShadow = true;
-const band = new THREE.Mesh(new THREE.TorusGeometry(WRECK_R * 1.005, 0.05, 8, 48), new THREE.MeshStandardMaterial({ color: 0xf7df1e, roughness: 0.4 }));
-wreckMesh.add(band);
-scene.add(wreckMesh);
-const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1, 8), new THREE.MeshStandardMaterial({ color: 0x9aa4b8, metalness: 0.7, roughness: 0.35 }));
-cable.castShadow = true;
-scene.add(cable);
-
-function armWreck() {
-  const p = new Jolt.RVec3(wreckStart.x, wreckStart.y, wreckStart.z);
-  const q = new Jolt.Quat(0, 0, 0, 1);
-  bi.SetPositionAndRotation(wreck.GetID(), p, q, Jolt.EActivation_Activate);
-  tmpV.Set(Math.cos(SWING_START) * SWING_V0, -Math.sin(SWING_START) * SWING_V0, 0);
-  bi.SetLinearAndAngularVelocity(wreck.GetID(), tmpV, zeroV);
-  Jolt.destroy(p); Jolt.destroy(q);
-}
-
-// --- heavy shots ------------------------------------------------------------------------
-const shotShape = new Jolt.SphereShape(0.42, null);
-shotShape.AddRef();
-const shotGeo = new THREE.SphereGeometry(0.42, 28, 18);
-const shots = [];
-function removeShot(i) {
-  const s = shots[i];
-  bi.RemoveBody(s.body.GetID()); bi.DestroyBody(s.body.GetID());
-  scene.remove(s.mesh); s.mesh.material.dispose();
-  shots.splice(i, 1);
-}
-let shotNo = 0;
-function fireAt(target) {
-  if (shots.length >= MAX_SHOTS) removeShot(0);
-  const from = camera.position.clone().add(new THREE.Vector3(0, -1, 0)).lerp(target, 0.15);
-  const dir = target.clone().sub(from);
-  const t = Math.max(0.25, dir.length() / 34);
-  const body = createBody(shotShape, from, IDENT, Jolt.EMotionType_Dynamic, L_MOVING, (s) => {
-    s.mOverrideMassProperties = Jolt.EOverrideMassProperties_CalculateInertia;
-    s.mMassPropertiesOverride.mMass = 900;
-    s.mMotionQuality = Jolt.EMotionQuality_LinearCast;
+// ---------- three.js helpers ----------
+function disposeAll(root, extra) {
+  const seen = new Set();
+  const free = (x) => { if (x && !seen.has(x) && typeof x.dispose === "function") { seen.add(x); x.dispose(); } };
+  const freeMat = (m) => { if (!m) return; for (const v of Object.values(m)) if (v && v.isTexture) free(v); free(m); };
+  root.traverse((o) => {
+    free(o.geometry);
+    [].concat(o.material || []).forEach(freeMat);
+    if (o.isInstancedMesh) free(o);
   });
-  bi.AddBody(body.GetID(), Jolt.EActivation_Activate);
-  tmpV.Set(dir.x / t, dir.y / t + 4.9 * t, dir.z / t);
-  bi.SetLinearVelocity(body.GetID(), tmpV);
-  const color = [0x4cc9f0, 0xf72585, 0x7bd389, 0x9d8cff][shotNo++ % 4];
-  const mesh = new THREE.Mesh(shotGeo, new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.35, roughness: 0.25, metalness: 0.2 }));
-  mesh.castShadow = true;
-  mesh.position.copy(from);
-  scene.add(mesh);
-  shots.push({ body, mesh });
+  for (const t of [root.background, root.environment]) if (t && t.isTexture) free(t);
+  for (const x of extra) (x && x.isMaterial ? freeMat : free)(x);
 }
-// Pick a brick that is still high up, so automatic shots hit what is left standing.
-function standingTarget() {
-  const tall = [];
-  for (const b of bricks) { const p = b.GetPosition(); if (p.GetY() > 2) tall.push([p.GetX(), p.GetY(), p.GetZ()]); }
-  const pick = tall.length ? tall[(Math.random() * tall.length) | 0] : [(Math.random() - 0.5) * 8, 1, 0];
-  return new THREE.Vector3(pick[0], pick[1], pick[2]);
-}
-
-// --- input & UI -------------------------------------------------------------------------
-let auto = true, simTime = 0, cycleStart = 0, burst = 0, nextBurst = 0;
-const autoBtn = document.getElementById("auto");
-const setAuto = (on) => { auto = on; autoBtn.setAttribute("aria-pressed", String(on)); controls.autoRotate = on; };
-autoBtn.addEventListener("click", () => setAuto(!auto));
-document.getElementById("swing").addEventListener("click", armWreck);
-document.getElementById("shoot").addEventListener("click", () => { burst = 6; nextBurst = simTime; });
-document.getElementById("reset").addEventListener("click", resetAll);
-
-const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
-let down = null;
-renderer.domElement.addEventListener("pointerdown", (e) => { down = [e.clientX, e.clientY]; });
-renderer.domElement.addEventListener("pointerup", (e) => {
-  if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return;
-  ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
-  ray.setFromCamera(ndc, camera);
-  const hit = ray.intersectObjects([brickMesh, wreckMesh, ground])[0];
-  fireAt(hit ? hit.point : ray.ray.at(25, new THREE.Vector3()));
-  setAuto(false);
-});
-
-function resetAll() {
-  while (shots.length) removeShot(shots.length - 1);
-  buildBricks();
-  armWreck();
-  cycleStart = simTime;
-  burst = 0;
-}
-
-function resize() {
-  const w = innerWidth, h = innerHeight;
-  renderer.setSize(w, h);
-  camera.aspect = w / h;
-  camera.updateProjectionMatrix();
-  const dist = 25 / Math.min(1, camera.aspect * 1.1);
-  const dir = camera.position.clone().sub(controls.target);
-  if (dir.lengthSq() < 0.01) dir.set(0.3, 0.22, 1);
-  camera.position.copy(controls.target).addScaledVector(dir.normalize(), dist);
-  controls.update();
-}
-
-// --- loop -------------------------------------------------------------------------------
-const statsEl = document.getElementById("stats");
-let last = performance.now(), frameNo = 0, stepMs = 0;
-function frame(now) {
-  const dt = Math.min(1 / 30, (now - last) / 1000);
-  last = now;
-  const t0 = performance.now();
-  jolt.Step(dt, dt > 1 / 55 ? 2 : 1);
-  stepMs = stepMs * 0.9 + (performance.now() - t0) * 0.1;
-  simTime += dt;
-
-  // Auto show: the pendulum swings through all three towers, heavy shots finish the job, then rebuild.
-  if (auto) {
-    const ct = simTime - cycleStart;
-    if (ct > 9 && ct < 9.1 && burst === 0) { burst = 6; nextBurst = simTime; }
-    if (ct > 16) resetAll();
+function stage(ctx, o = {}) {
+  const host = o.host || ctx.el;
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = o.exposure ?? 1;
+  if (o.shadows) { renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; }
+  const canvas = renderer.domElement;
+  canvas.className = "jp-gl";
+  host.append(canvas);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(o.bg ?? 0x0e1013);
+  const fov = o.fov ?? 45;
+  const camera = new THREE.PerspectiveCamera(fov, 1, 0.1, o.far ?? 300);
+  camera.position.set(...(o.pos || [0, 2, 8]));
+  let controls = null;
+  if (o.orbit !== false) {
+    controls = new OrbitControls(camera, canvas);
+    controls.target.set(...(o.target || [0, 0, 0]));
+    controls.enableDamping = true;
+    controls.enablePan = false;
+    Object.assign(controls, o.orbit || {});
   }
-  if (burst > 0 && simTime >= nextBurst) { fireAt(standingTarget()); burst--; nextBurst = simTime + 0.35; }
-
-  let dirty = false;
-  for (let i = 0; i < bricks.length; i++) {
-    const b = bricks[i];
-    if (!b.IsActive()) continue;
-    const p = b.GetPosition(), r = b.GetRotation();
-    v3.set(p.GetX(), p.GetY(), p.GetZ());
-    q4.set(r.GetX(), r.GetY(), r.GetZ(), r.GetW());
-    brickMesh.setMatrixAt(i, m4.compose(v3, q4, ONE));
-    dirty = true;
+  let labels = null;
+  if (o.labels) {
+    labels = new CSS2DRenderer();
+    labels.domElement.className = "jp-labels";
+    host.append(labels.domElement);
   }
-  if (dirty) brickMesh.instanceMatrix.needsUpdate = true;
-
-  const wp = wreck.GetPosition(), wr = wreck.GetRotation();
-  wreckMesh.position.set(wp.GetX(), wp.GetY(), wp.GetZ());
-  wreckMesh.quaternion.set(wr.GetX(), wr.GetY(), wr.GetZ(), wr.GetW());
-  v3.copy(wreckMesh.position).sub(PIVOT);
-  cable.position.copy(PIVOT).addScaledVector(v3, 0.5);
-  cable.scale.y = v3.length();
-  cable.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), v3.normalize());
-
-  for (let i = shots.length - 1; i >= 0; i--) {
-    const s = shots[i], p = s.body.GetPosition(), r = s.body.GetRotation();
-    s.mesh.position.set(p.GetX(), p.GetY(), p.GetZ());
-    s.mesh.quaternion.set(r.GetX(), r.GetY(), r.GetZ(), r.GetW());
-    if (p.GetY() < -10) removeShot(i);
+  const frameFns = [], sizeFns = [], extra = [];
+  const S = {
+    renderer, scene, camera, controls, canvas, host, width: 1, height: 1, availH: 1, full: 1,
+    render: () => renderer.render(scene, camera),
+    onFrame(fn) { frameFns.push(fn); },
+    onSize(fn) { sizeFns.push(fn); fn(S.width, S.height); },
+    own(...xs) { extra.push(...xs); return xs[0]; },
+  };
+  let lastKey = "";
+  const fit = () => {
+    const w = Math.max(1, host.clientWidth), hh = Math.max(1, host.clientHeight);
+    // on narrow screens the HUD chip sits under the top controls, so keep the 3D content clear of it too
+    const top = (parseFloat(ctx.el.style.getPropertyValue("--sc-ctl-h")) || 0) + (w < 640 && !o.host ? 44 : 0);
+    const bot = parseFloat(ctx.el.style.getPropertyValue("--sc-ctl-b")) || 0;
+    const key = `${w}x${hh}:${top}:${bot}`;
+    if (key === lastKey) return;
+    lastKey = key;
+    ctx.el.classList.toggle("jp-compact", w < 640);
+    const d = Math.max(-hh * 0.4, Math.min(hh * 0.4, top - bot));
+    S.width = w; S.height = hh; S.full = hh + Math.abs(d); S.availH = hh - Math.abs(d);
+    renderer.setSize(w, hh);
+    if (labels) labels.setSize(w, hh);
+    camera.aspect = w / S.full;
+    camera.fov = o.portraitFov && w < hh ? o.portraitFov : fov;
+    if (d) camera.setViewOffset(w, S.full, 0, d < 0 ? -d : 0, w, hh); else camera.clearViewOffset();
+    camera.updateProjectionMatrix();
+    for (const fn of sizeFns) fn(w, hh);
+  };
+  fit();
+  const timer = new THREE.Timer();
+  ctx.raf((t) => {
+    fit();
+    timer.update(t);
+    // rAF timestamps can trail performance.now(), so the very first delta may be negative.
+    const dt = clamp(timer.getDelta(), 0, 0.1), time = Math.max(0, timer.getElapsed());
+    for (const fn of frameFns) fn(dt, time);
+    if (controls) controls.update(dt);
+    S.render();
+    if (labels) labels.render(scene, camera);
+  });
+  ctx.onCleanup(() => {
+    if (controls) controls.dispose();
+    timer.dispose();
+    disposeAll(scene, extra);
+    renderer.dispose();
+    renderer.forceContextLoss();
+    canvas.remove();
+    if (labels) labels.domElement.remove();
+  });
+  return S;
+}
+function fitDistance(S, halfW, halfH, margin = 1.12) {
+  const tanV = Math.tan(THREE.MathUtils.degToRad(S.camera.fov) / 2);
+  const dv = (halfH * S.full) / (S.availH * tanV);
+  const dh = halfW / (tanV * S.camera.aspect);
+  return Math.max(dv, dh) * margin;
+}
+// Keep the current viewing direction, but move the camera so a halfW x halfH box fits the free area.
+function autoFit(S, hw, hh, m = 1.12) {
+  const dir = new THREE.Vector3();
+  S.onSize(() => {
+    dir.subVectors(S.camera.position, S.controls.target).normalize();
+    S.camera.position.copy(S.controls.target).addScaledVector(dir, fitDistance(S, hw, hh, m));
+  });
+}
+const setNdc = (S, e, v) => {
+  const r = S.canvas.getBoundingClientRect();
+  return v.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+};
+function onTap(ctx, el, fn) {
+  let d = null;
+  ctx.on(el, "pointerdown", (e) => { d = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+  ctx.on(el, "pointerup", (e) => {
+    if (d && performance.now() - d.t < 300 && Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6) fn(e);
+    d = null;
+  });
+}
+function env(S, intensity = 1) {
+  const pm = new THREE.PMREMGenerator(S.renderer), room = new RoomEnvironment();
+  const rt = pm.fromScene(room, 0.04);
+  room.dispose(); pm.dispose();
+  S.scene.environment = rt.texture; S.scene.environmentIntensity = intensity;
+  S.own(rt);
+}
+function sunLight(S, o = {}) {
+  if (o.hemi) S.scene.add(new THREE.HemisphereLight(o.hemi[0], o.hemi[1], o.hemi[2]));
+  const sun = new THREE.DirectionalLight(o.color ?? 0xffffff, o.intensity ?? 2);
+  sun.position.set(...(o.pos || [4, 10, 5]));
+  if (o.shadow !== false) {
+    sun.castShadow = true;
+    const c = sun.shadow.camera, r = o.range ?? 6;
+    c.left = -r; c.right = r; c.top = r; c.bottom = -r; c.near = 0.5; c.far = o.far ?? 30;
+    sun.shadow.mapSize.set(o.size ?? 1024, o.size ?? 1024);
+    sun.shadow.bias = -0.0005;
   }
-
-  if (frameNo++ % 10 === 0) {
-    const active = physics.GetNumActiveBodies(Jolt.EBodyType_RigidBody);
-    statsEl.textContent = "剛體 " + (bricks.length + shots.length + 1) + " 個・運動中 " + active + "・物理 " + stepMs.toFixed(1) + " ms";
-  }
-  controls.update();
-  renderer.render(scene, camera);
-  requestAnimationFrame(frame);
+  S.scene.add(sun, sun.target);
+  return sun;
+}
+function label(title, sub, zh) {
+  const small = sub != null ? h("small", { class: zh ? "zh" : null, text: sub }) : null;
+  const obj = new CSS2DObject(h("div", { class: "jp-lab" }, h("span", { text: title }), small));
+  obj.sub = small;
+  return obj;
+}
+function hud(ctx, fn) {
+  const el = h("div", { class: "jp-chip" });
+  ctx.el.append(el);
+  const upd = () => { el.innerHTML = fn(); };
+  upd(); ctx.interval(upd, 300);
+  return el;
+}
+function legend(ctx, items) {
+  ctx.el.append(h("div", { class: "jp-legend" },
+    items.map(([c, t, keep]) => h("span", { class: keep ? "keep" : null }, h("i", { style: `background:${c}` }), t))));
+}
+const std = (color, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.5, ...o });
+function canvasTex(c, aniso = 4) { const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = aniso; return t; }
+function canvas2d(w, hgt) { const c = document.createElement("canvas"); c.width = w; c.height = hgt; return [c, c.getContext("2d")]; }
+function floorGrid(S, size, y = 0.003) {
+  const g = new THREE.GridHelper(size, size, 0x323c54, 0x242c3e);
+  g.position.y = y; S.scene.add(g);
+  return g;
+}
+function boxMesh(S, hx, hy, hz, mat, shadow = true) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(hx * 2, hy * 2, hz * 2), mat);
+  m.castShadow = m.receiveShadow = shadow;
+  S.scene.add(m);
+  return m;
 }
 
-controls.target.set(0, 6.2, 0);
-camera.position.set(7.2, 11.5, 24);
-controls.autoRotateSpeed = 0.5;
-addEventListener("resize", resize);
-resize();
-setAuto(true);
-resetAll();
-requestAnimationFrame(frame);
+Showcase.run({ scenes: [
+  // 1. The original demo: a wrecking ball on a point constraint against 707 sleeping bricks.
+  {
+    id: "castle", title: "鐵球拆城堡",
+    api: "PointConstraintSettings・EMotionQuality_LinearCast・EActivation_DontActivate",
+    desc: "三座圓塔共 707 塊磚，十四噸鐵球用點約束吊在吊臂下擺盪撞擊。磚塊以休眠狀態加入世界，被撞到才喚醒、靜止後自動回到休眠；鐵球與重球開啟連續碰撞偵測（LinearCast），高速也不穿透。",
+    hint: "點畫面朝該處丟重球，拖曳旋轉視角",
+    async mount(ctx) {
+      await boot(ctx);
+      const S = stage(ctx, { shadows: true, fov: 42, portraitFov: 60, bg: 0x0d1018, pos: [7.2, 11.5, 24], target: [0, 6.2, 0],
+        orbit: { autoRotate: true, autoRotateSpeed: 0.5, maxPolarAngle: Math.PI * 0.48, minDistance: 10, maxDistance: 80 } });
+      S.scene.fog = new THREE.Fog(0x0d1018, 30, 60);
+      env(S, 0.35);
+      sunLight(S, { hemi: [0xe4ecff, 0x1b1f2b, 1.4], color: 0xfff4e0, intensity: 2.6, pos: [9, 18, 12], range: 16, far: 60, size: 2048 });
+      const P = physics(ctx);
+      const ground = new THREE.Mesh(new THREE.PlaneGeometry(160, 160).rotateX(-Math.PI / 2), std(0x1a2030, { roughness: 0.95 }));
+      ground.receiveShadow = true; S.scene.add(ground);
+      floorGrid(S, 40);
+      P.body(new J.BoxShape(P.V(40, 0.5, 40), 0.05, null), [0, -0.5, 0], { motion: "static" });
+
+      // crane: static mast and jib, the jib end anchors the point constraint
+      const craneMat = std(0xff8c42, { roughness: 0.45, metalness: 0.2 });
+      P.body(new J.BoxShape(P.V(0.35, 7.2, 0.35), 0.05, null), [0, 7.2, -6], { motion: "static", mesh: boxMesh(S, 0.35, 7.2, 0.35, craneMat) });
+      const jib = P.body(new J.BoxShape(P.V(0.28, 0.28, 3.4), 0.05, null), [0, 13.5, -2.9], { motion: "static", mesh: boxMesh(S, 0.28, 0.28, 3.4, craneMat) });
+      boxMesh(S, 0.6, 0.45, 0.6, std(0x3b465e)).position.set(0, 14.2, -6);
+
+      // bricks: three round towers, every brick added asleep
+      const HX = 0.33, HY = 0.17, HZ = 0.16, RING_N = 14, RING_R = HX / Math.tan(Math.PI / RING_N) + HZ + 0.03;
+      const TOWERS = [[-4.7, 15, [0x4cc9f0, 0x2b6cb0]], [0, 22, [0xf7df1e, 0xff8c42]], [4.7, 15, [0xf72585, 0x9d8cff]]];
+      const layout = [];
+      for (const [tx, layers, cols] of TOWERS)
+        for (let l = 0; l < layers; l++)
+          for (let i = 0; i < RING_N; i++) {
+            if (l === layers - 1 && i % 2) continue;   // crenellations on the top ring
+            const a = ((i + (l % 2) * 0.5) * 2 * Math.PI) / RING_N;
+            layout.push({ pos: [tx + Math.cos(a) * RING_R, HY + l * (2 * HY + 0.002), Math.sin(a) * RING_R], q: qy(Math.PI / 2 - a), col: cols[l % 2] });
+          }
+      const brickShape = P.keep(new J.BoxShape(P.V(HX, HY, HZ), 0.04, null));
+      const bricks = new THREE.InstancedMesh(new RoundedBoxGeometry(HX * 2, HY * 2, HZ * 2, 2, 0.035), std(0xffffff, { roughness: 0.6 }), layout.length);
+      bricks.castShadow = bricks.receiveShadow = true; bricks.frustumCulled = false;
+      S.scene.add(bricks);
+      const col = new THREE.Color(), rnd = rng(11);
+      const brickR = layout.map((L, k) => {
+        bricks.setColorAt(k, col.setHex(L.col).offsetHSL((rnd() - 0.5) * 0.04, 0, (rnd() - 0.5) * 0.08));
+        return P.body(brickShape, L.pos, { q: L.q, friction: 0.7, asleep: true });
+      });
+
+      // wrecking ball: 14 t, hung 9 m below the jib end with a point constraint
+      const PIVOT = new THREE.Vector3(0, 13, 0), ROPE = 9, A0 = Math.PI / 3;
+      const V0 = Math.sqrt(2 * 9.81 * ROPE * (Math.cos(A0) - Math.cos(THREE.MathUtils.degToRad(76))));
+      const BALL0 = [-Math.sin(A0) * ROPE, PIVOT.y - Math.cos(A0) * ROPE, 0];
+      const ballG = new THREE.Group();
+      const ballM = new THREE.Mesh(new THREE.SphereGeometry(0.9, 40, 24), std(0x2b2f38, { metalness: 0.85, roughness: 0.3 }));
+      const band = new THREE.Mesh(new THREE.TorusGeometry(0.9, 0.06, 10, 48), std(0xf7df1e, { roughness: 0.4 }));
+      ballM.castShadow = band.castShadow = true;
+      ballG.add(ballM, band); S.scene.add(ballG);
+      const ball = P.body(new J.SphereShape(0.9, null), BALL0, { mass: 14000, ccd: true, damping: [0.02, 0.4], asleep: true, mesh: ballG });
+      const pcs = new J.PointConstraintSettings();
+      pcs.mPoint1 = P.R(PIVOT.x, PIVOT.y, PIVOT.z); pcs.mPoint2 = P.R(PIVOT.x, PIVOT.y, PIVOT.z);
+      P.ps.AddConstraint(pcs.Create(jib.b, ball.b));
+      J.destroy(pcs);
+      const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1, 8).translate(0, -0.5, 0), std(0x9aa4b8, { metalness: 0.6, roughness: 0.35 }));
+      cable.position.copy(PIVOT); S.scene.add(cable);
+
+      // heavy shots: 900 kg spheres on a ballistic arc
+      const shotShape = P.keep(new J.SphereShape(0.42, null));
+      const shotGeo = S.own(new THREE.SphereGeometry(0.42, 24, 16));
+      const shotMats = [0x4cc9f0, 0xf72585, 0x7bd389, 0x9d8cff].map((c) => S.own(std(c, { emissive: c, emissiveIntensity: 0.35, roughness: 0.35 })));
+      const shots = [];
+      let shotN = 0;
+      function fire(target) {
+        const from = S.camera.position.clone(); from.y -= 1; from.lerp(target, 0.15);
+        const d = new THREE.Vector3().subVectors(target, from), t = Math.max(0.25, d.length() / 34);
+        const m = new THREE.Mesh(shotGeo, shotMats[shotN++ % 4]); m.castShadow = true; S.scene.add(m);
+        const r = P.body(shotShape, from.toArray(), { mass: 900, ccd: true, mesh: m });
+        P.bi.SetLinearVelocity(r.b.GetID(), P.V(d.x / t, d.y / t + 4.905 * t, d.z / t));
+        shots.push(r);
+        if (shots.length > 24) { const old = shots.shift(); S.scene.remove(old.mesh); P.remove(old); }
+      }
+      const tv = new THREE.Vector3();
+      function standingTarget() {
+        const up = [];
+        for (let k = 0; k < brickR.length; k += 5) if (P.pos(brickR[k], tv).y > 2) up.push(k);
+        const k = up.length ? up[Math.floor(Math.random() * up.length)] : Math.floor(Math.random() * brickR.length);
+        return P.pos(brickR[k], new THREE.Vector3());
+      }
+      function release() {
+        P.place(ball, BALL0);
+        P.bi.SetLinearVelocity(ball.b.GetID(), P.V(Math.cos(A0) * V0, -Math.sin(A0) * V0, 0));
+        P.bi.ActivateBody(ball.b.GetID());
+      }
+      function reset() {
+        brickR.forEach((r, k) => P.place(r, layout[k].pos, layout[k].q));
+        P.place(ball, BALL0);
+        while (shots.length) { const old = shots.pop(); S.scene.remove(old.mesh); P.remove(old); }
+      }
+      let auto = true, autoT = 0, phase = 0, burst = 0, burstT = 0;
+      ctx.button("放下擺錘", release, { primary: true });
+      ctx.button("連發重球", () => { burst = 6; burstT = 0; });
+      ctx.button("重置", () => { reset(); autoT = 0; phase = 0; });
+      ctx.toggle("自動", true, (v) => { auto = v; autoT = 0; phase = 0; });
+
+      const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+      onTap(ctx, S.canvas, (e) => {
+        ray.setFromCamera(setNdc(S, e, ndc), S.camera);
+        bricks.boundingSphere = null;
+        const hit = ray.intersectObjects([bricks, ballM, ground], false)[0];
+        fire(hit ? hit.point : standingTarget());
+      });
+
+      const bv = new THREE.Vector3();
+      S.onFrame((dt) => {
+        if (auto) {
+          autoT += dt;
+          if (phase === 0 && autoT > 0.6) { release(); phase = 1; }
+          else if (phase === 1 && autoT > 9) { burst = 6; burstT = 0; phase = 2; }
+          else if (phase === 2 && autoT > 16) { reset(); autoT = 0; phase = 0; }
+        }
+        if (burst > 0 && (burstT -= dt) <= 0) { fire(standingTarget()); burst--; burstT = 0.35; }
+        P.step(dt);
+        const e = bricks.instanceMatrix.array;
+        for (let k = 0; k < brickR.length; k++) bodyMatrix(brickR[k], e, k * 16);
+        bricks.instanceMatrix.needsUpdate = true;
+        P.syncAll();
+        P.pos(ball, bv).sub(PIVOT);
+        const len = bv.length();
+        cable.scale.y = len; cable.quaternion.setFromUnitVectors(DOWN, bv.divideScalar(len));
+        const d = S.camera.position.distanceTo(S.controls.target);
+        S.scene.fog.near = d + 2; S.scene.fog.far = d + 26;
+      });
+      autoFit(S, 8, 6.8, 1.05);
+      hud(ctx, () => {
+        let awake = 0;
+        for (const r of brickR) if (r.b.IsActive()) awake++;
+        return `磚塊 <b>${brickR.length}</b>・運動中 <b>${awake}</b>・休眠 <b>${brickR.length - awake}</b>・物理 <b>${P.ms.toFixed(1)}</b> ms・WASM ${heapHtml()}`;
+      });
+    },
+  },
+
+  // 2. Shape gallery: eight collision shapes poured into a kinematic triangle-mesh bowl.
+  {
+    id: "shapes", title: "形狀圖鑑",
+    api: "MeshShapeSettings・ConvexHullShapeSettings・StaticCompoundShapeSettings・TaperedCapsuleShapeSettings",
+    desc: "八種碰撞形狀倒進一個用三角網格（MeshShape）做的碗：球、圓角方塊、膠囊、錐形膠囊、圓柱、錐形圓柱、凸包與靜態複合形狀（啞鈴）。碗是運動學物體，「震一下」用 MoveKinematic 把碗抬起搖晃，休眠中的形狀會被喚醒；靜止後重新休眠並變暗。",
+    hint: "點碗內任一處丟一個形狀，拖曳旋轉視角",
+    async mount(ctx) {
+      await boot(ctx);
+      const S = stage(ctx, { shadows: true, fov: 45, portraitFov: 60, bg: 0x10131a, pos: [0, 7.5, 9.5], target: [0, 1, 0],
+        orbit: { autoRotate: true, autoRotateSpeed: 0.6, maxPolarAngle: Math.PI * 0.47, minDistance: 5, maxDistance: 40 } });
+      env(S, 0.45);
+      sunLight(S, { hemi: [0xe4ecff, 0x1b1f2b, 1.2], intensity: 2.4, pos: [5, 12, 6], range: 7 });
+      const P = physics(ctx);
+      const ground = new THREE.Mesh(new THREE.PlaneGeometry(60, 60).rotateX(-Math.PI / 2), std(0x1a2030, { roughness: 0.95 }));
+      ground.receiveShadow = true; S.scene.add(ground);
+      floorGrid(S, 30);
+      P.body(new J.BoxShape(P.V(20, 0.5, 20), 0.05, null), [0, -0.5, 0], { motion: "static" });
+
+      // bowl: a lathe profile turned into an indexed triangle list (winding flipped so the inside faces up)
+      const prof = [[0, 0], [1.5, 0.05], [2.6, 0.3], [3.4, 0.8], [3.9, 1.5], [4.2, 2.3]].map(([x, y]) => new THREE.Vector2(x + 0.001, y));
+      const bowlGeo = new THREE.LatheGeometry(prof, 32), bp = bowlGeo.attributes.position, bix = bowlGeo.index.array;
+      const vl = new J.VertexList(), tl = new J.IndexedTriangleList(), ml = new J.PhysicsMaterialList(), f3 = new J.Float3(0, 0, 0);
+      for (let i = 0; i < bp.count; i++) { f3.x = bp.getX(i); f3.y = bp.getY(i); f3.z = bp.getZ(i); vl.push_back(f3); }
+      for (let i = 0; i < bix.length; i += 3) { const t = new J.IndexedTriangle(bix[i], bix[i + 2], bix[i + 1], 0); tl.push_back(t); J.destroy(t); }
+      const bowlShape = P.made(new J.MeshShapeSettings(vl, tl, ml));
+      J.destroy(vl); J.destroy(tl); J.destroy(ml); J.destroy(f3);
+      const bowlMesh = new THREE.Mesh(bowlGeo, std(0x2b3550, { side: THREE.DoubleSide, roughness: 0.55, metalness: 0.15 }));
+      bowlMesh.castShadow = bowlMesh.receiveShadow = true;
+      bowlMesh.add(new THREE.LineSegments(new THREE.WireframeGeometry(bowlGeo), new THREE.LineBasicMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0.16 })));
+      const rim = new THREE.Mesh(new THREE.TorusGeometry(4.2, 0.06, 8, 64).rotateX(Math.PI / 2), std(0xf7df1e, { roughness: 0.4 }));
+      rim.position.y = 2.3; bowlMesh.add(rim);
+      S.scene.add(bowlMesh);
+      const BY = 0.03;
+      const bowl = P.body(bowlShape, [0, BY, 0], { motion: "kinematic", boxInertia: [8, 2, 8], friction: 0.6, mesh: bowlMesh });
+
+      // eight shapes, each with a matching three.js geometry in shape space
+      const rnd = rng(7), hullPts = [];
+      for (let i = 0; i < 14; i++) {
+        const a = rnd() * Math.PI * 2, b = Math.acos(2 * rnd() - 1), r = 0.26 + 0.16 * rnd();
+        hullPts.push(new THREE.Vector3(r * Math.sin(b) * Math.cos(a), 0.8 * r * Math.cos(b), r * Math.sin(b) * Math.sin(a)));
+      }
+      const hs = new J.ConvexHullShapeSettings();
+      for (const p of hullPts) hs.mPoints.push_back(P.V(p.x, p.y, p.z));
+      const cs = new J.StaticCompoundShapeSettings();
+      cs.AddShape(P.V(-0.4, 0, 0), P.Q(), new J.SphereShapeSettings(0.22), 0);
+      cs.AddShape(P.V(0.4, 0, 0), P.Q(), new J.SphereShapeSettings(0.22), 0);
+      cs.AddShape(P.V(0, 0, 0), P.Q(0, 0, Math.SQRT1_2, Math.SQRT1_2), new J.CylinderShapeSettings(0.4, 0.07, 0.02), 0);
+      const tb = 0.25, tPts = [];   // tapered capsule profile: bottom sphere r .3 at -.3, top sphere r .15 at +.3, tangent at asin(.25)
+      for (let i = 0; i <= 10; i++) { const a = -Math.PI / 2 + (i / 10) * (Math.asin(tb) + Math.PI / 2); tPts.push(new THREE.Vector2(0.3 * Math.cos(a), -0.3 + 0.3 * Math.sin(a))); }
+      for (let i = 0; i <= 8; i++) { const a = Math.asin(tb) + (i / 8) * (Math.PI / 2 - Math.asin(tb)); tPts.push(new THREE.Vector2(0.15 * Math.cos(a), 0.3 + 0.15 * Math.sin(a))); }
+      const KINDS = [
+        ["球體", 0xf7df1e, P.keep(new J.SphereShape(0.35, null)), new THREE.SphereGeometry(0.35, 28, 18)],
+        ["圓角方塊", 0x4cc9f0, P.keep(new J.BoxShape(P.V(0.3, 0.3, 0.3), 0.05, null)), new RoundedBoxGeometry(0.6, 0.6, 0.6, 2, 0.05)],
+        ["膠囊", 0xf72585, P.keep(new J.CapsuleShape(0.25, 0.22, null)), new THREE.CapsuleGeometry(0.22, 0.5, 6, 18)],
+        ["錐形膠囊", 0x7bd389, P.made(new J.TaperedCapsuleShapeSettings(0.3, 0.15, 0.3)), new THREE.LatheGeometry(tPts, 20)],
+        ["圓柱", 0xff8c42, P.keep(new J.CylinderShape(0.3, 0.28, 0.05, null)), new THREE.CylinderGeometry(0.28, 0.28, 0.6, 24)],
+        ["錐形圓柱", 0x9d8cff, P.made(new J.TaperedCylinderShapeSettings(0.3, 0.15, 0.35, 0.05)), new THREE.CylinderGeometry(0.15, 0.35, 0.6, 24)],
+        ["凸包", 0xff6b6b, P.made(hs), new ConvexGeometry(hullPts)],
+        ["複合啞鈴", 0x5eead4, P.made(cs), mergeGeometries([new THREE.SphereGeometry(0.22, 18, 12).translate(-0.4, 0, 0),
+          new THREE.SphereGeometry(0.22, 18, 12).translate(0.4, 0, 0), new THREE.CylinderGeometry(0.07, 0.07, 0.8, 12).rotateZ(Math.PI / 2)])],
+      ].map(([name, color, shape, geo]) => ({
+        name, color, shape, geo: S.own(geo),
+        mat: S.own(std(color, { roughness: 0.45, flatShading: name === "凸包" })),
+        dim: S.own(std(new THREE.Color(color).multiplyScalar(0.32), { roughness: 0.7, flatShading: name === "凸包" })),
+      }));
+
+      const items = [], MAX = 64, eu = new THREE.Euler(), qq = new THREE.Quaternion();
+      let kindN = 0;
+      function kill(r) { S.scene.remove(r.mesh); P.remove(r); }
+      function drop(x, z) {
+        const K = KINDS[kindN++ % KINDS.length];
+        const m = new THREE.Mesh(K.geo, K.mat); m.castShadow = m.receiveShadow = true; S.scene.add(m);
+        qq.setFromEuler(eu.set(Math.random() * 6.3, Math.random() * 6.3, Math.random() * 6.3));
+        items.push(P.body(K.shape, [x, 4.4 + Math.random() * 0.8, z], { q: [qq.x, qq.y, qq.z, qq.w], friction: 0.5, restitution: 0.15, mesh: m, data: K }));
+        if (items.length > MAX) kill(items.shift());
+      }
+      // shake: MoveKinematic sets the velocity that reaches the target pose in one step, so the bowl drags its contents
+      const SHAKE = 0.6;
+      let shakeU = -1, settle = false;
+      P.onStep((dt) => {
+        const id = bowl.b.GetID();
+        if (settle) { settle = false; P.bi.SetLinearAndAngularVelocity(id, P.V(), P.V()); return; }
+        if (shakeU < 0) return;
+        shakeU += dt / SHAKE;
+        if (shakeU >= 1) { shakeU = -1; settle = true; P.bi.MoveKinematic(id, P.R(0, BY, 0), P.Q(), dt); return; }
+        P.bi.MoveKinematic(id, P.R(0, BY + 0.45 * Math.sin(shakeU * Math.PI), 0), P.Q(...qz(0.15 * Math.sin(4 * Math.PI * shakeU))), dt);
+      });
+      const shake = () => { if (shakeU < 0 && !settle) shakeU = 0; };
+
+      let auto = true, waveLeft = 24, waveT = 0, idleT = 0, shook = false;
+      ctx.button("丟一把", () => { waveLeft += 16; }, { primary: true });
+      ctx.button("震一下", shake);
+      ctx.button("清空", () => { while (items.length) kill(items.pop()); waveLeft = 0; });
+      ctx.toggle("自動", true, (v) => { auto = v; idleT = 0; });
+      const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+      onTap(ctx, S.canvas, (e) => {
+        ray.setFromCamera(setNdc(S, e, ndc), S.camera);
+        const hit = ray.intersectObjects([bowlMesh, ground], false)[0];
+        if (!hit) return;
+        const d = Math.hypot(hit.point.x, hit.point.z), k = d > 3.6 ? 3.6 / d : 1;
+        drop(hit.point.x * k, hit.point.z * k);
+      });
+
+      const tv = new THREE.Vector3();
+      let sleeping = 0;
+      S.onFrame((dt) => {
+        if (waveLeft > 0) {
+          if ((waveT -= dt) <= 0) { const a = Math.random() * Math.PI * 2, d = Math.sqrt(Math.random()) * 2.6; drop(Math.cos(a) * d, Math.sin(a) * d); waveLeft--; waveT = 0.12; }
+        } else if (auto) {
+          idleT += dt;
+          if (idleT > 3.5 && !shook) { shake(); shook = true; }
+          if (idleT > 7) { idleT = 0; shook = false; waveLeft = 24; }
+        }
+        P.step(dt);
+        sleeping = 0;
+        for (let i = items.length - 1; i >= 0; i--) {
+          const r = items[i];
+          if (P.pos(r, tv).y < -4) { kill(r); items.splice(i, 1); continue; }
+          const on = r.b.IsActive();
+          if (!on) sleeping++;
+          r.mesh.material = on ? r.data.mat : r.data.dim;
+        }
+        P.syncAll();
+      });
+      autoFit(S, 4.6, 2.8);
+      legend(ctx, [...KINDS.map((K) => [`#${K.color.toString(16).padStart(6, "0")}`, K.name]), ["#3a3f4c", "變暗：休眠中", true]]);
+      hud(ctx, () => `形狀 <b>${items.length}</b>／${MAX}・休眠 <b>${sleeping}</b>・物理 <b>${P.ms.toFixed(1)}</b> ms・WASM ${heapHtml()}`);
+    },
+  },
+
+  // 3. Constraints: gear pair with a hinge motor, swing-twist chain, slider position motor, pulley.
+  {
+    id: "constraints", title: "約束與馬達",
+    api: "GearConstraintSettings・SwingTwistConstraintSettings・SliderConstraint.SetTargetPosition・PulleyConstraintSettings",
+    desc: "四組機構各示範一種約束：20 齒與 10 齒的齒輪由鉸鏈馬達驅動、齒輪約束固定 2：1 轉速比；五節鏈條用擺動扭轉約束限制每節錐角；托盤掛在滑軌上，位置馬達用彈簧追目標；兩個木箱掛在滑輪兩端，繩長固定。標籤即時顯示各約束的量測值。",
+    hint: "拖動「馬達轉速」與「彈簧頻率」看行為變化，拖曳畫面旋轉視角",
+    async mount(ctx) {
+      await boot(ctx);
+      const S = stage(ctx, { shadows: true, labels: true, fov: 45, portraitFov: 62, bg: 0x0f1219, pos: [0, 5.2, 11], target: [0, 4.3, 0],
+        orbit: { maxPolarAngle: Math.PI * 0.55, minAzimuthAngle: -0.7, maxAzimuthAngle: 0.7, minDistance: 5, maxDistance: 30 } });
+      env(S, 0.4);
+      sunLight(S, { hemi: [0xe4ecff, 0x1b1f2b, 1.1], intensity: 2.4, pos: [3, 9, 8], range: 7, far: 30 });
+      const P = physics(ctx);
+      const world = P.jolt.sGetFixedToWorldBody();
+      const ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 40).rotateX(-Math.PI / 2), std(0x1a2030, { roughness: 0.95 }));
+      ground.receiveShadow = true; S.scene.add(ground);
+      floorGrid(S, 20);
+      P.body(new J.BoxShape(P.V(10, 0.5, 10), 0.05, null), [0, -0.5, 0], { motion: "static" });
+      boxMesh(S, 4.6, 4.6, 0.05, std(0x161b26, { roughness: 0.9 })).position.set(0, 4.6, -1.1);
+      const metal = S.own(std(0x9aa4b8, { metalness: 0.6, roughness: 0.35 }));
+      const constraints = [];
+      const add = (c, type) => { P.ps.AddConstraint(c); constraints.push(c); return type ? J.castObject(c, type) : c; };
+      const lab = (title, sub, zh, x, y) => { const l = label(title, sub, zh); l.position.set(x, y, 0); S.scene.add(l); return l; };
+
+      // gears: two hinges to the world, a gear constraint couples them, hinge 1 carries a velocity motor
+      const gearGeo = (teeth, pitch) => {
+        const T = (Math.PI * 2) / teeth, rin = pitch - 0.09, rout = pitch + 0.09, sh = new THREE.Shape();
+        for (let i = 0; i < teeth; i++) {
+          for (const [f, r] of [[0, rin], [0.15, rout], [0.4, rout], [0.55, rin]]) {
+            const a = (i + f) * T, x = r * Math.cos(a), y = r * Math.sin(a);
+            if (i === 0 && f === 0) sh.moveTo(x, y); else sh.lineTo(x, y);
+          }
+        }
+        const hole = new THREE.Path(); hole.absarc(0, 0, 0.08, 0, Math.PI * 2, true); sh.holes.push(hole);
+        return new THREE.ExtrudeGeometry(sh, { depth: 0.2, bevelEnabled: false, curveSegments: 12 }).translate(0, 0, -0.1);
+      };
+      const G1 = [-2.9, 6.6, 0], G2 = [-1.6, 6.6, 0], QZ = [Math.SQRT1_2, 0, 0, Math.SQRT1_2];
+      const g1Geo = gearGeo(20, 0.867).rotateZ(-0.275 * (Math.PI * 2) / 20).rotateX(-Math.PI / 2);
+      const g2Geo = gearGeo(10, 0.433).rotateZ(0.225 * (Math.PI * 2) / 10).rotateX(-Math.PI / 2);
+      const g1M = new THREE.Mesh(g1Geo, std(0xf7df1e, { roughness: 0.4, metalness: 0.2 })), g2M = new THREE.Mesh(g2Geo, std(0x4cc9f0, { roughness: 0.4, metalness: 0.2 }));
+      g1M.castShadow = g2M.castShadow = true; S.scene.add(g1M, g2M);
+      const gear1 = P.body(new J.CylinderShape(0.1, 0.86, 0.02, null), G1, { q: QZ, sleep: false, mesh: g1M });
+      const gear2 = P.body(new J.CylinderShape(0.1, 0.38, 0.02, null), G2, { q: QZ, sleep: false, mesh: g2M });
+      const hinge = (r, c) => {
+        const s = new J.HingeConstraintSettings();
+        s.mPoint1 = s.mPoint2 = P.R(...c);
+        s.mHingeAxis1 = s.mHingeAxis2 = P.V(0, 0, 1);
+        s.mNormalAxis1 = s.mNormalAxis2 = P.V(1, 0, 0);
+        const h = add(s.Create(world, r.b), J.HingeConstraint); J.destroy(s); return h;
+      };
+      const h1 = hinge(gear1, G1), h2 = hinge(gear2, G2);
+      const gs = new J.GearConstraintSettings();
+      gs.mHingeAxis1 = gs.mHingeAxis2 = P.V(0, 0, 1);
+      gs.SetRatio(20, 10);
+      const gear = J.castObject(gs.Create(gear1.b, gear2.b), J.GearConstraint); J.destroy(gs);
+      gear.SetConstraints(h1, h2); add(gear);
+      h1.SetMotorState(J.EMotorState_Velocity); h1.SetTargetAngularVelocity(2);
+      for (const [x, y] of [G1, G2]) { const p = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.2, 12).rotateX(Math.PI / 2), metal); p.position.set(x, y, -0.5); S.scene.add(p); }
+      const gearLab = lab("齒輪約束 20：10", "", false, -2.25, 7.95);
+
+      // chain: five capsule links and a ball, every joint a swing-twist cone of 0.6 rad
+      const CX = 2.3, CY = 8.4, CONE = 0.6;
+      const linkShape = P.keep(new J.CapsuleShape(0.16, 0.07, null)), linkGeo = S.own(new THREE.CapsuleGeometry(0.07, 0.32, 4, 12));
+      const chain = [];
+      let prev = world;
+      const swing = (a, b, y) => {
+        const s = new J.SwingTwistConstraintSettings();
+        s.mPosition1 = s.mPosition2 = P.R(CX, y, 0);
+        s.mTwistAxis1 = s.mTwistAxis2 = P.V(0, -1, 0);
+        s.mPlaneAxis1 = s.mPlaneAxis2 = P.V(1, 0, 0);
+        s.mNormalHalfConeAngle = s.mPlaneHalfConeAngle = CONE;
+        s.mTwistMinAngle = -0.3; s.mTwistMaxAngle = 0.3;
+        add(s.Create(a, b)); J.destroy(s);
+      };
+      for (let i = 0; i < 5; i++) {
+        const m = new THREE.Mesh(linkGeo, metal); m.castShadow = true; S.scene.add(m);
+        const r = P.body(linkShape, [CX, CY - 0.5 * i - 0.25, 0], { damping: [0.05, 0.3], mesh: m });
+        swing(prev, r.b, CY - 0.5 * i); prev = r.b; chain.push(r);
+      }
+      const ballM = new THREE.Mesh(new THREE.SphereGeometry(0.3, 28, 18), std(0xf72585, { roughness: 0.35, metalness: 0.2 }));
+      ballM.castShadow = true; S.scene.add(ballM);
+      const ball = P.body(new J.SphereShape(0.3, null), [CX, CY - 2.8, 0], { mass: 8, damping: [0.05, 0.3], mesh: ballM });
+      swing(prev, ball.b, CY - 2.5); chain.push(ball);
+      boxMesh(S, 0.3, 0.08, 0.3, metal).position.set(CX, CY + 0.08, 0);
+      const chainLab = lab("擺動扭轉約束", "", true, CX, CY + 0.5);
+
+      // slider: a tray on a rail, position motor with a spring, cube riding on it
+      const TX = -2.3, TY = 2.2;
+      const trayS = new J.StaticCompoundShapeSettings();
+      trayS.AddShape(P.V(0, 0, 0), P.Q(), new J.BoxShapeSettings(P.V(0.45, 0.05, 0.35), 0.02), 0);
+      for (const s of [-1, 1]) trayS.AddShape(P.V(s * 0.42, 0.14, 0), P.Q(), new J.BoxShapeSettings(P.V(0.03, 0.12, 0.35), 0.01), 0);
+      const trayG = new THREE.Group();
+      trayG.add(new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.1, 0.7), std(0x7bd389, { roughness: 0.5 })));
+      for (const s of [-1, 1]) { const w = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.24, 0.7), std(0x7bd389, { roughness: 0.5 })); w.position.set(s * 0.42, 0.14, 0); trayG.add(w); }
+      trayG.traverse((o) => { o.castShadow = o.receiveShadow = true; });
+      S.scene.add(trayG);
+      const tray = P.body(P.made(trayS), [TX, TY, 0], { sleep: false, mesh: trayG });
+      const ss = new J.SliderConstraintSettings();
+      ss.mAutoDetectPoint = true;
+      ss.mSliderAxis1 = ss.mSliderAxis2 = P.V(1, 0, 0);
+      ss.mNormalAxis1 = ss.mNormalAxis2 = P.V(0, 1, 0);
+      ss.mLimitsMin = -1.3; ss.mLimitsMax = 1.3;
+      const slider = add(ss.Create(world, tray.b), J.SliderConstraint); J.destroy(ss);
+      const spring = slider.GetMotorSettings().mSpringSettings;
+      spring.mFrequency = 1.5; spring.mDamping = 0.5;
+      slider.SetMotorState(J.EMotorState_Position);
+      boxMesh(S, 1.75, 0.03, 0.03, metal).position.set(TX, TY, -0.5);
+      const mark = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.16, 12).rotateX(Math.PI), std(0xf7df1e, { emissive: 0xf7df1e, emissiveIntensity: 0.4 }));
+      S.scene.add(mark);
+      const cubeM = new THREE.Mesh(new RoundedBoxGeometry(0.3, 0.3, 0.3, 2, 0.03), std(0xff8c42, { roughness: 0.5 }));
+      cubeM.castShadow = true; S.scene.add(cubeM);
+      const CUBE0 = [TX, TY + 0.21, 0];
+      const cube = P.body(new J.BoxShape(P.V(0.15, 0.15, 0.15), 0.02, null), CUBE0, { friction: 0.6, mesh: cubeM });
+      const sliderLab = lab("滑軌位置馬達", "", true, TX, TY - 0.55);
+
+      // pulley: two boxes on one rope over two fixed wheels, rope length stays constant
+      const PA = [1.6, 0.85, 0], PB = [3.0, 1.6, 0], FY = 3.9;
+      P.body(new J.BoxShape(P.V(0.45, 0.3, 0.4), 0.03, null), [1.6, 0.3, 0], { motion: "static", mesh: boxMesh(S, 0.45, 0.3, 0.4, std(0x3b465e)) });
+      const crate = (c) => { const m = new THREE.Mesh(new RoundedBoxGeometry(0.5, 0.5, 0.5, 2, 0.04), std(c, { roughness: 0.55 })); m.castShadow = m.receiveShadow = true; S.scene.add(m); return m; };
+      const boxA = P.body(new J.BoxShape(P.V(0.25, 0.25, 0.25), 0.03, null), PA, { mass: 1.2, mesh: crate(0x9d8cff) });
+      const boxB = P.body(new J.BoxShape(P.V(0.25, 0.25, 0.25), 0.03, null), PB, { mass: 1.0, mesh: crate(0xff6b6b) });
+      const ps2 = new J.PulleyConstraintSettings();
+      ps2.mBodyPoint1 = P.R(PA[0], PA[1] + 0.25, 0); ps2.mBodyPoint2 = P.R(PB[0], PB[1] + 0.25, 0);
+      ps2.mFixedPoint1 = P.R(PA[0], FY, 0); ps2.mFixedPoint2 = P.R(PB[0], FY, 0);
+      ps2.mRatio = 1; ps2.mMinLength = 0;
+      const pulley = add(ps2.Create(boxA.b, boxB.b), J.PulleyConstraint); J.destroy(ps2);
+      for (const x of [PA[0], PB[0]]) { const w = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.08, 20).rotateX(Math.PI / 2), metal); w.position.set(x, FY, 0); S.scene.add(w); }
+      boxMesh(S, 0.95, 0.05, 0.05, metal).position.set((PA[0] + PB[0]) / 2, FY + 0.21, 0);
+      const ropeP = new Float32Array(12), ropeG = new THREE.BufferGeometry();
+      ropeG.setAttribute("position", new THREE.BufferAttribute(ropeP, 3));
+      const rope = new THREE.Line(ropeG, new THREE.LineBasicMaterial({ color: 0xe8edf5 }));
+      rope.frustumCulled = false; S.scene.add(rope);
+      const pulleyLab = lab("滑輪約束", "", true, (PA[0] + PB[0]) / 2, FY + 0.6);
+
+      const kick = () => P.bi.AddLinearVelocity(ball.b.GetID(), P.V(5, 0, 1.5));
+      const pull = () => {
+        P.bi.AddLinearVelocity(boxA.b.GetID(), P.V(0, 1.4, 0)); P.bi.AddLinearVelocity(boxB.b.GetID(), P.V(0, -1.4, 0));
+        P.bi.ActivateBody(boxA.b.GetID()); P.bi.ActivateBody(boxB.b.GetID());
+      };
+      ctx.slider("馬達轉速", { min: -4, max: 4, step: 0.5, value: 2, format: (v) => `${v} rad/s` }, (v) => { h1.SetTargetAngularVelocity(v); P.bi.ActivateBody(gear1.b.GetID()); });
+      ctx.slider("彈簧頻率", { min: 0.5, max: 6, step: 0.5, value: 1.5, format: (v) => `${v} Hz` }, (v) => { spring.mFrequency = v; });
+      ctx.button("撞一下", kick, { primary: true });
+      ctx.button("拉一下", pull);
+      let auto = true, autoT = 3, flip = 0, target = 0.9, sqT = 0;
+      ctx.toggle("自動", true, (v) => { auto = v; });
+
+      const v1 = new THREE.Vector3(), v2 = new THREE.Vector3(), q = new THREE.Quaternion(), a = new THREE.Vector3(), b = new THREE.Vector3();
+      let peak = 0;
+      S.onFrame((dt) => {
+        if ((sqT += dt) > 2.4) { sqT = 0; target = -target; }
+        slider.SetTargetPosition(target);
+        if (auto && (autoT += dt) > 5) { autoT = 0; (flip++ % 2 ? pull : kick)(); }
+        P.step(dt);
+        if (P.pos(cube, v1).y < 1) P.place(cube, CUBE0);
+        P.syncAll();
+        mark.position.set(TX + target, TY + 0.42, 0.45);
+        // rope: box tops (local +0.25) through both wheels
+        v1.set(0, 0.25, 0).applyMatrix4(boxA.mesh.matrix); v2.set(0, 0.25, 0).applyMatrix4(boxB.mesh.matrix);
+        ropeP.set([v1.x, v1.y, v1.z, PA[0], FY, 0, PB[0], FY, 0, v2.x, v2.y, v2.z]);
+        ropeG.attributes.position.needsUpdate = true;
+        // largest bend between consecutive links (the first joint measures against the vertical)
+        let mx = 0;
+        a.set(0, 1, 0);
+        for (const r of chain) { P.quat(r, q); b.set(0, 1, 0).applyQuaternion(q); mx = Math.max(mx, a.angleTo(b)); a.copy(b); }
+        peak = Math.max(mx, peak - dt * 0.2);
+      });
+      ctx.interval(() => {
+        const w1 = gear1.b.GetAngularVelocity().GetZ(), w2 = gear2.b.GetAngularVelocity().GetZ();
+        gearLab.sub.textContent = `ω ${w1.toFixed(2)}／${w2.toFixed(2)} rad/s`;
+        chainLab.sub.textContent = `θ ${deg(peak).toFixed(0)}°／上限 ${deg(CONE).toFixed(1)}°`;
+        sliderLab.sub.textContent = `位置 ${slider.GetCurrentPosition().toFixed(2)}／目標 ${target.toFixed(2)} m`;
+        pulleyLab.sub.textContent = `繩長 ${pulley.GetCurrentLength().toFixed(2)} m`;
+      }, 200);
+      autoFit(S, 4.3, 4.6);
+      hud(ctx, () => `約束 <b>${constraints.length}</b>・物理 <b>${P.ms.toFixed(1)}</b> ms・WASM ${heapHtml()}`);
+    },
+  },
+
+  // 4. CharacterVirtual: stairs, a walkable ramp, a too-steep plate, a spinning platform and pushable crates.
+  {
+    id: "character", title: "角色控制器",
+    api: "CharacterVirtual.ExtendedUpdate・CancelVelocityTowardsSteepSlopes・UpdateGroundVelocity・GetGroundState",
+    desc: "CharacterVirtual 是不放進物理世界的虛擬膠囊，每一步用形狀掃掠找出接觸，自動爬上台階、貼著斜坡往下走，並用最大坡度 45° 判斷能不能站。場景有八階樓梯、25° 斜坡、55° 陡坡、旋轉平台與可推動的木箱；腳下箭頭是地面法線，顏色代表著地狀態。",
+    hint: "WASD 或方向鍵移動、空白鍵跳躍；也可以點地面讓角色走過去",
+    async mount(ctx) {
+      await boot(ctx);
+      const S = stage(ctx, { shadows: true, labels: true, fov: 45, portraitFov: 62, bg: 0x10141c, pos: [-3, 7.5, 10], target: [0, 0.8, 0],
+        orbit: { maxPolarAngle: Math.PI * 0.46, minDistance: 5, maxDistance: 30 } });
+      env(S, 0.4);
+      sunLight(S, { hemi: [0xe4ecff, 0x1b1f2b, 1.1], intensity: 2.4, pos: [4, 10, 6], range: 9, far: 30 });
+      const P = physics(ctx);
+      const ground = new THREE.Mesh(new THREE.PlaneGeometry(24, 24).rotateX(-Math.PI / 2), std(0x1a2030, { roughness: 0.95 }));
+      ground.receiveShadow = true; S.scene.add(ground);
+      floorGrid(S, 24);
+      P.body(new J.BoxShape(P.V(12, 0.5, 12), 0.05, null), [0, -0.5, 0], { motion: "static" });
+      const solids = [ground];
+      const solid = (hx, hy, hz, pos, color, q) => {
+        const m = boxMesh(S, hx, hy, hz, std(color, { roughness: 0.75 }));
+        P.body(new J.BoxShape(P.V(hx, hy, hz), 0.02, null), pos, { motion: "static", q, mesh: m });
+        solids.push(m); return m;
+      };
+      for (let i = 0; i < 8; i++) solid(0.25, 0.1 * (i + 1), 1, [-0.75 + 0.5 * i, 0.1 * (i + 1), -3], i % 2 ? 0x445069 : 0x3b465e);
+      solid(1.5, 0.8, 1, [4.5, 0.8, -3], 0x3b465e);
+      solid(1.5, 0.05, 1.9, [4.5, 0.709, -0.327], 0x4f7a5c, qx(THREE.MathUtils.degToRad(25)));
+      solid(1, 0.05, 1.22, [-5, 0.943, 1.718], 0x8a4b3a, qx(THREE.MathUtils.degToRad(55)));
+      solid(1, 1, 0.4, [-5, 1, 0.7], 0x3b465e);
+      const lab = (t, sub, x, y, z) => { const l = label(t, sub, true); l.position.set(x, y, z); S.scene.add(l); return l; };
+      lab("八階樓梯", "每階 0.2 m", 1, 2.2, -3);
+      lab("斜坡 25°", "可行走", 4.5, 1.7, -0.3);
+      lab("陡坡 55°", "超過 45° 上限", -5, 2.7, 1.7);
+      lab("旋轉平台", "地面速度帶著走", 5, 1.1, 4);
+
+      // kinematic disc spinning by velocity; the character inherits its ground velocity
+      const disc = new THREE.Group();
+      const discM = new THREE.Mesh(new THREE.CylinderGeometry(1.6, 1.6, 0.3, 48), std(0x9d8cff, { roughness: 0.6 }));
+      discM.castShadow = discM.receiveShadow = true; disc.add(discM);
+      for (let i = 0; i < 6; i++) {
+        const s = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.02, 0.1), std(0xe8edf5));
+        s.position.set(0.8 * Math.cos(i * Math.PI / 3), 0.16, 0.8 * Math.sin(i * Math.PI / 3)); s.rotation.y = -i * Math.PI / 3; disc.add(s);
+      }
+      S.scene.add(disc); solids.push(discM);
+      const discR = P.body(new J.CylinderShape(0.15, 1.6, 0.05, null), [5, 0.15, 4], { motion: "kinematic", sleep: false, mesh: disc });
+      P.bi.SetAngularVelocity(discR.b.GetID(), P.V(0, 0.8, 0));
+
+      const CRATES = [[1.7, 0.3, 2.2], [2.3, 0.3, 2.2], [2, 0.9, 2.2]];
+      const crateShape = P.keep(new J.BoxShape(P.V(0.3, 0.3, 0.3), 0.03, null)), crateGeo = S.own(new RoundedBoxGeometry(0.6, 0.6, 0.6, 2, 0.05));
+      const crates = CRATES.map((p) => { const m = new THREE.Mesh(crateGeo, std(0xb07a45, { roughness: 0.7 })); m.castShadow = m.receiveShadow = true; S.scene.add(m); return P.body(crateShape, p, { mass: 8, mesh: m }); });
+      const resetCrates = () => crates.forEach((r, i) => P.place(r, CRATES[i]));
+
+      // the character: a capsule offset so its origin sits at the feet
+      const shape = P.made(new J.RotatedTranslatedShapeSettings(P.V(0, 0.9, 0), P.Q(), new J.CapsuleShapeSettings(0.6, 0.3)));
+      const cs = new J.CharacterVirtualSettings();
+      cs.mMass = 70; cs.mMaxSlopeAngle = THREE.MathUtils.degToRad(45); cs.mMaxStrength = 100; cs.mShape = shape;
+      cs.mBackFaceMode = J.EBackFaceMode_CollideWithBackFaces; cs.mCharacterPadding = 0.02;
+      cs.mPenetrationRecoverySpeed = 1; cs.mPredictiveContactDistance = 0.1;
+      const plane = new J.Plane(P.V(0, 1, 0), -0.3); cs.mSupportingVolume = plane;
+      const START = [-2.5, 0, 3.5];
+      const ch = new J.CharacterVirtual(cs, P.R(...START), P.Q(), P.ps);
+      J.destroy(cs); J.destroy(plane);
+      const us = new J.ExtendedUpdateSettings();
+      const bpF = new J.DefaultBroadPhaseLayerFilter(P.jolt.GetObjectVsBroadPhaseLayerFilter(), L_MOVING);
+      const olF = new J.DefaultObjectLayerFilter(P.jolt.GetObjectLayerPairFilter(), L_MOVING);
+      const bF = new J.BodyFilter(), sF = new J.ShapeFilter(), G = new J.Vec3(0, -9.81, 0);
+      P.own(() => { for (const x of [ch, us, bpF, olF, bF, sF, G]) J.destroy(x); });
+
+      const hero = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 1.2, 6, 20), std(0xf7df1e, { roughness: 0.45 }));
+      body.position.y = 0.9; body.castShadow = true;
+      const visor = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.14, 0.12), std(0x15171d, { roughness: 0.2, metalness: 0.5 }));
+      visor.position.set(0, 1.45, 0.26);
+      hero.add(body, visor); S.scene.add(hero);
+      const STATE = {
+        [J.EGroundState_OnGround]: [0x7bd389, "著地"], [J.EGroundState_OnSteepGround]: [0xff8c42, "陡坡"],
+        [J.EGroundState_NotSupported]: [0xf72585, "無支撐"], [J.EGroundState_InAir]: [0x9aa4b8, "空中"],
+      };
+      const arrow = new THREE.ArrowHelper(UP, new THREE.Vector3(), 0.9, 0x7bd389, 0.22, 0.12);
+      S.scene.add(arrow);
+      const ring = new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.05, 8, 32).rotateX(Math.PI / 2), std(0xf7df1e, { emissive: 0xf7df1e, emissiveIntensity: 0.6 }));
+      S.scene.add(ring);
+
+      const WP = [[-1.3, -3], [2.8, -3], [5.2, -3], [4.5, -1.5], [4.5, 1.6], [6, 4, "wait"], [2, 2.2], [-2.5, 2.4], [-5, 3.2], [-5, 1.3, "steep"], [-2.5, 0, "jump"]];
+      let auto = true, wi = 0, best = 1e9, stall = 0, waitT = -1, jumpReq = false, goal = null, speed = 3.5;
+      const nextWp = () => { wi = (wi + 1) % WP.length; best = 1e9; stall = 0; waitT = -1; if (wi === 0) resetCrates(); };
+      const autoTg = ctx.toggle("自動巡覽", true, (v) => { auto = v; goal = null; best = 1e9; stall = 0; });
+      const setAuto = (v) => { auto = v; autoTg.setAttribute("aria-pressed", String(v)); };
+      ctx.button("跳躍", () => { jumpReq = true; }, { primary: true });
+      ctx.button("重置", () => {
+        ch.SetPosition(P.R(...START)); ch.SetLinearVelocity(P.V()); resetCrates();
+        wi = 0; best = 1e9; stall = 0; waitT = -1; goal = null;
+      });
+      const keys = new Set();
+      const KEYMAP = { KeyW: "f", ArrowUp: "f", KeyS: "b", ArrowDown: "b", KeyA: "l", ArrowLeft: "l", KeyD: "r", ArrowRight: "r", Space: "x" };
+      ctx.on(window, "keydown", (e) => {
+        const k = KEYMAP[e.code];
+        if (!k || e.target?.closest?.("input,select,textarea,button")) return;
+        e.preventDefault();
+        if (k === "x") jumpReq = true; else keys.add(k);
+        goal = null; if (auto) setAuto(false);
+      });
+      ctx.on(window, "keyup", (e) => { const k = KEYMAP[e.code]; if (k) keys.delete(k); });
+      ctx.on(window, "blur", () => keys.clear());
+      const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+      onTap(ctx, S.canvas, (e) => {
+        ray.setFromCamera(setNdc(S, e, ndc), S.camera);
+        const hit = ray.intersectObjects(solids, false)[0];
+        if (hit) { goal = [hit.point.x, hit.point.z]; if (auto) setAuto(false); }
+      });
+
+      // per physics step (Jolt CharacterVirtual sample): keep ground velocity, add jump, gravity, then desired velocity
+      const inDir = new THREE.Vector3(), want = new THREE.Vector3();
+      P.onStep((dt) => {
+        want.multiplyScalar(0.75).addScaledVector(inDir, 0.25 * speed);
+        const c = ch.CancelVelocityTowardsSteepSlopes(P.V(want.x, 0, want.z));
+        const cx = c.GetX(), cy = c.GetY(), cz = c.GetZ();
+        ch.UpdateGroundVelocity();
+        const ly = ch.GetLinearVelocity().GetY();
+        const gv = ch.GetGroundVelocity(), gx = gv.GetX(), gy = gv.GetY(), gz = gv.GetZ();
+        let nx = 0, ny = ly, nz = 0;
+        if (ch.GetGroundState() === J.EGroundState_OnGround && ly - gy < 0.1) { nx = gx; ny = gy; nz = gz; if (jumpReq) ny += 5; }
+        jumpReq = false;
+        ny -= 9.81 * dt;
+        ch.SetLinearVelocity(P.V(nx + cx, ny + cy, nz + cz));
+        ch.ExtendedUpdate(dt, G, us, bpF, olF, bF, sF, P.jolt.GetTempAllocator());
+      });
+
+      const pos = new THREE.Vector3(), nrm = new THREE.Vector3(), fwd = new THREE.Vector3(), follow = new THREE.Vector3(), last = new THREE.Vector3(), down = new THREE.Raycaster();
+      let yaw = 0, stateKey = J.EGroundState_InAir, slope = 0, hspeed = 0, nContacts = 0;
+      const readPos = () => { const p = ch.GetPosition(); return pos.set(p.GetX(), p.GetY(), p.GetZ()); };
+      readPos(); follow.set(pos.x * 0.6, 0.8, pos.z * 0.6); last.copy(follow);
+      S.onFrame((dt) => {
+        readPos();
+        inDir.set(0, 0, 0);
+        if (auto) {
+          speed = 3.5;
+          const [wx, wz, tag] = WP[wi], dx = wx - pos.x, dz = wz - pos.z, d = Math.hypot(dx, dz);
+          if (waitT >= 0) { if ((waitT += dt) > 3) nextWp(); }
+          else if (d < (tag === "wait" ? 0.6 : 0.35)) { if (tag === "wait") waitT = 0; else { if (tag === "jump") jumpReq = true; nextWp(); } }
+          else {
+            inDir.set(dx / d, 0, dz / d);
+            if (d < best - 0.05) { best = d; stall = 0; } else if ((stall += dt) > 2.5) nextWp();
+          }
+        } else {
+          speed = 4.5;
+          if (goal) {
+            const dx = goal[0] - pos.x, dz = goal[1] - pos.z, d = Math.hypot(dx, dz);
+            if (d < 0.35) goal = null; else inDir.set(dx / d, 0, dz / d);
+          } else {
+            S.camera.getWorldDirection(fwd); fwd.y = 0; fwd.normalize();
+            const f = (keys.has("f") ? 1 : 0) - (keys.has("b") ? 1 : 0), r = (keys.has("r") ? 1 : 0) - (keys.has("l") ? 1 : 0);
+            inDir.set(fwd.x * f - fwd.z * r, 0, fwd.z * f + fwd.x * r);
+            if (inDir.lengthSq() > 1) inDir.normalize();
+          }
+        }
+        P.step(dt);
+        P.syncAll();
+        readPos();
+        if (pos.y < -5) { ch.SetPosition(P.R(...START)); ch.SetLinearVelocity(P.V()); }
+        const v = ch.GetLinearVelocity(), vx = v.GetX(), vz = v.GetZ();
+        hspeed = Math.hypot(vx, vz);
+        if (hspeed > 0.3) { const tgt = Math.atan2(vx, vz); yaw += Math.atan2(Math.sin(tgt - yaw), Math.cos(tgt - yaw)) * (1 - Math.exp(-10 * dt)); }
+        hero.position.copy(pos); hero.rotation.y = yaw;
+        stateKey = ch.GetGroundState();
+        const n = ch.GetGroundNormal(); nrm.set(n.GetX(), n.GetY(), n.GetZ());
+        if (nrm.lengthSq() < 0.25) nrm.copy(UP); else nrm.normalize();
+        slope = deg(Math.acos(clamp(nrm.y, -1, 1)));
+        nContacts = ch.GetActiveContacts().size();
+        const st = STATE[stateKey] || STATE[J.EGroundState_InAir];
+        arrow.position.set(pos.x, pos.y + 0.05, pos.z); arrow.setDirection(nrm); arrow.setColor(st[0]);
+        const g = auto ? WP[wi] : goal;
+        ring.visible = !!g;
+        if (g) {
+          down.set(new THREE.Vector3(g[0], 10, g[1]), DOWN);
+          const hit = down.intersectObjects(solids, false)[0];
+          ring.position.set(g[0], (hit ? hit.point.y : 0) + 0.06 + 0.04 * Math.sin(performance.now() / 200), g[1]);
+        }
+        // follow camera: shift camera and target by the smoothed movement of a point that leans toward the character
+        follow.lerp(fwd.set(pos.x * 0.6, 0.8 + Math.max(0, pos.y) * 0.5, pos.z * 0.6), 1 - Math.exp(-3 * dt));
+        fwd.subVectors(follow, last); last.copy(follow);
+        S.camera.position.add(fwd); S.controls.target.add(fwd);
+      });
+      autoFit(S, 5.2, 3.4);
+      legend(ctx, [["#7bd389", "著地", true], ["#ff8c42", "陡坡", true], ["#f72585", "無支撐", true], ["#9aa4b8", "空中", true]]);
+      hud(ctx, () => {
+        const st = STATE[stateKey] || STATE[J.EGroundState_InAir];
+        return `狀態 <em>${st[1]}</em>・坡度 <b>${slope.toFixed(0)}</b>°・速度 <b>${hspeed.toFixed(1)}</b> m/s・接觸 <b>${nContacts}</b>・物理 <b>${P.ms.toFixed(1)}</b> ms`;
+      });
+    },
+  },
+
+  // 5. Wheeled vehicle: engine, gearbox, differential and suspension, driven by pure pursuit around an oval.
+  {
+    id: "vehicle", title: "輪式車輛",
+    api: "VehicleConstraint・WheeledVehicleController.SetDriverInput・VehicleCollisionTesterCastCylinder・GetWheelWorldTransform",
+    desc: "Jolt 的車輛約束把引擎扭力、離合器與自動變速箱、前後差速器（四輪驅動）、懸吊和輪胎摩擦都算在 WASM 裡，輪子用圓柱掃掠偵測地面。自動駕駛用純追蹤法沿橢圓賽道開，彎道依曲率降速；跳台與木箱堆都是真的剛體，撞了會散開。",
+    hint: "WASD 或方向鍵駕駛、空白鍵手煞車；拖曳畫面會關閉追車視角",
+    async mount(ctx) {
+      await boot(ctx);
+      const SKY = 0x161c28;
+      const S = stage(ctx, { shadows: true, fov: 50, portraitFov: 70, bg: SKY, pos: [0, 8, -30], target: [0, 1, -14], far: 200 });
+      S.scene.fog = new THREE.Fog(SKY, 45, 120);
+      env(S, 0.35);
+      const sun = sunLight(S, { hemi: [0xdfe8ff, 0x1d2618, 1.2], intensity: 2.6, pos: [20, 30, 12], range: 14, far: 70, size: 2048 });
+      const P = physics(ctx);
+      const TA = 22, TB = 14, PX = 12.8;
+
+      // ground: one canvas texture with grass, the oval road, edge lines and a dashed centre line
+      const [cv, g] = canvas2d(1024, 1024);
+      g.fillStyle = "#24392b"; g.fillRect(0, 0, 1024, 1024);
+      const oval = (da, db) => { g.beginPath(); g.ellipse(512, 512, (TA + da) * PX, (TB + db) * PX, 0, 0, Math.PI * 2); g.stroke(); };
+      g.strokeStyle = "#3a3f4a"; g.lineWidth = 7 * PX; oval(0, 0);
+      g.strokeStyle = "#d9dde6"; g.lineWidth = 0.18 * PX; oval(3.3, 3.3); oval(-3.3, -3.3);
+      g.strokeStyle = "#f7df1e"; g.lineWidth = 0.2 * PX; g.setLineDash([2.5 * PX, 2.5 * PX]); oval(0, 0);
+      const groundTex = canvasTex(cv, 8);
+      const ground = new THREE.Mesh(new THREE.PlaneGeometry(80, 80).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ map: groundTex, roughness: 0.95 }));
+      ground.receiveShadow = true; S.scene.add(ground);
+      P.body(new J.BoxShape(P.V(40, 0.5, 40), 0.05, null), [0, -0.5, 0], { motion: "static", friction: 1 });
+      const coneGeo = S.own(new THREE.ConeGeometry(0.22, 0.7, 12)), coneMat = S.own(std(0xff8c42, { roughness: 0.6 }));
+      for (let i = 0; i < 28; i++) {
+        const t = (i / 28) * Math.PI * 2, c = new THREE.Mesh(coneGeo, coneMat);
+        c.position.set((TA + 4.6) * Math.cos(t), 0.35, (TB + 4.6) * Math.sin(t)); c.castShadow = true; S.scene.add(c);
+      }
+      // jump ramp on the far straight (the car arrives from +x) and a crate pyramid on the near straight
+      P.body(new J.BoxShape(P.V(2.2, 0.15, 2.4), 0.03, null), [0, 0.31, TB], { motion: "static", friction: 1, q: qz(-0.21), mesh: boxMesh(S, 2.2, 0.15, 2.4, std(0xf7df1e, { roughness: 0.6 })) });
+      const crateShape = P.keep(new J.BoxShape(P.V(0.35, 0.35, 0.35), 0.03, null)), crateGeo = S.own(new RoundedBoxGeometry(0.7, 0.7, 0.7, 2, 0.05));
+      const CR = [];
+      for (let r = 0; r < 4; r++) for (let j = 0; j < 4 - r; j++) CR.push([0, 0.35 + r * 0.7, -TB + (j - (3 - r) / 2) * 0.71]);
+      const crates = CR.map((p, i) => {
+        const m = new THREE.Mesh(crateGeo, std(i % 3 ? 0xb07a45 : 0x9a6838, { roughness: 0.7 })); m.castShadow = m.receiveShadow = true; S.scene.add(m);
+        return P.body(crateShape, p, { mass: 20, mesh: m, asleep: true });
+      });
+      const resetCrates = () => crates.forEach((r, i) => P.place(r, CR[i]));
+
+      // car body with a lowered centre of mass, then the vehicle constraint (Jolt sample settings)
+      const carG = new THREE.Group();
+      const shell = new THREE.Mesh(new RoundedBoxGeometry(1.8, 0.6, 4, 3, 0.14), std(0x4cc9f0, { roughness: 0.35, metalness: 0.3 }));
+      const cabin = new THREE.Mesh(new RoundedBoxGeometry(1.5, 0.5, 1.9, 3, 0.14), std(0x1b2333, { roughness: 0.15, metalness: 0.6 }));
+      cabin.position.set(0, 0.55, -0.2);
+      carG.add(shell, cabin);
+      for (const s of [-1, 1]) {
+        const hl = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.12, 0.04), std(0xfff4c2, { emissive: 0xfff4c2, emissiveIntensity: 1.2 }));
+        hl.position.set(s * 0.6, 0.08, 2.01);
+        const tl = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.1, 0.04), std(0xff3355, { emissive: 0xff3355, emissiveIntensity: 0.9 }));
+        tl.position.set(s * 0.6, 0.1, -2.01);
+        carG.add(hl, tl);
+      }
+      carG.traverse((o) => { o.castShadow = true; });
+      S.scene.add(carG);
+      const carShape = P.made(new J.OffsetCenterOfMassShapeSettings(P.V(0, -0.4, 0), new J.BoxShapeSettings(P.V(0.9, 0.3, 2), 0.05)));
+      const car = P.body(carShape, [0, 1.2, -TB], { mass: 1200, sleep: false, mesh: carG });
+      const vs = new J.VehicleConstraintSettings();
+      vs.mMaxPitchRollAngle = Math.PI / 3;
+      const cset = new J.WheeledVehicleControllerSettings();
+      cset.mEngine.mMaxTorque = 500; cset.mTransmission.mClutchStrength = 10;
+      vs.mController = cset;
+      vs.mWheels.clear();
+      [[0.9, 1.3], [-0.9, 1.3], [0.9, -1.3], [-0.9, -1.3]].forEach(([x, z], i) => {
+        const w = new J.WheelSettingsWV();
+        w.mPosition = P.V(x, -0.2, z);
+        w.mMaxSteerAngle = i < 2 ? 0.5 : 0; w.mMaxHandBrakeTorque = i < 2 ? 0 : 4000;
+        w.mRadius = 0.38; w.mWidth = 0.25; w.mSuspensionMinLength = 0.2; w.mSuspensionMaxLength = 0.5;
+        vs.mWheels.push_back(w);
+      });
+      cset.mDifferentials.clear();
+      // four wheel drive: front and rear differential each take half the engine torque
+      for (const [l, r] of [[0, 1], [2, 3]]) {
+        const diff = new J.VehicleDifferentialSettings();
+        diff.mLeftWheel = l; diff.mRightWheel = r; diff.mEngineTorqueRatio = 0.5;
+        cset.mDifferentials.push_back(diff); J.destroy(diff);
+      }
+      const con = new J.VehicleConstraint(car.b, vs);
+      J.destroy(vs);
+      con.SetVehicleCollisionTester(new J.VehicleCollisionTesterCastCylinder(L_MOVING, 0.05));
+      P.ps.AddConstraint(con);
+      const listener = new J.VehicleConstraintStepListener(con);
+      P.ps.AddStepListener(listener);
+      const ctrl = J.castObject(con.GetController(), J.WheeledVehicleController);
+      const WUP = new J.Vec3(0, 1, 0), WRIGHT = new J.Vec3(1, 0, 0);
+      P.own(() => { P.ps.RemoveStepListener(listener); J.destroy(listener); J.destroy(WUP); J.destroy(WRIGHT); });
+
+      const tireGeo = S.own(new THREE.CylinderGeometry(0.38, 0.38, 0.25, 28)), rimGeo = S.own(new THREE.CylinderGeometry(0.24, 0.24, 0.26, 16));
+      const spokeGeo = S.own(new THREE.BoxGeometry(0.42, 0.27, 0.07));
+      const tireMat = S.own(std(0x1c1f26, { roughness: 0.9 })), rimMat = S.own(std(0x9aa4b8, { metalness: 0.7, roughness: 0.3 })), spokeMat = S.own(std(0xf7df1e));
+      const dotMat = S.own(std(0xf72585, { emissive: 0xf72585, emissiveIntensity: 0.8 })), dotGeo = S.own(new THREE.SphereGeometry(0.09, 12, 8));
+      const wheels = [0, 1, 2, 3].map(() => {
+        const w = new THREE.Group(), tire = new THREE.Mesh(tireGeo, tireMat);
+        tire.castShadow = true;
+        w.add(tire, new THREE.Mesh(rimGeo, rimMat), new THREE.Mesh(spokeGeo, spokeMat));
+        const dot = new THREE.Mesh(dotGeo, dotMat);
+        S.scene.add(w, dot);
+        return { w, dot };
+      });
+
+      const param = (x, z) => Math.atan2(z / TB, x / TA);
+      const placeCar = (t) => {
+        P.place(car, [TA * Math.cos(t), 1.2, TB * Math.sin(t)], qy(Math.atan2(-TA * Math.sin(t), TB * Math.cos(t))), true);
+        steer = 0; tFlip = 0; tSlow = 0;
+      };
+      let auto = true, chase = true, steer = 0, tFlip = 0, tSlow = 0, vf = 0, grounded = 0, lastT = 0, vMax = 50 / 3.6, first = true;
+      placeCar(-Math.PI / 2 - 0.9);
+      lastT = -Math.PI / 2 - 0.9;
+
+      const keys = new Set();
+      const KEYMAP = { KeyW: "f", ArrowUp: "f", KeyS: "b", ArrowDown: "b", KeyA: "l", ArrowLeft: "l", KeyD: "r", ArrowRight: "r", Space: "x" };
+      ctx.on(window, "keydown", (e) => {
+        const k = KEYMAP[e.code];
+        if (!k || e.target?.closest?.("input,select,textarea,button")) return;
+        e.preventDefault(); keys.add(k);
+        if (auto) setAuto(false);
+      });
+      ctx.on(window, "keyup", (e) => { const k = KEYMAP[e.code]; if (k) keys.delete(k); });
+      ctx.on(window, "blur", () => keys.clear());
+      const autoTg = ctx.toggle("自動駕駛", true, (v) => { auto = v; });
+      const setAuto = (v) => { auto = v; autoTg.setAttribute("aria-pressed", String(v)); };
+      const chaseTg = ctx.toggle("追車視角", true, (v) => { chase = v; first = true; });
+      S.controls.addEventListener("start", () => { if (chase) { chase = false; chaseTg.setAttribute("aria-pressed", "false"); } });
+      ctx.slider("目標車速", { min: 20, max: 90, step: 5, value: 50, format: (v) => `${v} km/h` }, (v) => { vMax = v / 3.6; });
+      ctx.button("重置車輛", () => { const p = P.pos(car, tmp); placeCar(param(p.x, p.z)); resetCrates(); });
+
+      const tmp = new THREE.Vector3(), q = new THREE.Quaternion(), fwd = new THREE.Vector3(), left = new THREE.Vector3(), up = new THREE.Vector3();
+      const camGoal = new THREE.Vector3(), tgtGoal = new THREE.Vector3(), flat = new THREE.Vector3(), wq = new THREE.Quaternion();
+      S.onFrame((dt) => {
+        const p = P.pos(car, tmp);
+        P.quat(car, q);
+        fwd.set(0, 0, 1).applyQuaternion(q); left.set(1, 0, 0).applyQuaternion(q); up.set(0, 1, 0).applyQuaternion(q);
+        const lv = car.b.GetLinearVelocity();
+        vf = lv.GetX() * fwd.x + lv.GetY() * fwd.y + lv.GetZ() * fwd.z;
+        const t = param(p.x, p.z);
+        if (lastT < Math.PI / 2 && t >= Math.PI / 2 && t - lastT < 1) resetCrates();
+        lastT = t;
+        let fwdIn = 0, brake = 0, hand = 0, want = 0;
+        if (auto) {
+          // pure pursuit on the ellipse, speed limited by the curvature at the look-ahead point
+          const tt = t + (6 + 0.5 * Math.abs(vf)) / Math.hypot(TA * Math.sin(t), TB * Math.cos(t));
+          const dx = TA * Math.cos(tt) - p.x, dz = TB * Math.sin(tt) - p.z;
+          const lx = dx * left.x + dz * left.z, lz = dx * fwd.x + dz * fwd.z;
+          want = clamp(-Math.atan2(lx, lz) / 0.5, -1, 1);
+          const s2 = Math.sin(tt) ** 2, c2 = Math.cos(tt) ** 2;
+          const rc = (TA * TA * s2 + TB * TB * c2) ** 1.5 / (TA * TB);
+          const vt = Math.min(vMax, Math.sqrt(0.8 * 9.81 * rc)), e = vt - vf;
+          fwdIn = e > 0 ? clamp(e * 0.5, 0.15, 1) : 0;
+          brake = e < -1 ? clamp(-e * 0.25, 0, 1) : 0;
+        } else {
+          if (keys.has("f")) fwdIn = 1;
+          if (keys.has("b")) { if (vf > 1) brake = 1; else fwdIn = -1; }
+          want = (keys.has("r") ? 1 : 0) - (keys.has("l") ? 1 : 0);
+          if (keys.has("x")) hand = 1;
+        }
+        steer += clamp(want - steer, -2.5 * dt, 2.5 * dt);
+        ctrl.SetDriverInput(fwdIn, steer, brake, hand);
+        P.step(dt);
+        P.syncAll();
+        // respawn when flipped, fallen off, or stuck while driving itself
+        tFlip = up.y < 0.3 ? tFlip + dt : 0;
+        tSlow = auto && Math.abs(vf) < 1 ? tSlow + dt : 0;
+        if (tFlip > 1.5 || p.y < -5 || tSlow > 4) { placeCar(t); }
+        grounded = 0;
+        wheels.forEach(({ w, dot }, i) => {
+          const m = con.GetWheelWorldTransform(i, WUP, WRIGHT);
+          const mq = m.GetQuaternion(); wq.set(mq.GetX(), mq.GetY(), mq.GetZ(), mq.GetW());
+          const mt = m.GetTranslation(); w.position.set(mt.GetX(), mt.GetY(), mt.GetZ()); w.quaternion.copy(wq);
+          const wh = con.GetWheel(i);
+          dot.visible = wh.HasContact();
+          if (dot.visible) { grounded++; const c = wh.GetContactPosition(); dot.position.set(c.GetX(), c.GetY(), c.GetZ()); }
+        });
+        sun.position.set(p.x + 20, p.y + 30, p.z + 12); sun.target.position.copy(p);
+        if (chase) {
+          const k = first ? 1 : 1 - Math.exp(-3 * dt);
+          flat.set(fwd.x, 0, fwd.z).normalize();
+          camGoal.set(p.x - flat.x * 9, p.y + 4.2, p.z - flat.z * 9);
+          tgtGoal.set(p.x, p.y + 1, p.z);
+          S.camera.position.lerp(camGoal, k); S.controls.target.lerp(tgtGoal, k);
+          first = false;
+        }
+      });
+      legend(ctx, [["#f72585", "輪胎接地點", true], ["#f7df1e", "跳台"], ["#b07a45", "木箱 20 kg"]]);
+      hud(ctx, () => {
+        const gear = ctrl.GetTransmission().GetCurrentGear();
+        return `時速 <b>${Math.abs(vf * 3.6).toFixed(0)}</b> km/h・轉速 <b>${ctrl.GetEngine().GetCurrentRPM().toFixed(0)}</b> rpm・檔位 <b>${gear < 0 ? "R" : gear === 0 ? "N" : gear}</b>・著地 <b>${grounded}</b>／4・物理 <b>${P.ms.toFixed(1)}</b> ms・WASM ${heapHtml()}`;
+      });
+    },
+  },
+
+  // 6. Soft bodies: a cloth hammock pinned at its corners and two pressurised balloons; vertices are read straight from the WASM heap.
+  {
+    id: "soft", title: "軟體與氣球",
+    api: "SoftBodySharedSettings.CreateConstraints・SoftBodyCreationSettings.mPressure・SoftBodyMotionProperties.SetPressure・CreateSoftBody",
+    desc: "軟體由頂點、邊長約束與彎曲約束組成，每步在 WASM 裡迭代求解。吊床是 17×17 頂點的布料，四個角的質量倒數設為 0 固定住；氣球是封閉網格，靠內部壓力撐成球形。丟進去的鐵球會把布壓出凹陷、把氣球擠扁；畫面每幀直接讀 WASM 記憶體裡的頂點座標重建網格。",
+    hint: "點畫面朝該處丟鐵球；拖動「氣球壓力」看氣球膨脹或洩氣",
+    async mount(ctx) {
+      await boot(ctx);
+      const S = stage(ctx, { shadows: true, labels: true, fov: 45, portraitFov: 64, bg: 0x10141c, pos: [0, 4.2, 7.5], target: [0, 1.2, 0.6],
+        orbit: { maxPolarAngle: Math.PI * 0.48, minDistance: 3, maxDistance: 20 } });
+      env(S, 0.45);
+      sunLight(S, { hemi: [0xe4ecff, 0x1b1f2b, 1.1], intensity: 2.4, pos: [3, 8, 5], range: 5, far: 25 });
+      const P = physics(ctx);
+      const ground = new THREE.Mesh(new THREE.PlaneGeometry(30, 30).rotateX(-Math.PI / 2), std(0x1a2030, { roughness: 0.95 }));
+      ground.receiveShadow = true; S.scene.add(ground);
+      floorGrid(S, 20);
+      P.body(new J.BoxShape(P.V(10, 0.5, 10), 0.05, null), [0, -0.5, 0], { motion: "static" });
+      const postMat = S.own(std(0x9aa4b8, { metalness: 0.6, roughness: 0.35 })), postGeo = S.own(new THREE.CylinderGeometry(0.05, 0.05, 2.3, 12));
+      const postShape = P.keep(new J.CylinderShape(1.15, 0.05, 0.02, null));
+      for (const x of [-1.6, 1.6]) for (const z of [-1.6, 1.6]) {
+        const m = new THREE.Mesh(postGeo, postMat); m.castShadow = true; S.scene.add(m);
+        P.body(postShape, [x, 1.15, z], { motion: "static", mesh: m });
+      }
+
+      // shared settings: vertices, faces, then edge / shear / bend constraints generated by Jolt
+      const shared = (geo, invMass, [comp, shear, bend]) => {
+        const pos = geo.attributes.position, idx = geo.index.array;
+        const ss = new J.SoftBodySharedSettings(), v = new J.SoftBodySharedSettingsVertex(), f3 = new J.Float3(0, 0, 0);
+        for (let i = 0; i < pos.count; i++) { f3.x = pos.getX(i); f3.y = pos.getY(i); f3.z = pos.getZ(i); v.mPosition = f3; v.mInvMass = invMass(i); ss.mVertices.push_back(v); }
+        for (let i = 0; i < idx.length; i += 3) { const f = new J.SoftBodySharedSettingsFace(idx[i], idx[i + 1], idx[i + 2], 0); ss.AddFace(f); J.destroy(f); }
+        const va = new J.SoftBodySharedSettingsVertexAttributes();
+        va.mCompliance = comp; va.mShearCompliance = shear; va.mBendCompliance = bend;
+        ss.CreateConstraints(va, 1, J.SoftBodySharedSettings_EBendType_Distance);
+        ss.Optimize();
+        J.destroy(va); J.destroy(v); J.destroy(f3);
+        return P.keep(ss);
+      };
+      const clothGeo = new THREE.PlaneGeometry(3.2, 3.2, 16, 16).rotateX(-Math.PI / 2);
+      const PINS = new Set([0, 16, 272, 288]);
+      const clothSS = shared(clothGeo, (i) => (PINS.has(i) ? 0 : 1), [1e-5, 1e-5, 1e-3]);
+      let balloonGeo = new THREE.IcosahedronGeometry(0.8, 3);
+      balloonGeo.deleteAttribute("normal"); balloonGeo.deleteAttribute("uv");
+      balloonGeo = mergeVertices(balloonGeo);
+      const balloonSS = shared(balloonGeo, () => 1, [5e-4, 5e-4, 1e-2]);
+
+      const [sc, sg] = canvas2d(256, 256);
+      for (let i = 0; i < 8; i++) { sg.fillStyle = i % 2 ? "#f7df1e" : "#2b6cb0"; sg.fillRect(i * 32, 0, 32, 256); }
+      const clothMat = new THREE.MeshStandardMaterial({ map: canvasTex(sc), side: THREE.DoubleSide, roughness: 0.85 });
+      const balloonMats = [std(0xf72585, { roughness: 0.3 }), std(0x4cc9f0, { roughness: 0.3 })];
+      let pressure = 2000;
+      const softs = [];
+      const makeSoft = (ss, geo, mat, pos, pr) => {
+        const c = new J.SoftBodyCreationSettings(ss, P.R(...pos), P.Q(), L_MOVING);
+        c.mPressure = pr; c.mVertexRadius = 0.02; c.mNumIterations = 8;
+        const b = P.bi.CreateSoftBody(c); J.destroy(c);
+        P.bi.AddBody(b.GetID(), J.EActivation_Activate);
+        const mp = J.castObject(b.GetMotionProperties(), J.SoftBodyMotionProperties);
+        const g2 = geo.clone(), mesh = new THREE.Mesh(g2, mat);
+        mesh.castShadow = mesh.receiveShadow = true; S.scene.add(mesh);
+        const s = { b, mp, base: J.getPointer(mp.GetVertices().at(0)) >> 2, n: geo.attributes.position.count, geo: g2, mesh, idx: geo.index.array, vol: 0 };
+        softs.push(s);
+        return s;
+      };
+      const BALLOONS = [[-2.75, 0.9, 0.6], [2.75, 0.9, 0.6]];
+      const balloonLabs = BALLOONS.map(() => { const l = label("氣球", "", false); S.scene.add(l); return l; });
+      const clothLab = label("布料", "", true); S.scene.add(clothLab);
+      let cloth, balloons;
+      const build = () => {
+        for (const s of softs) { P.bi.RemoveBody(s.b.GetID()); P.bi.DestroyBody(s.b.GetID()); S.scene.remove(s.mesh); s.geo.dispose(); }
+        softs.length = 0;
+        cloth = makeSoft(clothSS, clothGeo, clothMat, [0, 2.2, 0], 0);
+        balloons = BALLOONS.map((p, i) => makeSoft(balloonSS, balloonGeo, balloonMats[i], p, pressure));
+      };
+      build();
+      S.own(clothGeo, balloonGeo, clothMat, ...balloonMats);
+      ctx.onCleanup(() => { for (const s of softs) s.geo.dispose(); });
+
+      // rigid balls thrown along a ballistic arc from the camera
+      const ballShape = P.keep(new J.SphereShape(0.32, null)), ballGeo = S.own(new THREE.SphereGeometry(0.32, 24, 16)), ballMat = S.own(std(0x9aa4b8, { metalness: 0.7, roughness: 0.3 }));
+      const balls = [], MAXB = 8;
+      const drop = (r) => { S.scene.remove(r.mesh); P.remove(r); };
+      const from = new THREE.Vector3(), dir = new THREE.Vector3();
+      // tap: throw from just in front of the camera; auto: drop from above the target
+      const throwAt = (target, fromAbove = false) => {
+        S.camera.getWorldDirection(dir);
+        if (fromAbove) from.set(target.x, target.y + 3, target.z);
+        else from.copy(S.camera.position).addScaledVector(dir, 2.5);
+        const tf = clamp(from.distanceTo(target) / 8, 0.5, 1.2);
+        const vx = (target.x - from.x) / tf, vy = (target.y - from.y) / tf + 0.5 * 9.81 * tf, vz = (target.z - from.z) / tf;
+        if (balls.length >= MAXB) drop(balls.shift());
+        const m = new THREE.Mesh(ballGeo, ballMat); m.castShadow = true; S.scene.add(m);
+        const r = P.body(ballShape, [from.x, from.y, from.z], { mass: 40, mesh: m });
+        P.bi.SetLinearVelocity(r.b.GetID(), P.V(vx, vy, vz));
+        balls.push(r);
+      };
+      const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), aim = new THREE.Vector3();
+      onTap(ctx, S.canvas, (e) => {
+        ray.setFromCamera(setNdc(S, e, ndc), S.camera);
+        const hit = ray.intersectObjects([...softs.map((s) => s.mesh), ground], false)[0];
+        throwAt(hit ? hit.point : ray.ray.at(6, aim));
+        if (auto) setAuto(false);
+      });
+      const rnd = rng(7);
+      let auto = true, autoT = 0.6, autoK = 0;
+      const autoThrow = () => {
+        const k = autoK++ % 3;
+        if (k === 0) aim.set((rnd() - 0.5) * 1.4, 2.0, (rnd() - 0.5) * 1.4);
+        else { const s = balloons[k - 1]; P.bi.ActivateBody(s.b.GetID()); const c = s.b.GetCenterOfMassPosition(); aim.set(c.GetX(), c.GetY() + 0.3, c.GetZ()); }
+        throwAt(aim, true);
+      };
+      ctx.button("丟球", autoThrow, { primary: true });
+      ctx.slider("氣球壓力", { min: 0, max: 8000, step: 100, value: 2000, format: (v) => `${v}` }, (v) => {
+        pressure = v;
+        for (const s of balloons) { s.mp.SetPressure(v); P.bi.ActivateBody(s.b.GetID()); }
+      });
+      ctx.button("重置", () => { build(); while (balls.length) drop(balls.pop()); });
+      const autoTg = ctx.toggle("自動", true, (v) => { auto = v; });
+      const setAuto = (v) => { auto = v; autoTg.setAttribute("aria-pressed", String(v)); };
+
+      // copy WASM vertex positions (local to the centre of mass) into the three.js geometry
+      const a = new THREE.Vector3(), b = new THREE.Vector3(), c3 = new THREE.Vector3();
+      const syncSoft = (s) => {
+        const F = J.HEAPF32, c = s.b.GetCenterOfMassPosition(), arr = s.geo.attributes.position.array;
+        s.mesh.position.set(c.GetX(), c.GetY(), c.GetZ());
+        for (let i = 0, k = s.base + 4; i < s.n; i++, k += 20) { arr[i * 3] = F[k]; arr[i * 3 + 1] = F[k + 1]; arr[i * 3 + 2] = F[k + 2]; }
+        s.geo.attributes.position.needsUpdate = true;
+        s.geo.computeVertexNormals(); s.geo.computeBoundingSphere();
+      };
+      // enclosed volume by the divergence theorem: sum of signed tetrahedra a·(b×c)/6
+      const volume = (s) => {
+        const arr = s.geo.attributes.position.array, I = s.idx;
+        let v = 0;
+        for (let i = 0; i < I.length; i += 3) {
+          a.fromArray(arr, I[i] * 3); b.fromArray(arr, I[i + 1] * 3); c3.fromArray(arr, I[i + 2] * 3);
+          v += a.dot(b.cross(c3));
+        }
+        return v / 6;
+      };
+      let low = 0;
+      S.onFrame((dt) => {
+        if (auto && (autoT -= dt) <= 0) { autoT = 1.6; autoThrow(); }
+        P.step(dt);
+        for (let i = balls.length - 1; i >= 0; i--) if (P.pos(balls[i], a).y < -3) { drop(balls[i]); balls.splice(i, 1); }
+        P.syncAll();
+        for (const s of softs) syncSoft(s);
+        balloons.forEach((s, i) => { balloonLabs[i].position.copy(s.mesh.position).y += 1.1; });
+        clothLab.position.set(0, 2.75, -1.6);
+        low = Infinity;
+        const arr = cloth.geo.attributes.position.array;
+        for (let i = 1; i < arr.length; i += 3) low = Math.min(low, arr[i]);
+        low += cloth.mesh.position.y;
+      });
+      ctx.interval(() => {
+        balloons.forEach((s, i) => { s.vol = volume(s); balloonLabs[i].sub.textContent = `p ${pressure}・V ${s.vol.toFixed(2)} m³`; });
+        clothLab.sub.textContent = `${cloth.n} 頂點・最低點 ${low.toFixed(2)} m`;
+      }, 250);
+      autoFit(S, 3.8, 2.0);
+      hud(ctx, () => `軟體頂點 <b>${softs.reduce((n, s) => n + s.n, 0)}</b>・鐵球 <b>${balls.length}</b>／${MAXB}・物理 <b>${P.ms.toFixed(1)}</b> ms・WASM ${heapHtml()}`);
+    },
+  },
+
+  // 7. Contact callbacks drive static conveyor belts and a bounce pad; a ray fan queries the narrow phase every frame.
+  {
+    id: "conveyor", title: "輸送帶與射線",
+    api: "ContactListenerJS・ContactSettings.mRelativeLinearSurfaceVelocity・mCombinedRestitution・NarrowPhaseQuery.CastRay",
+    desc: "兩條輸送帶都是靜態剛體，本身不會動；是接觸回呼在每次接觸時把 ContactSettings 的相對表面速度設成皮帶速度，求解器再用摩擦力把物件往前帶。彈跳墊同樣在回呼裡改寫合成恢復係數，標籤顯示物件剛碰到墊子後的向上速度，係數調到 0 就只會滑進收集箱。上方感測器每幀對窄相發出 16 條射線，CastRay 回傳最近命中的剛體與距離比例，被掃到的物件會亮起。",
+    hint: "拖動「輸送帶速度」與「彈跳係數」；關掉「掃描射線」比較查詢耗時",
+    async mount(ctx) {
+      await boot(ctx);
+      const S = stage(ctx, { shadows: true, labels: true, fov: 42, portraitFov: 66, bg: 0x0e1218, pos: [1, 5, 10], target: [1, 1.4, 0],
+        orbit: { maxPolarAngle: Math.PI * 0.48, minDistance: 4, maxDistance: 30 } });
+      env(S, 0.45);
+      sunLight(S, { hemi: [0xe4ecff, 0x1b1f2b, 1.1], intensity: 2.4, pos: [2, 9, 6], range: 8, far: 30 });
+      const P = physics(ctx);
+      const ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 40).rotateX(-Math.PI / 2), std(0x171c27, { roughness: 0.95 }));
+      ground.receiveShadow = true; S.scene.add(ground);
+      floorGrid(S, 24);
+      P.body(new J.BoxShape(P.V(20, 0.5, 20), 0.05, null), [0, -0.5, 0], { motion: "static" });
+      const box = (hx, hy, hz, pos, mat, opt = {}) => {
+        const m = boxMesh(S, hx, hy, hz, mat, true);
+        return P.body(new J.BoxShape(P.V(hx, hy, hz), 0.02, null), pos, { motion: "static", mesh: m, ...opt });
+      };
+
+      // belts: the top face (material index 2) carries a scrolling stripe texture
+      const [bc, bg] = canvas2d(64, 64);
+      bg.fillStyle = "#262c38"; bg.fillRect(0, 0, 64, 64); bg.fillStyle = "#f7df1e"; bg.fillRect(0, 0, 10, 64);
+      const side = S.own(std(0x3a4252, { roughness: 0.6 })), rail = S.own(std(0x9aa4b8, { metalness: 0.6, roughness: 0.35 }));
+      const BELTS = [{ h: [2.25, 0.1, 0.6], p: [-3.25, 2.3, 0] }, { h: [2.1, 0.1, 0.6], p: [0.9, 1.1, 0] }];
+      const legGeo = S.own(new THREE.CylinderGeometry(0.05, 0.05, 1, 10));
+      for (const B of BELTS) {
+        const tex = canvasTex(bc); tex.wrapS = THREE.RepeatWrapping; tex.repeat.set(B.h[0] * 2 / 0.5, 1);
+        B.tex = S.own(tex);
+        const top = S.own(new THREE.MeshStandardMaterial({ map: tex, roughness: 0.8 }));
+        const m = new THREE.Mesh(S.own(new THREE.BoxGeometry(B.h[0] * 2, B.h[1] * 2, B.h[2] * 2)), [side, side, top, side, side, side]);
+        m.castShadow = m.receiveShadow = true; S.scene.add(m);
+        B.r = P.body(new J.BoxShape(P.V(...B.h), 0.02, null), B.p, { motion: "static", mesh: m, friction: 1 });
+        for (const s of [-1, 1]) box(B.h[0], 0.1, 0.03, [B.p[0], B.p[1] + 0.2, s * 0.66], rail);
+        for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+          const leg = new THREE.Mesh(legGeo, rail); const hgt = B.p[1] - B.h[1];
+          leg.scale.y = hgt; leg.position.set(B.p[0] + sx * (B.h[0] - 0.25), hgt / 2, sz * 0.5); S.scene.add(leg);
+        }
+      }
+      const padMat = S.own(std(0xf72585, { roughness: 0.35 }));
+      const pad = box(1.0, 0.08, 0.6, [4.2, 0.25, 0], padMat, { q: qz(-0.15), friction: 0.05 });
+      const binMat = S.own(std(0x4cc9f0, { roughness: 0.4, transparent: true, opacity: 0.55 }));
+      box(0.05, 0.3, 0.95, [7.4, 0.3, 0], binMat);
+      for (const z of [-0.9, 0.9]) box(1.05, 0.3, 0.05, [6.35, 0.3, z], binMat);
+      const hopper = new THREE.Mesh(S.own(new THREE.CylinderGeometry(0.6, 0.32, 0.6, 4, 1, true)),
+        S.own(std(0x9aa4b8, { metalness: 0.5, roughness: 0.4, side: THREE.DoubleSide, transparent: true, opacity: 0.6 })));
+      hopper.rotation.y = Math.PI / 4; hopper.position.set(-5.1, 3.35, 0); S.scene.add(hopper);
+
+      // contact listener: belts get a surface velocity, the pad overrides restitution
+      let speed = 1.6, bounce = 0.8, calls = 0, cps = 0, clock = 0, vUp = 0, vShow = 0;
+      const byPtr = new Map();
+      const beltPtr = BELTS.map((B) => J.getPointer(B.r.b)), padPtr = J.getPointer(pad.b);
+      const sv = new J.Vec3(0, 0, 0);
+      const cl = new J.ContactListenerJS();
+      const onContact = (b1, b2, manifold, sp) => {
+        calls++;
+        const s = J.wrapPointer(sp, J.ContactSettings);
+        // relative surface velocity = body2 surface velocity minus body1 surface velocity
+        if (beltPtr.includes(b1)) { sv.Set(-speed, 0, 0); s.mRelativeLinearSurfaceVelocity = sv; }
+        else if (beltPtr.includes(b2)) { sv.Set(speed, 0, 0); s.mRelativeLinearSurfaceVelocity = sv; }
+        if (b1 === padPtr || b2 === padPtr) {
+          s.mCombinedRestitution = bounce;
+          const it = byPtr.get(b1 === padPtr ? b2 : b1);
+          if (it) it.padT = clock;
+        }
+      };
+      cl.OnContactValidate = () => J.ValidateResult_AcceptAllContactsForThisBodyPair;
+      cl.OnContactAdded = onContact;
+      cl.OnContactPersisted = onContact;
+      cl.OnContactRemoved = () => {};
+      P.ps.SetContactListener(cl);
+      P.own(() => { P.ps.SetContactListener(null); J.destroy(cl); J.destroy(sv); });
+
+      // items: three shapes, recycled through the hopper
+      const KINDS = [
+        { s: P.keep(new J.BoxShape(P.V(0.18, 0.18, 0.18), 0.03, null)), g: S.own(new RoundedBoxGeometry(0.36, 0.36, 0.36, 2, 0.03)) },
+        { s: P.keep(new J.BoxShape(P.V(0.25, 0.12, 0.18), 0.03, null)), g: S.own(new RoundedBoxGeometry(0.5, 0.24, 0.36, 2, 0.03)) },
+        { s: P.keep(new J.CylinderShape(0.12, 0.16, 0.03, null)), g: S.own(new THREE.CylinderGeometry(0.16, 0.16, 0.24, 20)) },
+      ];
+      const mats = PALETTE.map((c) => S.own(std(c, { roughness: 0.45 })));
+      const glow = S.own(std(0xffffff, { emissive: 0xf72585, emissiveIntensity: 1.4, roughness: 0.4 }));
+      const items = [], byId = new Map(), rnd = rng(11), tq = new THREE.Quaternion(), te = new THREE.Euler();
+      let MAX = 24, spawnT = 0, nextK = 0;
+      const hopperPos = () => [-5.1 + (rnd() - 0.5) * 0.3, 3.3, (rnd() - 0.5) * 0.3];
+      const randQ = () => tq.setFromEuler(te.set(rnd() * 6.3, rnd() * 6.3, rnd() * 6.3)).toArray();
+      const spawn = () => {
+        if (items.length < MAX) {
+          const k = nextK++, K = KINDS[k % 3], m = new THREE.Mesh(K.g, mats[k % mats.length]);
+          m.castShadow = true; S.scene.add(m);
+          const r = P.body(K.s, hopperPos(), { q: randQ(), mesh: m, friction: 0.7 });
+          r.base = m.material; r.padT = -9; items.push(r); byId.set(r.id, r); byPtr.set(J.getPointer(r.b), r);
+        } else {
+          const r = items.shift(); items.push(r);
+          P.place(r, hopperPos(), randQ(), true);
+        }
+      };
+
+      // ray fan: one RRayCast and one closest-hit collector reused for all 16 casts
+      const NR = 16, RL = 4.5, ORG = [0.9, 3.6, 0];
+      const npq = P.ps.GetNarrowPhaseQuery();
+      const rc = new J.RRayCast(P.R(...ORG), P.V(0, -RL, 0)), rset = new J.RayCastSettings(), col = new J.CastRayClosestHitCollisionCollector();
+      const bpf = new J.BroadPhaseLayerFilter(), olf = new J.ObjectLayerFilter(), bf = new J.BodyFilter(), sf = new J.ShapeFilter();
+      P.own(() => { for (const o of [rc, rset, col, bpf, olf, bf, sf]) J.destroy(o); });
+      const head = new THREE.Mesh(S.own(new THREE.BoxGeometry(0.5, 0.16, 0.3)), S.own(std(0x262c38, { emissive: 0x4cc9f0, emissiveIntensity: 0.6 })));
+      head.position.set(...ORG); S.scene.add(head);
+      const lpos = new Float32Array(NR * 6), lcol = new Float32Array(NR * 6);
+      const lgeo = S.own(new THREE.BufferGeometry());
+      lgeo.setAttribute("position", new THREE.BufferAttribute(lpos, 3)); lgeo.setAttribute("color", new THREE.BufferAttribute(lcol, 3));
+      const lines = new THREE.LineSegments(lgeo, S.own(new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.9 })));
+      lines.frustumCulled = false; S.scene.add(lines);
+      const HIT = new THREE.Color(0xf72585), MISS = new THREE.Color(0x4cc9f0);
+      let scan = true, hits = 0, qms = 0, sweep = 0;
+      const lit = new Set();
+      const castFan = (dt) => {
+        sweep += dt;
+        for (const r of lit) r.mesh.material = r.base;
+        lit.clear(); hits = 0;
+        const t0 = performance.now(), dz = 0.12 * Math.sin(sweep * 1.3);
+        for (let i = 0; i < NR; i++) {
+          const a = -0.9 + (1.8 * i) / (NR - 1), dx = Math.sin(a), dy = -Math.cos(a);
+          rc.mOrigin = P.R(...ORG); rc.mDirection = P.V(dx * RL, dy * RL, dz * RL);
+          col.Reset();
+          npq.CastRay(rc, rset, col, bpf, olf, bf, sf);
+          let f = 1, item = null;
+          if (col.HadHit()) { f = col.mHit.mFraction; item = byId.get(col.mHit.mBodyID.GetIndexAndSequenceNumber()) || null; }
+          if (item) { hits++; lit.add(item); item.mesh.material = glow; }
+          const c = item ? HIT : MISS, k = i * 6;
+          lpos[k] = ORG[0]; lpos[k + 1] = ORG[1]; lpos[k + 2] = ORG[2];
+          lpos[k + 3] = ORG[0] + dx * RL * f; lpos[k + 4] = ORG[1] + dy * RL * f; lpos[k + 5] = ORG[2] + dz * RL * f;
+          lcol[k] = c.r * 0.35; lcol[k + 1] = c.g * 0.35; lcol[k + 2] = c.b * 0.35; lcol[k + 3] = c.r; lcol[k + 4] = c.g; lcol[k + 5] = c.b;
+        }
+        qms = ema(qms, performance.now() - t0);
+        lgeo.attributes.position.needsUpdate = true; lgeo.attributes.color.needsUpdate = true;
+      };
+
+      ctx.slider("輸送帶速度", { min: 0.5, max: 4, step: 0.1, value: 1.6, format: (v) => `${v.toFixed(1)} m/s` }, (v) => { speed = v; });
+      ctx.slider("彈跳係數", { min: 0, max: 1, step: 0.05, value: 0.8, format: (v) => v.toFixed(2) }, (v) => { bounce = v; });
+      ctx.toggle("掃描射線", true, (v) => {
+        scan = v; lines.visible = v;
+        if (!v) { for (const r of lit) r.mesh.material = r.base; lit.clear(); hits = 0; }
+      });
+      ctx.button("加料", () => { MAX = Math.min(40, MAX + 8); spawnT = 0; });
+      legend(ctx, [["#f72585", "射線命中物件"], ["#4cc9f0", "射線未命中"]]);
+      const labs = {
+        belt: label("輸送帶", "", false), sensor: label("射線感測器", "", false),
+        pad: label("彈跳墊", "", false), bin: label("收集箱", "", false),
+      };
+      labs.belt.position.set(-3.25, 3.0, -0.7); labs.sensor.position.set(0.9, 4.1, 0);
+      labs.pad.position.set(3.9, 0.12, 1.25); labs.bin.position.set(6.4, 1.0, 0);
+      for (const l of Object.values(labs)) S.scene.add(l);
+      const v = new THREE.Vector3();
+      let inBin = 0;
+      S.onFrame((dt) => {
+        if ((spawnT -= dt) <= 0) { spawnT = 0.7; spawn(); }
+        P.step(dt);
+        clock += dt;
+        for (const r of items) {
+          if (P.pos(r, v).y < -2) P.place(r, hopperPos(), randQ(), true);
+          // upward speed just after touching the pad: restitution times impact speed
+          if (clock - r.padT < 0.25) vUp = Math.max(vUp, r.b.GetLinearVelocity().GetY());
+        }
+        P.syncAll();
+        for (const B of BELTS) B.tex.offset.x = (B.tex.offset.x - (speed * dt) / 0.5) % 1;
+        if (scan) castFan(dt);
+      });
+      ctx.interval(() => { cps = calls; calls = 0; }, 1000);
+      ctx.interval(() => { vShow = vUp; vUp = 0; }, 1500);
+      ctx.interval(() => {
+        inBin = 0;
+        for (const r of items) { P.pos(r, v); if (v.x > 5.25 && v.x < 7.4 && Math.abs(v.z) < 0.9 && v.y < 1) inBin++; }
+        labs.belt.sub.textContent = `表面速度 ${speed.toFixed(1)} m/s`;
+        labs.sensor.sub.textContent = scan ? `命中 ${hits}／${NR}` : "關閉";
+        labs.pad.sub.textContent = `e ${bounce.toFixed(2)}・彈起 ${vShow.toFixed(1)} m/s`;
+        labs.bin.sub.textContent = `${inBin} 件`;
+      }, 250);
+      autoFit(S, 6.6, 2.4);
+      hud(ctx, () => `物件 <b>${items.length}</b>／${MAX}・接觸回呼 <b>${cps}</b>／秒・射線命中 <b>${hits}</b>／${NR}・查詢 <b>${qms.toFixed(3)}</b> ms・物理 <b>${P.ms.toFixed(1)}</b> ms`);
+    },
+  },
+
+  // 8. Stress: rigid body count ramp in a stirred glass box.
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "PhysicsSystem.Update（單執行緒）・GetNumActiveBodies・InstancedMesh 直讀 WASM 堆積",
+    desc: "方塊與球逐級加量倒進攪拌箱，量測 Jolt 每步耗時、同步到 InstancedMesh 的時間、活動剛體數與 WASM 堆積用量，畫面掉到 30 FPS 以下就停止加壓。",
+    hint: "按「自動加壓」逐級增加剛體數",
+    async mount(ctx) {
+      ctx.html('<div class="jp-view"></div>');
+      const host = ctx.$(".jp-view");
+      ctx.controls.classList.add("bottom");
+      await boot(ctx);
+      const S = stage(ctx, { host, shadows: false, fov: 50, bg: 0x07080b, pos: [0, 13, 18], target: [0, 1, 0],
+        orbit: { autoRotate: true, autoRotateSpeed: 0.4, maxPolarAngle: Math.PI * 0.47, minDistance: 8, maxDistance: 60 } });
+      env(S, 0.5);
+      sunLight(S, { intensity: 1.8, pos: [6, 14, 8], shadow: false, hemi: [0xe8f0ff, 0x15171d, 0.9] });
+      const P = physics(ctx, { maxContacts: 20000 });
+      const fl = new THREE.Mesh(S.own(new THREE.PlaneGeometry(15, 15).rotateX(-Math.PI / 2)), S.own(std(0x141821, { roughness: 0.95 }))); S.scene.add(fl);
+      P.body(new J.BoxShape(P.V(7.5, 0.5, 7.5), 0.05, null), [0, -0.5, 0], { motion: "static" });
+      const glass = S.own(new THREE.MeshStandardMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0.08, depthWrite: false }));
+      const wx = P.keep(new J.BoxShape(P.V(7.5, 3, 0.25), 0.05, null)), wz = P.keep(new J.BoxShape(P.V(0.25, 3, 7.5), 0.05, null));
+      const gx = S.own(new THREE.BoxGeometry(15, 6, 0.5)), gz = S.own(new THREE.BoxGeometry(0.5, 6, 15));
+      for (const s of [-1, 1]) {
+        const mx = new THREE.Mesh(gx, glass), mz = new THREE.Mesh(gz, glass); S.scene.add(mx, mz);
+        P.body(wx, [0, 3, s * 7.25], { motion: "static", mesh: mx });
+        P.body(wz, [s * 7.25, 3, 0], { motion: "static", mesh: mz });
+      }
+      const edges = new THREE.LineSegments(S.own(new THREE.EdgesGeometry(new THREE.BoxGeometry(15, 6, 15))), S.own(new THREE.LineBasicMaterial({ color: 0x4cc9f0, transparent: true, opacity: 0.4 })));
+      edges.position.y = 3; S.scene.add(edges);
+      const padM = new THREE.Mesh(S.own(new THREE.BoxGeometry(13.6, 0.6, 0.3)), S.own(std(0xff8c42, { roughness: 0.4 }))); S.scene.add(padM);
+      const paddle = P.body(new J.BoxShape(P.V(6.8, 0.3, 0.15), 0.05, null), [0, 0.45, 0], { motion: "kinematic", sleep: false, mesh: padM });
+      let stir = true, ang = 0, syncMs = 0;
+      P.onStep((dt) => {
+        if (stir) ang += 0.6 * dt;
+        P.bi.MoveKinematic(paddle.b.GetID(), P.R(0, 0.45, 0), P.Q(...qy(ang)), dt);
+      });
+
+      const CAP = 2500;
+      const boxShape = P.keep(new J.BoxShape(P.V(0.22, 0.22, 0.22), 0.05, null)), sphShape = P.keep(new J.SphereShape(0.25, null));
+      const boxInst = new THREE.InstancedMesh(S.own(new RoundedBoxGeometry(0.44, 0.44, 0.44, 2, 0.05)), S.own(std(0xffffff, { roughness: 0.45 })), CAP);
+      const sphInst = new THREE.InstancedMesh(S.own(new THREE.SphereGeometry(0.25, 12, 8)), S.own(std(0xffffff, { roughness: 0.35 })), CAP);
+      const colr = new THREE.Color();
+      for (let i = 0; i < CAP; i++) { boxInst.setColorAt(i, colr.setHex(PALETTE[i % 6])); sphInst.setColorAt(i, colr.setHex(PALETTE[(i + 3) % 6])); }
+      for (const m of [boxInst, sphInst]) { m.frustumCulled = false; m.count = 0; S.scene.add(m); }
+      ctx.onCleanup(() => { boxInst.dispose(); sphInst.dispose(); });
+      const all = [], boxes = [], sphs = [];
+      const spawnPos = (k) => { const g = k % 196; return [((g % 14) - 6.5) * 0.9 + (Math.random() - 0.5) * 0.2, 7 + Math.floor(k / 196) * 0.8, (Math.floor(g / 14) - 6.5) * 0.9 + (Math.random() - 0.5) * 0.2]; };
+      function apply(n) {
+        while (all.length < n) {
+          const k = all.length, isBox = k % 2 === 0;
+          const r = P.body(isBox ? boxShape : sphShape, spawnPos(k), { restitution: 0.1 });
+          r.isBox = isBox; all.push(r); (isBox ? boxes : sphs).push(r);
+        }
+        while (all.length > n) { const r = all.pop(); (r.isBox ? boxes : sphs).pop(); P.remove(r); }
+      }
+      ctx.toggle("攪拌槳", true, (v) => { stir = v; });
+      ctx.button("重新灑落", () => { all.forEach((r, k) => P.place(r, spawnPos(k), undefined, true)); });
+      S.onFrame((dt) => {
+        P.step(dt);
+        P.sync(paddle);
+        const t0 = performance.now();
+        for (const [list, inst] of [[boxes, boxInst], [sphs, sphInst]]) {
+          const e = inst.instanceMatrix.array;
+          for (let i = 0; i < list.length; i++) bodyMatrix(list[i], e, i * 16);
+          inst.count = list.length; inst.instanceMatrix.needsUpdate = true;
+        }
+        syncMs = ema(syncMs, performance.now() - t0);
+      });
+      autoFit(S, 8, 4, 1.05);
+      ctx.ramp({
+        label: "剛體", unit: "個",
+        steps: [100, 250, 500, 1000, 2000, 3000, 4000, 5000],
+        minFps: 30,
+        apply,
+        metrics: () => ({
+          物理步進: `${P.ms.toFixed(1)} ms`,
+          同步繪圖: `${syncMs.toFixed(2)} ms`,
+          活動剛體: P.ps.GetNumActiveBodies(J.EBodyType_RigidBody),
+          "WASM 堆積": heapText(),
+        }),
+        note: "JoltPhysics.js 在單執行緒的 WebAssembly 裡跑完整 Jolt 管線：四元樹寬相、窄相碰撞與接觸約束求解器。剛體越密，接觸約束越多，求解器負擔隨之上升；關閉攪拌槳後靜止的剛體會進入休眠、幾乎不耗時。WASM 堆積大小固定，滿了就無法再加剛體；畫面用 InstancedMesh 直接讀 WASM 記憶體裡的位置與旋轉。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

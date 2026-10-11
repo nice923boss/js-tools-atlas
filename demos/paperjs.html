@@ -3,136 +3,962 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Paper.js 示範：貝茲曲線與路徑布林運算</title>
+<title>Paper.js 示範：8 個場景看懂向量路徑運算與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["布林運算","平滑與簡化","命中測試","符號實例","交點與沿路徑","影像分割","SVG 匯入匯出","極限測試"],"note":"每個場景各自建立一個 PaperScope，離開場景就釋放；拖曳與手繪用指標事件，觸控也能操作"}</script>
 <style>
-  body {
+  .pp-host {
+    position: absolute; inset: 0; overflow: hidden;
     background:
-      radial-gradient(circle at 1px 1px, rgba(255,255,255,0.07) 1px, transparent 1.5px) 0 0 / 22px 22px,
+      radial-gradient(circle at 1px 1px, rgba(255, 255, 255, .07) 1px, transparent 1.5px) 0 0 / 22px 22px,
       radial-gradient(80% 70% at 50% 40%, #161a24, var(--bg));
   }
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
-  #c.dragging { cursor: grabbing; }
-  .info {
-    position: fixed; right: 12px; bottom: 12px; z-index: 50;
-    padding: 8px 12px; font-size: 12px; line-height: 1.5; text-align: right;
+  .pp-host canvas { position: absolute; left: 0; top: 0; display: block; touch-action: none; }
+  .pp-tag {
+    position: absolute; right: 10px; bottom: 10px; text-align: right; z-index: 2; max-width: calc(100% - 20px);
+    padding: 5px 9px; border-radius: 6px; border: 1px solid var(--line);
+    background: rgba(14, 16, 19, .82); color: var(--fg); font: 600 12px/1.45 var(--mono);
+    pointer-events: none;
   }
-  .info b { color: var(--accent); font-size: 14px; }
-  @media (max-width: 560px) { .info { bottom: 52px; } }
+  .pp-tag b { color: var(--accent); font-weight: 600; }
+  .stress-host {
+    position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 8px;
+    border-radius: 10px; overflow: hidden; background: #0b0d10;
+  }
+  @media (min-width: 761px) { .stress-host { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 350px; } }
+
+  /* SVG round-trip scene: canvas on the left, exported markup on the right (stacked on narrow screens) */
+  .svg-stage { position: absolute; left: 0; top: 0; bottom: 0; right: 42%; }
+  .svg-side {
+    position: absolute; right: 10px; top: calc(var(--sc-ctl-h, 0px) + 10px); bottom: 10px; width: calc(42% - 20px);
+    display: flex; flex-direction: column; gap: 8px; min-height: 0;
+  }
+  .svg-cap { font: 600 12px/1.45 var(--mono); color: var(--muted); }
+  .svg-cap b { color: var(--accent); font-weight: 600; }
+  .svg-preview {
+    flex: 0 0 34%; min-height: 0; display: flex; align-items: center; justify-content: center;
+    border: 1px solid var(--line); border-radius: 10px; background: #0b0d10; padding: 8px; overflow: hidden;
+  }
+  .svg-preview svg { max-width: 100%; max-height: 100%; width: auto; height: auto; display: block; }
+  .svg-code {
+    flex: 1; min-height: 0; margin: 0; overflow: auto; padding: 10px 12px; border-radius: 10px;
+    border: 1px solid var(--line); background: #0b0d10; color: #d9d7cf;
+    font: 11px/1.5 var(--mono); white-space: pre; tab-size: 2;
+  }
+  @media (max-width: 760px) { .svg-code { font-size: 10px; padding: 8px; } }
+  @media (max-width: 760px) and (max-aspect-ratio: 1/1) {
+    .svg-stage { right: 0; top: var(--sc-ctl-h, 0px); bottom: 52%; }
+    .svg-side { left: 10px; width: auto; top: 48%; bottom: 10px; }
+    .svg-preview { flex-basis: 30%; }
+  }
 </style>
 </head>
 <body>
-<canvas id="c" resize></canvas>
-<div class="controls">
-  <button class="btn" data-op="unite" aria-pressed="true">聯集</button>
-  <button class="btn" data-op="intersect">交集</button>
-  <button class="btn" data-op="subtract">差集</button>
-  <button class="btn" data-op="exclude">互斥</button>
-  <button class="btn" data-op="divide">分割</button>
-</div>
-<div class="panel info"><b id="opName">聯集 unite()</b><div class="muted"><span class="mono" id="segs">0</span> 個錨點・黃點為貝茲控制把手</div></div>
-<div class="hint">拖曳圓形或花瓣移動・切換右上布林運算</div>
-
 <script src="https://cdn.jsdelivr.net/npm/paper@0.12.18/dist/paper-core.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Two editable shapes (circle + smoothed star "flower"); the boolean result is recomputed every frame
-// and drawn fully selected so Paper.js shows its bezier anchors and handles.
-paper.setup(document.getElementById("c"));
-const { Path, Point, Group, view, Tool } = paper;
-const OPS = {
-  unite: "聯集 unite()", intersect: "交集 intersect()", subtract: "差集 subtract()",
-  exclude: "互斥 exclude()", divide: "分割 divide()",
-};
-let op = "unite";
+// Paper.js showcase: every scene owns a PaperScope (its own project and view on its own canvas),
+// so scenes never share items and leaving a scene releases everything with scope.remove().
+const PAL = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#9d8cff"];
+const rootCss = getComputedStyle(document.documentElement);
+const FONT = rootCss.getPropertyValue("--font").trim() || "system-ui, sans-serif";
+const PHOTO = (n) => `_shared/img/photo-${n}.jpg`;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const smooth = (prev, v) => prev + (v - prev) * 0.1;
+const rgba = (hex, a) => `rgba(${[1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(",")},${a})`;
+// Y just below the top-right control cluster.
+const belowControls = (ctx) => (ctx.controls.childElementCount ? ctx.controls.offsetHeight + 20 : 12);
+// Anchor count of a path, compound path or group.
+const countSegs = (item) => (item.segments ? item.segments.length : (item.children || []).reduce((s, c) => s + countSegs(c), 0));
 
-const resultLayer = new paper.Layer();
-const shapeLayer = new paper.Layer();
-
-function unit() { return Math.min(view.size.width, view.size.height); }
-
-const circle = new Path.Circle({ center: [0, 0], radius: 100, strokeColor: "#4cc9f0", strokeWidth: 2, dashArray: [6, 6] });
-const flower = new Path.Star({ center: [0, 0], points: 6, radius1: 50, radius2: 120, strokeColor: "#f72585", strokeWidth: 2, dashArray: [6, 6] });
-flower.smooth({ type: "catmull-rom", factor: 0.5 });
-shapeLayer.addChildren([circle, flower]);
-
-function layout() {
-  const u = unit();
-  const c = view.center;
-  circle.fitBounds(new paper.Rectangle(c.x - u * 0.36, c.y - u * 0.2, u * 0.4, u * 0.4));
-  circle.position = c.add([-u * 0.12, -u * 0.02]);
-  const s = (u * 0.5) / flower.bounds.width;
-  flower.scale(s);
-  flower.position = c.add([u * 0.13, u * 0.04]);
-}
-layout();
-
-let result = new Group();
-function rebuild() {
-  result.remove();
-  const opts = { insert: false };
-  if (op === "divide") {
-    // Split into three independently coloured regions
-    const parts = [circle.subtract(flower, opts), circle.intersect(flower, opts), flower.subtract(circle, opts)];
-    const colors = ["#4cc9f0", "#f7df1e", "#f72585"];
-    parts.forEach((p, i) => {
-      p.fillColor = colors[i];
-      p.fillColor.alpha = 0.85;
-      p.strokeColor = "#0e1013";
-      p.strokeWidth = 3;
-      p.fullySelected = true;
+// Create a PaperScope on a fresh canvas that tracks the size of its box.
+// Items are always created in the *active* scope, so every callback runs scope.activate() first.
+function paperScene(ctx, { parent = ctx.el } = {}) {
+  const box = Showcase.h("div", { class: "pp-host" });
+  parent.prepend(box);
+  const canvas = Showcase.h("canvas");
+  box.append(canvas);
+  const scope = new paper.PaperScope();
+  scope.setup(canvas);
+  const pp = { scope, project: scope.project, view: scope.view, canvas, box, pointer: null, onResize: null };
+  const fitView = () => {
+    const w = Math.max(1, box.clientWidth), h = Math.max(1, box.clientHeight);
+    if (w === pp.view.viewSize.width && h === pp.view.viewSize.height) return false;
+    scope.activate();
+    pp.view.viewSize = new scope.Size(w, h);
+    return true;
+  };
+  fitView();
+  let pending = 0;
+  const ro = new ResizeObserver(() => {
+    cancelAnimationFrame(pending);
+    pending = requestAnimationFrame(() => {
+      if (ctx.active && fitView() && pp.onResize) { scope.activate(); pp.onResize(); pp.view.update(); }
     });
-    result = new Group(parts);
-  } else {
-    const r = circle[op](flower, opts);
-    r.fillColor = {
-      gradient: { stops: ["#4cc9f0", "#9d8cff", "#f72585"] },
-      origin: r.bounds.topLeft, destination: r.bounds.bottomRight,
-    };
-    r.strokeColor = "#ffffff";
-    r.strokeWidth = 1.5;
-    r.fullySelected = true;
-    result = new Group([r]);
-  }
-  result.selectedColor = "#f7df1e";
-  result.shadowColor = "rgba(157,140,255,0.45)";
-  result.shadowBlur = 30;
-  resultLayer.addChild(result);
-  let n = 0;
-  result.getItems({ class: Path }).forEach((p) => { n += p.segments.length; });
-  document.getElementById("segs").textContent = n;
+  });
+  ro.observe(box);
+  ctx.onCleanup(() => { ro.disconnect(); cancelAnimationFrame(pending); scope.remove(); box.remove(); });
+
+  pp.size = () => pp.view.viewSize;
+  pp.toProject = (e) => {
+    const r = canvas.getBoundingClientRect();
+    return pp.view.viewToProject(new scope.Point(e.clientX - r.left, e.clientY - r.top));
+  };
+  // Native pointer events on the canvas (Paper's own mouse routing is global per page).
+  pp.on = (type, fn) => ctx.on(canvas, type, (e) => { scope.activate(); fn(e, pp.toProject(e)); pp.view.update(); });
+  // Per-frame callback with seconds since start; redraws synchronously afterwards.
+  pp.tick = (fn) => {
+    const t0 = performance.now();
+    // rAF timestamps can precede t0 on the first frame, so clamp to keep scene time non-negative.
+    return ctx.raf((t, dt) => { scope.activate(); fn(Math.max(0, t - t0) / 1000, dt); pp.view.update(); });
+  };
+  pp.act = (fn) => (...a) => { scope.activate(); const r = fn(...a); pp.view.update(); return r; };
+  let lastMove = -1e9;
+  pp.on("pointermove", (e, p) => { lastMove = performance.now(); pp.pointer = p; });
+  pp.on("pointerdown", (e, p) => { lastMove = performance.now(); pp.pointer = p; });
+  // True while the pointer moved over the canvas in the last 2.5 s; otherwise scenes animate on their own.
+  pp.live = () => performance.now() - lastMove < 2500;
+  return pp;
 }
 
-let dragging = null;
-const tool = new Tool();
-tool.onMouseDown = (e) => {
-  dragging = flower.contains(e.point) ? flower : circle.contains(e.point) ? circle : null;
-  if (dragging) document.getElementById("c").classList.add("dragging");
-};
-tool.onMouseDrag = (e) => {
-  if (dragging) dragging.position = dragging.position.add(e.delta);
-};
-tool.onMouseUp = () => {
-  dragging = null;
-  document.getElementById("c").classList.remove("dragging");
-};
+// Bottom-right HTML caption, refreshed at most four times a second.
+function htmlTag(ctx, parent = ctx.el) {
+  const el = Showcase.h("div", { class: "pp-tag" });
+  parent.append(el);
+  let last = "", at = 0;
+  return (html, force) => {
+    const now = performance.now();
+    if (html === last || (!force && now - at < 250)) return;
+    last = html;
+    at = now;
+    el.innerHTML = html;
+  };
+}
 
-view.onFrame = (e) => {
-  // Slow rotation keeps the bezier result alive
-  if (dragging !== flower) flower.rotate(0.25);
-  rebuild();
-};
+Showcase.run({ scenes: [
+  // 1. Boolean operations (port of the original single-page demo)
+  {
+    id: "boolean", title: "布林運算",
+    api: "PathItem.unite() / intersect() / subtract() / exclude() / divide()、getIntersections()",
+    desc: "圓形與平滑花瓣是兩條貝茲路徑，每一幀重新計算一次布林運算。結果路徑設成 fullySelected，看得到 Paper.js 算出來的每個錨點與控制把手；白點是 getIntersections() 找到的交點，分割模式會把結果拆成各自上色的區塊。",
+    hint: "拖曳圓形或花瓣・切換右上的布林運算",
+    mount(ctx) {
+      const OPS = [["聯集", "unite"], ["交集", "intersect"], ["差集", "subtract"], ["互斥", "exclude"], ["分割", "divide"]];
+      let op = 0;
+      ctx.group(OPS.map((o) => o[0]), 0, (i) => { op = i; });
+      const pp = paperScene(ctx);
+      const { scope, canvas } = pp;
+      const tag = htmlTag(ctx);
+      const resultLayer = new scope.Layer();
+      const shapeLayer = new scope.Layer();
+      const markLayer = new scope.Layer();
+      let circle = null, flower = null, angle = 0, u = 100, home = null, drag = null, off = null;
 
-view.onResize = () => layout();
+      function layout() {
+        const { width: W, height: H } = pp.size();
+        const top = belowControls(ctx);
+        const area = new scope.Rectangle(12, top, W - 24, Math.max(80, H - top - 56));
+        u = Math.max(90, Math.min(area.width / 0.78, area.height / 0.58));
+        home = area.center.add([-u * 0.12, -u * 0.02]);
+        circle?.remove();
+        flower?.remove();
+        circle = new scope.Path.Circle({ center: home, radius: u * 0.2, strokeColor: PAL[1], strokeWidth: 2, dashArray: [6, 6], parent: shapeLayer });
+        flower = new scope.Path.Star({ center: area.center.add([u * 0.13, u * 0.04]), points: 6, radius1: u * 0.104, radius2: u * 0.25, strokeColor: PAL[2], strokeWidth: 2, dashArray: [6, 6], parent: shapeLayer });
+        flower.smooth({ type: "catmull-rom", factor: 0.5 });
+        flower.rotate(angle);
+        drag = null;
+      }
 
-document.querySelectorAll("[data-op]").forEach((b) => {
-  b.addEventListener("click", () => {
-    op = b.dataset.op;
-    document.querySelectorAll("[data-op]").forEach((x) => x.setAttribute("aria-pressed", x === b));
-    document.getElementById("opName").textContent = OPS[op];
-  });
-});
+      function rebuild() {
+        resultLayer.removeChildren();
+        markLayer.removeChildren();
+        const name = OPS[op][1];
+        let res = circle[name](flower, { insert: false });
+        let pieces = 0;
+        if (name === "divide") {
+          // divide() returns one CompoundPath; move its children into a group so each piece gets its own colour.
+          const parts = res.children ? res.removeChildren() : [res];
+          parts.forEach((p, i) => {
+            p.fillColor = rgba(PAL[[1, 0, 2, 3, 4, 5][i % 6]], 0.85);
+            p.strokeColor = "#0e1013";
+            p.strokeWidth = 3;
+            p.selectedColor = PAL[0];
+          });
+          res = new scope.Group({ children: parts, insert: false });
+          pieces = parts.length;
+        } else {
+          const b = res.bounds;
+          res.fillColor = { gradient: { stops: [PAL[1], PAL[5], PAL[2]] }, origin: b.topLeft, destination: b.bottomRight };
+          res.strokeColor = "#ffffff";
+          res.strokeWidth = 1.5;
+          res.selectedColor = PAL[0];
+          res.shadowColor = "rgba(157,140,255,0.45)";
+          res.shadowBlur = 30;
+        }
+        resultLayer.addChild(res);
+        res.fullySelected = true;
+        const xs = circle.getIntersections(flower);
+        for (const loc of xs) {
+          new scope.Path.Circle({ center: loc.point, radius: 4.5, fillColor: "#ffffff", strokeColor: "#0e1013", strokeWidth: 1.5, parent: markLayer });
+        }
+        tag(`<b>${OPS[op][0]} ${name}()</b><br>${countSegs(res)} 個錨點・${xs.length} 個交點${pieces ? `・${pieces} 塊` : ""}`);
+      }
+
+      const pick = (p) => (flower.contains(p) ? flower : circle.contains(p) ? circle : null);
+      pp.on("pointerdown", (e, p) => {
+        drag = pick(p);
+        if (!drag) return;
+        off = drag.position.subtract(p);
+        canvas.setPointerCapture(e.pointerId);
+        canvas.style.cursor = "grabbing";
+      });
+      pp.on("pointermove", (e, p) => {
+        if (drag) drag.position = p.add(off);
+        else canvas.style.cursor = pick(p) ? "grab" : "";
+      });
+      const end = () => { drag = null; canvas.style.cursor = ""; };
+      pp.on("pointerup", end);
+      pp.on("pointercancel", end);
+
+      pp.onResize = layout;
+      scope.activate();
+      layout();
+      pp.tick((t) => {
+        if (drag !== flower) { flower.rotate(0.25); angle += 0.25; }
+        if (!drag && !pp.live()) {
+          // Idle: the circle drifts on a Lissajous path so the result keeps changing.
+          const target = home.add([Math.sin(t * 0.6) * u * 0.13, Math.sin(t * 0.9) * u * 0.08]);
+          circle.position = circle.position.add(target.subtract(circle.position).multiply(0.05));
+        }
+        rebuild();
+      });
+    },
+  },
+
+  // 2. Freehand smoothing and simplification
+  {
+    id: "smooth", title: "平滑與簡化",
+    api: "Path.simplify(tolerance)、Path.smooth({ type: \"catmull-rom\" })",
+    desc: "手繪筆跡會留下上百個原始取樣點（灰點）。simplify() 用最小平方法擬合出少量貝茲曲線；smooth() 則先每隔幾點取一點，再替每個錨點算出平滑把手。彩色線是處理後的路徑，方點與把手就是 Paper.js 產生的結果，強度越高錨點越少。",
+    hint: "在畫布上手繪・切換演算法、拖動強度看錨點數變化",
+    mount(ctx) {
+      let mode = 0, strength = 3, userStrokes = 0;
+      const MAX = 4;
+      ctx.group(["simplify()", "smooth()"], 0, (i) => { mode = i; reprocess(); });
+      ctx.slider("強度", { min: 1, max: 10, step: 1, value: 3 }, (v) => { strength = v; reprocess(); });
+      ctx.button("清除", () => clearAll());
+      const pp = paperScene(ctx);
+      const { scope, canvas } = pp;
+      const tag = htmlTag(ctx);
+      const rawLayer = new scope.Layer();
+      const outLayer = new scope.Layer();
+      const strokes = [];
+      let live = null, auto = null, autoCount = 0, pauseUntil = 0;
+
+      const area = () => {
+        const { width: W, height: H } = pp.size();
+        const top = belowControls(ctx);
+        return new scope.Rectangle(20, top, W - 40, Math.max(80, H - top - 60));
+      };
+      function process(pts) {
+        let path;
+        if (mode === 0) {
+          path = new scope.Path({ segments: pts, insert: false });
+          path.simplify(strength * 1.5);
+        } else {
+          const k = strength + 1;
+          const keep = pts.filter((_, i) => i % k === 0);
+          if (keep[keep.length - 1] !== pts[pts.length - 1]) keep.push(pts[pts.length - 1]);
+          path = new scope.Path({ segments: keep, insert: false });
+          path.smooth({ type: "catmull-rom", factor: 0.5 });
+        }
+        return path;
+      }
+      function startStroke(p, color) {
+        const line = new scope.Path({ segments: [p], strokeColor: "rgba(200,205,215,0.25)", strokeWidth: 1, parent: rawLayer });
+        const dots = new scope.CompoundPath({ fillColor: "rgba(200,205,215,0.55)", parent: rawLayer });
+        live = { pts: [p], line, dots, color };
+        addDot(p);
+      }
+      function addDot(p) {
+        live.dots.addChild(new scope.Path.Circle({ center: p, radius: 1.6, insert: false }));
+      }
+      function extend(p) {
+        const last = live.pts[live.pts.length - 1];
+        if (p.getDistance(last) < 3) return;
+        live.pts.push(p);
+        live.line.add(p);
+        addDot(p);
+      }
+      function finish() {
+        const s = live;
+        live = null;
+        if (s.pts.length < 3) { s.line.remove(); s.dots.remove(); return; }
+        s.line.remove();
+        strokes.push(s);
+        while (strokes.length > MAX) { const old = strokes.shift(); old.dots.remove(); old.out?.remove(); }
+        styleOut(s);
+      }
+      function styleOut(s) {
+        s.out?.remove();
+        s.out = process(s.pts);
+        s.out.strokeColor = s.color;
+        s.out.strokeWidth = 3.5;
+        s.out.strokeCap = "round";
+        s.out.strokeJoin = "round";
+        s.out.selectedColor = s.color;
+        outLayer.addChild(s.out);
+        s.out.fullySelected = true;
+        const raw = s.pts.length, segs = s.out.segments.length;
+        const what = mode === 0 ? `simplify(容差 ${(strength * 1.5).toFixed(1)})` : `smooth()，每 ${strength + 1} 點取 1`;
+        tag(`<b>${what}</b><br>原始 ${raw} 點 → ${segs} 個錨點（少 ${Math.round((1 - segs / raw) * 100)}%）`, true);
+      }
+      function reprocess() {
+        scope.activate();
+        strokes.forEach(styleOut);
+        if (!strokes.length) tag(`<b>${mode === 0 ? "simplify()" : "smooth()"}</b><br>強度 ${strength}`, true);
+        pp.view.update();
+      }
+      function clearAll() {
+        scope.activate();
+        for (const s of strokes) { s.dots.remove(); s.out?.remove(); }
+        strokes.length = 0;
+        if (live) { live.line.remove(); live.dots.remove(); live = null; }
+        auto = null;
+        userStrokes = 0;
+        autoCount = 0;
+        pauseUntil = 0;
+        pp.view.update();
+      }
+      // Cursive "eeee" loops with hand jitter, laid out in three horizontal bands.
+      function scribble() {
+        const a = area(), band = autoCount % 3;
+        const cy = a.y + a.height * (0.2 + 0.3 * band);
+        const r = Math.min(a.height * 0.11, a.width * 0.05);
+        const loops = Math.max(3, Math.round(a.width / (r * 4.2)));
+        const seed = autoCount * 1.7;
+        const pts = [];
+        const n = loops * 46;
+        for (let i = 0; i < n; i++) {
+          const s = i / (n - 1), th = s * Math.PI * 2 * loops;
+          const x = a.x + a.width * (0.04 + 0.9 * s) + Math.cos(th + Math.PI) * r * 0.9 + (Math.random() - 0.5) * 2.4;
+          const y = cy - Math.sin(th) * r * 1.5 + Math.sin(s * 4 + seed) * r * 0.8 + (Math.random() - 0.5) * 2.4;
+          pts.push(new scope.Point(x, y));
+        }
+        autoCount++;
+        return { pts, i: 0, color: PAL[(autoCount + 1) % PAL.length] };
+      }
+
+      pp.on("pointerdown", (e, p) => {
+        canvas.setPointerCapture(e.pointerId);
+        if (live) finish();
+        auto = null;
+        userStrokes++;
+        startStroke(p, PAL[(userStrokes + 2) % PAL.length]);
+      });
+      pp.on("pointermove", (e, p) => { if (live && !auto) extend(p); });
+      const up = () => { if (live && !auto) finish(); };
+      pp.on("pointerup", up);
+      pp.on("pointercancel", up);
+
+      scope.activate();
+      canvas.style.cursor = "crosshair";
+      // Seed one finished stroke so the scene never starts empty.
+      const first = scribble();
+      startStroke(first.pts[0], first.color);
+      first.pts.slice(1).forEach(extend);
+      finish();
+      pp.tick(() => {
+        if (userStrokes > 0 || performance.now() < pauseUntil) return;
+        if (!auto) { auto = scribble(); startStroke(auto.pts[0], auto.color); auto.i = 1; }
+        for (let k = 0; k < 5 && auto.i < auto.pts.length; k++) extend(auto.pts[auto.i++]);
+        if (auto.i >= auto.pts.length) { finish(); auto = null; pauseUntil = performance.now() + 1200; }
+      });
+    },
+  },
+
+  // 3. Hit testing: segments, handles, strokes and fills
+  {
+    id: "hittest", title: "命中測試",
+    api: "project.hitTest(point, { segments, handles, stroke, fill, tolerance })",
+    desc: "hitTest() 一次回答「游標底下是什麼」：錨點 segment、入／出把手 handle-in／handle-out、線段 stroke（附曲線上的位置、切線與法線）、或填色 fill（圓環中間的洞依 evenodd 規則不算）。拖曳錨點或把手可改形，按在線段上會用 divideAt() 插入新錨點，按在填色上可整塊移動。",
+    hint: "移到圖形上看命中類型・拖曳錨點、把手或線段・調整容差",
+    mount(ctx) {
+      let tol = 8, handles = true;
+      ctx.slider("容差", { min: 0, max: 24, step: 1, value: 8, format: (v) => `${v} px` }, (v) => { tol = v; });
+      ctx.toggle("顯示把手", true, (v) => { handles = v; pp.act(() => shapes.forEach((s) => (s.fullySelected = v)))(); });
+      const pp = paperScene(ctx);
+      const { scope, canvas } = pp;
+      const tag = htmlTag(ctx);
+      const shapeLayer = new scope.Layer();
+      const overlay = new scope.Layer();
+      overlay.locked = true; // locked items are skipped by hitTest()
+      const TYPE = { segment: "錨點 segment", "handle-in": "入把手 handle-in", "handle-out": "出把手 handle-out", stroke: "線段 stroke", fill: "填色 fill" };
+      let shapes = [], drag = null, area = null;
+
+      function build() {
+        shapeLayer.removeChildren();
+        const { width: W, height: H } = pp.size();
+        const top = belowControls(ctx);
+        area = new scope.Rectangle(16, top, W - 32, Math.max(80, H - top - 64));
+        const s = Math.min(area.width, area.height * 1.15) * 0.42;
+        const P = (fx, fy) => new scope.Point(area.x + area.width * fx, area.y + area.height * fy);
+        const rr = new scope.Path.Rectangle({
+          rectangle: new scope.Rectangle(P(0.24, 0.27).subtract([s * 0.55, s * 0.4]), new scope.Size(s * 1.1, s * 0.8)),
+          radius: s * 0.2, fillColor: rgba(PAL[1], 0.75), strokeColor: PAL[1], strokeWidth: 2, parent: shapeLayer,
+        });
+        const star = new scope.Path.Star({ center: P(0.74, 0.3), points: 5, radius1: s * 0.22, radius2: s * 0.5, fillColor: rgba(PAL[0], 0.8), strokeColor: PAL[0], strokeWidth: 2, parent: shapeLayer });
+        const wave = new scope.Path({ segments: [P(0.06, 0.9), P(0.26, 0.6), P(0.46, 0.94), P(0.62, 0.64)], strokeColor: PAL[2], strokeWidth: 8, strokeCap: "round", parent: shapeLayer });
+        wave.smooth({ type: "continuous" });
+        const c = P(0.85, 0.76);
+        const ring = new scope.CompoundPath({
+          children: [new scope.Path.Circle({ center: c, radius: s * 0.4, insert: false }), new scope.Path.Circle({ center: c, radius: s * 0.19, insert: false })],
+          fillRule: "evenodd", fillColor: rgba(PAL[3], 0.75), strokeColor: PAL[3], strokeWidth: 2, parent: shapeLayer,
+        });
+        rr.data.name = "圓角方塊";
+        star.data.name = "星形";
+        wave.data.name = "開放曲線（只有描邊）";
+        ring.data.name = "圓環 CompoundPath";
+        shapes = [rr, star, wave, ring];
+        shapes.forEach((sh) => { sh.selectedColor = "#ffffff"; sh.fullySelected = handles; });
+      }
+      const owner = (item) => (item.parent instanceof scope.CompoundPath ? item.parent : item);
+      const opts = () => ({ segments: true, handles, stroke: true, fill: true, tolerance: tol });
+      const line = (a, b, color, w = 2) => new scope.Path({ segments: [a, b], strokeColor: color, strokeWidth: w, parent: overlay });
+
+      function show(hit, p, probe) {
+        overlay.removeChildren();
+        if (probe) {
+          line(p.add([-9, 0]), p.add([9, 0]), "#ffffff", 1.5);
+          line(p.add([0, -9]), p.add([0, 9]), "#ffffff", 1.5);
+        }
+        if (tol > 0) new scope.Path.Circle({ center: p, radius: tol, strokeColor: "rgba(255,255,255,0.45)", strokeWidth: 1, dashArray: [3, 3], parent: overlay });
+        if (!hit) {
+          canvas.style.cursor = "";
+          tag(`<b>沒有命中</b><br>tolerance ${tol} px`);
+          return;
+        }
+        const seg = hit.segment;
+        if (hit.type === "segment") {
+          new scope.Path.Circle({ center: seg.point, radius: 9, strokeColor: PAL[0], strokeWidth: 2.5, parent: overlay });
+        } else if (hit.type === "handle-in" || hit.type === "handle-out") {
+          const hp = seg.point.add(hit.type === "handle-in" ? seg.handleIn : seg.handleOut);
+          line(seg.point, hp, PAL[1], 2);
+          new scope.Path.Circle({ center: hp, radius: 8, strokeColor: PAL[1], strokeWidth: 2.5, parent: overlay });
+        } else if (hit.type === "stroke") {
+          const loc = hit.location, tg = loc.tangent, nv = loc.normal;
+          line(loc.point.subtract(tg.multiply(40)), loc.point.add(tg.multiply(40)), PAL[0], 2);
+          line(loc.point, loc.point.add(nv.multiply(32)), PAL[1], 2);
+          new scope.Path.Circle({ center: loc.point, radius: 5, fillColor: PAL[2], strokeColor: "#ffffff", strokeWidth: 1.5, parent: overlay });
+        } else if (hit.type === "fill") {
+          const o = hit.item.clone({ insert: false });
+          o.selected = false;
+          o.fillColor = null;
+          o.strokeColor = PAL[0];
+          o.strokeWidth = 3;
+          o.dashArray = [8, 5];
+          overlay.addChild(o);
+        }
+        canvas.style.cursor = hit.type === "fill" ? "move" : hit.type === "stroke" ? "copy" : "pointer";
+        let extra = `tolerance ${tol} px`;
+        if (hit.type === "stroke") extra = `offset ${hit.location.offset.toFixed(0)} px・黃＝切線、藍＝法線`;
+        tag(`<b>${TYPE[hit.type] || hit.type}</b>・${owner(hit.item).data.name || ""}<br>${extra}`);
+      }
+
+      pp.on("pointerdown", (e, p) => {
+        const hit = pp.project.hitTest(p, opts());
+        if (!hit) return;
+        canvas.setPointerCapture(e.pointerId);
+        if (hit.type === "stroke") {
+          // Clicking a curve splits it there and drags the new anchor.
+          const path = hit.location.path;
+          const seg = path.divideAt(hit.location);
+          if (seg) { owner(path).fullySelected = handles; drag = { type: "segment", seg }; }
+        } else if (hit.type === "segment" || hit.type === "handle-in" || hit.type === "handle-out") {
+          drag = { type: hit.type, seg: hit.segment };
+        } else {
+          drag = { type: "fill", item: hit.item, last: p };
+        }
+      });
+      pp.on("pointermove", (e, p) => {
+        if (!drag) return;
+        if (drag.type === "segment") drag.seg.point = p;
+        else if (drag.type === "handle-in") drag.seg.handleIn = p.subtract(drag.seg.point);
+        else if (drag.type === "handle-out") drag.seg.handleOut = p.subtract(drag.seg.point);
+        else { drag.item.position = drag.item.position.add(p.subtract(drag.last)); drag.last = p; }
+      });
+      const end = () => { drag = null; };
+      pp.on("pointerup", end);
+      pp.on("pointercancel", end);
+
+      // Idle tour: the probe glides between spots that produce each hit type (and the ring's hole, which misses).
+      const handleOf = (path) => {
+        const seg = path.segments.find((s) => s.handleOut.length > 6) || path.segments[0];
+        return seg.point.add(seg.handleOut);
+      };
+      const TOUR = [
+        () => shapes[0].segments[1].point,
+        () => handleOf(shapes[0]),
+        () => shapes[2].getPointAt(shapes[2].length * 0.4),
+        () => handleOf(shapes[2]),
+        () => shapes[3].position.add([shapes[3].bounds.width * 0.3, 0]),
+        () => shapes[3].position,
+        () => shapes[1].segments[0].point,
+        () => shapes[1].position,
+      ];
+      const ease = (k) => k * k * (3 - 2 * k);
+
+      pp.onResize = build;
+      scope.activate();
+      build();
+      pp.tick((t) => {
+        const live = pp.live() && pp.pointer;
+        let p = live ? pp.pointer : null;
+        if (!p) {
+          const step = Math.floor(t / 1.8), k = ease(Math.min(1, (t % 1.8) / 0.7));
+          const from = TOUR[(step + TOUR.length - 1) % TOUR.length](), to = TOUR[step % TOUR.length]();
+          p = from.add(to.subtract(from).multiply(k));
+        }
+        show(pp.project.hitTest(p, opts()), p, !live);
+      });
+    },
+  },
+
+  // 4. Symbols: one definition, many instances
+  {
+    id: "symbol", title: "符號實例",
+    api: "SymbolDefinition、SymbolItem、definition.item = newItem",
+    desc: "上百個圖形其實只存一份幾何：SymbolDefinition 保存一次路徑，每個 SymbolItem 只帶自己的變形矩陣。轉向游標、靠近放大都只改矩陣；切換圖形時只改 definition.item，所有實例在同一幀一起換掉。",
+    hint: "移動游標讓圖形轉向・切換圖形或調整數量",
+    mount(ctx) {
+      let shape = 0, count = 400;
+      ctx.group(["花", "星", "箭頭"], 0, (i) => { shape = i; pp.act(swap)(); });
+      ctx.slider("數量", { min: 50, max: 2000, step: 50, value: 400 }, (v) => { count = v; pp.act(place)(); });
+      const pp = paperScene(ctx);
+      const { scope } = pp;
+      const tag = htmlTag(ctx);
+      const layer = new scope.Layer();
+      const top = new scope.Layer();
+      const SIZE = 40; // definitions are drawn about 40 px wide; instances scale them
+      let items = [], sigma = 100, area = null;
+
+      function makeShape(i) {
+        if (i === 0) {
+          const petals = new scope.Path.Star({ center: [0, 0], points: 5, radius1: 7, radius2: 20, insert: false });
+          petals.smooth({ type: "catmull-rom", factor: 0.6 });
+          petals.fillColor = { gradient: { stops: [PAL[0], PAL[4], PAL[2]], radial: true }, origin: [0, 0], destination: [20, 0] };
+          const core = new scope.Path.Circle({ center: [0, 0], radius: 4.5, fillColor: "#0e1013", insert: false });
+          return new scope.Group({ children: [petals, core], insert: false });
+        }
+        if (i === 1) {
+          return new scope.Path.Star({ center: [0, 0], points: 5, radius1: 8, radius2: 20, fillColor: PAL[1], strokeColor: "#ffffff", strokeWidth: 1, insert: false });
+        }
+        return new scope.Path({
+          segments: [[-18, -6], [3, -6], [3, -14], [20, 0], [3, 14], [3, 6], [-18, 6]], closed: true,
+          fillColor: { gradient: { stops: [PAL[5], PAL[2]] }, origin: [-18, 0], destination: [20, 0] }, insert: false,
+        });
+      }
+      const def = new scope.SymbolDefinition(makeShape(0));
+
+      function place() {
+        layer.removeChildren();
+        const { width: W, height: H } = pp.size();
+        const t0 = belowControls(ctx);
+        area = new scope.Rectangle(10, t0, W - 20, Math.max(60, H - t0 - 50));
+        const cell = Math.sqrt((area.width * area.height) / count);
+        sigma = Math.max(60, Math.min(area.width, area.height) * 0.22);
+        const c = area.center;
+        items = [];
+        // Sunflower (phyllotaxis) layout, keeping only points inside the area.
+        for (let i = 0; items.length < count && i < count * 4; i++) {
+          const r = cell * 0.565 * Math.sqrt(i + 0.5), a = i * 2.39996;
+          const x = c.x + r * Math.cos(a), y = c.y + r * Math.sin(a);
+          if (!area.contains(new scope.Point(x, y))) continue;
+          const it = new scope.SymbolItem(def);
+          it.data = { x, y, base: (cell * 0.95) / SIZE };
+          layer.addChild(it);
+          items.push(it);
+        }
+      }
+      function swap() {
+        def.item = makeShape(shape);
+      }
+      const marker = new scope.Path.Circle({ center: [0, 0], radius: 7, strokeColor: "#ffffff", strokeWidth: 1.5, parent: top });
+
+      pp.onResize = place;
+      scope.activate();
+      place();
+      pp.tick((t) => {
+        const p = pp.live() && pp.pointer ? pp.pointer : area.center.add([Math.sin(t * 0.5) * area.width * 0.38, Math.sin(t * 0.8) * area.height * 0.36]);
+        marker.position = p;
+        const s2 = 2 * sigma * sigma;
+        for (const it of items) {
+          const d = it.data, dx = p.x - d.x, dy = p.y - d.y;
+          const a = Math.atan2(dy, dx), s = d.base * (1 + 1.1 * Math.exp(-(dx * dx + dy * dy) / s2));
+          const cs = Math.cos(a) * s, sn = Math.sin(a) * s;
+          // Only the instance matrix changes; the shared geometry is untouched.
+          it.matrix.set(cs, sn, -sn, cs, d.x, d.y);
+        }
+        const segs = countSegs(def.item);
+        tag(`<b>${items.length}</b> 個 SymbolItem 共用 1 份定義（${segs} 個錨點）<br>若各自複製：${(items.length * segs).toLocaleString()} 個錨點`);
+      });
+    },
+  },
+
+  // 5. Intersections, text on a path, tangents and normals
+  {
+    id: "along", title: "交點與沿路徑",
+    api: "getIntersections()、getPointAt() / getTangentAt() / getNormalAt()、path.length",
+    desc: "一條隨時間起伏的平滑曲線：getIntersections() 即時找出它與旋轉星形的交點（黃點）；文字每個字用 getPointAt() 取位置、getTangentAt() 取方向，沿著曲線跑馬燈；紫色短線是每隔一段距離用 getNormalAt() 算出的法線。",
+    hint: "移動游標帶著星形穿過曲線・調整波幅、開關法線",
+    mount(ctx) {
+      let amp = 0.6, normals = true;
+      ctx.slider("波幅", { min: 0, max: 1, step: 0.05, value: 0.6, format: (v) => `${Math.round(v * 100)}%` }, (v) => { amp = v; });
+      ctx.toggle("法線", true, (v) => { normals = v; });
+      const pp = paperScene(ctx);
+      const { scope } = pp;
+      const tag = htmlTag(ctx);
+      const back = new scope.Layer();
+      const front = new scope.Layer();
+      const ticks = new scope.CompoundPath({ strokeColor: rgba(PAL[5], 0.8), strokeWidth: 1.5, parent: back });
+      const wave = new scope.Path({ strokeColor: PAL[1], strokeWidth: 3, parent: back });
+      for (let i = 0; i < 8; i++) wave.add(new scope.Point(i * 10, 0));
+      const marks = new scope.Group({ parent: front });
+      let star = null;
+      const CHARS = [..."Paper.js 讓文字沿著貝茲曲線排列：getPointAt() 給位置，getTangentAt() 給方向。　　"];
+      // One PointText per character; the sentence repeats as many times as the path length needs.
+      const copies = [];
+      const makeCopy = () => CHARS.map((ch) => new scope.PointText({
+        point: [0, 0], content: ch, justification: "center", fontFamily: FONT, fontWeight: "bold", fontSize: 17, fillColor: "#ece9df", parent: front,
+      }));
+      copies.push(makeCopy());
+      const adv = copies[0].map((g, i) => (CHARS[i].trim() ? Math.max(g.bounds.width, 5) : 10));
+      const GAP = 1.5;
+      const total = adv.reduce((a, b) => a + b, 0) + GAP * adv.length;
+
+      function layout() {
+        star?.remove();
+        const { width: W, height: H } = pp.size();
+        const r = clamp(Math.min(W, H) * 0.11, 34, 80);
+        star = new scope.Path.Star({ center: [W / 2, H / 2], points: 5, radius1: r * 0.45, radius2: r, fillColor: rgba(PAL[2], 0.2), strokeColor: PAL[2], strokeWidth: 2, parent: back });
+        star.smooth({ type: "geometric", factor: 0.3 });
+      }
+      pp.onResize = layout;
+      scope.activate();
+      layout();
+      pp.tick((t) => {
+        const { width: W, height: H } = pp.size();
+        const top = belowControls(ctx);
+        const x0 = 24, x1 = W - 24, cy = top + (H - top - 40) * 0.5, A = (H - top) * 0.27 * amp;
+        const n = wave.segments.length;
+        for (let i = 0; i < n; i++) {
+          const x = x0 + ((x1 - x0) * i) / (n - 1);
+          const y = cy + A * Math.sin(i * 0.95 + t * 1.3) * (0.65 + 0.35 * Math.sin(t * 0.4 + i));
+          wave.segments[i].point = new scope.Point(x, y);
+        }
+        wave.smooth({ type: "continuous" });
+        const L = wave.length;
+
+        star.position = pp.live() && pp.pointer ? pp.pointer : new scope.Point(x0 + (x1 - x0) * (0.5 + 0.4 * Math.sin(t * 0.45)), cy + A * 0.5 * Math.cos(t * 0.9));
+        star.rotate(0.6);
+        const xs = wave.getIntersections(star);
+        marks.removeChildren();
+        for (const loc of xs) new scope.Path.Circle({ center: loc.point, radius: 6, fillColor: PAL[0], strokeColor: "#0e1013", strokeWidth: 2, parent: marks });
+
+        ticks.removeChildren();
+        if (normals) {
+          for (let o = 0; o <= L; o += 18) {
+            const pt = wave.getPointAt(o), nv = wave.getNormalAt(o);
+            if (pt && nv) ticks.addChild(new scope.Path({ segments: [pt, pt.subtract(nv.multiply(16))], insert: false }));
+          }
+        }
+
+        // Marquee: each glyph sits at its own offset along the curve, rotated to the tangent.
+        while (copies.length < Math.ceil(L / total) + 1) copies.push(makeCopy());
+        const start = -((t * 70) % total);
+        let shown = 0;
+        copies.forEach((copy, c) => {
+          let o = start + c * total;
+          copy.forEach((g, i) => {
+            const mid = o + adv[i] / 2;
+            o += adv[i] + GAP;
+            const pt = mid >= 0 && mid <= L - 0.5 ? wave.getPointAt(mid) : null;
+            const tg = pt && wave.getTangentAt(mid);
+            g.visible = !!tg;
+            if (!tg) return;
+            if (CHARS[i].trim()) shown++;
+            g.matrix.set(tg.x, tg.y, -tg.y, tg.x, pt.x + tg.y * 8, pt.y - tg.x * 8);
+          });
+        });
+        tag(`路徑長 <b>${Math.round(L)}</b> px・交點 <b>${xs.length}</b> 個<br>${shown} 個字沿 getPointAt()／getTangentAt() 排列`);
+      });
+    },
+  },
+
+  // 6. Division raster: quadtree split coloured by the photo's average colour
+  {
+    id: "raster", title: "影像分割",
+    api: "Raster、raster.getAverageColor(rect)、layer.hitTest()",
+    desc: "照片載入成隱藏的 Raster，畫面上只有色塊。游標經過的方格用 hitTest() 找出來，切成四格，每一格用 getAverageColor() 取照片那一塊的平均色。越切越細，照片就從色塊中浮現。",
+    hint: "移動游標把方格越切越細・游標停住會一路切到最小格",
+    mount(ctx) {
+      let minSize = 8, round = false, photo = 6, raster = null, ready = false, cellCount = 0, lastP = null;
+      ctx.slider("最小格", { min: 6, max: 32, step: 2, value: 8, format: (v) => `${v} px` }, (v) => { minSize = v; });
+      ctx.toggle("圓角", false, (v) => { round = v; pp.act(restyle)(); });
+      ctx.button("換一張", () => { photo = (photo % 8) + 1; pp.act(load)(); });
+      ctx.button("重設", () => pp.act(reset)());
+      const pp = paperScene(ctx);
+      const { scope } = pp;
+      const tag = htmlTag(ctx);
+      const cells = new scope.Layer();
+      const overlay = new scope.Layer();
+      overlay.locked = true;
+      const probe = new scope.Path.Circle({ center: [0, 0], radius: 10, strokeColor: "#ffffff", strokeWidth: 1.5, parent: overlay });
+
+      function makeCell(rect, color) {
+        const c = color || raster.getAverageColor(rect) || new scope.Color("#1a1d24");
+        const inner = rect.expand(-0.6);
+        const item = new scope.Path.Rectangle({ rectangle: inner, radius: round ? inner.width * 0.3 : 0, fillColor: c, parent: cells });
+        item.data.rect = rect;
+        item.data.color = c;
+        cellCount++;
+        return item;
+      }
+      function reset() {
+        cells.removeChildren();
+        cellCount = 0;
+        if (!ready) return;
+        const { width: W, height: H } = pp.size();
+        raster.fitBounds(pp.view.bounds, true);
+        let s0 = minSize;
+        while (s0 * 2 <= Math.min(W, H) / 7) s0 *= 2;
+        const cols = Math.ceil(W / s0), rows = Math.ceil(H / s0);
+        const ox = (W - cols * s0) / 2, oy = (H - rows * s0) / 2;
+        for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) makeCell(new scope.Rectangle(ox + x * s0, oy + y * s0, s0, s0));
+      }
+      function restyle() {
+        const data = cells.children.map((c) => [c.data.rect, c.data.color]);
+        cells.removeChildren();
+        cellCount = 0;
+        for (const [r, c] of data) makeCell(r, c);
+      }
+      function load() {
+        ready = false;
+        raster?.remove();
+        cells.removeChildren();
+        tag("<b>載入照片中</b>", true);
+        raster = new scope.Raster({ source: PHOTO(photo), visible: false, insertAbove: cells });
+        raster.onLoad = () => { if (!ctx.active) return; scope.activate(); ready = true; reset(); pp.view.update(); };
+        raster.onError = () => tag(`<b>照片載入失敗</b><br>${PHOTO(photo)}`, true);
+      }
+      // Replace a cell by four half-size cells (one level per call).
+      function split(item) {
+        const r = item.data.rect;
+        if (r.width / 2 < minSize) return false;
+        item.remove();
+        cellCount--;
+        const h = r.width / 2;
+        for (const [dx, dy] of [[0, 0], [h, 0], [0, h], [h, h]]) makeCell(new scope.Rectangle(r.x + dx, r.y + dy, h, h));
+        return true;
+      }
+      // The pointer splits the one cell hitTest() finds under it.
+      function splitAt(p) {
+        const hit = cells.hitTest(p, { fill: true, tolerance: 0 });
+        if (hit) split(hit.item);
+      }
+      // The idle probe acts as a round brush so the photo emerges without a pointer.
+      function splitAround(p, R, budget) {
+        for (const item of cells.children.slice()) {
+          const r = item.data.rect;
+          const dx = clamp(p.x, r.left, r.right) - p.x, dy = clamp(p.y, r.top, r.bottom) - p.y;
+          if (dx * dx + dy * dy < R * R && split(item) && --budget <= 0) return;
+        }
+      }
+
+      pp.onResize = reset;
+      scope.activate();
+      load();
+      pp.tick((t) => {
+        if (!ready) return;
+        const live = pp.live() && pp.pointer;
+        const { width: W, height: H } = pp.size();
+        const p = live ? pp.pointer : new scope.Point(
+          W / 2 + Math.sin(t * 0.37) * W * 0.42 + Math.sin(t * 1.3) * W * 0.05,
+          H / 2 + Math.sin(t * 0.53 + 1) * H * 0.4 + Math.cos(t * 1.1) * H * 0.05);
+        probe.position = p;
+        probe.visible = !live;
+        if (live) {
+          // Sample the segment since the last frame so fast moves do not skip cells.
+          const from = lastP || p, dist = from.getDistance(p), steps = Math.min(40, Math.ceil(dist / (minSize / 2)));
+          for (let i = 1; i <= steps; i++) splitAt(from.add(p.subtract(from).multiply(i / steps)));
+          splitAt(p);
+        } else {
+          splitAround(p, probe.bounds.width * 1.6, 16);
+        }
+        lastP = p;
+        tag(`<b>${cellCount.toLocaleString()}</b> 格・最小 ${minSize} px<br>每格顏色＝getAverageColor(該格)`);
+      });
+    },
+  },
+
+  // 7. SVG import / export round trip
+  {
+    id: "svg", title: "SVG 匯入匯出",
+    api: "project.importSVG(markup, { expandShapes: true })、project.exportSVG({ asString: true, precision })",
+    desc: "左邊是一段手寫的 SVG 字串（rect、path、circle、polygon、ellipse），用 importSVG() 轉成 Paper.js 路徑後就能逐點變形。右邊每 0.4 秒呼叫一次 exportSVG()，上方是瀏覽器直接顯示匯出的 SVG，下方是原始碼與位元組數；precision 越低檔案越小、座標越粗。",
+    hint: "游標靠近圖形會推開錨點・切換精度比較檔案大小",
+    mount(ctx) {
+      let precision = 1, animate = true;
+      const PREC = [0, 1, 3];
+      ctx.group(PREC.map((p) => `精度 ${p}`), 1, (i) => { precision = PREC[i]; exportNow(); });
+      ctx.toggle("動畫", true, (v) => { animate = v; });
+      ctx.button("重新匯入", () => pp.act(importIt)());
+      const stage = Showcase.h("div", { class: "svg-stage" });
+      const cap = Showcase.h("div", { class: "svg-cap" }, "exportSVG()");
+      const preview = Showcase.h("div", { class: "svg-preview" });
+      const code = Showcase.h("pre", { class: "svg-code" });
+      ctx.el.append(stage, Showcase.h("div", { class: "svg-side" }, cap, preview, code));
+      const pp = paperScene(ctx, { parent: stage });
+      const { scope } = pp;
+      const SRC = `<svg xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="320" height="220" rx="28" fill="#1a1f2b" stroke="#3a4256" stroke-width="2"/>
+  <path d="M28 160 C 78 64, 128 64, 160 122 S 246 196, 292 92" fill="none" stroke="#4cc9f0" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="92" cy="74" r="30" fill="#f72585"/>
+  <polygon points="226,34 262,98 190,98" fill="#f7df1e"/>
+  <ellipse cx="246" cy="164" rx="40" ry="24" fill="#7bd389" fill-opacity="0.9"/>
+</svg>`;
+      let paths = [], scale = 1;
+
+      function fitArea() {
+        const sr = stage.getBoundingClientRect(), cr = ctx.controls.getBoundingClientRect();
+        const { width: W, height: H } = pp.size();
+        const top = cr.left < sr.right && cr.bottom > sr.top ? cr.bottom - sr.top + 10 : 16;
+        return new scope.Rectangle(16, top, W - 32, Math.max(40, H - top - 16));
+      }
+      function importIt() {
+        pp.project.activeLayer.removeChildren();
+        const g = pp.project.importSVG(SRC, { expandShapes: true });
+        g.fitBounds(fitArea());
+        scale = g.bounds.width / 320;
+        pp.project.activeLayer.selectedColor = PAL[0];
+        paths = g.getItems({ class: scope.Path }).filter((p) => !p.clipMask);
+        for (const p of paths) {
+          p.data.base = p.segments.map((s) => s.point.clone());
+          p.fullySelected = true;
+        }
+        exportNow();
+      }
+      function exportNow() {
+        scope.activate();
+        const svg = pp.project.exportSVG({ asString: true, precision, bounds: "content" });
+        preview.innerHTML = svg;
+        code.textContent = svg.replace(/></g, ">\n<");
+        const bytes = new TextEncoder().encode(svg).length;
+        const anchors = paths.reduce((s, p) => s + p.segments.length, 0);
+        cap.innerHTML = `exportSVG({ precision: ${precision} })：<b>${bytes.toLocaleString()}</b> bytes・${paths.length} 條路徑・${anchors} 個錨點`;
+      }
+
+      pp.onResize = importIt;
+      scope.activate();
+      importIt();
+      ctx.interval(exportNow, 400);
+      pp.tick((t) => {
+        if (!animate) return;
+        const p = pp.live() ? pp.pointer : null, R = 90 * Math.max(0.6, scale);
+        paths.forEach((path, i) => {
+          path.segments.forEach((seg, j) => {
+            const b = path.data.base[j];
+            let x = b.x + Math.sin(t * 1.6 + j * 1.3 + i) * 5 * scale;
+            let y = b.y + Math.cos(t * 1.3 + j * 0.9 + i * 2) * 5 * scale;
+            if (p) {
+              const dx = x - p.x, dy = y - p.y, d = Math.hypot(dx, dy);
+              if (d < R && d > 0.01) { const k = ((1 - d / R) ** 2 * 40 * scale) / d; x += dx * k; y += dy * k; }
+            }
+            seg.point = new scope.Point(x, y);
+          });
+        });
+      });
+    },
+  },
+
+  // 8. Stress test: union of N moving circles every frame
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "PathItem.unite()：逐一兩兩聯集 vs. CompoundPath 一次聯集",
+    desc: "N 顆移動中的圓，每一幀合併成一條外框路徑。「逐一」是 a.unite(b).unite(c)… 的直覺寫法；「一次」先把所有圓放進一個 CompoundPath，再呼叫一次 unite() 統一解交點與繞數。兩種寫法結果相同（面積與錨點數一致），成本差很多。",
+    hint: "按「自動加壓」開始・切換聯集寫法後再測一次比較",
+    mount(ctx) {
+      ctx.controls.classList.add("bottom");
+      let mode = 1, n = 16, ms = 0, anchors = 0, balls = [], failed = 0;
+      const host = Showcase.h("div", { class: "stress-host" });
+      ctx.el.append(host);
+      ctx.group(["逐一 unite()", "一次 unite()"], 1, (i) => { mode = i; ms = 0; });
+      const pp = paperScene(ctx, { parent: host });
+      const { scope } = pp;
+      const tag = htmlTag(ctx, host);
+      const layer = new scope.Layer();
+
+      function makeBalls() {
+        balls = Array.from({ length: n }, (_, i) => ({
+          ax: 0.25 + Math.random() * 0.7, ay: 0.25 + Math.random() * 0.7,
+          fx: 0.2 + Math.random() * 0.5, fy: 0.2 + Math.random() * 0.5,
+          px: Math.random() * 6.28, py: Math.random() * 6.28, k: 0.8 + Math.random() * 0.5, c: i,
+        }));
+      }
+      makeBalls();
+      scope.activate();
+      pp.tick((t) => {
+        const { width: W, height: H } = pp.size();
+        const base = clamp(Math.sqrt((W * H) / n) * 0.42, 5, 70);
+        const circles = balls.map((b) => new scope.Path.Circle({
+          center: [W / 2 + Math.sin(t * b.fx + b.px) * b.ax * (W / 2 - base), H / 2 + Math.sin(t * b.fy + b.py) * b.ay * (H / 2 - base)],
+          radius: base * b.k, insert: false,
+        }));
+        const t0 = performance.now();
+        let res = null, src;
+        try {
+          if (mode === 0) {
+            res = circles[0];
+            for (let i = 1; i < circles.length; i++) res = res.unite(circles[i], { insert: false });
+            src = new scope.CompoundPath({ children: circles, insert: false });
+          } else {
+            src = new scope.CompoundPath({ children: circles, insert: false });
+            res = src.unite(undefined, { insert: false });
+          }
+        } catch (e) {
+          // Paper's boolean ops can fail on degenerate (tangent) geometry; skip that frame but keep it visible.
+          failed++;
+          console.warn("unite() failed on this frame", e);
+          src = src || new scope.CompoundPath({ children: circles, insert: false });
+        }
+        ms = smooth(ms, performance.now() - t0);
+        layer.removeChildren();
+        src.fillColor = null;
+        src.strokeColor = "rgba(255,255,255,0.16)";
+        src.strokeWidth = 1;
+        layer.addChild(src);
+        if (res) {
+          res.fillColor = "rgba(157,140,255,0.32)";
+          res.strokeColor = PAL[0];
+          res.strokeWidth = 2;
+          layer.addChild(res);
+          anchors = countSegs(res);
+        }
+        tag(`<b>${mode ? "一次 unite()" : "逐一 unite()"}</b>・${n} 個圓<br>布林 ${ms.toFixed(1)} ms・外框 ${anchors} 個錨點${failed ? `・失敗 ${failed} 幀` : ""}`);
+      });
+      ctx.ramp({
+        label: "圓", unit: "個", minFps: 30,
+        steps: [4, 8, 16, 32, 64, 128, 256, 512],
+        initial: 2,
+        apply(v) { n = v; makeBalls(); },
+        metrics: () => ({ 寫法: mode ? "一次 unite()" : "逐一 unite()", 布林耗時: `${ms.toFixed(1)} ms`, 外框錨點: anchors }),
+        note: "量的是每一幀把 N 個圓合併成一條外框的 CPU 時間：Paper.js 先求出所有貝茲曲線兩兩的交點，在交點處切段，再依繞數（winding）決定保留哪些段。逐一寫法每合併一次就把已累積的外框重算一遍，耗時隨數量超線性上升；一次寫法只做一次全域求交，但交點數仍隨重疊程度增加。全部在主執行緒進行，沒有 GPU 參與。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

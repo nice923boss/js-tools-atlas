@@ -7,6 +7,7 @@ const IFRAME_ALLOW = "camera; microphone; midi; serial; xr-spatial-tracking; ful
 
 const stageEl = () => document.getElementById("stage");
 let current = null;
+let pendingScene = -1; // scene chip clicked before the iframe finished loading
 
 const firstEffect = (t) => (t.effect || "").split(/[、，,]/)[0].trim() || t.name;
 
@@ -54,13 +55,41 @@ function mountIframe(t) {
   frame.querySelector("iframe")?.remove();
   const loading = frame.querySelector(".loading");
   loading.classList.remove("done");
+  pendingScene = -1;
   // A fresh iframe per load keeps demo navigations out of the page's back/forward history.
   const ifr = document.createElement("iframe");
   ifr.src = `demos/${t.slug}.html`;
   ifr.title = `${t.name} 示範`;
   ifr.allow = IFRAME_ALLOW;
-  ifr.addEventListener("load", () => loading.classList.add("done"), { once: true });
+  ifr.addEventListener("load", () => {
+    loading.classList.add("done");
+    if (pendingScene >= 0) ifr.contentWindow.__showcase?.go(pendingScene);
+    pendingScene = -1;
+  }, { once: true });
   frame.prepend(ifr);
+}
+
+// Showcase demos list their scenes in demo-meta; the chips jump the iframe to a scene.
+function scenesHTML(t) {
+  const scenes = t.demo?.scenes || [];
+  if (!scenes.length) return "";
+  const chips = scenes.map((name, i) =>
+    `<button type="button" class="scene-chip" data-act="scene" data-i="${i}"${i ? "" : ' aria-current="true"'}><b>${i + 1}</b>${esc(name)}</button>`);
+  return `<div class="info-sec"><h4>示範場景（${scenes.length}）</h4><div class="scene-list">${chips.join("")}</div></div>`;
+}
+
+function markScene(i) {
+  document.querySelectorAll("#stage .scene-chip").forEach((b) => {
+    if (Number(b.dataset.i) === i) b.setAttribute("aria-current", "true");
+    else b.removeAttribute("aria-current");
+  });
+}
+
+function goScene(i) {
+  const showcase = document.querySelector("#frame iframe")?.contentWindow?.__showcase;
+  if (showcase) showcase.go(i);
+  else pendingScene = i;
+  markScene(i);
 }
 
 function infoHTML(t) {
@@ -88,6 +117,7 @@ function infoHTML(t) {
   ].filter(Boolean).join("");
   return `<div class="info">
     <div class="info-head"><h2>${esc(t.name)}</h2><div class="badges">${badges}</div></div>
+    ${scenesHTML(t)}
     <div class="info-sec"><h4>功能</h4><p>${esc(t.desc)}</p></div>
     <div class="info-sec"><h4>可做出的效果</h4><p>${esc(t.effect)}</p></div>
     <dl class="kv">${kv.map(([k, v, c]) => `<div><dt>${k}</dt><dd${c ? ` class="${c}"` : ""}>${esc(v)}</dd></div>`).join("")}</dl>
@@ -183,6 +213,12 @@ export function initStage({ onClose }) {
     else if (act === "source") openSource(current);
     else if (act === "fullscreen") document.getElementById("frame")?.requestFullscreen?.();
     else if (act === "copy-prompt") copyText(promptFor(current), "已複製提示詞");
+    else if (act === "scene") goScene(Number(btn.dataset.i));
+  });
+  window.addEventListener("message", (e) => {
+    const ifr = document.querySelector("#frame iframe");
+    if (!ifr || e.source !== ifr.contentWindow || e.data?.type !== "showcase:scene") return;
+    markScene(e.data.index);
   });
 
   const dlg = document.getElementById("source-dialog");

@@ -3,60 +3,187 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>JointJS 示範：可拖曳的組織圖</title>
+<title>JointJS 示範：8 個場景看懂圖表編輯核心與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["組織圖","形狀圖庫","路由與連接器","埠與連線規則","嵌入與群組","工具與高亮","自動排版與 JSON","極限測試"]}</script>
 <style>
   /* Dot grid on its own compositor layer: drawing it inside the paper left paint trails
      behind moving nodes in headless Chrome (SwiftShader GPU raster). */
-  body::before {
-    content: ""; position: fixed; inset: 0; will-change: transform;
-    background-image: radial-gradient(circle, rgba(255, 255, 255, .1) 1.2px, transparent 1.6px);
-    background-size: 12px 12px;
-  }
-  #paper { position: fixed; inset: 0; }
-  #paper .joint-element { cursor: grab; }
-  #paper .joint-element:active { cursor: grabbing; }
-  .head { position: fixed; left: 14px; top: 12px; z-index: 40; pointer-events: none; }
-  .head h1 { margin: 0; font-size: 17px; line-height: 1.3; }
-  .head .meta { font-size: 12px; color: var(--muted); }
-  .head .meta b { color: var(--fg); font-variant-numeric: tabular-nums; }
-  .controls { max-width: calc(100% - 180px); justify-content: flex-end; }
-  .hint { transition: color .2s, border-color .2s; }
-  .hint.on { color: var(--fg); border-color: var(--c2); }
-  @media (max-width: 560px) {
-    .head h1 { font-size: 15px; }
-    .head .meta { display: none; }
-    .controls { max-width: calc(100% - 130px); }
-    .controls .btn { padding: 6px 9px; font-size: 12px; }
-  }
+  .jj-dots { position: absolute; inset: 0; pointer-events: none; will-change: transform;
+    background-image: radial-gradient(circle, rgba(255, 255, 255, .09) 1.2px, transparent 1.6px); background-size: 14px 14px; }
+  .jj-paper { position: absolute; inset: 0; }
+  .jj-paper .joint-element { cursor: grab; }
+  .jj-paper .joint-element:active { cursor: grabbing; }
+  .jj-tag { position: absolute; right: 12px; bottom: calc(var(--sc-ctl-b, 0px) + 10px); z-index: 5; max-width: calc(100% - 24px);
+    pointer-events: none; padding: 5px 10px; border-radius: 8px; background: rgba(23, 26, 31, .88); border: 1px solid #2c313b;
+    font: 12px/1.5 var(--font); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color .2s, border-color .2s; }
+  .jj-tag b { color: var(--fg); font-weight: 600; }
+  .jj-tag code { font: 500 11.5px/1 var(--mono); color: var(--c1); }
+  .jj-tag.on { color: var(--fg); border-color: var(--c2); }
+
+  /* 4. ports: available magnets while dragging a new link */
+  .jj-paper .available-magnet { stroke: #7bd389; stroke-width: 4px; }
+  .jj-paper .available-cell [joint-selector="body"] { stroke-dasharray: 5 3; }
+
+  /* 6. tools: readable handles on the dark board */
+  .jj-paper .marker-vertex { fill: #ecebe6; stroke: #0e1013; }
+  .jj-paper .marker-vertex:hover { fill: #f7df1e; }
+  .jj-paper .source-arrowhead, .jj-paper .target-arrowhead { fill: #f7df1e; stroke: #0e1013; }
+  .jj-paper .jj-glow { filter: drop-shadow(0 0 7px #f7df1e); }
+  .jj-paper .jj-flow { stroke-dasharray: 7 5; animation: jj-dash 0.8s linear infinite; }
+  @keyframes jj-dash { to { stroke-dashoffset: -12; } }
+
+  /* 7. JSON panel */
+  .jj-json { position: absolute; right: 12px; bottom: 10px; z-index: 5; width: min(330px, calc(100% - 24px)); pointer-events: none;
+    padding: 7px 10px 8px; border-radius: 8px; background: rgba(23, 26, 31, .92); border: 1px solid #2c313b; }
+  .jj-json .jj-json-h { font: 12px/1.4 var(--font); color: var(--muted); margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .jj-json .jj-json-h b { color: var(--fg); font-weight: 600; }
+  .jj-json .jj-json-h code { font: 500 11.5px/1 var(--mono); color: var(--c4); }
+  .jj-json pre { margin: 0; height: 66px; overflow: hidden; font: 10.5px/1.45 var(--mono); color: #b9b7ae; white-space: pre; }
+  .jj-dag .jj-tag { bottom: 120px; max-width: min(330px, calc(100% - 24px)); }
+
+  /* 8. stress */
+  .jj-stress { position: absolute; inset: 8px 8px 8px 350px; overflow: hidden; border-radius: 10px; border: 1px solid #23272f; }
+  @media (max-width: 760px) { .jj-stress { inset: 8px; opacity: .9; } }
 </style>
 </head>
 <body>
-<div id="paper"></div>
-<div class="head">
-  <h1>AI 學院組織圖</h1>
-  <div class="meta">成員 <b id="count">0</b> 人・連線隨節點自動重繞</div>
-</div>
-<div class="controls">
-  <button class="btn" id="add">新增成員</button>
-  <button class="btn" id="style">連線：直角</button>
-  <button class="btn" id="mode">版面：組織圖</button>
-  <button class="btn" id="relayout">重新排列</button>
-</div>
-<div class="hint">拖曳成員卡片・點卡片看匯報路線</div>
-
 <script src="https://cdn.jsdelivr.net/npm/@joint/core@4.3.3/dist/joint.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
+// JointJS showcase: eight scenes from a custom org chart to a resetCells() render benchmark.
 const FONT = getComputedStyle(document.body).fontFamily;
-const DEPT = {
-  exec: "#f7df1e",
-  edu: "#4cc9f0",
-  prod: "#9d8cff",
-  ops: "#ff8c42",
+const C = {
+  c1: "#f7df1e", c2: "#4cc9f0", c3: "#f72585", c4: "#7bd389", c5: "#ff8c42", c6: "#9d8cff",
+  fg: "#ecebe6", muted: "#9b998f", card: "#171a1f", cardOn: "#21252d", edge: "#2c313b", link: "#5a6170", bg: "#0e1013",
 };
-// Sample organisation (fictional people).
+const S = joint.shapes.standard;
+const tint = (hex, a) => hex + Math.round(a * 255).toString(16).padStart(2, "0");
+const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
+const DURATION = 650;
+const ARROW = { type: "path", d: "M 9 -4.5 0 0 9 4.5 z", stroke: "none" };
+const DAGRE_URLS = [
+  "https://cdn.jsdelivr.net/npm/@dagrejs/graphlib@2.2.4/dist/graphlib.min.js",
+  "https://cdn.jsdelivr.net/npm/@dagrejs/dagre@1.1.4/dist/dagre.min.js",
+  "https://cdn.jsdelivr.net/npm/@joint/layout-directed-graph@4.3.0/dist/DirectedGraph.min.js",
+];
+
+// Custom element used by the org chart: markup + calc() attributes.
+const Member = joint.dia.Element.define("atlas.Member", {
+  size: { width: 156, height: 58 },
+  attrs: {
+    body: { width: "calc(w)", height: "calc(h)", rx: 12, ry: 12, fill: C.card, stroke: C.edge, strokeWidth: 1.5 },
+    stripe: { x: 0, y: 12, width: 4, height: "calc(h-24)", rx: 2 },
+    avatar: { cx: 30, cy: "calc(0.5*h)", r: 17 },
+    initial: { x: 30, y: "calc(0.5*h)", textAnchor: "middle", textVerticalAnchor: "middle", fontSize: 15, fontWeight: 700, fill: "#14161a", fontFamily: FONT },
+    name: { x: 56, y: "calc(0.5*h-9)", textVerticalAnchor: "middle", fontSize: 15, fontWeight: 600, fill: C.fg, fontFamily: FONT },
+    role: { x: 56, y: "calc(0.5*h+11)", textVerticalAnchor: "middle", fontSize: 12, fill: C.muted, fontFamily: FONT },
+  },
+}, {
+  markup: [
+    { tagName: "rect", selector: "body" },
+    { tagName: "rect", selector: "stripe" },
+    { tagName: "circle", selector: "avatar" },
+    { tagName: "text", selector: "initial" },
+    { tagName: "text", selector: "name" },
+    { tagName: "text", selector: "role" },
+  ],
+});
+const NS = { ...joint.shapes, atlas: { Member } };
+
+// ---------- shared helpers ----------
+function board(ctx, extra = "", cls = "") {
+  ctx.html(`<div class="jj-dots"></div><div class="jj-paper ${cls}"></div><div class="jj-tag"></div>${extra}`);
+}
+function makePaper(ctx, graph, opts = {}, el = ctx.$(".jj-paper")) {
+  const paper = new joint.dia.Paper({
+    el, model: graph, width: "100%", height: "100%", gridSize: 1, async: true,
+    background: { color: "transparent" }, cellViewNamespace: NS, ...opts,
+  });
+  ctx.onCleanup(() => { graph.getElements().forEach((e) => e.stopTransitions()); paper.remove(); });
+  return paper;
+}
+// Free area left by the floating control bar (top or bottom) and an optional bottom overlay.
+function insets(ctx, extraBottom = 0) {
+  const s = ctx.el.getBoundingClientRect();
+  const r = ctx.controls.getBoundingClientRect();
+  const atBottom = ctx.controls.classList.contains("bottom");
+  const ctl = ctx.controls.childElementCount ? (atBottom ? s.bottom - r.top : r.bottom - s.top) : 0;
+  return { top: (atBottom ? 0 : ctl) + 14, bottom: (atBottom ? ctl : 0) + 14 + extraBottom, left: 14, right: 14 };
+}
+// Fit content into the free area; with animate, scale and translate glide alongside moving nodes.
+function fit(ctx, paper, { area, maxScale = 1.2, extraBottom = 30, animate = false } = {}) {
+  const s0 = paper.scale().sx, t0 = paper.translate();
+  const opt = { padding: insets(ctx, extraBottom), maxScale, horizontalAlign: "middle", verticalAlign: "middle", useModelGeometry: true };
+  if (area) opt.contentArea = area;
+  paper.transformToFitContent(opt);
+  if (!animate) return;
+  const s1 = paper.scale().sx, t1 = paper.translate();
+  paper.scale(s0);
+  paper.translate(t0.tx, t0.ty);
+  if (paper.jjTween) paper.jjTween();
+  const start = performance.now();
+  const stop = ctx.raf(() => {
+    const k = ease(Math.min(1, (performance.now() - start) / DURATION));
+    paper.scale(s0 + (s1 - s0) * k);
+    paper.translate(t0.tx + (t1.tx - t0.tx) * k, t0.ty + (t1.ty - t0.ty) * k);
+    if (k >= 1) stop();
+  });
+  paper.jjTween = stop;
+}
+function boundsOf(points, w, h) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of points) {
+    const pw = p.w ?? w, ph = p.h ?? h;
+    x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x + pw); y1 = Math.max(y1, p.y + ph);
+  }
+  return new joint.g.Rect(x0, y0, x1 - x0, y1 - y0);
+}
+// Bottom-left info tag with a resting text and short-lived flashes.
+function tagger(ctx) {
+  const el = ctx.$(".jj-tag");
+  let rest = "", timer = 0;
+  return {
+    set(html) { rest = html; if (!timer) el.innerHTML = html; },
+    flash(html, ms = 3200) {
+      el.innerHTML = html; el.classList.add("on");
+      clearTimeout(timer);
+      timer = ctx.timeout(() => { timer = 0; el.innerHTML = rest; el.classList.remove("on"); }, ms);
+    },
+  };
+}
+// Mouse wheel zooms around the pointer; dragging the blank area pans.
+function zoomPan(ctx, paper) {
+  const zoom = (evt, x, y, delta) => {
+    evt.preventDefault();
+    const s0 = paper.scale().sx;
+    const s1 = Math.max(0.2, Math.min(3, s0 * (delta > 0 ? 1.12 : 1 / 1.12)));
+    const t = paper.translate();
+    paper.scale(s1);
+    paper.translate(t.tx + x * (s0 - s1), t.ty + y * (s0 - s1));
+  };
+  paper.on("blank:mousewheel", zoom);
+  paper.on("cell:mousewheel", (view, evt, x, y, delta) => zoom(evt, x, y, delta));
+  let pan = null;
+  paper.on("blank:pointerdown", (evt) => { const t = paper.translate(); pan = { x: evt.clientX, y: evt.clientY, tx: t.tx, ty: t.ty }; });
+  paper.on("blank:pointermove", (evt) => { if (pan) paper.translate(pan.tx + evt.clientX - pan.x, pan.ty + evt.clientY - pan.y); });
+  paper.on("blank:pointerup", () => { pan = null; });
+}
+const label = (text, extra = {}) => ({ text, fill: C.fg, fontSize: 13, fontFamily: FONT, ...extra });
+// Calls apply(narrow) once now and again whenever the stage crosses the phone breakpoint.
+function breakpoint(ctx, apply) {
+  let last = null;
+  return () => {
+    const narrow = ctx.size().width < 560;
+    if (narrow !== last) { last = narrow; apply(narrow); }
+  };
+}
+const placeAll = (graph, spots) => { for (const [id, p] of Object.entries(spots)) graph.getCell(id).position(p[0], p[1]); };
+
+// ---------- 1. org chart data ----------
+const DEPT = { exec: C.c1, edu: C.c2, prod: C.c6, ops: C.c5 };
 const PEOPLE = [
   { id: "ceo", name: "林雅婷", role: "院長", dept: "exec" },
   { id: "edu", name: "陳柏宇", role: "教學部主任", dept: "edu", boss: "ceo" },
@@ -70,254 +197,765 @@ const PEOPLE = [
   { id: "o1", name: "周育誠", role: "行銷企劃", dept: "ops", boss: "ops" },
   { id: "o2", name: "鄭雅雯", role: "學員服務", dept: "ops", boss: "ops" },
 ];
-
-const W = 156, H = 58;
-const CARD = "#171a1f", CARD_ON = "#21252d", EDGE = "#2c313b", LINK = "#4a515e";
-const Member = joint.dia.Element.define("atlas.Member", {
-  size: { width: W, height: H },
-  attrs: {
-    body: { width: "calc(w)", height: "calc(h)", rx: 12, ry: 12, fill: CARD, stroke: EDGE, strokeWidth: 1.5 },
-    stripe: { x: 0, y: 12, width: 4, height: "calc(h-24)", rx: 2 },
-    avatar: { cx: 30, cy: "calc(0.5*h)", r: 17 },
-    initial: { x: 30, y: "calc(0.5*h)", textAnchor: "middle", textVerticalAnchor: "middle", fontSize: 15, fontWeight: 700, fill: "#14161a", fontFamily: FONT },
-    name: { x: 56, y: "calc(0.5*h-9)", textVerticalAnchor: "middle", fontSize: 15, fontWeight: 600, fill: "#ecebe6", fontFamily: FONT },
-    role: { x: 56, y: "calc(0.5*h+11)", textVerticalAnchor: "middle", fontSize: 12, fill: "#9b998f", fontFamily: FONT },
-  },
-}, {
-  markup: [
-    { tagName: "rect", selector: "body" },
-    { tagName: "rect", selector: "stripe" },
-    { tagName: "circle", selector: "avatar" },
-    { tagName: "text", selector: "initial" },
-    { tagName: "text", selector: "name" },
-    { tagName: "text", selector: "role" },
-  ],
-});
-
-const namespace = { ...joint.shapes, atlas: { Member } };
-const graph = new joint.dia.Graph({}, { cellNamespace: namespace });
-const paper = new joint.dia.Paper({
-  el: document.getElementById("paper"),
-  model: graph,
-  width: "100%",
-  height: "100%",
-  gridSize: 10,
-  background: { color: "transparent" },
-  cellViewNamespace: namespace,
-  // Elements can be dragged; links are not editable, they only follow.
-  interactive: (view) => view.model.isElement(),
-  restrictTranslate: true,
-  async: true,
-  sorting: joint.dia.Paper.sorting.APPROX,
-});
-
-// Link shapes. "drop": parent's bottom to child's top. "indent": parent's lower-left corner
-// into the side of a child listed below it. "side": parent's right to child's left.
-// tan holds the curve tangents at both ends (the target one points away from the target).
+// Link geometry per placement: "drop" parent bottom to child top, "indent" lower-left corner into
+// the side of a listed child, "side" right to left. tan holds the curve tangents at both ends.
 const GEOMETRY = {
   drop: { source: { name: "bottom" }, target: { name: "top" }, from: "bottom", to: "top", tan: [{ x: 0, y: 46 }, { x: 0, y: -46 }] },
   indent: { source: { name: "bottomLeft", args: { dx: 14 } }, target: { name: "left" }, from: "bottom", to: "left", tan: [{ x: 0, y: 30 }, { x: -30, y: 0 }] },
   side: { source: { name: "right" }, target: { name: "left" }, from: "right", to: "left", tan: [{ x: 50, y: 0 }, { x: -50, y: 0 }] },
 };
-const STYLES = [
+const LINK_STYLES = [
   { label: "直角", router: (g) => ({ name: "rightAngle", args: { sourceDirection: g.from, targetDirection: g.to, margin: 8 } }), connector: () => ({ name: "rounded", args: { radius: 8 } }) },
   { label: "曲線", router: () => ({ name: "normal" }), connector: (g) => ({ name: "curve", args: { sourceTangent: g.tan[0], targetTangent: g.tan[1] } }) },
   { label: "直線", router: () => ({ name: "normal" }), connector: () => ({ name: "straight" }) },
 ];
-let styleIdx = 0;
-let mode = "org";
-let kinds = new Map();
 
-const els = new Map();
-const info = (id) => els.get(id).get("data");
+// ---------- 2. shape gallery ----------
+const IMG = "_shared/img/photo-4.jpg";
+const GALLERY = [
+  { type: "Rectangle", zh: "矩形", k: [1, 0.58], make: () => new S.Rectangle({ attrs: { body: { fill: tint(C.c2, .14), stroke: C.c2, rx: 8, ry: 8 }, label: label("矩形\nRectangle") } }) },
+  { type: "Circle", zh: "圓形", k: [0.66, 0.66], make: () => new S.Circle({ attrs: { body: { fill: tint(C.c4, .14), stroke: C.c4 }, label: label("圓形\nCircle", { fontSize: 12 }) } }) },
+  { type: "Ellipse", zh: "橢圓", k: [1, 0.58], make: () => new S.Ellipse({ attrs: { body: { fill: tint(C.c6, .14), stroke: C.c6 }, label: label("橢圓\nEllipse") } }) },
+  { type: "Polygon", zh: "多邊形", k: [1, 0.62], make: () => new S.Polygon({ attrs: {
+    body: { points: "calc(0.25*w),0 calc(0.75*w),0 calc(w),calc(0.5*h) calc(0.75*w),calc(h) calc(0.25*w),calc(h) 0,calc(0.5*h)", fill: tint(C.c5, .14), stroke: C.c5 },
+    label: label("多邊形\nPolygon") } }) },
+  { type: "Polyline", zh: "折線", k: [1, 0.5], below: true, make: () => new S.Polyline({ attrs: {
+    body: { points: "0,calc(h) calc(0.25*w),0 calc(0.5*w),calc(h) calc(0.75*w),0 calc(w),calc(h)", fill: "none", stroke: C.c3, strokeWidth: 3, strokeLinejoin: "round" },
+    label: label("折線 Polyline", { y: "calc(h+14)" }) } }) },
+  { type: "Path", zh: "路徑", k: [1, 0.58], make: () => new S.Path({ attrs: {
+    body: { d: "M 0 0 H calc(w-20) L calc(w) calc(0.5*h) L calc(w-20) calc(h) H 0 L 14 calc(0.5*h) Z", fill: tint(C.c1, .14), stroke: C.c1 },
+    label: label("路徑\nPath") } }) },
+  { type: "Cylinder", zh: "圓柱", k: [0.8, 0.72], make: () => new S.Cylinder({ attrs: {
+    body: { fill: tint(C.c2, .12), stroke: C.c2 }, top: { fill: tint(C.c2, .35), stroke: C.c2 }, label: label("圓柱\nCylinder", { fontSize: 12 }) } }) },
+  { type: "HeaderedRectangle", zh: "標題矩形", k: [1, 0.66], make: () => new S.HeaderedRectangle({ attrs: {
+    body: { fill: C.card, stroke: C.c6 }, header: { fill: tint(C.c6, .5), stroke: C.c6 },
+    headerText: label("標題列", { fontSize: 12 }), bodyText: label("Headered\nRectangle", { fontSize: 11.5, fill: C.muted }) } }) },
+  { type: "TextBlock", zh: "文字區塊", k: [1, 0.66], make: () => new S.TextBlock({ attrs: {
+    body: { fill: C.card, stroke: C.c4, rx: 6, ry: 6 },
+    label: { text: "TextBlock 會依框的寬度自動換行", style: { color: C.fg, fontSize: 12, fontFamily: FONT, lineHeight: 1.35 } } } }) },
+  { type: "Image", zh: "圖片", k: [0.9, 0.6], below: true, make: () => new S.Image({ attrs: {
+    image: { xlinkHref: IMG, preserveAspectRatio: "xMidYMid slice" }, label: label("圖片 Image", { fontSize: 12 }) } }) },
+  { type: "BorderedImage", zh: "外框圖片", k: [0.9, 0.6], below: true, make: () => new S.BorderedImage({ attrs: {
+    border: { stroke: C.c1, strokeWidth: 3, rx: 6 }, background: { fill: C.card }, image: { xlinkHref: IMG, preserveAspectRatio: "xMidYMid slice" },
+    label: label("BorderedImage", { fontSize: 12 }) } }) },
+  { type: "EmbeddedImage", zh: "內嵌圖片", k: [1.1, 0.58], make: () => new S.EmbeddedImage({ attrs: {
+    body: { fill: C.card, stroke: C.c5, rx: 6, ry: 6 }, image: { xlinkHref: IMG, preserveAspectRatio: "xMidYMid slice" },
+    label: label("內嵌\nEmbedded", { fontSize: 11.5 }) } }) },
+  { type: "InscribedImage", zh: "內切圖片", k: [0.66, 0.66], below: true, make: () => new S.InscribedImage({ attrs: {
+    border: { stroke: C.c3, strokeWidth: 3 }, background: { fill: C.card }, image: { xlinkHref: IMG },
+    label: label("InscribedImage", { fontSize: 12 }) } }) },
+  { type: "Link", link: true, make: () => new S.Link({ connector: { name: "smooth" },
+    attrs: { line: { stroke: C.c4, strokeWidth: 2.5, targetMarker: { ...ARROW, fill: C.c4 } } } }), text: "連線 Link" },
+  { type: "DoubleLink", link: true, make: () => new S.DoubleLink({ connector: { name: "smooth" },
+    attrs: { line: { stroke: C.c5, strokeWidth: 4 }, outline: { stroke: "#5a3214", strokeWidth: 8 } } }), text: "雙線 DoubleLink" },
+  { type: "ShadowLink", link: true, make: () => new S.ShadowLink({ connector: { name: "smooth" },
+    attrs: { line: { stroke: C.c6, strokeWidth: 4 }, shadow: { stroke: "#000", strokeOpacity: 0.6 } } }), text: "陰影線 ShadowLink" },
+];
 
-function addMember(p) {
-  const color = DEPT[p.dept];
-  const el = new Member({ id: p.id, data: p });
-  el.attr({
-    stripe: { fill: color },
-    avatar: { fill: color },
-    initial: { text: p.name[0] },
-    name: { text: p.name },
-    role: { text: p.role },
-  });
-  graph.addCell(el);
-  els.set(p.id, el);
-  if (p.boss) {
-    const link = new joint.shapes.standard.Link({ id: `${p.boss}-${p.id}`, source: { id: p.boss }, target: { id: p.id }, z: -1 });
-    link.attr("line", { stroke: LINK, strokeWidth: 2, targetMarker: { type: "circle", r: 3.5, fill: color, stroke: "none" } });
-    graph.addCell(link);
-  }
-  return el;
-}
+// ---------- 3. routers & connectors ----------
+const ROUTERS = {
+  normal: { name: "normal" },
+  orthogonal: { name: "orthogonal", args: { padding: 14 } },
+  rightAngle: { name: "rightAngle", args: { margin: 18 } },
+  manhattan: { name: "manhattan", args: { padding: 14, step: 10 } },
+  metro: { name: "metro", args: { padding: 14, step: 10 } },
+};
+const CONNECTORS = {
+  straight: { name: "straight" },
+  rounded: { name: "rounded", args: { radius: 14 } },
+  smooth: { name: "smooth" },
+  curve: { name: "curve" },
+  jumpover: { name: "jumpover", args: { size: 7, jump: "arc" } },
+};
 
-function styleLink(link) {
-  const g = GEOMETRY[kinds.get(link.target().id)];
-  const s = STYLES[styleIdx];
-  link.prop({
-    source: { id: link.source().id, anchor: g.source },
-    target: { id: link.target().id, anchor: g.target },
-    router: s.router(g),
-    connector: s.connector(g),
-  });
-}
+// ---------- 4. ports ----------
+const portGroup = (side, color) => ({
+  position: { name: side },
+  attrs: {
+    portBody: { r: 7, magnet: side === "right" ? true : "passive", fill: side === "right" ? color : C.bg, stroke: color, strokeWidth: 2, cursor: side === "right" ? "crosshair" : "default" },
+    label: { fill: "#c9c7bf", fontSize: 11.5, fontFamily: FONT },
+  },
+  label: { position: { name: side === "left" ? "right" : "left", args: { x: side === "left" ? 12 : -12 } }, markup: [{ tagName: "text", selector: "label" }] },
+  markup: [{ tagName: "circle", selector: "portBody" }],
+});
+const PORT_GROUPS = { in: portGroup("left", C.c2), out: portGroup("right", C.c4) };
+const PIPE = [
+  { id: "a", name: "感測器 A", x: 0, y: 30, ins: [], outs: ["溫度", "濕度"], color: C.c4 },
+  { id: "b", name: "感測器 B", x: 0, y: 210, ins: [], outs: ["PM2.5"], color: C.c4 },
+  { id: "clean", name: "資料清理", x: 230, y: 30, ins: ["原始"], outs: ["乾淨"], color: C.c2 },
+  { id: "merge", name: "合併", x: 460, y: 120, ins: ["輸入 1", "輸入 2"], outs: ["資料集"], color: C.c2 },
+  { id: "model", name: "預測模型", x: 690, y: 120, ins: ["特徵"], outs: ["預測", "信心"], color: C.c6 },
+  { id: "dash", name: "儀表板", x: 920, y: 30, ins: ["數值", "圖表"], outs: [], color: C.c1 },
+  { id: "alert", name: "警示", x: 920, y: 210, ins: ["條件"], outs: [], color: C.c3 },
+];
+const PIPE_LINKS = [["a", 0, "clean", 0], ["clean", 0, "merge", 0], ["b", 0, "merge", 1], ["merge", 0, "model", 0], ["model", 0, "dash", 0]];
+// Curves read best in the wide pipeline; the phone zigzag has backward links, which right angles keep tight.
+const pipeStyle = (narrow) => (narrow
+  ? { router: { name: "rightAngle", args: { sourceDirection: "right", targetDirection: "left", margin: 16 } }, connector: { name: "rounded", args: { radius: 10 } } }
+  : { router: { name: "normal" }, connector: { name: "curve", args: { sourceDirection: "right", targetDirection: "left" } } });
+const pipeLink = (narrow) => new S.Link({
+  ...pipeStyle(narrow),
+  attrs: { line: { stroke: C.c4, strokeWidth: 2.2, targetMarker: { ...ARROW, fill: C.c4 } } },
+});
 
-// "org": the director on top, department heads side by side, each team listed under its head.
-// "tree": a left-to-right tidy tree; leaves take consecutive rows, parents sit centred on their children.
-const IND = 26, ROW = H + 14, COL_GAP = 24, DROP = 58, LEVEL = W + 64;
-function layout() {
-  const kids = new Map();
-  for (const el of els.values()) {
-    const boss = el.get("data").boss;
-    if (boss) kids.set(boss, [...(kids.get(boss) || []), el.id]);
-  }
-  const pos = new Map();
-  const kind = new Map();
-  if (mode === "tree") {
-    let row = 0;
-    const place = (id, depth) => {
-      const children = kids.get(id) || [];
-      children.forEach((c) => kind.set(c, "side"));
-      const rows = children.map((c) => place(c, depth + 1));
-      const at = rows.length ? (rows[0] + rows[rows.length - 1]) / 2 : row++;
-      pos.set(id, { x: depth * LEVEL, y: at * ROW });
-      return at;
-    };
-    place("ceo", 0);
-  } else {
-    let right = 0;
-    // Pre-order walk that stacks a subtree as an indented list; returns the next free y.
-    const stack = (id, x, y, depth) => {
-      pos.set(id, { x: x + depth * IND, y });
-      right = Math.max(right, x + depth * IND + W);
-      let next = y + ROW;
-      for (const c of kids.get(id) || []) {
-        kind.set(c, "indent");
-        next = stack(c, x, next, depth + 1);
+// ---------- 5. embedding ----------
+const REGIONS = [
+  { id: "north", name: "北部", color: C.c2 }, { id: "central", name: "中部", color: C.c4 },
+  { id: "south", name: "南部", color: C.c5 }, { id: "east", name: "東部", color: C.c6 },
+];
+const CITIES = [
+  ["台北", "north", "north"], ["新北", "north", "north"], ["桃園", "north", null], ["新竹", "north", null],
+  ["台中", "central", "central"], ["彰化", "central", null], ["南投", "central", null],
+  ["台南", "south", null], ["高雄", "south", "south"], ["屏東", "south", null],
+  ["花蓮", "east", null], ["台東", "east", "central"],
+];
+
+// ---------- 7. course prerequisite graph ----------
+const TRACK = { code: C.c2, data: C.c4, ai: C.c6, app: C.c5 };
+const COURSES = [
+  ["py", "Python 基礎", "code"], ["np", "NumPy", "code"], ["sql", "SQL 資料庫", "data"], ["stat", "統計入門", "data"],
+  ["pd", "Pandas 資料處理", "data"], ["viz", "資料視覺化", "data"], ["ml", "機器學習", "ai"], ["dl", "深度學習", "ai"],
+  ["nlp", "自然語言處理", "ai"], ["cv", "電腦視覺", "ai"], ["prompt", "提示工程", "app"], ["llm", "大型語言模型應用", "app"],
+  ["rag", "RAG 檢索增強", "app"], ["proj", "專題實作", "app"],
+];
+const PREREQ = [["py", "np"], ["py", "pd"], ["np", "pd"], ["pd", "viz"], ["pd", "ml"], ["stat", "ml"], ["ml", "dl"], ["np", "dl"],
+  ["dl", "nlp"], ["dl", "cv"], ["nlp", "llm"], ["prompt", "llm"], ["llm", "rag"], ["sql", "rag"], ["viz", "proj"], ["cv", "proj"], ["rag", "proj"]];
+
+Showcase.run({ scenes: [
+  {
+    id: "org", title: "組織圖",
+    api: "dia.Element.define() + el.transition(\"position\") + paper.transformToFitContent()",
+    desc: "自訂 atlas.Member 卡片（markup 搭配 calc() 屬性）。兩種版面用 transition 補間移動，視窗同步補間縮放；連線樣式切換 router 與 connector。",
+    hint: "拖曳卡片、點卡片看匯報路線；新增成員會加在選取的人底下",
+    mount(ctx) {
+      board(ctx);
+      const graph = new joint.dia.Graph({}, { cellNamespace: NS });
+      const paper = makePaper(ctx, graph, { interactive: (v) => v.model.isElement(), restrictTranslate: true });
+      const tag = tagger(ctx);
+      const W = 156, H = 58, IND = 26, ROW = H + 14, COL_GAP = 24, DROP = 58, LEVEL = W + 64;
+      const els = new Map();
+      const info = (id) => els.get(id).get("data");
+      let styleIdx = 0, mode = "org", kinds = new Map(), selected = null, added = 0;
+
+      function addMember(p) {
+        const color = DEPT[p.dept];
+        const el = new Member({ id: p.id, data: p });
+        el.attr({ stripe: { fill: color }, avatar: { fill: color }, initial: { text: p.name[0] }, name: { text: p.name }, role: { text: p.role } });
+        graph.addCell(el);
+        els.set(p.id, el);
+        if (p.boss) {
+          const link = new S.Link({ id: `${p.boss}-${p.id}`, source: { id: p.boss }, target: { id: p.id }, z: -1 });
+          link.attr("line", { stroke: C.link, strokeWidth: 2, targetMarker: { type: "circle", r: 3.5, fill: color, stroke: "none" } });
+          graph.addCell(link);
+        }
+        return el;
       }
-      return next;
-    };
-    const heads = kids.get("ceo");
-    let x = 0;
-    for (const h of heads) {
-      kind.set(h, "drop");
-      stack(h, x, H + DROP, 0);
-      x = right + COL_GAP;
-    }
-    const first = pos.get(heads[0]).x, last = pos.get(heads[heads.length - 1]).x;
-    pos.set("ceo", { x: (first + last) / 2, y: 0 });
-  }
-  kinds = kind;
-  return pos;
-}
+      function styleLink(link) {
+        const g = GEOMETRY[kinds.get(link.target().id)];
+        const s = LINK_STYLES[styleIdx];
+        link.prop({ source: { id: link.source().id, anchor: g.source }, target: { id: link.target().id, anchor: g.target }, router: s.router(g), connector: s.connector(g) });
+      }
+      // "org": director on top, heads side by side, each team listed under its head.
+      // "tree": left-to-right tidy tree; leaves take consecutive rows, parents centre on children.
+      function layout() {
+        const kids = new Map();
+        for (const el of els.values()) {
+          const boss = el.get("data").boss;
+          if (boss) kids.set(boss, [...(kids.get(boss) || []), el.id]);
+        }
+        const pos = new Map(), kind = new Map();
+        if (mode === "tree") {
+          let row = 0;
+          const place = (id, depth) => {
+            const children = kids.get(id) || [];
+            children.forEach((c) => kind.set(c, "side"));
+            const rows = children.map((c) => place(c, depth + 1));
+            const at = rows.length ? (rows[0] + rows[rows.length - 1]) / 2 : row++;
+            pos.set(id, { x: depth * LEVEL, y: at * ROW });
+            return at;
+          };
+          place("ceo", 0);
+        } else {
+          let right = 0;
+          const stack = (id, x, y, depth) => {
+            pos.set(id, { x: x + depth * IND, y });
+            right = Math.max(right, x + depth * IND + W);
+            let next = y + ROW;
+            for (const c of kids.get(id) || []) { kind.set(c, "indent"); next = stack(c, x, next, depth + 1); }
+            return next;
+          };
+          const heads = kids.get("ceo");
+          let x = 0;
+          for (const hd of heads) { kind.set(hd, "drop"); stack(hd, x, H + DROP, 0); x = right + COL_GAP; }
+          pos.set("ceo", { x: (pos.get(heads[0]).x + pos.get(heads[heads.length - 1]).x) / 2, y: 0 });
+        }
+        kinds = kind;
+        return pos;
+      }
+      function arrange(animate) {
+        const pos = layout();
+        graph.getLinks().forEach(styleLink);
+        for (const [id, p] of pos) {
+          const el = els.get(id);
+          if (animate) el.transition("position", p, { duration: DURATION, timingFunction: ease, valueFunction: joint.util.interpolate.object });
+          else el.position(p.x, p.y);
+        }
+        fit(ctx, paper, { area: boundsOf(pos.values(), W, H), animate, maxScale: 1.15 });
+      }
+      // Highlight the reporting line from the clicked person up to the director.
+      function highlight(id) {
+        selected = id;
+        const chain = new Set();
+        for (let cur = id; cur; cur = info(cur).boss) chain.add(cur);
+        for (const el of els.values()) {
+          const on = chain.has(el.id);
+          el.attr("body", { fill: el.id === id ? C.cardOn : C.card, stroke: on ? DEPT[el.get("data").dept] : C.edge, strokeWidth: on ? 2.5 : 1.5 });
+        }
+        for (const link of graph.getLinks()) {
+          const on = chain.has(link.target().id);
+          link.attr("line", { stroke: on ? C.fg : C.link, strokeWidth: on ? 3 : 2 });
+          link.set("z", on ? 0 : -1);
+        }
+        if (id) tag.flash(`匯報路線：<b>${[...chain].reverse().map((c) => info(c).name).join(" → ")}</b>`);
+      }
+      const count = () => tag.set(`成員 <b>${els.size}</b> 人・連線隨節點自動重繞`);
 
-const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
-const DURATION = 650;
-const FIT = { padding: { top: 64, bottom: 54, left: 16, right: 16 }, maxScale: 1.15, horizontalAlign: "middle", verticalAlign: "middle", useModelGeometry: true };
+      paper.on("element:pointerdown", (view) => view.model.toFront());
+      paper.on("element:pointerclick", (view) => highlight(view.model.id));
+      paper.on("blank:pointerclick", () => highlight(null));
 
-// Fit the paper to an area; with animate, tween scale and translate alongside the nodes.
-function fitTo(area, animate) {
-  const s0 = paper.scale().sx;
-  const t0 = paper.translate();
-  paper.transformToFitContent(area ? { ...FIT, contentArea: area } : FIT);
-  if (!animate) return;
-  const s1 = paper.scale().sx;
-  const t1 = paper.translate();
-  paper.scale(s0);
-  paper.translate(t0.tx, t0.ty);
-  const start = performance.now();
-  requestAnimationFrame(function step(now) {
-    const k = ease(Math.min(1, (now - start) / DURATION));
-    paper.scale(s0 + (s1 - s0) * k);
-    paper.translate(t0.tx + (t1.tx - t0.tx) * k, t0.ty + (t1.ty - t0.ty) * k);
-    if (k < 1) requestAnimationFrame(step);
-  });
-}
+      ctx.button("新增成員", () => {
+        const bossId = selected || "edu";
+        const boss = info(bossId);
+        added += 1;
+        const el = addMember({ id: `n${added}`, name: `新成員${added}`, role: "實習生", dept: boss.dept === "exec" ? "edu" : boss.dept, boss: bossId });
+        const bp = els.get(bossId).position();
+        el.position(bp.x, bp.y);
+        count();
+        arrange(true);
+        highlight(selected);
+        tag.flash(`已在「<b>${boss.name}</b>」底下新增 1 位成員`);
+      }, { primary: true });
+      ctx.group(LINK_STYLES.map((s) => s.label), 0, (i) => { styleIdx = i; graph.getLinks().forEach(styleLink); });
+      ctx.group(["組織圖", "樹狀圖"], 0, (i) => { mode = i ? "tree" : "org"; arrange(true); });
+      ctx.button("重新排列", () => arrange(true));
 
-function arrange(animate) {
-  const pos = layout();
-  graph.getLinks().forEach(styleLink);
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  for (const [id, p] of pos) {
-    x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y);
-    x1 = Math.max(x1, p.x + W); y1 = Math.max(y1, p.y + H);
-    const el = els.get(id);
-    if (animate) el.transition("position", p, { duration: DURATION, timingFunction: ease, valueFunction: joint.util.interpolate.object });
-    else el.position(p.x, p.y);
-  }
-  fitTo(new joint.g.Rect(x0, y0, x1 - x0, y1 - y0), animate);
-}
+      PEOPLE.forEach(addMember);
+      count();
+      arrange(false);
+      ctx.onResize(() => fit(ctx, paper, { maxScale: 1.15 }));
+    },
+  },
+  {
+    id: "shapes", title: "形狀圖庫",
+    api: "shapes.standard.*（13 種元素＋3 種連線）",
+    desc: "內建 standard 形狀一次列出：矩形、圓、多邊形、路徑、圓柱、標題矩形、會自動換行的文字區塊、四種圖片框，以及 Link、DoubleLink、ShadowLink。屬性以 calc(w)、calc(h) 撰寫，改尺寸時自動重算。",
+    hint: "拖動「尺寸」滑桿看 calc() 重算；每個形狀都能拖曳",
+    mount(ctx) {
+      board(ctx);
+      const graph = new joint.dia.Graph({}, { cellNamespace: NS });
+      const paper = makePaper(ctx, graph);
+      const tag = tagger(ctx);
+      const CW = 170, CH = 128;
+      const items = GALLERY.map((g) => {
+        const cell = g.make();
+        if (g.link) cell.labels([{ position: 0.5, attrs: { text: label(g.text, { fontSize: 12 }), rect: { fill: C.bg, stroke: C.edge, strokeWidth: 1, rx: 4, ry: 4 } } }]);
+        graph.addCell(cell);
+        return { ...g, cell };
+      });
+      let size = 112, cols = 0;
+      function place() {
+        items.forEach((it, i) => {
+          const x0 = (i % cols) * CW, y0 = Math.floor(i / cols) * CH;
+          if (it.link) {
+            it.cell.prop({ source: { x: x0 + 18, y: y0 + CH * 0.7 }, target: { x: x0 + CW - 18, y: y0 + CH * 0.3 } });
+            return;
+          }
+          const w = Math.round(size * it.k[0]), h = Math.round(size * it.k[1]);
+          it.cell.resize(w, h);
+          it.cell.position(x0 + (CW - w) / 2, y0 + (CH - h) / 2 - (it.below ? 10 : 0));
+        });
+      }
+      function relayout(force) {
+        const { width } = ctx.size();
+        const c = width >= 900 ? 6 : width >= 520 ? 4 : 3;
+        if (c === cols && !force) return fit(ctx, paper, { maxScale: 1.3, area: area() });
+        cols = c;
+        place();
+        fit(ctx, paper, { maxScale: 1.3, area: area() });
+      }
+      const area = () => new joint.g.Rect(0, 0, cols * CW, Math.ceil(items.length / cols) * CH);
+      ctx.slider("尺寸", { min: 70, max: 140, step: 2, value: size, format: (v) => `${v} px` }, (v) => { size = v; place(); });
+      tag.set(`元素 <b>13</b> 種・連線 <b>3</b> 種，全部來自 <code>joint.shapes.standard</code>`);
+      relayout(true);
+      ctx.onResize(() => relayout(false));
+    },
+  },
+  {
+    id: "routers", title: "路由與連接器",
+    api: "link.router({ name }) + link.connector({ name })",
+    desc: "同一組連線切換五種 router 與五種 connector。manhattan、metro 會繞開施工區，jumpover 在連線交叉處畫跳線；標籤顯示重算四條路徑的耗時。",
+    hint: "拖動倉庫、門市或施工區，路徑會即時重繞",
+    mount(ctx) {
+      board(ctx);
+      const graph = new joint.dia.Graph({}, { cellNamespace: NS });
+      const paper = makePaper(ctx, graph, { async: false, interactive: { linkMove: false } });
+      const tag = tagger(ctx);
+      const node = (id, text, color) => new S.Rectangle({ id, size: { width: 118, height: 46 },
+        attrs: { body: { fill: tint(color, .14), stroke: color, strokeWidth: 2, rx: 8, ry: 8 }, label: label(text) } });
+      const block = (id) => new S.Rectangle({ id,
+        attrs: { body: { fill: tint(C.c5, .07), stroke: C.c5, strokeDasharray: "6 4", strokeWidth: 1.5, rx: 6, ry: 6 }, label: label("施工區", { fill: C.c5, fontSize: 12 }) } });
+      graph.addCells([
+        node("wa", "倉庫 A", C.c2), node("wb", "倉庫 B", C.c2), node("wc", "倉庫 C", C.c2),
+        node("s1", "門市 1", C.c4), node("s2", "門市 2", C.c4), node("s3", "門市 3", C.c4),
+        block("k1"), block("k2"), block("k3"),
+      ]);
+      // [x, y] per cell, plus block sizes; the phone layout narrows the gap between both columns.
+      const LAYOUT = {
+        wide: { spots: { wa: [0, 20], wb: [0, 160], wc: [0, 300], s1: [640, 20], s2: [640, 160], s3: [640, 300], k1: [250, 0], k2: [420, 200], k3: [290, 250] },
+          sizes: { k1: [90, 150], k2: [90, 160], k3: [60, 60] } },
+        narrow: { spots: { wa: [0, 0], wb: [0, 170], wc: [0, 340], s1: [330, 0], s2: [330, 170], s3: [330, 340], k1: [150, -10], k2: [240, 200], k3: [158, 290] },
+          sizes: { k1: [52, 140], k2: [52, 180], k3: [46, 50] } },
+      };
+      const relayout = breakpoint(ctx, (narrow) => {
+        const L = LAYOUT[narrow ? "narrow" : "wide"];
+        for (const [id, s] of Object.entries(L.sizes)) graph.getCell(id).resize(s[0], s[1]);
+        placeAll(graph, L.spots);
+      });
+      relayout();
+      const route = (s, t, color) => new S.Link({ source: { id: s }, target: { id: t },
+        attrs: { line: { stroke: color, strokeWidth: 2.5, targetMarker: { ...ARROW, fill: color } } } });
+      graph.addCells([route("wa", "s2", C.c1), route("wb", "s1", C.c3), route("wb", "s3", C.c6), route("wc", "s1", C.c4)]);
+      let r = "manhattan", c = "rounded";
+      function apply() {
+        const t0 = performance.now();
+        graph.getLinks().forEach((l) => l.set({ router: ROUTERS[r], connector: CONNECTORS[c] }));
+        const ms = performance.now() - t0;
+        tag.set(`router <code>${r}</code>・connector <code>${c}</code>・重算 4 條 <code>${ms.toFixed(1)} ms</code>`);
+      }
+      ctx.select("路由", Object.keys(ROUTERS), r, (v) => { r = v; apply(); });
+      ctx.select("連接器", Object.keys(CONNECTORS), c, (v) => { c = v; apply(); });
+      apply();
+      fit(ctx, paper, { maxScale: 1.25 });
+      ctx.onResize(() => { relayout(); fit(ctx, paper, { maxScale: 1.25 }); });
+    },
+  },
+  {
+    id: "ports", title: "埠與連線規則",
+    api: "ports.groups + validateConnection + markAvailable + snapLinks",
+    desc: "節點分 in、out 兩個埠群組。從右側輸出埠拖出連線，validateConnection 只放行「輸出接到空著的輸入」，markAvailable 把可接的埠標成綠色，靠近 28 px 內自動吸附。",
+    hint: "從右側實心圓點拖到其他節點左側空心圓點；雙擊連線可刪除",
+    mount(ctx) {
+      board(ctx);
+      const graph = new joint.dia.Graph({}, { cellNamespace: NS });
+      const tag = tagger(ctx);
+      let isNarrow = false;
+      const paper = makePaper(ctx, graph, {
+        async: false, markAvailable: true, snapLinks: { radius: 28 }, linkPinning: false, defaultLink: () => pipeLink(isNarrow),
+        interactive: { linkMove: false, labelMove: false },
+        validateConnection(vS, mS, vT, mT, end, linkView) {
+          if (!mS || !mT || vS === vT) return false;
+          if (vS.findAttribute("port-group", mS) !== "out" || vT.findAttribute("port-group", mT) !== "in") return false;
+          const port = vT.findAttribute("port", mT);
+          return !graph.getConnectedLinks(vT.model, { inbound: true }).some((l) => l !== linkView.model && l.target().port === port);
+        },
+      });
+      const height = (n) => Math.max(1, n) * 26 + 10;
+      const nodes = new Map();
+      for (const p of PIPE) {
+        const el = new S.Rectangle({
+          id: p.id, position: { x: p.x, y: p.y }, size: { width: 150, height: height(Math.max(p.ins.length, p.outs.length)) },
+          attrs: { body: { fill: C.card, stroke: p.color, strokeWidth: 1.5, rx: 8, ry: 8 },
+            label: label(p.name, { x: 2, y: -8, textAnchor: "start", textVerticalAnchor: "bottom", fontWeight: 600 }) },
+          ports: { groups: PORT_GROUPS, items: [
+            ...p.ins.map((t, i) => ({ id: `in-${i}`, group: "in", attrs: { label: { text: t } } })),
+            ...p.outs.map((t, i) => ({ id: `out-${i}`, group: "out", attrs: { label: { text: t } } })),
+          ] },
+        });
+        nodes.set(p.id, el);
+        graph.addCell(el);
+      }
+      for (const [s, sp, t, tp] of PIPE_LINKS) graph.addCell(pipeLink().prop({ source: { id: s, port: `out-${sp}` }, target: { id: t, port: `in-${tp}` } }));
+      // Phones get a two-column zigzag instead of the long left-to-right pipeline.
+      const NARROW = { a: [0, 20], clean: [220, 20], b: [0, 150], merge: [220, 150], model: [0, 290], dash: [220, 290], alert: [220, 400] };
+      const relayout = breakpoint(ctx, (narrow) => {
+        isNarrow = narrow;
+        placeAll(graph, narrow ? NARROW : Object.fromEntries(PIPE.map((p) => [p.id, [p.x, p.y]])));
+        graph.getLinks().forEach((l) => l.set(pipeStyle(narrow)));
+      });
+      relayout();
+      const portName = (el, port) => el.getPort(port)?.attrs?.label?.text ?? port;
+      const status = () => tag.set(`連線 <b>${graph.getLinks().length}</b> 條・可接的埠拖曳時會變綠`);
+      paper.on("link:connect", (lv) => {
+        const s = lv.model.getSourceElement(), t = lv.model.getTargetElement();
+        status();
+        tag.flash(`已連接：<b>${s.attr("label/text")}・${portName(s, lv.model.source().port)}</b> → <b>${t.attr("label/text")}・${portName(t, lv.model.target().port)}</b>`);
+      });
+      paper.on("link:pointerdblclick", (lv) => { lv.model.remove(); status(); });
+      graph.on("remove", () => ctx.timeout(status, 0));
+      let selected = nodes.get("dash");
+      paper.on("element:pointerclick", (v) => { selected = v.model; tag.flash(`已選取 <b>${selected.attr("label/text")}</b>`, 1600); });
+      ctx.button("選取節點加輸入埠", () => {
+        const el = selected;
+        const ins = el.getGroupPorts("in");
+        if (ins.length >= 5) return tag.flash("每個節點最多 5 個輸入埠");
+        el.addPort({ id: `in-${ins.length}`, group: "in", attrs: { label: { text: `輸入 ${ins.length + 1}` } } });
+        el.resize(150, height(Math.max(ins.length + 1, el.getGroupPorts("out").length)));
+        tag.flash(`<b>${el.attr("label/text")}</b> 新增輸入埠，共 ${ins.length + 1} 個`);
+      });
+      ctx.button("清除連線", () => { graph.removeCells(graph.getLinks()); status(); });
+      status();
+      // rightAngle routes leave ports sideways by 16px, so leave room on both sides in the zigzag layout.
+      const refit = () => fit(ctx, paper, { maxScale: 1.2, area: isNarrow ? graph.getBBox().moveAndExpand({ x: -24, y: 0, width: 48, height: 0 }) : undefined });
+      refit();
+      ctx.onResize(() => { relayout(); refit(); });
+    },
+  },
+  {
+    id: "embed", title: "嵌入與群組",
+    api: "embeddingMode + validateEmbedding + parent.embed(child)",
+    desc: "把縣市拖進區域框就成為它的子元素（embed），拖動區域框時整組一起移動；validateEmbedding 只允許區域框當父層。放對區域變綠、放錯變紅。",
+    hint: "把縣市拖進區域框；拖動區域框時裡面的縣市會一起移動",
+    mount(ctx) {
+      board(ctx);
+      const graph = new joint.dia.Graph({}, { cellNamespace: NS });
+      const tag = tagger(ctx);
+      const paper = makePaper(ctx, graph, {
+        async: false, embeddingMode: true,
+        validateEmbedding: (childView, parentView) => !!parentView.model.get("isGroup") && !childView.model.get("isGroup"),
+        highlighting: { embedding: { name: "mask", options: { padding: 4, attrs: { stroke: C.c1, "stroke-width": 3, "stroke-linejoin": "round" } } } },
+      });
+      const GW = 200, CW = 84, CHH = 32, GAP = 8, HEAD = 40, GH = HEAD + 3 * (CHH + GAP) + 6;
+      const groups = REGIONS.map((r) => new S.Rectangle({
+        id: r.id, isGroup: true, region: r.id, size: { width: GW, height: GH },
+        attrs: { body: { fill: tint(r.color, .06), stroke: r.color, strokeDasharray: "6 4", strokeWidth: 1.5, rx: 12, ry: 12 },
+          label: label(r.name, { x: 14, y: 20, textAnchor: "start", fontWeight: 600, fill: r.color }) },
+      }));
+      graph.addCells(groups);
+      const chips = CITIES.map(([name, region], i) => new S.Rectangle({
+        id: `city${i}`, region, order: i, size: { width: CW, height: CHH },
+        attrs: { body: { fill: C.card, stroke: C.edge, strokeWidth: 2, rx: 8, ry: 8 }, label: label(name) },
+      }));
+      graph.addCells(chips);
+      CITIES.forEach(([, , start], i) => { if (start) graph.getCell(start).embed(chips[i]); });
+      // Regions form one row on landscape stages and a 2 x 2 grid on portrait ones; deep moves the children along.
+      let cols = 0;
+      const wantCols = () => { const { width, height } = ctx.size(); return width / height > 1.25 ? 4 : 2; };
+      function arrange() {
+        cols = wantCols();
+        groups.forEach((g, i) => g.position((i % cols) * (GW + 18), Math.floor(i / cols) * (GH + 18), { deep: true }));
+      }
+      // Children sit in a two-column grid under the header; the group grows when it holds more than six.
+      function tidy() {
+        for (const g of groups) {
+          const p = g.position();
+          const kids = g.getEmbeddedCells().sort((a, b) => a.get("order") - b.get("order"));
+          kids.forEach((k, i) => k.position(p.x + 12 + (i % 2) * (CW + GAP), p.y + HEAD + Math.floor(i / 2) * (CHH + GAP)));
+          g.resize(GW, Math.max(GH, HEAD + Math.ceil(kids.length / 2) * (CHH + GAP) + 6));
+        }
+        let ok = 0;
+        for (const ch of chips) {
+          const parent = ch.getParentCell();
+          const good = parent && parent.get("region") === ch.get("region");
+          if (good) ok++;
+          ch.attr("body/stroke", !parent ? C.edge : good ? C.c4 : C.c3);
+        }
+        for (const g of groups) {
+          const kids = g.getEmbeddedCells();
+          const right = kids.filter((k) => k.get("region") === g.get("region")).length;
+          g.attr("label/text", `${REGIONS.find((r) => r.id === g.id).name}　${right}/${kids.length}`);
+        }
+        tag.set(ok === chips.length ? `<b>全部歸位</b>：12 個縣市都在正確區域` : `已歸位 <b>${ok}</b> / ${chips.length}・灰框是尚未分組`);
+      }
+      function pool() {
+        const free = chips.filter((c) => !c.getParentCell());
+        const top = Math.max(...groups.map((g) => g.position().y + g.size().height)) + 30;
+        const perRow = Math.floor((cols * (GW + 18)) / (CW + 14));
+        free.forEach((c, i) => c.position((i % perRow) * (CW + 14), top + Math.floor(i / perRow) * (CHH + 12)));
+      }
+      arrange();
+      tidy();
+      pool();
+      paper.on("element:pointerup", () => ctx.timeout(tidy, 0));
+      ctx.button("自動歸位", () => {
+        for (const ch of chips) {
+          const parent = ch.getParentCell();
+          if (parent && parent.get("region") === ch.get("region")) continue;
+          if (parent) parent.unembed(ch);
+          graph.getCell(ch.get("region")).embed(ch);
+        }
+        tidy();
+        fit(ctx, paper, { maxScale: 1.2, animate: true });
+      }, { primary: true });
+      ctx.button("全部移出", () => {
+        for (const ch of chips) ch.getParentCell()?.unembed(ch);
+        tidy();
+        pool();
+        fit(ctx, paper, { maxScale: 1.2, animate: true });
+      });
+      fit(ctx, paper, { maxScale: 1.2 });
+      ctx.onResize(() => {
+        if (wantCols() !== cols) { arrange(); tidy(); pool(); }
+        fit(ctx, paper, { maxScale: 1.2 });
+      });
+    },
+  },
+  {
+    id: "tools", title: "工具與高亮",
+    api: "elementTools / linkTools + highlighters.{stroke, mask, opacity, addClass}",
+    desc: "點選節點掛上 elementTools（外框、刪除、拉出連線、資訊鈕），點選連線掛上 linkTools（轉折點、兩端箭頭、刪除）。選取效果可切換四種 highlighter，相連的連線另外用 addClass 加上流動虛線。",
+    hint: "點節點或連線顯示工具；拖曳連線上的白點調整轉折，點線段可新增轉折",
+    mount(ctx) {
+      board(ctx);
+      const graph = new joint.dia.Graph({}, { cellNamespace: NS });
+      const tag = tagger(ctx);
+      const flowLink = () => new S.Link({ connector: { name: "rounded", args: { radius: 10 } },
+        attrs: { line: { stroke: C.link, strokeWidth: 2.5, targetMarker: { ...ARROW, fill: C.link } } } });
+      const paper = makePaper(ctx, graph, { async: false, linkPinning: false, defaultLink: flowLink, interactive: { linkMove: false } });
+      const box = (id, Ctor, x, y, w, h, text, color, body = {}) => new Ctor({ id, position: { x, y }, size: { width: w, height: h },
+        attrs: { body: { fill: tint(color, .14), stroke: color, strokeWidth: 2, ...body }, label: label(text) } });
+      graph.addCells([
+        box("start", S.Ellipse, 0, 104, 110, 52, "開始報名", C.c4),
+        box("form", S.Rectangle, 170, 100, 120, 60, "填寫表單", C.c2, { rx: 8, ry: 8 }),
+        box("check", S.Polygon, 350, 85, 140, 90, "資料完整？", C.c1, { points: "calc(0.5*w),0 calc(w),calc(0.5*h) calc(0.5*w),calc(h) 0,calc(0.5*h)" }),
+        box("pay", S.Rectangle, 550, 100, 120, 60, "線上繳費", C.c2, { rx: 8, ry: 8 }),
+        box("done", S.Ellipse, 730, 104, 110, 52, "報名完成", C.c4),
+        box("fix", S.Rectangle, 360, 250, 120, 56, "補件通知", C.c3, { rx: 8, ry: 8 }),
+      ]);
+      const edge = (s, t, text, vertices = []) => {
+        const l = flowLink().prop({ source: { id: s }, target: { id: t }, vertices });
+        if (text) l.labels([{ attrs: { text: label(text, { fontSize: 12 }), rect: { fill: C.bg, stroke: C.edge, rx: 4, ry: 4 } } }]);
+        return l;
+      };
+      const back = edge("fix", "form", "", [{ x: 230, y: 278 }]);
+      graph.addCells([edge("start", "form"), edge("form", "check"), edge("check", "pay", "是"), edge("pay", "done"), edge("check", "fix", "否"), back]);
+      // Phones get the same flow top to bottom, with the fix-up loop on the right.
+      const WIDE = { start: [0, 104], form: [170, 100], check: [350, 85], pay: [550, 100], done: [730, 104], fix: [360, 250] };
+      const NARROW = { start: [5, 0], form: [0, 100], check: [-10, 210], pay: [0, 360], done: [5, 470], fix: [200, 227] };
+      const relayout = breakpoint(ctx, (narrow) => {
+        placeAll(graph, narrow ? NARROW : WIDE);
+        back.vertices(narrow ? [{ x: 260, y: 130 }] : [{ x: 230, y: 278 }]);
+      });
+      relayout();
 
-// Highlight the reporting line from the clicked person up to the director.
-let selected = null;
-function highlight(id) {
-  selected = id;
-  const chain = new Set();
-  for (let cur = id; cur; cur = info(cur).boss) chain.add(cur);
-  for (const el of els.values()) {
-    const on = chain.has(el.id);
-    el.attr("body", { fill: el.id === id ? CARD_ON : CARD, stroke: on ? DEPT[el.get("data").dept] : EDGE, strokeWidth: on ? 2.5 : 1.5 });
-  }
-  for (const link of graph.getLinks()) {
-    const on = chain.has(link.target().id);
-    link.attr("line", { stroke: on ? "#ecebe6" : LINK, strokeWidth: on ? 3 : 2 });
-    // Lift the highlighted links above the others, still below the cards.
-    link.set("z", on ? 0 : -1);
-  }
-  if (id) flash(`匯報路線：${[...chain].reverse().map((c) => info(c).name).join(" → ")}`);
-}
-
-const hint = document.querySelector(".hint");
-const HINT_TEXT = hint.textContent;
-let hintTimer;
-function flash(msg) {
-  hint.textContent = msg;
-  hint.classList.add("on");
-  clearTimeout(hintTimer);
-  hintTimer = setTimeout(() => { hint.textContent = HINT_TEXT; hint.classList.remove("on"); }, 3200);
-}
-
-const updateCount = () => { document.getElementById("count").textContent = els.size; };
-
-paper.on("element:pointerdown", (view) => view.model.toFront());
-paper.on("element:pointerclick", (view) => highlight(view.model.id));
-paper.on("blank:pointerclick", () => highlight(null));
-
-let added = 0;
-document.getElementById("add").addEventListener("click", () => {
-  // New members join the selected person's team, or the teaching team by default.
-  const bossId = selected || "edu";
-  const boss = info(bossId);
-  added += 1;
-  const el = addMember({ id: `n${added}`, name: `新成員${added}`, role: "實習生", dept: boss.dept === "exec" ? "edu" : boss.dept, boss: bossId });
-  el.position(els.get(bossId).position().x, els.get(bossId).position().y);
-  updateCount();
-  arrange(true);
-  highlight(selected);
-  flash(`已在「${boss.name}」底下新增 1 位成員`);
-});
-document.getElementById("style").addEventListener("click", (e) => {
-  styleIdx = (styleIdx + 1) % STYLES.length;
-  graph.getLinks().forEach(styleLink);
-  e.currentTarget.textContent = `連線：${STYLES[styleIdx].label}`;
-});
-document.getElementById("mode").addEventListener("click", (e) => {
-  mode = mode === "org" ? "tree" : "org";
-  e.currentTarget.textContent = `版面：${mode === "org" ? "組織圖" : "樹狀圖"}`;
-  arrange(true);
-});
-document.getElementById("relayout").addEventListener("click", () => arrange(true));
-
-PEOPLE.forEach(addMember);
-updateCount();
-arrange(false);
-
-// Keep the user's dragged positions on resize; only refit the view.
-let rz;
-addEventListener("resize", () => {
-  clearTimeout(rz);
-  rz = setTimeout(() => fitTo(null, false), 150);
-});
+      const HL = ["stroke", "mask", "opacity", "addClass"];
+      let hl = 0, selected = null;
+      const shown = new Set();
+      const sel = (v) => (v.model.isLink() ? "line" : "body");
+      const highlight = (v) => {
+        const name = HL[hl];
+        const opts = {
+          stroke: { padding: 6, rx: 8, ry: 8, attrs: { stroke: C.c1, "stroke-width": 3 } },
+          mask: { padding: 4, attrs: { stroke: C.c1, "stroke-width": 3, "stroke-linejoin": "round" } },
+          opacity: { alphaValue: 0.35 },
+          addClass: { className: "jj-glow" },
+        }[name];
+        joint.highlighters[name].add(v, name === "opacity" || name === "addClass" ? "root" : sel(v), "sel", opts);
+      };
+      const infoBtn = () => new joint.elementTools.Button({
+        x: 0, y: 0, offset: { x: -6, y: -6 },
+        markup: [
+          { tagName: "circle", selector: "button", attributes: { r: 9, fill: C.c2, cursor: "pointer" } },
+          { tagName: "text", selector: "icon", textContent: "i", attributes: { fill: C.bg, "font-size": 12, "font-weight": 700, "text-anchor": "middle", y: 4, "pointer-events": "none" } },
+        ],
+        action: (evt, view) => {
+          const m = view.model;
+          const ins = graph.getConnectedLinks(m, { inbound: true }).length, outs = graph.getConnectedLinks(m, { outbound: true }).length;
+          tag.flash(`<b>${m.attr("label/text")}</b>：進入 ${ins} 條、離開 ${outs} 條連線`);
+        },
+      });
+      const toolsFor = (v) => new joint.dia.ToolsView({ tools: v.model.isLink() ? [
+        new joint.linkTools.Vertices(), new joint.linkTools.SourceArrowhead(), new joint.linkTools.TargetArrowhead(),
+        new joint.linkTools.Remove({ distance: "50%" }), new joint.linkTools.Boundary({ padding: 10, attrs: { stroke: C.muted } }),
+      ] : [
+        new joint.elementTools.Boundary({ padding: 10, useModelGeometry: true, attrs: { stroke: C.muted, "stroke-dasharray": "4 4", fill: "none" } }),
+        new joint.elementTools.Remove({ x: "100%", y: 0, offset: { x: 6, y: -6 } }),
+        new joint.elementTools.Connect({ x: "100%", y: "100%", offset: { x: 6, y: 6 }, magnet: "body" }),
+        infoBtn(),
+      ] });
+      function clear() {
+        for (const v of shown) { v.removeTools(); joint.dia.HighlighterView.remove(v, "sel"); }
+        shown.clear();
+        for (const l of graph.getLinks()) {
+          const lv = paper.findViewByModel(l);
+          if (lv) joint.dia.HighlighterView.remove(lv, "flow");
+        }
+      }
+      function select(v) {
+        clear();
+        selected = v;
+        if (!v) return tag.set("點選節點或連線，會掛上對應的工具");
+        v.addTools(toolsFor(v));
+        highlight(v);
+        shown.add(v);
+        if (v.model.isElement()) {
+          for (const l of graph.getConnectedLinks(v.model)) joint.highlighters.addClass.add(paper.findViewByModel(l), "line", "flow", { className: "jj-flow" });
+        }
+        tag.set(`已選取 <b>${v.model.isLink() ? "連線" : v.model.attr("label/text")}</b>・高亮 <code>highlighters.${HL[hl]}</code>`);
+      }
+      paper.on("cell:pointerclick", (v) => select(v));
+      paper.on("blank:pointerclick", () => select(null));
+      graph.on("remove", (cell) => { if (selected && selected.model === cell) { shown.delete(selected); selected = null; ctx.timeout(() => select(null), 0); } });
+      ctx.group(HL, 0, (i) => { hl = i; if (selected) select(selected); });
+      select(paper.findViewByModel("check"));
+      // Show link tools on the loop-back edge too, so both tool sets are visible at start.
+      const bv = paper.findViewByModel(back);
+      bv.addTools(toolsFor(bv));
+      shown.add(bv);
+      fit(ctx, paper, { maxScale: 1.25 });
+      ctx.onResize(() => { relayout(); fit(ctx, paper, { maxScale: 1.25 }); });
+    },
+  },
+  {
+    id: "dag", title: "自動排版與 JSON",
+    api: "layout.DirectedGraph.layout(graph, { rankDir }) + graph.toJSON() / fromJSON()",
+    desc: "@joint/layout-directed-graph 以 dagre 自動排出課程先修關係，切換方向時節點補間移動。toJSON() 把整張圖存成純資料，fromJSON() 原樣還原；滾輪縮放、拖曳空白處平移。",
+    hint: "新增幾個節點後按「從 JSON 還原」回到存檔；滾輪縮放、拖曳空白處平移",
+    async mount(ctx) {
+      board(ctx, `<div class="jj-json"><div class="jj-json-h">目前存檔</div><pre></pre></div>`, "");
+      ctx.el.classList.add("jj-dag");
+      if (!joint.layout.DirectedGraph) {
+        const s = ctx.status("載入 dagre 排版模組…");
+        await ctx.load(DAGRE_URLS);
+        s.done();
+      }
+      const graph = new joint.dia.Graph({}, { cellNamespace: NS });
+      const paper = makePaper(ctx, graph, { interactive: (v) => v.model.isElement() });
+      zoomPan(ctx, paper);
+      const tag = tagger(ctx);
+      const head = ctx.$(".jj-json-h"), pre = ctx.$(".jj-json pre");
+      const NW = 132, NH = 40;
+      const course = (id, text, track) => new S.Rectangle({ id, track, size: { width: NW, height: NH },
+        attrs: { body: { fill: tint(TRACK[track], .14), stroke: TRACK[track], strokeWidth: 1.8, rx: 8, ry: 8 }, label: label(text) } });
+      const req = (s, t) => new S.Link({ source: { id: s }, target: { id: t }, z: -1,
+        attrs: { line: { stroke: C.link, strokeWidth: 1.8, targetMarker: { ...ARROW, fill: C.link } } } });
+      graph.addCells(COURSES.map(([id, t, tr]) => course(id, t, tr)));
+      graph.addCells(PREREQ.map(([s, t]) => req(s, t)));
+      const DIRS = [{ rank: "TB", from: "bottom", to: "top" }, { rank: "LR", from: "right", to: "left" }];
+      // Landscape stages start left-to-right, portrait ones top-to-bottom.
+      let dir = ctx.size().width >= ctx.size().height ? 1 : 0, extra = 0, snapshot = "";
+      const jsonH = () => ctx.$(".jj-json").offsetHeight + 40;
+      function relayout(animate) {
+        const d = DIRS[dir];
+        const targets = new Map();
+        joint.layout.DirectedGraph.layout(graph, {
+          rankDir: d.rank, nodeSep: 24, rankSep: 56, edgeSep: 14, setVertices: false, setLabels: false,
+          setPosition: (el, n) => targets.set(el, { x: n.x - n.width / 2, y: n.y - n.height / 2 }),
+        });
+        for (const l of graph.getLinks()) {
+          l.prop({ source: { id: l.source().id, anchor: { name: d.from } }, target: { id: l.target().id, anchor: { name: d.to } },
+            router: { name: "rightAngle", args: { sourceDirection: d.from, targetDirection: d.to, margin: 10 } }, connector: { name: "rounded", args: { radius: 8 } } });
+        }
+        for (const [el, p] of targets) {
+          if (animate) el.transition("position", p, { duration: DURATION, timingFunction: ease, valueFunction: joint.util.interpolate.object });
+          else el.position(p.x, p.y);
+        }
+        fit(ctx, paper, { area: boundsOf(targets.values(), NW, NH), animate, maxScale: 1.15, extraBottom: jsonH() });
+      }
+      function showJSON(note) {
+        const data = JSON.parse(snapshot);
+        head.innerHTML = `${note}：<code>${Showcase.fmt(snapshot.length)}</code> 字元・<code>${data.cells.length}</code> 個 cell`;
+        const first = { ...data.cells[0] };
+        pre.textContent = JSON.stringify(first, null, 1).split("\n").slice(0, 6).join("\n") + "\n …";
+      }
+      ctx.group(["上→下", "左→右"], dir, (i) => { dir = i; relayout(true); });
+      ctx.button("新增節點", () => {
+        extra += 1;
+        const els = graph.getElements();
+        const from = els[Math.floor(Math.random() * els.length)];
+        const id = `extra${extra}`;
+        graph.addCell(course(id, `選修 ${extra}`, from.get("track")).position(from.position().x, from.position().y));
+        graph.addCell(req(from.id, id));
+        relayout(true);
+        tag.flash(`新增「選修 ${extra}」，接在 <b>${from.attr("label/text")}</b> 之後`);
+      });
+      ctx.button("存成 JSON", () => { snapshot = JSON.stringify(graph.toJSON()); showJSON("已存檔"); tag.flash("已用 <code>graph.toJSON()</code> 存檔"); });
+      ctx.button("從 JSON 還原", () => {
+        graph.getElements().forEach((e) => e.stopTransitions());
+        graph.fromJSON(JSON.parse(snapshot));
+        showJSON("已還原");
+        fit(ctx, paper, { maxScale: 1.15, animate: true, extraBottom: jsonH() });
+        tag.flash(`<code>graph.fromJSON()</code> 還原 ${graph.getElements().length} 個節點`);
+      }, { primary: true });
+      relayout(false);
+      snapshot = JSON.stringify(graph.toJSON());
+      showJSON("目前存檔");
+      tag.set(`課程 <b>${COURSES.length}</b> 門・先修關係 <b>${PREREQ.length}</b> 條・dagre 排版`);
+      ctx.onResize(() => fit(ctx, paper, { maxScale: 1.15, extraBottom: jsonH() }));
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "graph.resetCells(cells) + new dia.Paper({ async })",
+    desc: "每一級先清空畫布，再用 graph.resetCells() 一次放進 N 個矩形與相鄰連線，計時到所有視圖都畫完，並記錄期間最長的一次畫面卡頓。可切換 async／同步渲染與含不含連線，比較成本落在哪裡。",
+    hint: "按「開始測試」；關掉「含連線」再測一次，比較耗時成長",
+    mount(ctx) {
+      ctx.html(`<div class="jj-stress"><div class="jj-dots"></div></div>`);
+      ctx.controls.classList.add("bottom");
+      const wrap = ctx.$(".jj-stress");
+      const graph = new joint.dia.Graph({}, { cellNamespace: NS });
+      let useAsync = true, withLinks = true, paper = null;
+      const COLORS = [C.c2, C.c4, C.c6, C.c5];
+      function build() {
+        if (paper) paper.remove();
+        const el = document.createElement("div");
+        el.className = "jj-paper";
+        wrap.append(el);
+        paper = new joint.dia.Paper({ el, model: graph, width: "100%", height: "100%", gridSize: 1, async: useAsync, interactive: false,
+          background: { color: "transparent" }, cellViewNamespace: NS });
+      }
+      ctx.onCleanup(() => paper && paper.remove());
+      const idle = () => new Promise((res) => { const chk = () => (paper.hasScheduledUpdates() ? requestAnimationFrame(chk) : res()); chk(); });
+      function cells(n) {
+        const cols = Math.ceil(Math.sqrt(n * 1.8));
+        const out = [];
+        for (let i = 0; i < n; i++) {
+          const color = COLORS[i % 4];
+          out.push(new S.Rectangle({ id: `n${i}`, position: { x: (i % cols) * 64, y: Math.floor(i / cols) * 40 }, size: { width: 44, height: 24 },
+            attrs: { body: { fill: tint(color, .16), stroke: color, strokeWidth: 1.5, rx: 4, ry: 4 }, label: { text: String(i), fill: C.fg, fontSize: 10, fontFamily: FONT } } }));
+        }
+        if (withLinks) {
+          for (let i = 0; i + 1 < n; i++) {
+            if (i % cols === cols - 1) continue;
+            out.push(new S.Link({ source: { id: `n${i}` }, target: { id: `n${i + 1}` }, attrs: { line: { stroke: C.link, strokeWidth: 1.5, targetMarker: null } } }));
+          }
+        }
+        return out;
+      }
+      const refit = () => paper.transformToFitContent({ padding: { top: 12, left: 12, right: 12, bottom: 12 + (ctx.size().width > 760 ? 0 : ctx.controls.offsetHeight + 8) },
+        maxScale: 1, useModelGeometry: true, horizontalAlign: "middle", verticalAlign: "middle" });
+      build();
+      graph.resetCells(cells(300));
+      refit();
+      ctx.toggle("async 非同步渲染", useAsync, (v) => { useAsync = v; });
+      ctx.toggle("含連線", withLinks, (v) => { withLinks = v; });
+      ctx.onResize(refit);
+      ctx.bench({
+        label: "元素", unit: "個", sizes: [250, 500, 1000, 2500, 5000, 10000, 20000, 40000], budget: 2000,
+        async prepare(n) {
+          if (paper.options.async !== useAsync) build();
+          graph.resetCells([]);
+          await idle();
+          return cells(n);
+        },
+        async run(n, data) {
+          let worst = 0, last = performance.now(), live = true;
+          const tick = () => { const now = performance.now(); worst = Math.max(worst, now - last); last = now; if (live) requestAnimationFrame(tick); };
+          requestAnimationFrame(tick);
+          last = performance.now();
+          graph.resetCells(data);
+          await idle();
+          await ctx.frame(1);
+          live = false;
+          worst = Math.max(worst, performance.now() - last);
+          refit();
+          return `最長卡頓 ${Showcase.fmtMs(worst)}・${useAsync ? "async" : "同步"}`;
+        },
+        note: "計時包含建立 SVG 節點、套用屬性與量測文字。本機實測 resetCells 的成本多半擠在同一段，即使開 async，最長卡頓仍約為總耗時的八到九成，async 對這種一次性大量載入幫助有限。含連線時每條線都要算端點與路徑，耗時隨數量超線性成長；關掉「含連線」後接近線性，看得出元素本身的成本。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

@@ -3,149 +3,619 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Blotter.js 示範：會流動的 WebGL 文字</title>
+<title>Blotter.js 示範：七個場景看懂 WebGL 文字材質</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/noto-sans-tc@5.3.0/900.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","note":"中文字型使用思源黑體（Noto Sans TC）的分段子集，只下載畫面用到的字"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["字在流動","五種內建材質","即時調整 uniform","一個實例多段文字","自訂著色器","滑鼠事件","極限測試"],"note":"中文字型使用思源黑體（Noto Sans TC）Black 的分段子集，只下載畫面用到的字；字型以別名載入，不影響介面字體"}</script>
 <style>
-  body { background: radial-gradient(60% 60% at 50% 45%, #1c1830, var(--bg) 75%); }
-  .wrap { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 64px 16px 56px; }
-  #stage { min-height: 120px; display: grid; place-items: center; cursor: crosshair; }
-  #stage canvas { display: block; }
-  .info { text-align: center; }
+  .fill { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 44px); overflow: hidden; }
+  .b-canvas { display: block; }
+  .hold { position: relative; display: grid; place-items: center; min-width: 0; min-height: 0; overflow: hidden; }
+  .tile { position: relative; min-width: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column; padding: 8px 10px 6px;
+    background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; }
+  .tile h2 { flex: none; margin: 0 0 4px; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tile h2 small { font-weight: 400; color: var(--muted); margin-left: 6px; }
+  .tile h2 code { font: 10.5px var(--mono); color: var(--muted); margin-left: 6px; }
+  .tile .hold { flex: 1; }
+  .memo { flex: none; margin-top: 4px; font-size: 11.5px; line-height: 1.5; color: var(--muted); }
+
+  /* 1. signature */
+  .solo { display: flex; flex-direction: column; gap: 10px; }
+  .solo .hold { flex: 1; cursor: crosshair; }
+  .info { flex: none; text-align: center; }
   .info b { display: block; font-size: 15px; }
   .info span { font-size: 13px; color: var(--muted); }
-  .uni { margin-top: 8px; font: 12px var(--mono); color: var(--c2); min-height: 1.4em; }
-  .controls .sep { width: 1px; background: var(--line); }
-  @media (max-width: 560px) { .wrap { padding-top: 96px; } .controls .sep { display: none; } }
+  .uni { margin-top: 6px; font: 12px var(--mono); color: var(--c2); min-height: 1.4em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* 2. five materials */
+  .mats { display: grid; gap: 10px; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+  .us { flex: none; font: 10.5px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .howto pre { flex: none; margin: 4px 0 2px; font: 11px/1.6 var(--mono); color: var(--c1); white-space: pre; overflow: hidden; }
+  @media (max-width: 560px) { .mats { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(3, minmax(0, 1fr)); } .howto .wide { display: none; } }
+
+  /* 3. live uniforms */
+  .tune { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) minmax(0, 270px); grid-template-rows: minmax(0, 1fr); }
+  .knobs { overflow: auto; }
+  .knobs.wait .rows { opacity: .45; pointer-events: none; }
+  .rows { display: flex; flex-direction: column; gap: 4px; }
+  .knob { display: grid; grid-template-columns: 84px minmax(0, 1fr) 46px; gap: 8px; align-items: center; }
+  .knob span { font-size: 12.5px; line-height: 1.2; }
+  .knob span small { display: block; font: 10px var(--mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .knob input { width: 100%; min-width: 0; margin: 0; }
+  .knob output { font: 11.5px var(--mono); text-align: right; }
+  .last { flex: none; margin-top: auto; padding-top: 6px; border-top: 1px solid var(--line); }
+  .last small { display: block; font-size: 11px; color: var(--muted); }
+  .last code { display: block; font: 11px var(--mono); color: var(--c1); word-break: break-all; min-height: 1.5em; }
+  @media (max-width: 560px) { .tune { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, .8fr) minmax(0, 1.2fr); } }
+
+  /* 4. one blotter, many texts */
+  .multi4 { display: grid; gap: 10px; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+  .cells { display: grid; gap: 8px; min-height: 0; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+  .cell { cursor: pointer; }
+  .cell.paused::after { content: "已暫停"; position: absolute; right: 8px; bottom: 6px; font-size: 11px; color: var(--accent-ink); background: var(--accent); border-radius: 4px; padding: 1px 6px; }
+  .abox { position: relative; flex: 1; min-height: 0; }
+  .abox canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  @media (max-width: 560px) { .multi4 { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1.5fr) minmax(0, 1fr); } }
+
+  /* 5. custom shader */
+  .shade { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: minmax(0, 1fr); }
+  .glsl pre { flex: 1; min-height: 0; margin: 0; overflow: auto; font: 11px/1.5 var(--mono); white-space: pre; }
+  @media (max-width: 560px) { .shade { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); } }
+
+  /* 6. mouse events */
+  .flies { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) minmax(0, 210px); grid-template-rows: minmax(0, 1fr); }
+  .flies .b-canvas { touch-action: none; }
+  .evlist { display: flex; flex-direction: column; gap: 3px; }
+  .evt { display: flex; justify-content: space-between; gap: 8px; padding: 2px 8px; border-radius: 6px; font: 11.5px var(--mono); transition: background .35s; }
+  .evt.hit { background: rgba(76, 201, 240, .28); transition: none; }
+  .evt b { font-weight: 400; color: var(--muted); }
+  .pos { margin-top: 8px; font: 11.5px/1.6 var(--mono); color: var(--c2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .state { margin-top: 4px; font-size: 12.5px; line-height: 1.5; }
+  @media (max-width: 560px) {
+    .flies { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+    .evlist { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .pos { margin-top: 4px; }
+  }
+
+  /* 7. stress */
+  .stress-box { position: absolute; inset: 8px 8px 8px 350px; overflow: auto; display: flex; flex-wrap: wrap; align-content: flex-start; justify-content: center;
+    gap: 0 4px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; }
+  /* The bench panel only spans the full width below 560px; above that it leaves room on the right */
+  @media (max-width: 560px) { .stress-box { inset: 8px; } }
 </style>
 </head>
 <body>
-<div class="controls" id="mats">
-  <button class="btn" data-mat="liquid" aria-pressed="true">液態扭曲</button>
-  <button class="btn" data-mat="split">色版分離</button>
-  <button class="btn" data-mat="roll">滾動撕裂</button>
-  <span class="sep"></span>
-  <button class="btn primary" id="next">換一句</button>
-</div>
-
-<div class="wrap">
-  <div id="stage"></div>
-  <div class="info">
-    <b id="mname">液態扭曲</b>
-    <span id="mdesc">用 3D 雜訊推動每個像素，滑鼠動得越快，字晃得越厲害</span>
-    <div class="uni" id="uni"></div>
-  </div>
-</div>
-<div class="status" id="st">正在載入思源黑體…</div>
-<div class="hint">在字的附近快速移動滑鼠或手指</div>
-
 <script src="https://cdn.jsdelivr.net/gh/bradley/Blotter@0.1.0/build/blotter.min.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/bradley/Blotter@0.1.0/build/materials/liquidDistortMaterial.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/bradley/Blotter@0.1.0/build/materials/channelSplitMaterial.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/bradley/Blotter@0.1.0/build/materials/rollingDistortMaterial.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/bradley/Blotter@0.1.0/build/materials/slidingDoorMaterial.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/bradley/Blotter@0.1.0/build/materials/fliesMaterial.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
+const { h, fmtMs } = Showcase;
+const CDN = "https://cdn.jsdelivr.net/npm/@fontsource/noto-sans-tc@5.3.0/";
+const FACE = "Blotter Noto";
+const FAMILY = `'${FACE}', 'Microsoft JhengHei', 'PingFang TC', sans-serif`;
+const PAGE_BG = [0.055, 0.063, 0.075, 1]; // --bg, so channel split blends onto the page
+const CARD_BG = [0.09, 0.102, 0.122, 1];  // --bg-2, for tiles
+const C = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#9d8cff"];
+const INK = "#f4f1ff";
+const LEAD = 1.3;
+const SKIP = new Set(["uGlobalTime", "uTimeDelta", "uResolution"]);
+
+// Blotter rasterizes text into its own canvas, so the web font must be ready first.
+// The 900-weight Fontsource sheet is injected under an alias so it never replaces the UI font.
+let faceCss = null;
+function loadFont(chars) {
+  if (!faceCss) {
+    faceCss = fetch(CDN + "900.css")
+      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
+      .then((css) => {
+        const renamed = css.replace(/font-family:\s*'Noto Sans TC'/g, `font-family: '${FACE}'`).replace(/url\(\.\//g, `url(${CDN}`);
+        document.head.append(h("style", { text: renamed }));
+      });
+  }
+  const ready = faceCss.then(() => document.fonts.load(`900 100px '${FACE}'`, chars));
+  return Promise.race([ready, new Promise((r) => setTimeout(r, 6000))])
+    .catch((err) => { faceCss = null; console.warn("字型載入失敗，改用系統字型", err); });
+}
+
+function textProps(size, fill) {
+  // Padding leaves room for the distortion to spill over the glyph edges
+  const p = Math.round(size * 0.35), v = Math.round(p * 0.6);
+  return { family: FAMILY, weight: 900, size, leading: LEAD, fill, paddingLeft: p, paddingRight: p, paddingTop: v, paddingBottom: v };
+}
+const fitSize = (len, w, hh, max) => Math.max(12, Math.floor(Math.min(w / (len + 0.75), hh / (LEAD + 0.45), max)));
+// A build is "live" once the shader on screen was compiled for the current material
+const live = (b) => !!(b && b.mappingMaterial && b.mappingMaterial.material === b.material);
+const setU = (m, vals) => { for (const [k, v] of Object.entries(vals)) m.uniforms[k].value = v; return m; };
+const snapshot = (m) => Object.fromEntries(Object.entries(m.uniforms).map(([k, u]) => [k, Array.isArray(u.value) ? u.value.slice() : u.value]));
+const fmtU = (v, step) => (+v).toFixed(step >= 1 ? 0 : Math.min(3, Math.ceil(-Math.log10(step))));
+
+function disposeMapping(mm) {
+  const sm = mm && mm.shaderMaterial;
+  if (!sm) return;
+  for (const k in sm.uniforms) { const v = sm.uniforms[k].value; if (v && v.isTexture) v.dispose(); }
+  sm.dispose();
+}
+
+// new Blotter() plus the housekeeping it lacks: free GPU objects of replaced builds and on unmount,
+// re-push global uniforms after each build (rebuilds carry stale per-text values over), retry out-of-order builds.
+function makeBlotter(ctx, material, texts, onBuilt) {
+  const b = new Blotter(material, { texts });
+  const r = b._renderer;
+  const setSize = r.setSize;
+  r.setSize = function (w, hh) { if (this._renderTarget) this._renderTarget.dispose(); return setSize.call(this, w, hh); };
+  let shown = null, dead = false;
+  const release = () => { b.stop(); disposeMapping(shown); shown = null; r._renderTarget.dispose(); };
+  const built = () => {
+    if (shown && shown !== b.mappingMaterial) disposeMapping(shown);
+    shown = b.mappingMaterial;
+    if (dead) { release(); return; }
+    if (!live(b)) { b.needsUpdate = true; return; }
+    const u = b.material.uniforms;
+    for (const k in u) if (!SKIP.has(k)) u[k].value = u[k].value;
+    if (onBuilt) onBuilt();
+  };
+  b.on("ready", built);
+  b.on("update", built);
+  ctx.onCleanup(() => { dead = true; release(); r._plane.dispose(); });
+  return b;
+}
+function nextBuild(b, ms = 15000) {
+  return new Promise((res) => {
+    let t = 0;
+    const done = () => { clearTimeout(t); b.off("ready", done); b.off("update", done); res(); };
+    t = setTimeout(done, ms);
+    b.on("ready", done);
+    b.on("update", done);
+  });
+}
+function rebuild(b) { const p = nextBuild(b); b.needsUpdate = true; return p; }
+
+function innerSize(el) {
+  const cs = getComputedStyle(el);
+  return [el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight), el.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)];
+}
+function watchBox(ctx, el, fn) {
+  let [lw, lh] = innerSize(el), id = 0;
+  const ro = new ResizeObserver(() => {
+    clearTimeout(id);
+    id = setTimeout(() => {
+      if (!ctx.active) return;
+      const [w, hh] = innerSize(el);
+      if (Math.abs(w - lw) < 1 && Math.abs(hh - lh) < 1) return;
+      lw = w; lh = hh;
+      fn(w, hh);
+    }, 120);
+  });
+  ro.observe(el);
+  ctx.onCleanup(() => { ro.disconnect(); clearTimeout(id); });
+}
+// One text in its own Blotter, sized to fill `box` and refitted when the box changes size
+function fitText(ctx, box, { word, fill = INK, material, max, onBuilt }) {
+  const sizeFor = (len) => { const [w, hh] = innerSize(box); return textProps(fitSize(len, w, hh, max), fill); };
+  const text = new Blotter.Text(word, sizeFor(word.length));
+  const b = makeBlotter(ctx, material, [text], onBuilt);
+  const scope = b.forText(text);
+  scope.appendTo(box);
+  const refit = () => { text.properties = sizeFor(text.value.length); text.needsUpdate = true; };
+  watchBox(ctx, box, refit);
+  return { text, b, scope, refit };
+}
+async function fontGate(ctx, chars) {
+  const st = ctx.status("正在載入思源黑體…");
+  await loadFont(chars);
+  st.done();
+  return ctx.active;
+}
+
 const WORDS = ["字在流動", "攪動文字", "光的三原色", "像水一樣"];
-const FAMILY = "'Noto Sans TC', 'Microsoft JhengHei', sans-serif";
-const BG = [0.055, 0.063, 0.075, 1]; // page background, so channel split blends onto it
+const TUNE = [
+  { name: "液態扭曲", cls: "LiquidDistortMaterial", make: () => new Blotter.LiquidDistortMaterial(), rows: [
+    ["uSpeed", null, 0, 3, 0.05, "流速"], ["uVolatility", null, 0, 1, 0.01, "波動幅度"], ["uSeed", null, 0, 1, 0.01, "雜訊種子"]] },
+  { name: "色版分離", cls: "ChannelSplitMaterial", make: () => setU(new Blotter.ChannelSplitMaterial(), { uBlendColor: CARD_BG }), rows: [
+    ["uOffset", null, 0, 0.2, 0.002, "偏移距離"], ["uRotation", null, 0, 360, 1, "偏移角度"],
+    ["uApplyBlur", null, 0, 1, 1, "動態模糊"], ["uAnimateNoise", null, 0, 1, 1, "雜訊動畫"]] },
+  { name: "滾動撕裂", cls: "RollingDistortMaterial", make: () => new Blotter.RollingDistortMaterial(), rows: [
+    ["uSineDistortSpread", null, 0, 0.3, 0.005, "波帶寬度"], ["uSineDistortCycleCount", null, 0, 10, 0.1, "波數"],
+    ["uSineDistortAmplitude", null, 0, 0.5, 0.005, "正弦振幅"], ["uNoiseDistortVolatility", null, 0, 100, 1, "雜訊頻率"],
+    ["uNoiseDistortAmplitude", null, 0, 0.1, 0.001, "雜訊振幅"], ["uDistortPosition", 0, 0, 1, 0.01, "中心 X"],
+    ["uDistortPosition", 1, 0, 1, 0.01, "中心 Y"], ["uRotation", null, 0, 360, 1, "捲動角度"], ["uSpeed", null, 0, 0.5, 0.005, "速度"]] },
+  { name: "滑門切片", cls: "SlidingDoorMaterial", make: () => new Blotter.SlidingDoorMaterial(), rows: [
+    ["uDivisions", null, 1, 20, 1, "切片數"], ["uDivisionWidth", null, 0.02, 1, 0.01, "切片寬"],
+    ["uAnimateHorizontal", null, 0, 1, 1, "水平方向"], ["uFlipAnimationDirection", null, 0, 1, 1, "反向"], ["uSpeed", null, 0, 1, 0.01, "速度"]] },
+];
+const CITIES = [
+  { word: "台北一〇一", fill: C[1], amp: 0.05, rot: 170, speed: 0.05 },
+  { word: "高雄港", fill: C[2], amp: 0.12, rot: 120, speed: 0.08 },
+  { word: "日月潭", fill: C[3], amp: 0.2, rot: 45, speed: 0.12 },
+  { word: "花東縱谷", fill: C[0], amp: 0.3, rot: 90, speed: 0.16 },
+];
+const UNIFIED = { amp: 0.15, rot: 150, speed: 0.1 };
+const SHADERS = [
+  { name: "網點", src: `void mainImage(out vec4 mainImage, in vec2 fragCoord) {
+  // Sample the text once per cell, draw a dot sized by its coverage
+  float cell = floor(3.0 + uAmount * 12.0) * uPixelRatio;
+  vec2 center = (floor(fragCoord / cell) + 0.5) * cell;
+  vec4 s = textTexture(center / uResolution);
+  float pulse = 0.75 + 0.25 * sin(uGlobalTime * 2.5 - center.x * 0.04);
+  float r = 0.5 * cell * sqrt(s.a) * pulse;
+  float a = 1.0 - smoothstep(r - 1.0, r + 0.5, distance(fragCoord, center));
+  vec3 col = mix(vec3(0.97, 0.87, 0.12), vec3(0.97, 0.15, 0.52), fragCoord.x / uResolution.x);
+  mainImage = vec4(col, a * step(0.02, s.a));
+}` },
+  { name: "故障", src: `float gHash(float n) { return fract(sin(n) * 43758.5453); }
 
-const MATS = {
-  liquid: { name: "液態扭曲", desc: "用 3D 雜訊推動每個像素，滑鼠動得越快，字晃得越厲害", make: () => new Blotter.LiquidDistortMaterial(),
-    tick(u, k) { u.uSpeed.value = 0.6; u.uVolatility.value = 0.02 + k * 0.32; return "uVolatility " + u.uVolatility.value.toFixed(3); } },
-  split: { name: "色版分離", desc: "紅綠藍三個色版各自偏移再加上動態模糊，方向跟著滑鼠轉", make: () => new Blotter.ChannelSplitMaterial(),
-    tick(u, k, ang) { u.uOffset.value = 0.006 + k * 0.1; u.uRotation.value = ang; return "uOffset " + u.uOffset.value.toFixed(3) + "  uRotation " + ang.toFixed(0) + "°"; } },
-  roll: { name: "滾動撕裂", desc: "一道道正弦波帶著雜訊捲過文字，中心點跟著滑鼠移動", make: () => new Blotter.RollingDistortMaterial(),
-    tick(u, k, ang, pos) { u.uSineDistortAmplitude.value = 0.03 + k * 0.28; u.uDistortPosition.value = pos; u.uSpeed.value = 0.12;
-      return "uSineDistortAmplitude " + u.uSineDistortAmplitude.value.toFixed(3); } },
-};
-
-const stage = document.getElementById("stage");
-const uniEl = document.getElementById("uni");
-let blotter, text, scope, matKey = "liquid", material, wordIdx = 0;
-
-function textProps(word) {
-  // Fit the word to the viewport; padding leaves room for the distortion to spill over
-  const size = Math.floor(Math.min((innerWidth - 32) / (word.length + 0.7), innerHeight * 0.3, 170));
-  const pad = Math.round(size * 0.35);
-  return { family: FAMILY, weight: 900, size, fill: "#f4f1ff", paddingLeft: pad, paddingRight: pad, paddingTop: pad * 0.6, paddingBottom: pad * 0.6 };
+void mainImage(out vec4 mainImage, in vec2 fragCoord) {
+  // Random horizontal bands jump sideways ten times a second
+  vec2 uv = fragCoord / uResolution;
+  float t = floor(uGlobalTime * 10.0);
+  float band = floor(uv.y * 12.0);
+  float jump = step(0.6, gHash(band * 7.13 + t));
+  float shift = (gHash(band * 3.7 + t * 1.3) - 0.5) * 0.25 * uAmount * jump;
+  float split = 0.025 * uAmount;
+  float r = textTexture(uv + vec2(shift + split, 0.0)).a;
+  float g = textTexture(uv + vec2(shift, 0.0)).a;
+  float b = textTexture(uv + vec2(shift - split, 0.0)).a;
+  float scan = 0.8 + 0.2 * sin(fragCoord.y * 1.6 / uPixelRatio);
+  mainImage = vec4(vec3(r, g, b) * scan, max(max(r, g), b));
+}` },
+  { name: "彩虹", src: `vec3 rbHue(float h) {
+  return clamp(abs(mod(h * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
 }
 
-function useMaterial(key) {
-  matKey = key;
-  material = MATS[key].make();
-  if (!blotter) return;
-  blotter.material = material;
-  blotter.needsUpdate = true;
-  document.querySelectorAll("[data-mat]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.mat === key));
-  document.getElementById("mname").textContent = MATS[key].name;
-  document.getElementById("mdesc").textContent = MATS[key].desc;
-}
+void mainImage(out vec4 mainImage, in vec2 fragCoord) {
+  // A sine wave bends the sampling position; hue scrolls over time
+  vec2 uv = fragCoord / uResolution;
+  float wave = sin(uv.x * 10.0 - uGlobalTime * 3.0) * 0.1 * uAmount;
+  vec4 s = textTexture(vec2(uv.x, uv.y + wave));
+  vec3 col = rbHue(fract(uv.x * 0.7 + uv.y * 0.25 - uGlobalTime * 0.12));
+  mainImage = vec4(mix(vec3(1.0), col, 0.9), s.a);
+}` },
+];
+const EVENTS = ["mouseenter", "mousemove", "mousedown", "mouseup", "mouseleave", "render"];
+const TOWNS = ["淡水", "九份", "鹿港", "美濃", "旗津", "礁溪", "池上", "關山", "集集", "內灣", "大溪", "三峽", "鶯歌", "北投", "平溪", "瑞芳",
+  "頭城", "羅東", "竹東", "北埔", "苑裡", "大甲", "清水", "埔里", "鹿谷", "竹山", "西螺", "北港", "新港", "鹽水", "安平", "關子嶺",
+  "六龜", "恆春", "東港", "小琉球", "太麻里", "知本", "鹿野", "瑞穗", "玉里", "光復", "壽豐", "南澳", "蘇澳", "金山", "萬里", "石碇",
+  "坪林", "烏來", "深坑", "新埔", "關西", "通霄", "後龍", "三義", "東勢", "和平", "霧峰", "草屯", "水里", "魚池", "信義", "卑南"];
 
-function setWord(i) {
-  wordIdx = i % WORDS.length;
-  text.value = WORDS[wordIdx];
-  text.properties = textProps(WORDS[wordIdx]);
-  text.needsUpdate = true;
-}
+Showcase.run({
+  scenes: [
+    {
+      id: "flow", title: "字在流動",
+      api: "new Blotter(material, { texts: text }) · blotter.forText(text).appendTo(el)",
+      desc: "Blotter 先把文字畫進一張貼圖，再交給 GLSL 材質逐像素扭曲。滑鼠移動的速度與方向每一幀寫進 uniform，字就跟著手勢流動。",
+      hint: "在字的附近快速移動滑鼠或手指",
+      async mount(ctx) {
+        ctx.html(`<div class="fill solo"><div class="hold"></div><div class="info"><b></b><span></span><div class="uni"></div></div></div>`);
+        const hold = ctx.$(".hold"), nameEl = ctx.$(".info b"), descEl = ctx.$(".info span"), uniEl = ctx.$(".uni");
+        const MATS = [
+          { name: "液態扭曲", desc: "用 3D 雜訊推動每個像素，滑鼠動得越快，字晃得越厲害",
+            make: () => setU(new Blotter.LiquidDistortMaterial(), { uSpeed: 0.6 }),
+            tick(u, k) { u.uVolatility.value = 0.02 + k * 0.32; return `uVolatility ${u.uVolatility.value.toFixed(3)}`; } },
+          { name: "色版分離", desc: "紅綠藍三個色版各自偏移再加上動態模糊，方向跟著滑鼠轉",
+            make: () => setU(new Blotter.ChannelSplitMaterial(), { uBlendColor: PAGE_BG }),
+            tick(u, k, ang) { u.uOffset.value = 0.006 + k * 0.1; u.uRotation.value = ang; return `uOffset ${u.uOffset.value.toFixed(3)}  uRotation ${ang.toFixed(0)}°`; } },
+          { name: "滾動撕裂", desc: "一道道正弦波帶著雜訊捲過文字，中心點跟著滑鼠移動",
+            make: () => setU(new Blotter.RollingDistortMaterial(), { uSpeed: 0.12 }),
+            tick(u, k, ang, pos) { u.uSineDistortAmplitude.value = 0.03 + k * 0.28; u.uDistortPosition.value = pos; return `uSineDistortAmplitude ${u.uSineDistortAmplitude.value.toFixed(3)}`; } },
+        ];
+        const cache = [];
+        const mat = (i) => (cache[i] ||= MATS[i].make());
+        let mi = 0, wi = 0, fitted = null;
+        const show = () => { nameEl.textContent = MATS[mi].name; descEl.textContent = MATS[mi].desc; };
+        ctx.group(MATS.map((m) => m.name), 0, (i) => {
+          mi = i; show();
+          if (fitted) { fitted.b.material = mat(i); fitted.b.needsUpdate = true; }
+        });
+        ctx.button("換一句", () => {
+          if (!fitted) return;
+          wi = (wi + 1) % WORDS.length;
+          fitted.text.value = WORDS[wi];
+          fitted.refit();
+          energy = 1;
+        }, { primary: true });
+        show();
 
-// Pointer energy: fast movement pumps it up, it decays every frame; when idle it breathes on its own
-let energy = 0.9, lastMove = 0, last = null, angle = 30, pos = [0.5, 0.5];
-addEventListener("pointermove", (e) => {
-  const now = performance.now();
-  if (last) {
-    const dt = Math.max(now - last.t, 8);
-    energy = Math.min(1.2, energy + Math.hypot(e.clientX - last.x, e.clientY - last.y) / dt * 0.05);
-  }
-  last = { x: e.clientX, y: e.clientY, t: now };
-  lastMove = now;
-  const c = scope && scope.domElement.getBoundingClientRect();
-  if (c && c.width) {
-    angle = (Math.atan2(c.top + c.height / 2 - e.clientY, e.clientX - (c.left + c.width / 2)) * 180 / Math.PI + 360) % 360;
-    pos = [Math.min(1, Math.max(0, (e.clientX - c.left) / c.width)), Math.min(1, Math.max(0, 1 - (e.clientY - c.top) / c.height))];
-  }
+        // Pointer energy: fast movement pumps it up, it decays every frame; when idle it breathes on its own
+        let energy = 0.9, lastMove = -1e9, last = null, angle = 30, pos = [0.5, 0.5];
+        ctx.on(ctx.el, "pointermove", (e) => {
+          const now = performance.now();
+          if (last) energy = Math.min(1.2, energy + Math.hypot(e.clientX - last.x, e.clientY - last.y) / Math.max(now - last.t, 8) * 0.05);
+          last = { x: e.clientX, y: e.clientY, t: now };
+          lastMove = now;
+          const c = fitted && fitted.scope.domElement.getBoundingClientRect();
+          if (c && c.width) {
+            angle = (Math.atan2(c.top + c.height / 2 - e.clientY, e.clientX - (c.left + c.width / 2)) * 180 / Math.PI + 360) % 360;
+            pos = [Math.min(1, Math.max(0, (e.clientX - c.left) / c.width)), Math.min(1, Math.max(0, 1 - (e.clientY - c.top) / c.height))];
+          }
+        });
+        if (!(await fontGate(ctx, WORDS.join("")))) return;
+        fitted = fitText(ctx, hold, { word: WORDS[0], material: mat(mi), max: 170 });
+        ctx.raf((t) => {
+          energy *= 0.955;
+          if (t - lastMove > 1800) {
+            energy = Math.max(energy, 0.38 + 0.26 * Math.sin(t / 900));
+            angle = (t / 40) % 360;
+            pos = [0.5 + 0.35 * Math.sin(t / 1300), 0.5];
+          }
+          // After a material swap the shader rebuilds asynchronously; only write uniforms the live build knows
+          if (live(fitted.b)) uniEl.textContent = MATS[mi].tick(fitted.b.material.uniforms, Math.min(energy, 1), angle, pos);
+        });
+      },
+    },
+    {
+      id: "materials", title: "五種內建材質",
+      api: "new Blotter.LiquidDistortMaterial() · ChannelSplit · RollingDistort · SlidingDoor · Flies",
+      desc: "官方附的五種材質，各是一段 GLSL 加一組 uniform。五張卡片各自是獨立的 Blotter 實例，同時在跑。",
+      hint: "卡片底下列出這張卡改過的 uniform",
+      async mount(ctx) {
+        const LIST = [
+          { word: "淡水", name: "液態扭曲", cls: "LiquidDistortMaterial", fill: C[1], set: { uSpeed: 0.4, uVolatility: 0.12 } },
+          { word: "九份", name: "色版分離", cls: "ChannelSplitMaterial", fill: INK, set: { uOffset: 0.06, uBlendColor: CARD_BG } },
+          { word: "墾丁", name: "滾動撕裂", cls: "RollingDistortMaterial", fill: C[2], set: { uSineDistortAmplitude: 0.12, uSpeed: 0.1 } },
+          { word: "太魯閣", name: "滑門切片", cls: "SlidingDoorMaterial", fill: C[3], set: { uDivisions: 6, uSpeed: 0.3 } },
+          { word: "日月潭", name: "螢火點陣", cls: "FliesMaterial", fill: C[0], set: { uPointCellWidth: 0.035 } },
+        ];
+        ctx.html(`<div class="fill mats">${LIST.map((m) => `<div class="tile"><h2>${m.name}<code>${m.cls}</code></h2><div class="hold"></div><div class="us"></div></div>`).join("")}
+          <div class="tile howto"><h2>換材質</h2><pre>b.material = m;\nb.needsUpdate = true;</pre>
+          <div class="memo">每種材質是獨立檔案<span class="wide">（build/materials/*.js）</span>，換材質會重建貼圖與著色器。</div></div></div>`);
+        const holds = ctx.$$(".mats .hold"), uss = ctx.$$(".mats .us");
+        LIST.forEach((m, i) => {
+          const s = Object.entries(m.set).map(([k, v]) => `${k}=${Array.isArray(v) ? `[${v.join(",")}]` : v}`).join("  ");
+          uss[i].textContent = s;
+          uss[i].title = s;
+        });
+        if (!(await fontGate(ctx, LIST.map((m) => m.word).join("")))) return;
+        LIST.forEach((m, i) => fitText(ctx, holds[i], { word: m.word, fill: m.fill, material: setU(new Blotter[m.cls](), m.set), max: 110 }));
+      },
+    },
+    {
+      id: "tune", title: "即時調整 uniform",
+      api: "material.uniforms.uSpeed.value = 1.2",
+      desc: "uniform 是著色器的參數。改 value 會直接寫進 GPU 的資料貼圖，不必重建；換材質才需要 needsUpdate 重建。",
+      hint: "拖動右側滑桿，畫面立刻反應",
+      async mount(ctx) {
+        ctx.html(`<div class="fill tune"><div class="tile"><h2>即時預覽</h2><div class="hold"></div></div>
+          <div class="tile knobs wait"><h2></h2><div class="rows"></div><div class="last"><small>最後一次寫入</small><code>…</code></div></div></div>`);
+        const knobs = ctx.$(".knobs"), titleEl = ctx.$(".knobs h2"), rowsEl = ctx.$(".rows"), codeEl = ctx.$(".last code");
+        const cache = [], defaults = [];
+        const mat = (i) => { if (!cache[i]) { cache[i] = TUNE[i].make(); defaults[i] = snapshot(cache[i]); } return cache[i]; };
+        let mi = 0, fitted = null;
+        const ready = () => fitted && live(fitted.b);
+        function renderRows() {
+          const t = TUNE[mi], m = mat(mi);
+          titleEl.replaceChildren(t.name, h("code", { text: t.cls }));
+          rowsEl.replaceChildren(...t.rows.map(([key, idx, min, max, step, label]) => {
+            const cur = idx == null ? m.uniforms[key].value : m.uniforms[key].value[idx];
+            const out = h("output", { text: fmtU(cur, step) });
+            const input = h("input", { type: "range", min, max, step, value: cur, "aria-label": label });
+            input.addEventListener("input", () => {
+              const v = +input.value;
+              out.textContent = fmtU(v, step);
+              if (!ready()) return;
+              const u = m.uniforms[key];
+              const next = idx == null ? v : u.value.map((x, j) => (j === idx ? v : x));
+              u.value = next;
+              codeEl.textContent = `material.uniforms.${key}.value = ${idx == null ? fmtU(v, step) : `[${next.map((x) => fmtU(x, step)).join(", ")}]`};`;
+            });
+            return h("label", { class: "knob" }, h("span", {}, label, h("small", { text: idx == null ? key : `${key}[${idx}]` })), input, out);
+          }));
+        }
+        ctx.group(TUNE.map((t) => t.name), 0, (i) => {
+          mi = i;
+          knobs.classList.add("wait");
+          renderRows();
+          if (fitted) { fitted.b.material = mat(i); fitted.b.needsUpdate = true; }
+        });
+        ctx.button("還原預設", () => {
+          if (!ready()) return;
+          const m = mat(mi), d = defaults[mi];
+          for (const [key] of TUNE[mi].rows) m.uniforms[key].value = Array.isArray(d[key]) ? d[key].slice() : d[key];
+          renderRows();
+          codeEl.textContent = "// defaults restored";
+        });
+        renderRows();
+        if (!(await fontGate(ctx, "即時調整"))) return;
+        fitted = fitText(ctx, ctx.$(".tune .hold"), { word: "即時調整", material: mat(mi), max: 150, onBuilt: () => knobs.classList.remove("wait") });
+      },
+    },
+    {
+      id: "multi", title: "一個實例多段文字",
+      api: "new Blotter(material, { texts: [a, b, c, d] }) · blotter.forText(a).material.uniforms",
+      desc: "多段文字共用一個 Blotter：打包進同一張貼圖、一次繪製呼叫畫完。每段文字仍可以有自己的 uniform 值，也能各自暫停。",
+      hint: "點任一格暫停或繼續；右側是四段文字共用的貼圖",
+      async mount(ctx) {
+        ctx.html(`<div class="fill multi4"><div class="cells">${CITIES.map((c) => `<div class="tile cell"><h2>${c.word}<small></small></h2><div class="hold"></div></div>`).join("")}</div>
+          <div class="tile atlas"><h2>共用貼圖<code></code></h2><div class="abox"><canvas></canvas></div>
+          <div class="memo">每一幀整張貼圖從 GPU 讀回，每段文字的 2D canvas 再切出自己那一塊；暫停的格子不再複製，但貼圖照樣更新。</div></div></div>`);
+        const cells = ctx.$$(".cell"), holds = ctx.$$(".cell .hold"), smalls = ctx.$$(".cell h2 small");
+        const cv = ctx.$(".abox canvas"), dimEl = ctx.$(".atlas h2 code"), off = document.createElement("canvas");
+        let mode = 0, b = null, texts = [];
+        const paint = () => CITIES.forEach((c, i) => { const p = mode ? UNIFIED : c; smalls[i].textContent = `振幅 ${p.amp}・角度 ${p.rot}°`; });
+        const apply = () => {
+          if (!live(b)) return;
+          if (mode) setU(b.material, { uSineDistortAmplitude: UNIFIED.amp, uRotation: UNIFIED.rot, uSpeed: UNIFIED.speed });
+          else texts.forEach((t, i) => setU(b.forText(t).material, { uSineDistortAmplitude: CITIES[i].amp, uRotation: CITIES[i].rot, uSpeed: CITIES[i].speed }));
+        };
+        ctx.group(["各自參數", "統一參數"], 0, (i) => { mode = i; paint(); apply(); });
+        paint();
+        if (!(await fontGate(ctx, CITIES.map((c) => c.word).join("")))) return;
+        const sizeOf = (i) => { const [w, hh] = innerSize(holds[i]); return textProps(fitSize(CITIES[i].word.length, w, hh, 110), CITIES[i].fill); };
+        texts = CITIES.map((c, i) => new Blotter.Text(c.word, sizeOf(i)));
+        b = makeBlotter(ctx, new Blotter.RollingDistortMaterial(), texts, apply);
+        texts.forEach((t, i) => {
+          const scope = b.forText(t);
+          scope.appendTo(holds[i]);
+          ctx.on(cells[i], "click", () => {
+            if (scope.playing) scope.pause(); else scope.play();
+            cells[i].classList.toggle("paused", !scope.playing);
+          });
+        });
+        watchBox(ctx, ctx.$(".cells"), () => { texts.forEach((t, i) => { t.properties = sizeOf(i); }); b.needsUpdate = true; });
+        ctx.interval(() => {
+          const img = b.imageData;
+          const W = cv.clientWidth, H = cv.clientHeight;
+          if (!live(b) || !img || img.width < 2 || !W || !H) return;
+          if (off.width !== img.width || off.height !== img.height) { off.width = img.width; off.height = img.height; }
+          off.getContext("2d").putImageData(img, 0, 0);
+          const dpr = devicePixelRatio || 1;
+          if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+          const g = cv.getContext("2d");
+          g.setTransform(dpr, 0, 0, dpr, 0, 0);
+          g.clearRect(0, 0, W, H);
+          const s = Math.min(W / img.width, H / img.height), ox = (W - img.width * s) / 2, oy = (H - img.height * s) / 2;
+          g.fillStyle = "rgba(255,255,255,.04)";
+          g.fillRect(ox, oy, img.width * s, img.height * s);
+          g.drawImage(off, ox, oy, img.width * s, img.height * s);
+          g.lineWidth = 1;
+          texts.forEach((t, i) => {
+            const bd = b.forText(t).bounds;
+            if (!bd) return;
+            g.strokeStyle = CITIES[i].fill;
+            g.strokeRect(ox - bd.x * s + 0.5, oy - bd.y * s + 0.5, bd.w * s - 1, bd.h * s - 1);
+          });
+          dimEl.textContent = `${img.width}×${img.height} px`;
+        }, 200);
+      },
+    },
+    {
+      id: "shader", title: "自訂著色器",
+      api: "new Blotter.ShaderMaterial(glsl, { uniforms: { uAmount: { type: \"1f\", value: 0.45 } } })",
+      desc: "自己寫 mainImage()：用 textTexture(uv) 取文字像素，搭配 uResolution、uGlobalTime 等內建 uniform，再加上自訂的 uAmount。",
+      hint: "切換三種著色器，拖動強度看 uAmount 的效果",
+      async mount(ctx) {
+        ctx.html(`<div class="fill shade"><div class="tile"><h2>預覽<code>Blotter.ShaderMaterial</code></h2><div class="hold"></div></div>
+          <div class="tile glsl"><h2>mainImage()<small></small></h2><pre></pre></div></div>`);
+        const pre = ctx.$(".glsl pre"), nameEl = ctx.$(".glsl h2 small");
+        const cache = [];
+        let si = 0, amount = 0.45, fitted = null;
+        const mat = (i) => (cache[i] ||= new Blotter.ShaderMaterial(SHADERS[i].src, { uniforms: { uAmount: { type: "1f", value: amount } } }));
+        const show = () => { pre.textContent = SHADERS[si].src; nameEl.textContent = SHADERS[si].name; };
+        ctx.group(SHADERS.map((s) => s.name), 0, (i) => {
+          si = i; show();
+          if (fitted) { fitted.b.material = mat(i); fitted.b.needsUpdate = true; }
+        });
+        ctx.slider("強度", { min: 0, max: 1, step: 0.01, value: amount }, (v) => {
+          amount = v;
+          if (fitted && live(fitted.b)) fitted.b.material.uniforms.uAmount.value = v;
+        });
+        show();
+        if (!(await fontGate(ctx, "夜市霓虹"))) return;
+        fitted = fitText(ctx, ctx.$(".shade .hold"), {
+          word: "夜市霓虹", fill: "#ffffff", material: mat(si), max: 150,
+          onBuilt: () => { if (fitted) fitted.b.material.uniforms.uAmount.value = amount; },
+        });
+      },
+    },
+    {
+      id: "mouse", title: "滑鼠事件",
+      api: "scope.on(\"mousemove\", ({ x, y }) => …) · scope.on(\"render\", (frame) => …)",
+      desc: "RenderScope 會轉發 canvas 上的滑鼠事件並給出 0 到 1 的相對座標。這裡把座標寫進螢火點陣材質的躲避點，粒子就會避開游標。",
+      hint: "把游標移到字上，按住滑鼠試試",
+      async mount(ctx) {
+        ctx.html(`<div class="fill flies"><div class="tile"><h2>螢火蟲<code>FliesMaterial</code></h2><div class="hold"></div></div>
+          <div class="tile evts"><h2>RenderScope 事件</h2><div class="evlist">${EVENTS.map((n) => `<div class="evt"><span>${n}</span><b>0</b></div>`).join("")}</div>
+          <div class="pos"></div><div class="state"></div></div></div>`);
+        const rows = ctx.$$(".evt"), counts = ctx.$$(".evt b"), posEl = ctx.$(".pos"), stateEl = ctx.$(".state");
+        const hits = EVENTS.map(() => 0), lastHit = EVENTS.map(() => -1e9);
+        let cell = 0.03, spread = 0.22, fitted = null;
+        let target = [0.5, 0.5], cur = [0.5, 0.5], evPos = { x: 0.5, y: 0.5 }, lastMouse = -1e9, inside = false, pressed = false, frames = 0;
+        ctx.slider("顆粒", { min: 0.015, max: 0.08, step: 0.001, value: cell, format: (v) => v.toFixed(3) }, (v) => { cell = v; });
+        ctx.slider("躲避範圍", { min: 0.05, max: 0.6, step: 0.01, value: spread }, (v) => { spread = v; });
+        const hit = (n) => { const i = EVENTS.indexOf(n); hits[i]++; lastHit[i] = performance.now(); };
+        if (!(await fontGate(ctx, "螢火蟲"))) return;
+        const material = setU(new Blotter.FliesMaterial(), { uDodge: 1, uPointCellWidth: cell, uDodgeSpread: spread, uSpeed: 1 });
+        fitted = fitText(ctx, ctx.$(".flies .hold"), { word: "螢火蟲", fill: C[0], material, max: 170 });
+        const scope = fitted.scope;
+        scope.on("mousemove", (p) => { hit("mousemove"); evPos = p; target = [p.x, 1 - p.y]; lastMouse = performance.now(); });
+        scope.on("mouseenter", () => { hit("mouseenter"); inside = true; });
+        scope.on("mouseleave", () => { hit("mouseleave"); inside = false; pressed = false; });
+        scope.on("mousedown", () => { hit("mousedown"); pressed = true; });
+        scope.on("mouseup", () => { hit("mouseup"); pressed = false; });
+        scope.on("render", (n) => { frames = n; });
+        // Touch and pen do not produce continuous mouse events; feed the same target from pointer events
+        const cvs = scope.domElement;
+        const touch = (e) => {
+          if (e.pointerType === "mouse") return;
+          const r = cvs.getBoundingClientRect();
+          target = [(e.clientX - r.left) / r.width, 1 - (e.clientY - r.top) / r.height];
+          lastMouse = performance.now();
+        };
+        ctx.on(cvs, "pointerdown", touch);
+        ctx.on(cvs, "pointermove", touch);
+        ctx.raf((t) => {
+          const now = performance.now();
+          const idle = now - lastMouse > 1500;
+          if (idle) target = [0.5 + 0.4 * Math.sin(t / 1100), 0.5 + 0.3 * Math.sin(t / 700)];
+          cur = [cur[0] + (target[0] - cur[0]) * 0.18, cur[1] + (target[1] - cur[1]) * 0.18];
+          rows.forEach((r, i) => r.classList.toggle("hit", now - lastHit[i] < 160));
+          counts.forEach((c, i) => { c.textContent = i === 5 ? frames : hits[i]; });
+          posEl.textContent = `{ x: ${evPos.x.toFixed(2)}, y: ${evPos.y.toFixed(2)} }\nuDodgePosition [${cur[0].toFixed(2)}, ${cur[1].toFixed(2)}]`;
+          stateEl.textContent = idle ? "游標不在字上：躲避點自己繞圈" : pressed ? "按住中：躲避範圍放大、粒子加速" : "粒子正在躲開游標";
+          if (!live(fitted.b)) return;
+          const u = fitted.b.material.uniforms;
+          u.uDodgePosition.value = cur;
+          const sp = pressed ? spread * 2.2 : spread, speed = pressed ? 4 : 1;
+          if (u.uDodgeSpread.value !== sp) u.uDodgeSpread.value = sp;
+          if (u.uSpeed.value !== speed) u.uSpeed.value = speed;
+          if (u.uPointCellWidth.value !== cell) u.uPointCellWidth.value = cell;
+        });
+      },
+    },
+    {
+      id: "stress", title: "極限測試", kind: "stress",
+      api: "blotter.addTexts(texts) · blotter.removeTexts(texts) · blotter.needsUpdate = true",
+      desc: "同一個 Blotter 實例逐步加入更多段文字，每次都重建共用貼圖。量的是每幀從 GPU 讀回整張貼圖、再分送到每段 canvas 的代價。",
+      hint: "按「自動加壓」，文字段數會一路加倍直到掉幀",
+      mount(ctx) {
+        const fontP = loadFont(TOWNS.join(""));
+        ctx.html(`<div class="stress-box"></div>`);
+        const box = ctx.$(".stress-box");
+        const canvases = new Map();
+        let b = null, texts = [], lastMs = 0;
+        const make = (i) => new Blotter.Text(TOWNS[i % TOWNS.length], textProps(22, C[i % C.length]));
+        const attach = (list) => list.forEach((t) => { const c = b.forText(t).domElement; canvases.set(t, c); box.append(c); });
+        ctx.ramp({
+          label: "文字段數", unit: "段", steps: [1, 2, 4, 8, 16, 32, 64, 128, 256],
+          note: "Blotter 每一幀用 readPixels 把整張貼圖讀回 CPU，再對每段文字的 2D canvas 各做一次 putImageData；段數越多，貼圖越大、複製越多次。",
+          metrics: () => (b ? {
+            "貼圖": `${b._renderer._width}×${b._renderer._height}`,
+            "每幀讀回": `${(b._renderer._width * b._renderer._height * 4 / 1048576).toFixed(1)} MB`,
+            "上次重建": fmtMs(lastMs),
+          } : {}),
+          async apply(n) {
+            await fontP;
+            if (!ctx.active) return;
+            const t0 = performance.now();
+            if (!b) {
+              texts = Array.from({ length: n }, (_, i) => make(i));
+              b = makeBlotter(ctx, setU(new Blotter.LiquidDistortMaterial(), { uSpeed: 0.5, uVolatility: 0.08 }), texts);
+              attach(texts);
+              await nextBuild(b);
+            } else if (n < texts.length) {
+              const gone = texts.slice(n);
+              texts = texts.slice(0, n);
+              b.removeTexts(gone);
+              gone.forEach((t) => { canvases.get(t).remove(); canvases.delete(t); });
+              await rebuild(b);
+            } else if (n > texts.length) {
+              const more = Array.from({ length: n - texts.length }, (_, k) => make(texts.length + k));
+              texts = [...texts, ...more];
+              b.addTexts(more);
+              attach(more);
+              await rebuild(b);
+            }
+            lastMs = performance.now() - t0;
+          },
+        });
+      },
+    },
+  ],
 });
-
-function loop(t) {
-  energy *= 0.955;
-  if (t - lastMove > 1800) {
-    energy = Math.max(energy, 0.38 + 0.26 * Math.sin(t / 900));
-    angle = (t / 40) % 360;
-    pos = [0.5 + 0.35 * Math.sin(t / 1300), 0.5];
-  }
-  const su = scope.material.uniforms;
-  if (su && su.uBlendColor && su.uBlendColor.value !== BG) su.uBlendColor.value = BG;
-  // After a material swap Blotter rebuilds its shader asynchronously; only write uniforms the current build knows
-  const ui = blotter.mappingMaterial && blotter.mappingMaterial.uniformInterface;
-  const u = material.uniforms;
-  if (ui && Object.keys(u).every((k) => ui[k])) uniEl.textContent = MATS[matKey].tick(u, Math.min(energy, 1), angle, pos);
-  requestAnimationFrame(loop);
-}
-
-async function start() {
-  const st = document.getElementById("st");
-  // Blotter rasterizes text into its own canvas, so the web font must be ready first
-  try {
-    await Promise.race([document.fonts.load("900 100px 'Noto Sans TC'", WORDS.join("")), new Promise((r) => setTimeout(r, 6000))]);
-  } catch (err) {
-    console.warn("字型載入失敗，改用系統字型", err);
-  }
-  st.hidden = true;
-  useMaterial("liquid");
-  text = new Blotter.Text(WORDS[0], textProps(WORDS[0]));
-  blotter = new Blotter(material, { texts: text });
-  scope = blotter.forText(text);
-  scope.appendTo(stage);
-  requestAnimationFrame(loop);
-}
-
-document.getElementById("mats").addEventListener("click", (e) => {
-  const b = e.target.closest("[data-mat]");
-  if (b) useMaterial(b.dataset.mat);
-});
-document.getElementById("next").addEventListener("click", () => { setWord(wordIdx + 1); energy = 1; });
-addEventListener("resize", () => { if (text) { text.properties = textProps(text.value); text.needsUpdate = true; } });
-start();
 </script>
 </body>
 </html>

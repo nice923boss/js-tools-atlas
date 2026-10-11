@@ -3,369 +3,1180 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ml5.js 示範：手部骨架、數手指與空中畫畫</title>
+<title>ml5.js 示範：手勢、姿勢、臉部網格、影像分類、訓練與情緒分析</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"click","needs":["camera"],"size":"約 9 MB","note":"handPose 模型在瀏覽器內執行，鏡頭影像不會上傳"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"click","size":"約 13 MB 起（全部模型約 66 MB）","note":"ml5.js 約 4.5 MB，各場景的模型切到該場景才下載；推論都在瀏覽器內執行，圖片、鏡頭影像與文字不會上傳","scenes":["手勢骨架","人體姿勢","臉部網格","影像分類","塗鴉辨識","自訂神經網路","情緒分析","極限測試"]}</script>
 <style>
-  .app { position: fixed; inset: 0; padding: 12px 14px 46px; }
-  .view {
-    position: relative; width: 100%; height: 100%; border-radius: 12px; overflow: hidden;
-    border: 1px solid var(--line); background: radial-gradient(circle at 50% 40%, #1d222c, #0c0e12);
-  }
-  .view canvas { display: block; }
-  /* the video only feeds the canvas and the model; keep it rendered but invisible */
-  #video { position: absolute; left: 0; top: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
-  .hud { position: absolute; left: 10px; top: 10px; display: flex; flex-wrap: wrap; gap: 6px; max-width: calc(100% - 130px); }
-  .chip {
-    padding: 4px 10px; border-radius: 999px; background: rgba(12, 14, 18, .72); backdrop-filter: blur(4px);
-    color: #ecebe6; font-size: 12.5px; white-space: nowrap; border: 1px solid rgba(255, 255, 255, .1);
-  }
-  .chip.pinch { display: none; border-color: #f72585; color: #ffd0e4; }
-  .chip.pinch.on { display: inline-block; }
-  .chip.fps { color: #9b998f; font-family: var(--mono); font-size: 11.5px; }
-  .chip.fps:empty { display: none; }
-  .total {
-    position: absolute; right: 10px; top: 10px; min-width: 96px; padding: 6px 12px 8px; border-radius: 12px;
-    background: rgba(12, 14, 18, .72); backdrop-filter: blur(4px); text-align: center; color: #ecebe6;
-    border: 1px solid rgba(255, 255, 255, .1);
-  }
-  .total b { display: block; font: 800 34px/1.1 var(--mono); color: #f7df1e; }
-  .total span { font-size: 12px; color: #9b998f; }
-  .legend {
-    position: absolute; right: 10px; bottom: 10px; display: flex; gap: 10px; padding: 4px 10px; border-radius: 999px;
-    background: rgba(12, 14, 18, .72); color: #c9c7bf; font-size: 11.5px;
-  }
-  .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: 0; }
-  .idle {
-    position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 4px;
-    color: #ecebe6; font-size: 15px; padding: 0 24px; pointer-events: none; text-shadow: 0 1px 8px rgba(0, 0, 0, .7);
-  }
-  .idle b { font-size: 46px; line-height: 1.1; animation: wave 1.6s ease-in-out infinite; transform-origin: 70% 80%; }
-  .idle small { color: #c9c7bf; font-size: 12.5px; }
-  .idle[hidden] { display: none; }
-  @keyframes wave { 0%, 100% { transform: rotate(0); } 30% { transform: rotate(14deg); } 60% { transform: rotate(-8deg); } }
-  @media (max-width: 520px) {
-    .app { padding: 10px 10px 46px; }
-    .legend { display: none; }
-    .total { min-width: 78px; padding: 4px 10px 6px; }
-    .total b { font-size: 26px; }
-    .hud { max-width: calc(100% - 100px); }
+  .m5-wrap { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr); }
+  .m5-box { position: relative; min-width: 0; min-height: 0; border-radius: 12px; overflow: hidden; border: 1px solid var(--line);
+    background: radial-gradient(circle at 50% 40%, #1d222c, #0c0e12); }
+  .m5-box > canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .m5-chips { position: absolute; left: 10px; top: 10px; z-index: 4; display: flex; flex-wrap: wrap; gap: 6px; max-width: calc(100% - 120px); pointer-events: none; }
+  .m5-chip { padding: 3px 10px; border-radius: 999px; background: rgba(12, 14, 18, .74); border: 1px solid rgba(255, 255, 255, .1);
+    color: #ecebe6; font: 500 12px/1.5 var(--font); white-space: nowrap; }
+  .m5-chip b { font: 600 12px/1.5 var(--mono); color: #f7df1e; font-variant-numeric: tabular-nums; }
+  .m5-chip:empty { display: none; }
+  .m5-total { position: absolute; right: 10px; top: 10px; z-index: 4; min-width: 84px; padding: 5px 12px 7px; border-radius: 12px; text-align: center;
+    background: rgba(12, 14, 18, .74); border: 1px solid rgba(255, 255, 255, .1); pointer-events: none; }
+  .m5-total b { display: block; font: 800 30px/1.1 var(--mono); color: #f7df1e; }
+  .m5-total span { font-size: 11.5px; color: #9b998f; }
+  .m5-mem { position: absolute; left: 10px; bottom: 8px; z-index: 5; pointer-events: none; padding: 3px 8px; border-radius: 6px;
+    background: rgba(0, 0, 0, .62); color: #9b998f; font: 500 11px/1.4 var(--font); }
+  .m5-mem b { font: 600 11px/1.4 var(--mono); color: #ecebe6; }
+  .m5-mem:empty { display: none; }
+  .m5-inset { position: absolute; right: 10px; bottom: 10px; width: 170px; height: 170px; z-index: 3; border-radius: 10px;
+    background: rgba(12, 14, 18, .74); border: 1px solid rgba(255, 255, 255, .1); overflow: hidden; }
+  .m5-inset > canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .m5-inset small { position: absolute; left: 8px; top: 5px; z-index: 1; font-size: 11px; color: #9b998f; }
+
+  .m5-split { grid-template-columns: minmax(0, 1fr) 270px; }
+  .m5-side { display: grid; gap: 8px; align-content: start; min-width: 0; min-height: 0; overflow: hidden; }
+  .m5-card { position: relative; background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; min-width: 0; }
+  .m5-card h3 { margin: 0 0 6px; font: 600 12px/1.4 var(--font); color: var(--muted); }
+  .m5-bars { display: grid; gap: 7px; }
+  .m5-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; font-size: 12.5px; align-items: baseline; }
+  .m5-bar .l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m5-bar .l code { font: 500 12px/1.4 var(--mono); color: var(--fg); }
+  .m5-bar .l span { font-family: var(--font); color: var(--muted); margin-left: 6px; }
+  .m5-bar .p { font: 600 12px/1.4 var(--mono); font-variant-numeric: tabular-nums; }
+  .m5-bar .t { grid-column: 1 / -1; height: 6px; border-radius: 3px; background: rgba(127, 127, 127, .18); overflow: hidden; }
+  .m5-bar .t i { display: block; height: 100%; width: 0; background: var(--c2); border-radius: 3px; transition: width .5s ease; }
+  .m5-bar:first-child .t i { background: var(--accent); }
+  .m5-kv { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .m5-kv div { background: rgba(127, 127, 127, .08); border-radius: 8px; padding: 4px 8px; font-size: 11px; color: var(--muted); min-width: 0; }
+  .m5-kv b { display: block; font: 700 15px/1.3 var(--mono); color: var(--fg); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .m5-kv b.zh { font-family: var(--font); }
+  .m5-mini { display: grid; gap: 2px; }
+  .m5-mini div { display: grid; grid-template-columns: 34px minmax(0, 1fr) 34px; gap: 6px; align-items: center; font-size: 11px; color: var(--muted); }
+  .m5-mini i { display: block; height: 5px; border-radius: 3px; background: var(--c2); }
+  .m5-mini b { font: 500 10.5px/1.3 var(--mono); color: var(--fg); text-align: right; font-variant-numeric: tabular-nums; }
+  .m5-cv { position: relative; height: 230px; }
+  .m5-cv > canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .m5-loss { height: 120px; }
+
+  .m5-padhost { position: absolute; inset: 0; display: grid; place-items: center; }
+  .m5-padhost canvas { background: #fff; border-radius: 10px; touch-action: none; cursor: crosshair; box-shadow: 0 6px 24px rgba(0, 0, 0, .35); }
+
+  .m5-swatch { display: flex; gap: 10px; align-items: center; }
+  .m5-swatch i { width: 54px; height: 54px; border-radius: 10px; flex: none; border: 1px solid var(--line); }
+  .m5-swatch div { font-size: 12px; color: var(--muted); line-height: 1.6; min-width: 0; }
+  .m5-swatch b { font: 700 16px/1.3 var(--font); color: var(--fg); }
+
+  .m5-sent { grid-template-rows: auto minmax(0, 1fr); }
+  .m5-words { display: flex; flex-wrap: wrap; gap: 5px; align-content: flex-start; padding: 10px 12px; min-height: 56px;
+    background: var(--bg-2); border: 1px solid var(--line); border-radius: 10px; }
+  .m5-words span { padding: 2px 7px; border-radius: 6px; font: 500 15px/1.5 var(--font); color: var(--fg); transition: background .3s, opacity .3s; }
+  .m5-words span.off { opacity: .25; }
+  .m5-words small { flex-basis: 100%; color: var(--muted); font-size: 12px; }
+  .m5-input { font: 13px/1.4 var(--font); padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg-2); color: var(--fg); width: 260px; min-width: 0; }
+
+  .m5-stress { position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px); }
+  @media (min-width: 761px) { .m5-stress { left: 350px; } }
+  @media (max-width: 760px) { .m5-stress { opacity: .9; } }
+
+  @media (max-width: 640px) {
+    .m5-split { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+    .m5-hide-n { display: none; }
+    .m5-bar:nth-child(n+4) { display: none; }
+    .m5-inset { width: 104px; height: 104px; }
+    .m5-total { min-width: 66px; padding: 3px 8px 5px; }
+    .m5-total b { font-size: 22px; }
+    .m5-kv { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; }
+    .m5-kv div { padding: 3px 6px; }
+    .m5-kv b { font-size: 13px; }
+    .m5-card { padding: 6px 8px; }
+    .m5-swatch i { width: 34px; height: 34px; }
+    .m5-swatch div { line-height: 1.4; }
+    .m5-words { padding: 6px 8px; min-height: 0; gap: 3px; }
+    .m5-words span { font-size: 13px; padding: 1px 5px; }
+    .m5-input { width: 100%; }
   }
 </style>
 </head>
 <body>
-<div class="app">
-  <div class="view" id="view">
-    <video id="video" playsinline muted></video>
-    <div class="idle" id="idle"><b>🖐️</b>鏡頭畫面會顯示在這裡</div>
-    <div class="hud">
-      <span class="chip" id="chipHands">✋ 等待鏡頭</span>
-      <span class="chip pinch" id="chipPinch">🤏 捏合畫畫中</span>
-      <span class="chip fps" id="chipFps"></span>
-    </div>
-    <div class="total"><b id="total">0</b><span>根手指</span></div>
-    <div class="legend">
-      <span><i style="background:#f72585"></i>拇指</span><span><i style="background:#f7df1e"></i>食指</span>
-      <span><i style="background:#4cc9f0"></i>中指</span><span><i style="background:#7bd389"></i>無名指</span>
-      <span><i style="background:#9d8cff"></i>小指</span>
-    </div>
-  </div>
-</div>
-<div class="hint">張開手掌數手指，拇指和食指捏住可以在空中畫線</div>
-
-<script src="_shared/gate.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-const P5_URL = "https://cdn.jsdelivr.net/npm/p5@2.3.4/lib/p5.min.js";
+const { h } = Showcase;
 const ML5_URL = "https://cdn.jsdelivr.net/npm/ml5@1.4.0/dist/ml5.min.js";
+// Official MediaPipe sample images (Google, Apache-2.0 repo assets, served with CORS)
+const MP = "https://storage.googleapis.com/mediapipe-assets/";
+const FONT = getComputedStyle(document.documentElement).getPropertyValue("--font").trim() || "sans-serif";
+const MONO = getComputedStyle(document.documentElement).getPropertyValue("--mono").trim() || "monospace";
 
-// MediaPipe hand landmark order: 0 wrist, then 4 joints per finger (thumb, index, middle, ring, pinky)
+// Approximate download sizes measured from the network panel (MB)
+const MB = { lib: 4.5, hand: 8.2, body: 9.7, blaze: 12.6, face: 3.8, mobilenet: 14, doodle: 2, sentiment: 10.7, nn: 0 };
+const NAME = { hand: "handPose", body: "bodyPose（MoveNet）", blaze: "bodyPose（BlazePose）", face: "faceMesh",
+  mobilenet: "MobileNet", doodle: "DoodleNet", sentiment: "sentiment", nn: "neuralNetwork" };
+const MAKE = {
+  hand: () => ml5.handPose({ maxHands: 2, flipped: false }),
+  body: () => ml5.bodyPose(),
+  blaze: () => ml5.bodyPose("BlazePose"),
+  face: () => ml5.faceMesh({ maxFaces: 1, refineLandmarks: true, flipped: false }),
+  mobilenet: () => ml5.imageClassifier("MobileNet"),
+  doodle: () => ml5.imageClassifier("DoodleNet"),
+  sentiment: () => ml5.sentiment("MovieReviews"),
+};
 const FINGERS = [
   { chain: [0, 1, 2, 3, 4], color: "#f72585" },
-  { chain: [5, 6, 7, 8], color: "#f7df1e" },
+  { chain: [0, 5, 6, 7, 8], color: "#f7df1e" },
   { chain: [9, 10, 11, 12], color: "#4cc9f0" },
   { chain: [13, 14, 15, 16], color: "#7bd389" },
-  { chain: [17, 18, 19, 20], color: "#9d8cff" },
+  { chain: [0, 17, 18, 19, 20], color: "#9d8cff" },
 ];
 const PALM = [0, 5, 9, 13, 17, 0];
-const TRAIL_COLORS = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#9d8cff"];
-const TRAIL_LIFE = 6000;           // ms a drawn point stays visible
-const PINCH_ON = 0.3, PINCH_OFF = 0.45; // thumb-index gap relative to palm length, with hysteresis
-const LOST_AFTER = 300;            // ms without detection before a hand is dropped
+const HAND_EDGES = [...FINGERS.flatMap((f) => f.chain.slice(1).map((b, i) => [f.chain[i], b, f.color])), [5, 9, "#ffffff"], [9, 13, "#ffffff"], [13, 17, "#ffffff"]];
+const ZH = {
+  lion: "獅子", jellyfish: "水母", "sea lion": "海獅", cliff: "懸崖", valley: "山谷", alp: "高山", promontory: "岬角", lakeside: "湖畔",
+  seashore: "海岸", volcano: "火山", cougar: "美洲獅", cheetah: "獵豹", tiger: "老虎", leopard: "花豹", dugong: "儒艮", fountain: "噴泉",
+  geyser: "間歇泉", "dam": "水壩", "canyon": "峽谷", "mountain": "山", "house": "房子", "sun": "太陽", "fish": "魚", "star": "星星",
+  "eyeglasses": "眼鏡", "circle": "圓形", "barn": "穀倉", "tent": "帳篷", "shark": "鯊魚", "flower": "花", "octagon": "八角形",
+  "snowflake": "雪花", "spider": "蜘蛛", "wheel": "輪子", "clock": "時鐘", "triangle": "三角形", "square": "正方形", "church": "教堂",
+  "castle": "城堡", "bicycle": "腳踏車", "fireplace": "壁爐", "lighthouse": "燈塔", "garden": "花園", "hexagon": "六角形",
+  "whale": "鯨魚", "umbrella": "雨傘", "envelope": "信封", "snowman": "雪人", "ladder": "梯子", "mug": "馬克杯", "cup": "杯子", "postcard": "明信片", "parachute": "降落傘", "owl": "貓頭鷹", "submarine": "潛水艇", "dolphin": "海豚", "sea turtle": "海龜", "hospital": "醫院", "door": "門", "lantern": "燈籠",
+  "binoculars": "望遠鏡", "bracelet": "手環", "dumbbell": "啞鈴", "headphones": "耳機", "mouth": "嘴巴", "lollipop": "棒棒糖",
+};
 
-const view = document.getElementById("view");
-const video = document.getElementById("video");
-const idleEl = document.getElementById("idle");
-const chipHands = document.getElementById("chipHands");
-const chipPinch = document.getElementById("chipPinch");
-const chipFps = document.getElementById("chipFps");
-const totalEl = document.getElementById("total");
-
-let tracks = new Map(); // hand key -> { target, shown, seen, fingers, pinching, stroke }
-let strokes = [];       // { id, color, pts: [{ x, y, t }] } in mirrored video pixels
-let strokeSeq = 0, handSeq = 0;
-let detecting = false, detections = 0, fpsStamp = performance.now();
-
-const alpha = (hex, a) => hex + Math.round(Math.max(0, Math.min(1, a)) * 255).toString(16).padStart(2, "0");
+let consent = false;
+const imgCache = new Map();
+const isAbort = (e) => e && e.name === "AbortError";
+const abortErr = () => Object.assign(new Error("superseded"), { name: "AbortError" });
+const mbText = (n) => `${n < 10 ? n.toFixed(1) : Math.round(n)} MB`;
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const contain = (sw, sh, W, H, pad = 0) => {
+  const s = Math.min((W - pad * 2) / sw, (H - pad * 2) / sh);
+  return { s, x: (W - sw * s) / 2, y: (H - sh * s) / 2, w: sw * s, h: sh * s };
+};
 
-// ---------- hand analysis ----------
+function loadImage(src) {
+  if (!imgCache.has(src)) {
+    imgCache.set(src, new Promise((ok, no) => {
+      const i = new Image();
+      i.crossOrigin = "anonymous";
+      i.onload = () => ok(i);
+      i.onerror = () => { imgCache.delete(src); no(new Error(`圖片載入失敗：${src}`)); };
+      i.src = src;
+    }));
+  }
+  return imgCache.get(src);
+}
+
+// Gate once per page visit, then make sure ml5.js itself is loaded.
+async function startMl5(ctx, key, { icon, title, desc }) {
+  if (!consent) {
+    const need = (window.ml5 ? 0 : MB.lib) + MB[key];
+    const what = MB[key] ? `ml5.js 與 ${NAME[key]}` : "ml5.js";
+    await ctx.gate({
+      icon, title,
+      desc: `${desc}。推論都在瀏覽器內執行，圖片、鏡頭影像與文字不會上傳；之後切到其他場景會自動下載該場景的模型（2～14 MB）。`,
+      tags: [`約 ${mbText(need)}`, "ml5.js 1.4.0", "TensorFlow.js WebGL"],
+      button: `載入 ${what}（約 ${mbText(need)}）`,
+    });
+    consent = true;
+  }
+  if (!window.ml5) {
+    const s = ctx.status(`下載 ml5.js（約 ${mbText(MB.lib)}）…`);
+    try { await ctx.load(ML5_URL); await ml5.tf.ready(); } catch (e) { if (!isAbort(e)) s.error(`ml5.js 載入失敗：${e.message}`); throw e; }
+    s.done();
+  }
+}
+
+// ml5 wrappers keep the tf model at .model (detectors, sentiment) or .model.model (image classifiers).
+function freeModel(m) {
+  try {
+    const inner = m && m.model && (typeof m.model.dispose === "function" ? m.model : m.model.model);
+    if (inner && typeof inner.dispose === "function") inner.dispose();
+  } catch (e) { console.warn("[ml5 demo] dispose failed", e); }
+}
+
+// One live model per scene; switching or leaving disposes the previous one.
+function modelSlot(ctx) {
+  let cur = null, seq = 0;
+  ctx.onCleanup(() => { seq++; if (cur) freeModel(cur); cur = null; });
+  return {
+    get model() { return cur; },
+    async use(key) {
+      const my = ++seq;
+      if (cur) { freeModel(cur); cur = null; }
+      const s = ctx.status(`下載並初始化 ${NAME[key]} 模型（約 ${mbText(MB[key])}）…`);
+      let m;
+      try { m = await MAKE[key](); if (m && m.ready) await m.ready; } catch (e) {
+        if (ctx.active) s.error(`${NAME[key]} 載入失敗：${e.message}`);
+        throw e;
+      }
+      s.done();
+      if (my !== seq || !ctx.active) { freeModel(m); throw abortErr(); }
+      cur = m;
+      return m;
+    },
+  };
+}
+
+// Surface async errors inside the scene instead of an unhandled rejection.
+function guard(ctx, p) {
+  return Promise.resolve(p).catch((e) => { if (!isAbort(e) && ctx.active) ctx.status("").error(`發生錯誤：${e.message}`); });
+}
+
+function canvasIn(ctx, host, onFit) {
+  const cv = h("canvas");
+  host.append(cv);
+  const g = cv.getContext("2d");
+  const st = { cv, g, w: 0, h: 0 };
+  const fit = (first) => {
+    const w = host.clientWidth, hh = host.clientHeight;
+    if (!w || !hh || (w === st.w && hh === st.h)) return;
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    st.w = w; st.h = hh;
+    cv.width = Math.round(w * dpr); cv.height = Math.round(hh * dpr);
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (onFit) first === true ? queueMicrotask(() => ctx.active && onFit(st)) : onFit(st);
+  };
+  const ro = new ResizeObserver(() => fit());
+  ro.observe(host);
+  ctx.onCleanup(() => ro.disconnect());
+  fit(true);
+  return st;
+}
+
+function memTag(ctx, host = ctx.el) {
+  const el = h("div", { class: "m5-mem" });
+  host.append(el);
+  const paint = () => {
+    if (!window.ml5) return;
+    const m = ml5.tf.memory();
+    el.innerHTML = `張量 <b>${m.numTensors}</b>・<b>${(m.numBytes / 1048576).toFixed(1)}</b> MB・<b>${ml5.tf.getBackend()}</b>`;
+  };
+  ctx.interval(paint, 500);
+  paint();
+  return el;
+}
+
+function pressGroup(wrap, i) {
+  wrap.querySelectorAll("button").forEach((b, k) => b.setAttribute("aria-pressed", String(k === i)));
+}
+
+function pill(g, text, x, y, color = "#f7df1e") {
+  g.font = `600 12px ${FONT}`;
+  const w = g.measureText(text).width + 14;
+  g.fillStyle = "rgba(12,14,18,.8)";
+  g.beginPath(); g.roundRect(x - w / 2, y - 10, w, 20, 10); g.fill();
+  g.fillStyle = color; g.textAlign = "center"; g.textBaseline = "middle";
+  g.fillText(text, x, y + 0.5);
+}
+
+// Top-k bar list (label + percentage)
+function barsIn(host, n) {
+  host.innerHTML = "";
+  const rows = Array.from({ length: n }, () => {
+    const l = h("div", { class: "l" }), p = h("span", { class: "p" }), i = h("i");
+    host.append(h("div", { class: "m5-bar" }, l, p, h("div", { class: "t" }, i)));
+    return { l, p, i };
+  });
+  return (items) => rows.forEach((r, k) => {
+    const it = items[k];
+    const name = it ? String(it.label).split(",")[0].replace(/_/g, " ").trim() : "";
+    r.l.innerHTML = it ? `<code>${esc(name)}</code>${ZH[name] ? `<span>${ZH[name]}</span>` : ""}` : "&nbsp;";
+    r.p.textContent = it ? `${(it.confidence * 100).toFixed(1)}%` : "";
+    r.i.style.width = it ? `${Math.max(1, it.confidence * 100)}%` : "0";
+  });
+}
+
+// Rotating orthographic view of 3D keypoints (meters, y down).
+function draw3D(v, pts, edges, angle, span) {
+  const { g, w, h: H } = v;
+  g.clearRect(0, 0, w, H);
+  if (!pts || !pts.length) return;
+  const n = pts.length;
+  const m = pts.reduce((a, p) => ({ x: a.x + p.x / n, y: a.y + p.y / n, z: a.z + (p.z || 0) / n }), { x: 0, y: 0, z: 0 });
+  const ca = Math.cos(angle), sa = Math.sin(angle), s = Math.min(w, H) / span, cx = w / 2, cy = H / 2 + 6;
+  const P = pts.map((p) => {
+    const x = p.x - m.x, y = p.y - m.y, z = (p.z || 0) - m.z;
+    return { x: cx + (x * ca + z * sa) * s, y: cy + y * s, d: -x * sa + z * ca };
+  });
+  g.strokeStyle = "rgba(255,255,255,.08)"; g.lineWidth = 1;
+  for (let k = -2; k <= 2; k++) {
+    const off = k * span * 0.15 * s;
+    g.beginPath(); g.moveTo(cx - span * 0.3 * s * ca + off * sa, H - 14 + off * 0.12); g.lineTo(cx + span * 0.3 * s * ca + off * sa, H - 14 + off * 0.12); g.stroke();
+  }
+  const order = edges.map((e, i) => [i, (P[e[0]].d + P[e[1]].d) / 2]).sort((a, b) => b[1] - a[1]);
+  const dmax = Math.max(1e-6, ...P.map((p) => Math.abs(p.d)));
+  g.lineCap = "round";
+  for (const [i, d] of order) {
+    const [a, b, color] = edges[i];
+    g.globalAlpha = clamp(0.95 - (d / dmax) * 0.35, 0.35, 1);
+    g.strokeStyle = color; g.lineWidth = 2.6;
+    g.beginPath(); g.moveTo(P[a].x, P[a].y); g.lineTo(P[b].x, P[b].y); g.stroke();
+  }
+  g.globalAlpha = 1;
+}
+
+const sideColor = (name) => (/^left/.test(name) ? "#4cc9f0" : /^right/.test(name) ? "#f72585" : "#f7df1e");
+const jointAngle = (a, b, c) => {
+  const u = [a.x - b.x, a.y - b.y, (a.z || 0) - (b.z || 0)], v = [c.x - b.x, c.y - b.y, (c.z || 0) - (b.z || 0)];
+  const dot = u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+  const nu = Math.hypot(...u), nv = Math.hypot(...v);
+  return nu && nv ? (Math.acos(clamp(dot / (nu * nv), -1, 1)) * 180) / Math.PI : NaN;
+};
+
+// ---------- hand analysis (ported from the original demo) ----------
 function extendedFingers(pts) {
   const fromWrist = (i) => dist(pts[i], pts[0]);
-  // fingers: tip farther from the wrist than the middle joint
   const others = [[8, 6], [12, 10], [16, 14], [20, 18]].map(([tip, pip]) => fromWrist(tip) > fromWrist(pip) * 1.1);
-  // thumb: tip well away from the middle knuckle and farther from the pinky side than the index knuckle is
   const palm = dist(pts[0], pts[9]);
   const thumb = dist(pts[4], pts[9]) > palm * 0.6 && dist(pts[4], pts[17]) > dist(pts[5], pts[17]) * 1.1;
   return [thumb, ...others];
 }
 
-function updatePinch(track, now) {
-  const pts = track.target;
-  const gap = dist(pts[4], pts[8]) / Math.max(1, dist(pts[0], pts[9]));
-  const pinching = track.pinching ? gap < PINCH_OFF : gap < PINCH_ON;
-  if (pinching && !track.pinching) {
-    const stroke = { id: ++strokeSeq, color: TRAIL_COLORS[strokeSeq % TRAIL_COLORS.length], pts: [] };
-    strokes = [...strokes, stroke];
-    track.strokeId = stroke.id; track.strokeColor = stroke.color;
-  }
-  if (pinching) {
-    const mid = { x: (pts[4].x + pts[8].x) / 2, y: (pts[4].y + pts[8].y) / 2, t: now };
-    strokes = strokes.map((s) => {
-      if (s.id !== track.strokeId) return s;
-      const last = s.pts[s.pts.length - 1];
-      return !last || dist(last, mid) > 2 ? { ...s, pts: [...s.pts, mid] } : s;
-    });
-  } else {
-    track.strokeId = null;
-  }
-  track.pinching = pinching;
-}
-
-function gotHands(results) {
-  const now = performance.now();
-  const vw = video.videoWidth;
-  const next = new Map();
-  results.forEach((hand) => {
-    // mirror x so the overlay matches the selfie view
-    const target = hand.keypoints.map((k) => ({ x: vw - k.x, y: k.y }));
-    // follow the same hand across frames by matching the nearest unused wrist
-    let key = null, best = dist(target[0], target[9]) * 1.5;
-    for (const [k, t] of tracks) {
-      const d = dist(t.target[0], target[0]);
-      if (!next.has(k) && d < best) { best = d; key = k; }
-    }
-    const prev = key && tracks.get(key);
-    if (!key) key = ++handSeq;
-    const track = prev
-      ? { ...prev, target, seen: now }
-      : { target, shown: target, seen: now, pinching: false, strokeId: null, strokeColor: null };
-    track.fingers = extendedFingers(target);
-    updatePinch(track, now);
-    next.set(key, track);
-  });
-  // keep briefly lost hands for a moment so a single missed frame does not flicker
-  for (const [key, track] of tracks) {
-    if (!next.has(key) && now - track.seen < LOST_AFTER) next.set(key, track);
-  }
-  tracks = next;
-  detections++;
-  updateHud();
-}
-
-function updateHud() {
-  const live = [...tracks.values()];
-  const total = live.reduce((n, t) => n + t.fingers.filter(Boolean).length, 0);
-  totalEl.textContent = total;
-  chipHands.textContent = live.length ? `✋ 偵測到 ${live.length} 隻手` : "✋ 尚未偵測到手";
-  chipPinch.classList.toggle("on", live.some((t) => t.pinching));
-  idleEl.hidden = live.length > 0;
-}
-
-// ---------- p5 sketch ----------
-function sketch(p) {
-  p.setup = () => {
-    p.createCanvas(view.clientWidth, view.clientHeight);
-    p.pixelDensity(Math.min(window.devicePixelRatio || 1, 2));
-    p.strokeJoin(p.ROUND);
-    p.strokeCap(p.ROUND);
-    p.textAlign(p.CENTER, p.CENTER);
-  };
-  p.windowResized = () => p.resizeCanvas(view.clientWidth, view.clientHeight);
-
-  p.draw = () => {
-    const W = p.width, H = p.height, now = performance.now();
-    p.clear();
-    const vw = video.videoWidth, vh = video.videoHeight;
-    if (!vw || !vh) return;
-    // cover-fit the mirrored webcam frame
-    const sc = Math.max(W / vw, H / vh), ox = (W - vw * sc) / 2, oy = (H - vh * sc) / 2;
-    const ctx = p.drawingContext;
-    ctx.save();
-    ctx.translate(W, 0); ctx.scale(-1, 1);
-    ctx.drawImage(video, ox, oy, vw * sc, vh * sc);
-    ctx.restore();
-    p.noStroke(); p.fill(10, 12, 16, 120); p.rect(0, 0, W, H);
-
-    const toScreen = (pt) => ({ x: ox + pt.x * sc, y: oy + pt.y * sc });
-    drawTrails(p, now, toScreen);
-
-    for (const track of tracks.values()) {
-      // ease the drawn skeleton toward the latest detection for smooth motion between model frames
-      track.shown = track.shown.map((s, i) => ({ x: s.x + (track.target[i].x - s.x) * 0.45, y: s.y + (track.target[i].y - s.y) * 0.45 }));
-      drawHand(p, track, track.shown.map(toScreen), now);
-    }
-
-    const elapsed = now - fpsStamp;
-    if (detecting && elapsed > 1000) {
-      const rate = (detections * 1000) / elapsed;
-      chipFps.textContent = `偵測 ${rate < 10 ? rate.toFixed(1) : Math.round(rate)} fps`;
-      detections = 0; fpsStamp = now;
-    }
-  };
-}
-
-function drawTrails(p, now, toScreen) {
-  const live = new Set([...tracks.values()].map((t) => t.strokeId));
-  strokes = strokes
-    .map((s) => ({ ...s, pts: s.pts.filter((pt) => now - pt.t < TRAIL_LIFE) }))
-    .filter((s) => s.pts.length || live.has(s.id));
-  p.noFill();
-  for (const s of strokes) {
-    const pts = s.pts.map((pt) => ({ ...toScreen(pt), t: pt.t }));
-    for (let pass = 0; pass < 2; pass++) {
-      p.strokeWeight(pass ? 5 : 16);
-      for (let i = 1; i < pts.length; i++) {
-        const life = 1 - (now - pts[i].t) / TRAIL_LIFE;
-        p.stroke(alpha(s.color, pass ? life : life * 0.22));
-        p.line(pts[i - 1].x, pts[i - 1].y, pts[i].x, pts[i].y);
-      }
-    }
-  }
-}
-
-function drawHand(p, track, pts, now) {
-  const palm = dist(pts[0], pts[9]);
-  const w = Math.max(2, Math.min(8, palm * 0.055));
-  const ctx = p.drawingContext;
-
-  // palm fill and outline
-  p.noStroke(); p.fill(255, 255, 255, 22);
-  p.beginShape(); PALM.forEach((i) => p.vertex(pts[i].x, pts[i].y)); p.endShape(p.CLOSE);
-  p.noFill(); p.stroke(255, 255, 255, 120); p.strokeWeight(w * 0.7);
-  p.beginShape(); PALM.forEach((i) => p.vertex(pts[i].x, pts[i].y)); p.endShape();
-
-  // glowing finger bones, dimmed when the finger is folded
+function drawHand(g, P, p, fingers) {
+  const lw = clamp(dist(P[0], P[9]) * 0.06, 2.2, 7);
+  g.lineCap = "round"; g.lineJoin = "round";
+  g.fillStyle = "rgba(255,255,255,.08)"; g.strokeStyle = "rgba(255,255,255,.35)"; g.lineWidth = 2;
+  g.beginPath(); PALM.forEach((k, i) => (i ? g.lineTo(P[k].x, P[k].y) : g.moveTo(P[k].x, P[k].y))); g.fill(); g.stroke();
   FINGERS.forEach((f, fi) => {
-    const on = track.fingers[fi];
-    ctx.shadowColor = f.color; ctx.shadowBlur = on ? 14 : 0;
-    p.stroke(alpha(f.color, on ? 1 : 0.45)); p.strokeWeight(on ? w : w * 0.7);
-    p.beginShape(); f.chain.forEach((i) => p.vertex(pts[i].x, pts[i].y)); p.endShape();
-  });
-  ctx.shadowBlur = 0;
-
-  // joints, with bigger fingertips
-  p.noStroke();
-  pts.forEach((pt, i) => {
-    const tip = i % 4 === 0 && i > 0;
-    const f = FINGERS[Math.max(0, Math.ceil(i / 4) - 1)];
-    if (tip) {
-      p.fill(alpha(f.color, track.fingers[FINGERS.indexOf(f)] ? 1 : 0.5)); p.circle(pt.x, pt.y, w * 3.2);
-      p.fill(255); p.circle(pt.x, pt.y, w * 1.3);
-    } else {
-      p.fill(236, 235, 230, 220); p.circle(pt.x, pt.y, w * 1.6);
+    const segs = f.chain.length - 1;
+    g.strokeStyle = f.color; g.lineWidth = lw;
+    for (let j = 0; j < segs; j++) {
+      const fr = clamp(p * segs - j, 0, 1);
+      if (fr <= 0) break;
+      const a = P[f.chain[j]], b = P[f.chain[j + 1]];
+      g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(a.x + (b.x - a.x) * fr, a.y + (b.y - a.y) * fr); g.stroke();
+    }
+    if (p >= 1) {
+      const tip = P[f.chain[segs]];
+      g.beginPath(); g.arc(tip.x, tip.y, lw * 1.5, 0, Math.PI * 2);
+      if (fingers[fi]) { g.fillStyle = f.color; g.fill(); } else { g.strokeStyle = f.color; g.lineWidth = 2; g.stroke(); }
     }
   });
-
-  // pinch cursor
-  if (track.pinching) {
-    const mx = (pts[4].x + pts[8].x) / 2, my = (pts[4].y + pts[8].y) / 2;
-    const pulse = 1 + 0.25 * Math.sin(now / 120);
-    p.noFill(); p.stroke(track.strokeColor || "#ffffff"); p.strokeWeight(2.5);
-    p.circle(mx, my, w * 6 * pulse);
-  }
-
-  // finger count badge in the middle of the palm
-  const n = track.fingers.filter(Boolean).length;
-  const r = Math.max(15, Math.min(26, palm * 0.2));
-  const c = [0, 5, 9, 13, 17].reduce((a, i) => ({ x: a.x + pts[i].x / 5, y: a.y + pts[i].y / 5 }), { x: 0, y: 0 });
-  const bx = Math.max(r + 4, Math.min(p.width - r - 4, c.x));
-  const by = Math.max(r + 4, Math.min(p.height - r - 4, c.y));
-  p.noStroke(); p.fill(12, 14, 18, 215); p.circle(bx, by, r * 2);
-  p.stroke("#f7df1e"); p.strokeWeight(2); p.noFill(); p.circle(bx, by, r * 2);
-  p.noStroke(); p.fill("#f7df1e"); p.textStyle(p.BOLD); p.textSize(r * 1.05); p.text(n, bx, by + 1);
+  g.fillStyle = "#fff";
+  P.forEach((q, i) => { if (![4, 8, 12, 16, 20].includes(i) && p >= 1) { g.beginPath(); g.arc(q.x, q.y, lw * 0.55, 0, Math.PI * 2); g.fill(); } });
 }
 
-// ---------- start ----------
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    const el = document.createElement("script");
-    el.src = src;
-    el.onload = resolve;
-    el.onerror = () => reject(new Error("函式庫下載失敗"));
-    document.head.append(el);
-  });
-}
-function cameraError(err) {
-  const name = err && err.name;
-  if (name === "NotAllowedError" || name === "SecurityError") return "鏡頭權限被拒絕。請在瀏覽器網址列的權限設定允許使用鏡頭，再重新整理頁面";
-  if (name === "NotFoundError" || name === "OverconstrainedError") return "找不到鏡頭。這個示範需要網路攝影機，請接上鏡頭後重新整理";
-  if (name === "NotReadableError") return "鏡頭正被其他程式使用中，請關閉該程式後重新整理";
-  return `無法開啟鏡頭：${(err && err.message) || err}`;
-}
+// ---------- doodles for DoodleNet (strokes in 0..1 coordinates) ----------
+const ring = (cx, cy, rx, ry, n = 28, a0 = 0, a1 = Math.PI * 2) => Array.from({ length: n + 1 }, (_, i) => [cx + rx * Math.cos(a0 + (i / n) * (a1 - a0)), cy + ry * Math.sin(a0 + (i / n) * (a1 - a0))]);
+const DOODLES = [
+  { name: "房子", strokes: [[[0.25, 0.45], [0.25, 0.85], [0.75, 0.85], [0.75, 0.45], [0.25, 0.45]], [[0.18, 0.47], [0.5, 0.17], [0.82, 0.47]], [[0.44, 0.85], [0.44, 0.64], [0.56, 0.64], [0.56, 0.85]]] },
+  { name: "太陽", strokes: [ring(0.5, 0.5, 0.17, 0.17), ...Array.from({ length: 8 }, (_, i) => { const a = (i / 8) * Math.PI * 2; return [[0.5 + 0.25 * Math.cos(a), 0.5 + 0.25 * Math.sin(a)], [0.5 + 0.38 * Math.cos(a), 0.5 + 0.38 * Math.sin(a)]]; })] },
+  { name: "魚", strokes: [ring(0.45, 0.5, 0.26, 0.15), [[0.7, 0.5], [0.9, 0.35], [0.9, 0.65], [0.7, 0.5]], ring(0.3, 0.46, 0.025, 0.025, 10)] },
+  { name: "眼鏡", strokes: [ring(0.3, 0.52, 0.14, 0.12), ring(0.7, 0.52, 0.14, 0.12), [[0.44, 0.5], [0.5, 0.46], [0.56, 0.5]], [[0.16, 0.5], [0.06, 0.4]], [[0.84, 0.5], [0.94, 0.4]]] },
+  { name: "星星", strokes: [Array.from({ length: 11 }, (_, i) => { const a = -Math.PI / 2 + (i * Math.PI * 4) / 5; return [0.5 + 0.38 * Math.cos(a), 0.54 + 0.38 * Math.sin(a)]; })] },
+  { name: "雨傘", strokes: [ring(0.5, 0.45, 0.38, 0.3, 24, Math.PI, Math.PI * 2), [[0.12, 0.45], [0.88, 0.45]], [[0.5, 0.45], [0.5, 0.82]], ring(0.44, 0.82, 0.06, 0.06, 10, 0, Math.PI)] },
+  { name: "信封", strokes: [[[0.15, 0.28], [0.85, 0.28], [0.85, 0.75], [0.15, 0.75], [0.15, 0.28]], [[0.15, 0.28], [0.5, 0.55], [0.85, 0.28]]] },
+  { name: "雪人", strokes: [ring(0.5, 0.68, 0.22, 0.22), ring(0.5, 0.32, 0.14, 0.14)] },
+];
 
-(async () => {
-  await demoGate({
-    icon: "🖐️",
-    title: "用手勢在空中畫畫",
-    desc: "ml5.js 的 handPose 會從鏡頭畫面找出每隻手的 21 個關節點，p5.js 即時畫出骨架並數出伸出幾根手指；拇指和食指捏住就能在空中留下光軌。影像只在瀏覽器內處理，不會上傳。",
-    tags: ["需要鏡頭", "約 9 MB"],
-    button: "開啟鏡頭",
-  });
-  const s = demoStatus("開啟鏡頭…");
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    s.error("這個瀏覽器不支援鏡頭存取（需要 HTTPS 與較新的瀏覽器）");
-    idleEl.hidden = true; // the status card carries the message
-    return;
-  }
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480, facingMode: "user" }, audio: false });
-    video.srcObject = stream;
-    await video.play();
-    // the detector reads the element's width/height attributes as the frame size
-    video.width = video.videoWidth;
-    video.height = video.videoHeight;
-    idleEl.hidden = true;
-    chipHands.textContent = "✋ 載入模型中";
-  } catch (err) {
-    console.error(err);
-    s.error(cameraError(err));
-    idleEl.hidden = true; // the status card carries the message
-    chipHands.textContent = "✋ 沒有鏡頭";
-    return;
-  }
-  try {
-    s.text("下載 p5.js…"); s.progress(0.15);
-    await loadScript(P5_URL);
-    new p5(sketch, view);
-    s.text("下載 ml5.js…"); s.progress(0.35);
-    await loadScript(ML5_URL);
-    s.text("載入 handPose 手部模型…"); s.progress(0.6);
-    const handPose = await ml5.handPose({ maxHands: 2, modelType: "full" });
-    if (handPose.ready) await handPose.ready;
-    handPose.detectStart(video, gotHands);
-    detecting = true; fpsStamp = performance.now();
-    s.done();
-  } catch (err) {
-    console.error(err);
-    s.error(`載入失敗：${err.message || err}，請確認網路連線後重新整理`);
-    chipHands.textContent = "✋ 模型載入失敗";
-    return;
-  }
-  idleEl.innerHTML = "<b>🖐️</b>把手舉到鏡頭前<small>可以同時偵測兩隻手</small>";
-  idleEl.hidden = tracks.size > 0;
-  if (!tracks.size) chipHands.textContent = "✋ 尚未偵測到手";
-})();
+// ---------- color data for neuralNetwork ----------
+const COLORS = [
+  { k: "red", t: "紅", c: "#e03131" }, { k: "orange", t: "橙", c: "#f76707" }, { k: "yellow", t: "黃", c: "#fcc419" },
+  { k: "green", t: "綠", c: "#37b24d" }, { k: "cyan", t: "青", c: "#22b8cf" }, { k: "blue", t: "藍", c: "#1c7ed6" },
+  { k: "purple", t: "紫", c: "#7048e8" }, { k: "pink", t: "粉紅", c: "#e64980" }, { k: "brown", t: "棕", c: "#8d5524" },
+  { k: "gray", t: "灰", c: "#868e96" },
+];
+const COLOR_BY = Object.fromEntries(COLORS.map((c) => [c.k, c]));
+function hslToRgb(hh, s, l) {
+  const f = (n) => { const k = (n + hh / 30) % 12; return l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1)); };
+  return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
+}
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2, d = mx - mn;
+  if (!d) return [0, 0, l];
+  const s = d / (1 - Math.abs(2 * l - 1));
+  const hh = mx === r ? ((g - b) / d + 6) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [hh * 60, s, l];
+}
+// Ground-truth naming rule used to label the synthetic training set
+function colorRule([r, g, b]) {
+  const [hh, s, l] = rgbToHsl(r, g, b);
+  if (s < 0.15 || l < 0.1 || l > 0.92) return "gray";
+  if (hh >= 15 && hh < 45 && l < 0.38) return "brown";
+  if (hh < 12 || hh >= 345) return l > 0.72 ? "pink" : "red";
+  if (hh < 40) return "orange";
+  if (hh < 68) return "yellow";
+  if (hh < 165) return "green";
+  if (hh < 195) return "cyan";
+  if (hh < 255) return "blue";
+  if (hh < 295) return "purple";
+  return "pink";
+}
+const randRgb = () => [Math.random() * 255, Math.random() * 255, Math.random() * 255].map(Math.round);
+
+const SENTENCES = [
+  { en: "The story was slow at first but the ending was absolutely wonderful.", zh: "故事一開始很慢，但結局非常精彩。" },
+  { en: "Great actors and beautiful music, yet the plot was a boring mess.", zh: "演員很棒、配樂很美，但劇情無聊又混亂。" },
+  { en: "I expected nothing and it turned out to be the best film of the year.", zh: "本來不抱期待，結果是今年最好看的電影。" },
+  { en: "The jokes fell flat and I wanted to leave halfway through.", zh: "笑點都不好笑，看到一半就想離場。" },
+  { en: "Not bad at all, actually quite charming and funny.", zh: "一點也不差，其實蠻迷人又好笑的。" },
+];
+
+Showcase.run({
+  scenes: [
+    // 1 ---------------------------------------------------------------------------------
+    {
+      id: "hand", title: "手勢骨架",
+      api: "ml5.handPose({ maxHands: 2 }) → detect(img)",
+      desc: "handPose 每隻手回傳 21 個關鍵點、左右手判定與 keypoints3D（以手掌為原點、單位公尺）。依關鍵點距離判斷手指是否伸直並計數，右下角是 3D 座標旋轉檢視。範例圖片取自 MediaPipe 官方範例素材。",
+      hint: "切換範例手勢・偵測到鏡頭時可改用即時影像，捏合拇指和食指可在空中畫線",
+      async mount(ctx) {
+        await startMl5(ctx, "hand", { icon: "✋", title: "手勢辨識", desc: "handPose 找出每隻手的 21 個關鍵點，可以數手指、判斷捏合" });
+        ctx.html(`<div class="m5-wrap"><div class="m5-box" data-r="main">
+          <div class="m5-chips"><span class="m5-chip" data-r="info">準備中…</span><span class="m5-chip" data-r="ms"></span></div>
+          <div class="m5-total"><b data-r="total">0</b><span>根手指伸直</span></div>
+          <div class="m5-inset" data-r="inset"><small>3D 座標（公尺）</small></div></div></div>`);
+        const SAMPLES = [
+          { f: "thumb_up.jpg", t: "比讚" }, { f: "victory.jpg", t: "勝利" }, { f: "pointing_up.jpg", t: "指上" },
+          { f: "fist.jpg", t: "握拳" }, { f: "right_hands.jpg", t: "雙手" },
+        ];
+        let idx = 0, auto = true, seq = 0, seqDone = -1, source = null, hands = [], shownAt = 0, cam = null;
+        let strokes = [];
+        const pinchOn = [];
+        const seg = ctx.group(SAMPLES.map((s) => s.t), 0, (i) => { auto = false; autoBtn.setAttribute("aria-pressed", "false"); if (cam) stopCam(); guard(ctx, show(i)); });
+        const autoBtn = ctx.toggle("自動輪播", true, (v) => (auto = v));
+        const main = ctx.$("[data-r=main]");
+        const view = canvasIn(ctx, main);
+        const inset = canvasIn(ctx, ctx.$("[data-r=inset]"));
+        memTag(ctx, main);
+        const slot = modelSlot(ctx);
+        // Start the download now but draw the sample image while it loads.
+        const modelP = slot.use("hand");
+        modelP.catch(() => {});
+
+        const hud = (ms) => {
+          const counts = hands.map((hd) => extendedFingers(hd.keypoints).filter(Boolean).length);
+          ctx.$("[data-r=total]").textContent = counts.reduce((a, b) => a + b, 0);
+          ctx.$("[data-r=info]").textContent = hands.length
+            ? hands.map((hd, i) => `${hd.handedness === "Left" ? "左手" : "右手"} ${Math.round((hd.confidence || 0) * 100)}%・${counts[i]} 指`).join("　")
+            : "沒有偵測到手";
+          if (ms != null) ctx.$("[data-r=ms]").innerHTML = `推論 <b>${ms.toFixed(0)}</b> ms`;
+        };
+        async function show(i) {
+          idx = i; pressGroup(seg, i);
+          const my = ++seq;
+          const img = await loadImage(MP + SAMPLES[i].f);
+          if (my !== seq || cam || !ctx.active) return;
+          if (source !== img) {
+            source = img; hands = [];
+            ctx.$("[data-r=info]").textContent = "偵測中…"; ctx.$("[data-r=total]").textContent = "–";
+          }
+          const model = await modelP;
+          if (my !== seq || cam || !ctx.active) return;
+          const t0 = performance.now();
+          const res = await model.detect(img);
+          if (my !== seq || cam || !ctx.active) return;
+          source = img; hands = res; shownAt = performance.now(); seqDone = my;
+          hud(performance.now() - t0);
+        }
+        // Advance only after the current sample has been shown for a while, so a slow first inference is never discarded.
+        ctx.interval(() => { if (auto && !cam && seqDone === seq && performance.now() - shownAt > 3600) guard(ctx, show((idx + 1) % SAMPLES.length)); }, 300);
+
+        // Optional live camera: only offered when the browser reports a video input.
+        async function startCam() {
+          try {
+            const model = await modelP;
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+            const video = h("video", { playsinline: "" });
+            video.muted = true; video.srcObject = stream;
+            await video.play();
+            if (!ctx.active) { stream.getTracks().forEach((t) => t.stop()); return; }
+            cam = { stream, video }; seq++; auto = false; autoBtn.setAttribute("aria-pressed", "false");
+            source = video; hands = []; strokes = [];
+            while (cam && cam.video === video && ctx.active) {
+              const t0 = performance.now();
+              const res = await model.detect(video);
+              if (!cam || cam.video !== video || !ctx.active) break;
+              hands = res; trackPinch(performance.now()); hud(performance.now() - t0);
+              await ctx.frame();
+            }
+          } catch (e) {
+            if (ctx.active) { ctx.$("[data-r=info]").textContent = `無法開啟鏡頭：${e.message}`; camBtn && camBtn.setAttribute("aria-pressed", "false"); cam = null; }
+          }
+        }
+        function stopCam() {
+          if (!cam) return;
+          cam.stream.getTracks().forEach((t) => t.stop());
+          cam = null; strokes = [];
+          if (camBtn) camBtn.setAttribute("aria-pressed", "false");
+          guard(ctx, show(idx));
+        }
+        ctx.onCleanup(() => { if (cam) cam.stream.getTracks().forEach((t) => t.stop()); cam = null; });
+        function trackPinch(now) {
+          hands.forEach((hd, i) => {
+            const P = hd.keypoints;
+            const gap = dist(P[4], P[8]) / Math.max(1, dist(P[0], P[9]));
+            const on = pinchOn[i] ? gap < 0.45 : gap < 0.3;
+            if (on && !pinchOn[i]) strokes.push({ hand: i, color: FINGERS[strokes.length % 5].color, pts: [] });
+            if (on) {
+              const s = [...strokes].reverse().find((x) => x.hand === i);
+              s.pts.push({ x: (P[4].x + P[8].x) / 2, y: (P[4].y + P[8].y) / 2, t: now });
+            }
+            pinchOn[i] = on;
+          });
+          strokes = strokes.map((s) => ({ ...s, pts: s.pts.filter((q) => now - q.t < 6000) })).filter((s) => s.pts.length || pinchOn[s.hand]);
+        }
+        let camBtn = null;
+        navigator.mediaDevices?.enumerateDevices?.().then((list) => {
+          if (ctx.active && list.some((d) => d.kind === "videoinput")) camBtn = ctx.toggle("📷 鏡頭", false, (v) => (v ? guard(ctx, startCam()) : stopCam()));
+        }).catch(() => {});
+
+        guard(ctx, show(0));
+        ctx.raf((t) => {
+          const { g, w, h: H } = view;
+          g.clearRect(0, 0, w, H);
+          if (source) {
+            const sw = source.videoWidth || source.naturalWidth, sh = source.videoHeight || source.naturalHeight;
+            const r = contain(sw, sh, w, H, 8);
+            const mirror = !!cam;
+            const toS = (k) => ({ x: r.x + (mirror ? sw - k.x : k.x) * r.s, y: r.y + k.y * r.s });
+            g.save();
+            if (mirror) { g.translate(r.x + r.w, r.y); g.scale(-r.s, r.s); } else { g.translate(r.x, r.y); g.scale(r.s, r.s); }
+            g.drawImage(source, 0, 0);
+            g.restore();
+            g.fillStyle = "rgba(0,0,0,.25)"; g.fillRect(r.x, r.y, r.w, r.h);
+            const now = performance.now();
+            for (const s of strokes) {
+              g.strokeStyle = s.color; g.lineCap = "round"; g.lineJoin = "round";
+              for (let i = 1; i < s.pts.length; i++) {
+                const a = toS(s.pts[i - 1]), b = toS(s.pts[i]);
+                g.globalAlpha = clamp(1 - (now - s.pts[i].t) / 6000, 0, 1); g.lineWidth = 6;
+                g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke();
+              }
+            }
+            g.globalAlpha = 1;
+            const p = cam ? 1 : clamp((performance.now() - shownAt) / 700, 0, 1);
+            hands.forEach((hd) => {
+              const P = hd.keypoints.map(toS);
+              drawHand(g, P, p, extendedFingers(hd.keypoints));
+              if (p >= 1) pill(g, `${hd.handedness === "Left" ? "左手" : "右手"}・${extendedFingers(hd.keypoints).filter(Boolean).length} 指`, P[0].x, P[0].y + 22);
+            });
+          }
+          const hd = hands[0];
+          draw3D(inset, hd && hd.keypoints3D, HAND_EDGES, t * 0.0009, 0.24);
+        });
+      },
+    },
+
+    // 2 ---------------------------------------------------------------------------------
+    {
+      id: "body", title: "人體姿勢",
+      api: "ml5.bodyPose() / ml5.bodyPose(\"BlazePose\") + getSkeleton()",
+      desc: "MoveNet 一次可偵測多人，每人 17 個關鍵點；BlazePose 只追一人但有 33 個點，並提供以髖部為原點的 3D 座標（公尺）。右側用關鍵點算出手肘與膝蓋角度，BlazePose 用 3D 座標計算。範例圖片取自 MediaPipe 官方範例素材。",
+      hint: "切換 MoveNet 與 BlazePose，比較點數、信心度與 3D 輸出",
+      async mount(ctx) {
+        await startMl5(ctx, "body", { icon: "🧘", title: "人體姿勢偵測", desc: "bodyPose 找出全身關節位置，可以算關節角度" });
+        ctx.html(`<div class="m5-wrap m5-split"><div class="m5-box" data-r="main"><div class="m5-chips"><span class="m5-chip" data-r="info">準備中…</span></div></div>
+          <div class="m5-side"><div class="m5-card"><h3 data-r="angT">關節角度</h3><div class="m5-kv" data-r="angles"></div></div>
+          <div class="m5-card m5-hide-n"><h3 data-r="exT">關鍵點信心度</h3><div class="m5-mini" data-r="list"></div><div class="m5-cv" data-r="v3d" hidden></div></div></div></div>`);
+        const ZH_KP = { nose: "鼻子", left_eye: "左眼", right_eye: "右眼", left_ear: "左耳", right_ear: "右耳", left_shoulder: "左肩", right_shoulder: "右肩",
+          left_elbow: "左肘", right_elbow: "右肘", left_wrist: "左腕", right_wrist: "右腕", left_hip: "左髖", right_hip: "右髖",
+          left_knee: "左膝", right_knee: "右膝", left_ankle: "左踝", right_ankle: "右踝" };
+        const JOINTS = [["左肘", "left_shoulder", "left_elbow", "left_wrist"], ["右肘", "right_shoulder", "right_elbow", "right_wrist"],
+          ["左膝", "left_hip", "left_knee", "left_ankle"], ["右膝", "right_hip", "right_knee", "right_ankle"]];
+        let key = "body", people = [], skeleton = [], img = null, shownAt = 0, angles = [];
+        const main = ctx.$("[data-r=main]");
+        const view = canvasIn(ctx, main);
+        const v3dHost = ctx.$("[data-r=v3d]");
+        const v3d = canvasIn(ctx, v3dHost);
+        memTag(ctx, main);
+        const slot = modelSlot(ctx);
+        ctx.group(["MoveNet（17 點）", "BlazePose（33 點＋3D）"], 0, (i) => guard(ctx, run(i ? "blaze" : "body")));
+
+        async function run(k) {
+          key = k; people = [];
+          const m = await slot.use(k);
+          img = await loadImage(MP + "pose.jpg");
+          const t0 = performance.now();
+          const res = await m.detect(img);
+          if (!ctx.active || slot.model !== m) return;
+          const ms = performance.now() - t0;
+          people = res; skeleton = m.getSkeleton(); shownAt = performance.now();
+          const p0 = res[0];
+          const find = (pts, n) => pts && pts.find((q) => q.name === n);
+          const src = p0 && (k === "blaze" ? p0.keypoints3D : p0.keypoints);
+          angles = JOINTS.map(([t, a, b, c]) => {
+            const A = find(src, a), B = find(src, b), C = find(src, c);
+            return { t, b, v: A && B && C ? jointAngle(A, B, C) : NaN };
+          });
+          ctx.$("[data-r=angT]").textContent = k === "blaze" ? "關節角度（3D 座標計算）" : "關節角度（2D 影像座標）";
+          ctx.$("[data-r=angles]").innerHTML = angles.map((a) => `<div>${a.t}<b>${Number.isFinite(a.v) ? a.v.toFixed(0) + "°" : "–"}</b></div>`).join("");
+          ctx.$("[data-r=info]").innerHTML = `${NAME[k]}・${res.length} 人・${p0 ? p0.keypoints.length : 0} 點・推論 <b>${ms.toFixed(0)}</b> ms`;
+          const list = ctx.$("[data-r=list]");
+          list.hidden = k === "blaze"; v3dHost.hidden = k !== "blaze";
+          ctx.$("[data-r=exT]").textContent = k === "blaze" ? "keypoints3D 旋轉檢視（公尺）" : "關鍵點信心度";
+          list.innerHTML = p0 && k === "body" ? p0.keypoints.map((q) => `<div>${ZH_KP[q.name] || q.name}<i style="width:${Math.round(q.confidence * 100)}%;background:${sideColor(q.name)}"></i><b>${q.confidence.toFixed(2)}</b></div>`).join("") : "";
+        }
+        await run("body");
+        ctx.raf((t) => {
+          const { g, w, h: H } = view;
+          g.clearRect(0, 0, w, H);
+          if (!img) return;
+          const r = contain(img.naturalWidth, img.naturalHeight, w, H, 8);
+          g.drawImage(img, r.x, r.y, r.w, r.h);
+          g.fillStyle = "rgba(0,0,0,.3)"; g.fillRect(r.x, r.y, r.w, r.h);
+          const p = clamp((t - shownAt) / 900, 0, 1);
+          const lw = clamp(r.s * 5, 2, 6);
+          for (const person of people) {
+            const P = person.keypoints.map((k) => ({ x: r.x + k.x * r.s, y: r.y + k.y * r.s, c: k.confidence ?? 1, n: k.name }));
+            g.lineCap = "round";
+            for (const [a, b] of skeleton) {
+              if (!P[a] || !P[b] || P[a].c < 0.25 || P[b].c < 0.25) continue;
+              g.strokeStyle = sideColor(P[b].n); g.lineWidth = lw; g.globalAlpha = 0.9;
+              g.beginPath(); g.moveTo(P[a].x, P[a].y); g.lineTo(P[a].x + (P[b].x - P[a].x) * p, P[a].y + (P[b].y - P[a].y) * p); g.stroke();
+            }
+            g.globalAlpha = 1;
+            const pulse = 1 + 0.25 * Math.sin(t / 300);
+            P.forEach((q) => { if (q.c < 0.25) return; g.fillStyle = "#fff"; g.beginPath(); g.arc(q.x, q.y, lw * 0.75 * (0.6 + q.c * 0.5) * pulse, 0, Math.PI * 2); g.fill(); });
+            if (person === people[0] && p >= 1) {
+              angles.forEach((a) => {
+                const q = P.find((x) => x.n === a.b);
+                if (q && q.c >= 0.25 && Number.isFinite(a.v)) pill(g, `${a.v.toFixed(0)}°`, q.x + 26, q.y - 4);
+              });
+            }
+          }
+          if (key === "blaze" && people[0] && !v3dHost.hidden) {
+            const edges = skeleton.map(([a, b]) => [a, b, sideColor(people[0].keypoints3D[b].name)]);
+            draw3D(v3d, people[0].keypoints3D, edges, t * 0.0007, 2.2);
+          }
+        });
+      },
+    },
+
+    // 3 ---------------------------------------------------------------------------------
+    {
+      id: "face", title: "臉部網格",
+      api: "ml5.faceMesh({ refineLandmarks: true }) → detect(img) + getTriangles()",
+      desc: "faceMesh 在一張臉上找出 478 個 3D 關鍵點（含 10 個虹膜點），getTriangles() 提供 852 個三角形把點連成網格，網格顏色代表深度 z。結果另外分好 lips、leftEye、faceOval 等部位，可直接算嘴巴與眼睛開合比例。範例圖片取自 MediaPipe 官方範例素材。",
+      hint: "切換網格、部位、虹膜顯示・「放大臉部」會平滑縮放到偵測框",
+      async mount(ctx) {
+        await startMl5(ctx, "face", { icon: "🙂", title: "臉部網格", desc: "faceMesh 找出臉上 478 個關鍵點並連成三角網格" });
+        ctx.html(`<div class="m5-wrap"><div class="m5-box" data-r="main"><div class="m5-chips" data-r="chips"><span class="m5-chip">準備中…</span></div></div></div>`);
+        const show = { mesh: true, parts: true, iris: true, zoom: true };
+        ctx.toggle("網格", true, (v) => (show.mesh = v));
+        ctx.toggle("部位", true, (v) => (show.parts = v));
+        ctx.toggle("虹膜", true, (v) => (show.iris = v));
+        ctx.toggle("放大臉部", true, (v) => (show.zoom = v));
+        const main = ctx.$("[data-r=main]");
+        const view = canvasIn(ctx, main);
+        memTag(ctx, main);
+        const slot = modelSlot(ctx);
+        // Show the photo while the model downloads; the full renderer takes over once ready.
+        let live = false;
+        const img = await loadImage(MP + "portrait.jpg");
+        ctx.raf(() => {
+          if (live) return;
+          const { g, w, h: H } = view;
+          g.clearRect(0, 0, w, H);
+          const r = contain(img.naturalWidth, img.naturalHeight, w, H, 8);
+          g.drawImage(img, r.x, r.y, r.w, r.h);
+          g.fillStyle = "rgba(0,0,0,.35)"; g.fillRect(r.x, r.y, r.w, r.h);
+        });
+        const model = await slot.use("face");
+        const t0 = performance.now();
+        const res = await model.detect(img);
+        const ms = performance.now() - t0;
+        const face = res[0];
+        const tris = model.getTriangles();
+        if (!face) { ctx.$("[data-r=chips]").innerHTML = `<span class="m5-chip">沒有偵測到臉</span>`; return; }
+        const K = face.keypoints;
+        const zs = K.map((k) => k.z), zmin = Math.min(...zs), zmax = Math.max(...zs);
+        const ratio = (part) => (part && part.width ? part.height / part.width : 0);
+        ctx.$("[data-r=chips]").innerHTML = [
+          `<b>${K.length}</b> 點`, `<b>${tris.length}</b> 三角形`, `推論 <b>${ms.toFixed(0)}</b> ms`,
+          `嘴巴開合 <b>${ratio(face.lips).toFixed(2)}</b>`, `眼睛開合 <b>${ratio(face.leftEye).toFixed(2)}</b>／<b>${ratio(face.rightEye).toFixed(2)}</b>`,
+        ].map((s) => `<span class="m5-chip">${s}</span>`).join("");
+        const order = tris.map((tr, i) => [i, (K[tr[0]].y + K[tr[1]].y + K[tr[2]].y) / 3]).sort((a, b) => a[1] - b[1]).map((x) => x[0]);
+        const PARTS = [["faceOval", "#f7df1e"], ["lips", "#f72585"], ["leftEye", "#4cc9f0"], ["rightEye", "#4cc9f0"], ["leftEyebrow", "#7bd389"], ["rightEyebrow", "#7bd389"]];
+        const b = face.box;
+        const pad = Math.max(b.width, b.height) * 0.35;
+        const faceRect = { x: b.xMin - pad, y: b.yMin - pad, w: b.width + pad * 2, h: b.height + pad * 2 };
+        const fullRect = { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
+        let z = 0, last = 0;
+        const start = performance.now();
+        live = true;
+        ctx.raf((t) => {
+          const dt = last ? t - last : 16; last = t;
+          z += ((show.zoom ? 1 : 0) - z) * Math.min(1, dt / 250);
+          const src = { x: fullRect.x + (faceRect.x - fullRect.x) * z, y: fullRect.y + (faceRect.y - fullRect.y) * z,
+            w: fullRect.w + (faceRect.w - fullRect.w) * z, h: fullRect.h + (faceRect.h - fullRect.h) * z };
+          const { g, w, h: H } = view;
+          g.clearRect(0, 0, w, H);
+          const r = contain(src.w, src.h, w, H, 8);
+          g.save(); g.beginPath(); g.roundRect(r.x, r.y, r.w, r.h, 8); g.clip();
+          g.drawImage(img, src.x, src.y, src.w, src.h, r.x, r.y, r.w, r.h);
+          g.fillStyle = "rgba(0,0,0,.35)"; g.fillRect(r.x, r.y, r.w, r.h);
+          g.restore();
+          const S = (k) => ({ x: r.x + (k.x - src.x) * r.s, y: r.y + (k.y - src.y) * r.s });
+          const P = K.map(S);
+          const reveal = clamp((t - start) / 1400, 0, 1);
+          const scan = r.y + (((t - start) / 3500) % 1) * r.h;
+          if (show.mesh) {
+            g.lineWidth = clamp(r.s * 0.9, 0.4, 1.2);
+            const n = Math.floor(order.length * reveal);
+            for (let j = 0; j < n; j++) {
+              const [a, bb, c] = tris[order[j]];
+              const zt = ((K[a].z + K[bb].z + K[c].z) / 3 - zmin) / Math.max(1e-6, zmax - zmin);
+              const cy = (P[a].y + P[bb].y + P[c].y) / 3;
+              const near = Math.abs(cy - scan) < 14;
+              g.strokeStyle = near ? "rgba(247,223,30,.95)" : `hsla(${190 + zt * 110},90%,65%,${0.65 - zt * 0.3})`;
+              g.beginPath(); g.moveTo(P[a].x, P[a].y); g.lineTo(P[bb].x, P[bb].y); g.lineTo(P[c].x, P[c].y); g.closePath(); g.stroke();
+            }
+          }
+          if (show.parts && reveal >= 1) {
+            for (const [part, color] of PARTS) {
+              const pk = face[part];
+              if (!pk) continue;
+              g.fillStyle = color;
+              pk.keypoints.forEach((k) => { const q = S(k); g.beginPath(); g.arc(q.x, q.y, clamp(r.s * 1.6, 1.2, 2.6), 0, Math.PI * 2); g.fill(); });
+            }
+          }
+          if (show.iris && reveal >= 1) {
+            for (const part of ["leftIris", "rightIris"]) {
+              const pk = face[part];
+              if (!pk) continue;
+              const Q = pk.keypoints.map(S);
+              const c = { x: Q.reduce((s, q) => s + q.x, 0) / Q.length, y: Q.reduce((s, q) => s + q.y, 0) / Q.length };
+              const rad = Q.map((q) => dist(q, c)).sort((a, bb) => bb - a).slice(0, 4).reduce((s, v) => s + v, 0) / 4;
+              g.strokeStyle = "#ff8c42"; g.lineWidth = 2;
+              g.beginPath(); g.arc(c.x, c.y, rad, 0, Math.PI * 2); g.stroke();
+              g.fillStyle = "#ff8c42"; g.beginPath(); g.arc(c.x, c.y, 2, 0, Math.PI * 2); g.fill();
+            }
+          }
+          g.font = `500 11px ${FONT}`; g.textAlign = "right"; g.textBaseline = "bottom";
+          const gy = H - 14, gx = w - 16;
+          const grad = g.createLinearGradient(gx - 120, 0, gx, 0);
+          grad.addColorStop(0, "hsl(190,90%,65%)"); grad.addColorStop(1, "hsl(300,90%,65%)");
+          g.fillStyle = grad; g.fillRect(gx - 120, gy, 120, 5);
+          g.fillStyle = "#ecebe6"; g.fillText("近　深度 z　遠", gx, gy - 3);
+        });
+      },
+    },
+
+    // 4 ---------------------------------------------------------------------------------
+    {
+      id: "classify", title: "影像分類",
+      api: "ml5.imageClassifier(\"MobileNet\") → classify(img, 5)",
+      desc: "MobileNet v2 在 ImageNet 1000 類上訓練，回傳信心度最高的前五個類別。可以看到它擅長動物（獅子、水母），對風景只能猜相近類別（峽谷判成 cliff），海象則被判成相似的 sea lion：ImageNet 沒有的類別不會出現在答案裡。",
+      hint: "切換照片或上傳自己的圖片（只在瀏覽器內處理）",
+      async mount(ctx) {
+        await startMl5(ctx, "mobilenet", { icon: "🏷️", title: "影像分類", desc: "MobileNet 判斷照片裡是 1000 種類別中的哪一種" });
+        ctx.html(`<div class="m5-wrap m5-split"><div class="m5-box" data-r="main"><div class="m5-chips"><span class="m5-chip" data-r="info">準備中…</span></div></div>
+          <div class="m5-side"><div class="m5-card"><h3>前五名（信心度）</h3><div class="m5-bars" data-r="bars"></div></div>
+          <div class="m5-card m5-hide-n"><div class="m5-kv"><div>模型<b>MobileNet v2</b></div><div>類別數<b>1000</b></div><div>推論耗時<b data-r="ms">…</b></div><div>輸入尺寸<b>224×224</b></div></div></div></div></div>`);
+        const PHOTOS = [{ n: 7, t: "母獅" }, { n: 6, t: "水母" }, { n: 8, t: "海象" }, { n: 2, t: "峽谷" }];
+        let idx = 0, auto = true, seq = 0, img = null, shownAt = 0;
+        const setBars = barsIn(ctx.$("[data-r=bars]"), 5);
+        setBars([]);
+        const seg = ctx.group(PHOTOS.map((p) => p.t), 0, (i) => { auto = false; autoBtn.setAttribute("aria-pressed", "false"); guard(ctx, classify(PHOTOS[i])); idx = i; });
+        const autoBtn = ctx.toggle("自動輪播", true, (v) => (auto = v));
+        const file = h("input", { type: "file", accept: "image/*", hidden: "" });
+        ctx.el.append(file);
+        ctx.button("上傳圖片", () => file.click());
+        const main = ctx.$("[data-r=main]");
+        const view = canvasIn(ctx, main);
+        memTag(ctx, main);
+        const slot = modelSlot(ctx);
+        const model = await slot.use("mobilenet");
+        async function classify(p, own) {
+          const my = ++seq;
+          if (!own) pressGroup(seg, PHOTOS.indexOf(p));
+          const im = own || (await loadImage(`_shared/img/photo-${p.n}.jpg`));
+          if (my !== seq || !ctx.active) return;
+          const t0 = performance.now();
+          const res = await model.classify(im, 5);
+          if (my !== seq || !ctx.active) return;
+          const ms = performance.now() - t0;
+          img = im; shownAt = performance.now();
+          setBars(res);
+          ctx.$("[data-r=ms]").textContent = `${ms.toFixed(0)} ms`;
+          ctx.$("[data-r=info]").textContent = own ? "上傳的圖片" : `照片：${p.t}`;
+        }
+        ctx.on(file, "change", () => {
+          const f = file.files && file.files[0];
+          if (!f) return;
+          auto = false; autoBtn.setAttribute("aria-pressed", "false"); pressGroup(seg, -1);
+          const url = URL.createObjectURL(f);
+          const im = new Image();
+          im.onload = () => { URL.revokeObjectURL(url); guard(ctx, classify(null, im)); };
+          im.onerror = () => { URL.revokeObjectURL(url); ctx.$("[data-r=info]").textContent = "無法讀取這個檔案"; };
+          im.src = url;
+          file.value = "";
+        });
+        ctx.interval(() => { if (auto) { idx = (idx + 1) % PHOTOS.length; guard(ctx, classify(PHOTOS[idx])); } }, 4000);
+        await classify(PHOTOS[0]);
+        ctx.raf((t) => {
+          const { g, w, h: H } = view;
+          g.clearRect(0, 0, w, H);
+          if (!img) return;
+          const k = 1 + 0.06 * clamp((t - shownAt) / 4000, 0, 1);
+          const r = contain(img.naturalWidth, img.naturalHeight, w, H, 8);
+          g.save(); g.beginPath(); g.roundRect(r.x, r.y, r.w, r.h, 8); g.clip();
+          g.globalAlpha = clamp((t - shownAt) / 300, 0, 1);
+          g.drawImage(img, r.x - (r.w * (k - 1)) / 2, r.y - (r.h * (k - 1)) / 2, r.w * k, r.h * k);
+          g.restore(); g.globalAlpha = 1;
+        });
+      },
+    },
+
+    // 5 ---------------------------------------------------------------------------------
+    {
+      id: "doodle", title: "塗鴉辨識",
+      api: "ml5.imageClassifier(\"DoodleNet\") → classify(canvas, 5)",
+      desc: "DoodleNet 用 Google Quick, Draw! 的 345 類塗鴉訓練，輸入是 28×28 灰階圖。每畫一筆就重新分類一次，可以看到判斷如何隨著筆畫改變。",
+      hint: "在白色畫布上畫畫（英文類別名稱）・按「清除」重畫，自動示範會依序畫出房子、太陽、魚、眼鏡、星星、雨傘、信封、雪人",
+      async mount(ctx) {
+        await startMl5(ctx, "doodle", { icon: "✏️", title: "塗鴉辨識", desc: "DoodleNet 猜你畫的是 345 種東西裡的哪一種" });
+        ctx.html(`<div class="m5-wrap m5-split"><div class="m5-box" data-r="main"><div class="m5-padhost" data-r="padhost"></div>
+          <div class="m5-chips"><span class="m5-chip" data-r="info">準備中…</span></div></div>
+          <div class="m5-side"><div class="m5-card"><h3>前五名（信心度）</h3><div class="m5-bars" data-r="bars"></div></div>
+          <div class="m5-card m5-hide-n"><div class="m5-kv"><div>筆畫數<b data-r="nst">0</b></div><div>推論耗時<b data-r="ms">…</b></div></div></div></div></div>`);
+        const SZ = 280;
+        const pad = h("canvas", { width: SZ, height: SZ });
+        ctx.$("[data-r=padhost]").append(pad);
+        const pg = pad.getContext("2d");
+        const setBars = barsIn(ctx.$("[data-r=bars]"), 5);
+        setBars([]);
+        let auto = true, strokes = 0, busy = false, dirty = false, doodleIdx = 0;
+        const clear = () => { pg.fillStyle = "#fff"; pg.fillRect(0, 0, SZ, SZ); strokes = 0; ctx.$("[data-r=nst]").textContent = "0"; setBars([]); };
+        clear();
+        pg.lineCap = "round"; pg.lineJoin = "round"; pg.lineWidth = 16; pg.strokeStyle = "#111";
+        ctx.button("清除", () => { auto = false; autoBtn.setAttribute("aria-pressed", "false"); clear(); ctx.$("[data-r=info]").textContent = "換你畫"; });
+        const autoBtn = ctx.toggle("自動示範", true, (v) => { auto = v; if (v) guard(ctx, demo()); });
+        const fitPad = () => { const host = ctx.$("[data-r=padhost]"); const s = Math.max(120, Math.min(host.clientWidth, host.clientHeight) - 24); pad.style.width = pad.style.height = `${s}px`; };
+        const ro = new ResizeObserver(fitPad); ro.observe(ctx.$("[data-r=padhost]")); ctx.onCleanup(() => ro.disconnect());
+        memTag(ctx, ctx.$("[data-r=main]"));
+        const slot = modelSlot(ctx);
+        const model = await slot.use("doodle");
+        async function classify() {
+          if (busy) { dirty = true; return; }
+          busy = true;
+          try {
+            do {
+              dirty = false;
+              const t0 = performance.now();
+              const res = await model.classify(pad, 5);
+              if (!ctx.active) return;
+              ctx.$("[data-r=ms]").textContent = `${(performance.now() - t0).toFixed(0)} ms`;
+              setBars(strokes ? res : []);
+            } while (dirty && ctx.active);
+          } finally { busy = false; }
+        }
+        // pointer drawing
+        let drawing = null;
+        const toPad = (e) => { const r = pad.getBoundingClientRect(); return [((e.clientX - r.left) / r.width) * SZ, ((e.clientY - r.top) / r.height) * SZ]; };
+        ctx.on(pad, "pointerdown", (e) => {
+          if (auto) { auto = false; autoBtn.setAttribute("aria-pressed", "false"); clear(); }
+          pad.setPointerCapture(e.pointerId);
+          drawing = toPad(e); strokes++; ctx.$("[data-r=nst]").textContent = strokes;
+          ctx.$("[data-r=info]").textContent = "繪製中";
+        });
+        ctx.on(pad, "pointermove", (e) => {
+          if (!drawing) return;
+          const p = toPad(e);
+          pg.beginPath(); pg.moveTo(...drawing); pg.lineTo(...p); pg.stroke();
+          drawing = p;
+          guard(ctx, classify());
+        });
+        const end = () => { if (drawing) { drawing = null; guard(ctx, classify()); } };
+        ctx.on(pad, "pointerup", end); ctx.on(pad, "pointercancel", end);
+        let demoRun = 0;
+        async function demo() {
+          const my = ++demoRun;
+          while (auto && ctx.active && my === demoRun) {
+            const d = DOODLES[doodleIdx % DOODLES.length];
+            doodleIdx++;
+            clear();
+            ctx.$("[data-r=info]").textContent = `自動示範：${d.name}`;
+            for (const st of d.strokes) {
+              strokes++; ctx.$("[data-r=nst]").textContent = strokes;
+              for (let i = 1; i < st.length; i++) {
+                if (!auto || my !== demoRun) return;
+                pg.beginPath(); pg.moveTo(st[i - 1][0] * SZ, st[i - 1][1] * SZ); pg.lineTo(st[i][0] * SZ, st[i][1] * SZ); pg.stroke();
+                if (i % 4 === 0) await ctx.sleep(16);
+              }
+              await classify();
+              await ctx.sleep(220);
+            }
+            await ctx.sleep(2200);
+          }
+        }
+        fitPad();
+        guard(ctx, demo());
+      },
+    },
+
+    // 6 ---------------------------------------------------------------------------------
+    {
+      id: "nn", title: "自訂神經網路",
+      api: "ml5.neuralNetwork({ task: \"classification\" }) → addData / normalizeData / train / classifyMultiple",
+      desc: "不用下載模型：在瀏覽器內從零訓練一個顏色分類器。合成資料是隨機 RGB，標註依色相、飽和度、亮度的規則產生（10 種顏色名稱）。上圖是實際顏色，下圖是模型對同一格的判斷，白點標出判斷與規則不同的格子；準確率用另外 300 筆沒看過的資料計算。",
+      hint: "調整訓練回合後按「重新訓練」・訓練完成後右下角會持續隨機出題",
+      async mount(ctx) {
+        await startMl5(ctx, "nn", { icon: "🎨", title: "自訂神經網路", desc: "用 ml5.neuralNetwork 在瀏覽器內從零訓練顏色分類器" });
+        ctx.html(`<div class="m5-wrap m5-split"><div class="m5-box" data-r="main"></div>
+          <div class="m5-side"><div class="m5-card"><div class="m5-kv"><div>訓練樣本<b>1,200</b></div><div>回合<b data-r="ep">0</b></div>
+          <div>loss<b data-r="loss">…</b></div><div>測試準確率<b data-r="acc">…</b></div></div></div>
+          <div class="m5-card m5-hide-n"><h3>loss 曲線</h3><div class="m5-cv m5-loss" data-r="loss"></div></div>
+          <div class="m5-card"><h3>隨機出題</h3><div class="m5-swatch"><i data-r="sw"></i><div data-r="ans">訓練完成後開始</div></div></div></div></div>`);
+        let epochs = 40;
+        ctx.slider("訓練回合", { min: 10, max: 80, step: 10, value: 40 }, (v) => (epochs = v));
+        const trainBtn = ctx.button("重新訓練", () => guard(ctx, train()), { primary: true });
+        const main = ctx.$("[data-r=main]");
+        const view = canvasIn(ctx, main, () => drawMaps());
+        const lossV = canvasIn(ctx, ctx.$(".m5-loss"), () => drawLoss());
+        memTag(ctx, main);
+        const COLS = 48, ROWS = 14;
+        const grid = [];
+        for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) grid.push(hslToRgb((x / COLS) * 360, 0.85, 0.12 + (y / (ROWS - 1)) * 0.76));
+        let nn = null, training = null, losses = [], pred = null;
+        const freeNet = (net) => { try { net.dispose(); } catch (e) { console.warn("[ml5 demo] nn dispose failed", e); } };
+        ctx.onCleanup(() => {
+          const net = nn; nn = null;
+          if (!net) return;
+          if (training) { try { net.neuralNetwork.model.stopTraining = true; } catch (e) { /* model not built yet */ } training.finally(() => freeNet(net)); } else freeNet(net);
+        });
+        function drawLoss() {
+          const { g, w, h: H } = lossV;
+          g.clearRect(0, 0, w, H);
+          if (losses.length < 2) return;
+          const mx = Math.max(...losses), mn = Math.min(...losses, 0);
+          g.strokeStyle = "#f7df1e"; g.lineWidth = 2; g.beginPath();
+          losses.forEach((l, i) => { const x = 4 + (i / (losses.length - 1)) * (w - 8), y = 6 + (1 - (l - mn) / Math.max(1e-6, mx - mn)) * (H - 12); i ? g.lineTo(x, y) : g.moveTo(x, y); });
+          g.stroke();
+        }
+        function drawMaps() {
+          const { g, w, h: H } = view;
+          g.clearRect(0, 0, w, H);
+          const padX = 14, top = 30, gap = 30, mh = (H - top - gap - 14) / 2, cw = (w - padX * 2) / COLS, ch = mh / ROWS;
+          g.font = `600 12.5px ${FONT}`; g.textAlign = "left"; g.textBaseline = "alphabetic"; g.fillStyle = "#ecebe6";
+          g.fillText("輸入顏色（色相 × 亮度）", padX, top - 9);
+          g.fillText(pred ? "模型判斷的顏色名稱" : "模型判斷的顏色名稱（等待訓練）", padX, top + mh + gap - 9);
+          grid.forEach((rgb, i) => {
+            const x = padX + (i % COLS) * cw, y = top + Math.floor(i / COLS) * ch;
+            g.fillStyle = `rgb(${rgb})`; g.fillRect(x, y, cw + 0.5, ch + 0.5);
+            const yy = y + mh + gap;
+            if (pred) {
+              g.fillStyle = COLOR_BY[pred[i]].c; g.fillRect(x, yy, cw + 0.5, ch + 0.5);
+              if (pred[i] !== colorRule(rgb)) { g.fillStyle = "rgba(255,255,255,.9)"; g.beginPath(); g.arc(x + cw / 2, yy + ch / 2, Math.min(cw, ch) * 0.16, 0, Math.PI * 2); g.fill(); }
+            } else { g.fillStyle = "rgba(127,127,127,.15)"; g.fillRect(x, yy, cw + 0.5, ch + 0.5); }
+          });
+        }
+        async function train() {
+          if (training) return;
+          trainBtn.disabled = true;
+          if (nn) { freeNet(nn); nn = null; }
+          pred = null; losses = []; drawMaps(); drawLoss();
+          ctx.$("[data-r=acc]").textContent = "…"; ctx.$("[data-r=ans]").textContent = "訓練中…";
+          const net = ml5.neuralNetwork({ task: "classification", debug: false, learningRate: 0.25, hiddenUnits: 32 });
+          nn = net;
+          for (let i = 0; i < 1200; i++) { const rgb = randRgb(); net.addData(rgb, [colorRule(rgb)]); }
+          net.normalizeData();
+          const total = epochs;
+          training = net.train({ epochs: total, batchSize: 64 }, (epoch, logs) => {
+            if (!ctx.active) return;
+            losses.push(logs.loss); drawLoss();
+            ctx.$("[data-r=ep]").textContent = `${epoch + 1}/${total}`;
+            ctx.$("[data-r=loss]").textContent = logs.loss.toFixed(3);
+          }, () => {}); // with a single callback ml5 treats it as the "finished" callback
+          try { await training; } finally { training = null; }
+          if (!ctx.active || nn !== net) return;
+          const test = Array.from({ length: 300 }, randRgb);
+          const tr = await net.classifyMultiple(test);
+          if (!ctx.active || nn !== net) return;
+          const ok = tr.filter((r, i) => r[0].label === colorRule(test[i])).length;
+          ctx.$("[data-r=acc]").textContent = `${((ok / test.length) * 100).toFixed(1)}%`;
+          const pm = await net.classifyMultiple(grid);
+          if (!ctx.active || nn !== net) return;
+          pred = pm.map((r) => r[0].label);
+          drawMaps();
+          trainBtn.disabled = false;
+        }
+        ctx.interval(async () => {
+          if (!nn || training || !pred) return;
+          const net = nn, rgb = randRgb();
+          const r = await net.classify(rgb);
+          if (!ctx.active || net !== nn) return;
+          const want = COLOR_BY[colorRule(rgb)], got = COLOR_BY[r[0].label];
+          ctx.$("[data-r=sw]").style.background = `rgb(${rgb})`;
+          ctx.$("[data-r=ans]").innerHTML = `模型：<b>${got.t}</b>（${(r[0].confidence * 100).toFixed(0)}%）<br>規則：${want.t}　${got === want ? "✔ 一致" : "✘ 不同"}`;
+        }, 1300);
+        await train();
+      },
+    },
+
+    // 7 ---------------------------------------------------------------------------------
+    {
+      id: "sentiment", title: "情緒分析",
+      api: "ml5.sentiment(\"MovieReviews\") → predict(text)",
+      desc: "以 IMDB 影評訓練的情緒模型，輸出 0（負面）到 1（正面）的分數，只認得英文單字。這裡把句子從第一個字開始逐字加長，每個前綴都預測一次，畫出分數怎麼隨著讀到的字改變；字的底色代表該字讓分數上升（綠）或下降（紅）。",
+      hint: "切換範例句子，或在輸入框打英文句子後按「分析」",
+      async mount(ctx) {
+        await startMl5(ctx, "sentiment", { icon: "💬", title: "情緒分析", desc: "sentiment 模型判斷英文句子是正面還是負面" });
+        ctx.html(`<div class="m5-wrap m5-sent"><div class="m5-words" data-r="words">準備中…</div><div class="m5-box" data-r="main"></div></div>`);
+        let idx = 0, auto = true, seq = 0, curve = [], words = [], shownAt = 0;
+        const seg = ctx.group(SENTENCES.map((_, i) => `例句 ${i + 1}`), 0, (i) => { auto = false; autoBtn.setAttribute("aria-pressed", "false"); idx = i; guard(ctx, analyze(SENTENCES[i])); });
+        const autoBtn = ctx.toggle("自動輪播", true, (v) => (auto = v));
+        const input = h("input", { class: "m5-input", type: "text", placeholder: "輸入英文句子，例如 What a great day", maxlength: "160" });
+        ctx.controls.append(input);
+        const go = () => { const v = input.value.trim(); if (!v) return; auto = false; autoBtn.setAttribute("aria-pressed", "false"); pressGroup(seg, -1); guard(ctx, analyze({ en: v, zh: "" })); };
+        ctx.button("分析", go);
+        ctx.on(input, "keydown", (e) => { if (e.key === "Enter") go(); });
+        const main = ctx.$("[data-r=main]");
+        const view = canvasIn(ctx, main);
+        memTag(ctx, main);
+        const slot = modelSlot(ctx);
+        const model = await slot.use("sentiment");
+        async function analyze(s) {
+          const my = ++seq;
+          if (SENTENCES.includes(s)) pressGroup(seg, SENTENCES.indexOf(s));
+          const ws = s.en.split(/\s+/).filter(Boolean).slice(0, 24);
+          const scores = [];
+          for (let k = 1; k <= ws.length; k++) {
+            const r = await model.predict(ws.slice(0, k).join(" "));
+            if (my !== seq || !ctx.active) return;
+            scores.push(r.confidence);
+          }
+          words = ws; curve = scores; shownAt = performance.now();
+          const box = ctx.$("[data-r=words]");
+          box.innerHTML = "";
+          ws.forEach((wd, i) => {
+            const d = scores[i] - (i ? scores[i - 1] : 0.5);
+            const a = clamp(Math.abs(d) * 2.2, 0, 0.75);
+            box.append(h("span", { class: "off", style: `background:${d >= 0 ? `rgba(123,211,137,${a})` : `rgba(247,37,133,${a})`}`, title: `${d >= 0 ? "+" : ""}${d.toFixed(3)}` }, wd));
+          });
+          if (s.zh) box.append(h("small", { text: s.zh }));
+        }
+        ctx.interval(() => { if (auto) { idx = (idx + 1) % SENTENCES.length; guard(ctx, analyze(SENTENCES[idx])); } }, 5200);
+        await analyze(SENTENCES[0]);
+        ctx.raf((t) => {
+          const { g, w, h: H } = view;
+          g.clearRect(0, 0, w, H);
+          const L = 46, R = 18, T = 20, B = 30, pw = w - L - R, ph = H - T - B;
+          g.font = `500 11px ${MONO}`; g.textAlign = "right"; g.textBaseline = "middle";
+          [0, 0.25, 0.5, 0.75, 1].forEach((v) => {
+            const y = T + (1 - v) * ph;
+            g.strokeStyle = v === 0.5 ? "rgba(255,255,255,.35)" : "rgba(255,255,255,.08)"; g.setLineDash(v === 0.5 ? [5, 5] : []);
+            g.beginPath(); g.moveTo(L, y); g.lineTo(L + pw, y); g.stroke();
+            g.fillStyle = "#9b998f"; g.fillText(v.toFixed(2), L - 6, y);
+          });
+          g.setLineDash([]);
+          g.font = `500 11px ${FONT}`; g.textAlign = "right"; g.fillStyle = "#7bd389"; g.fillText("正面", L - 6, T + ph * 0.125);
+          g.fillStyle = "#f72585"; g.fillText("負面", L - 6, T + ph * 0.875);
+          if (!curve.length) return;
+          const n = curve.length, shown = clamp(((t - shownAt) / 1800) * n, 1, n);
+          const X = (i) => L + (n === 1 ? pw / 2 : (i / (n - 1)) * pw), Y = (v) => T + (1 - v) * ph;
+          const spans = ctx.$$("[data-r=words] span");
+          spans.forEach((sp, i) => sp.classList.toggle("off", i >= Math.ceil(shown)));
+          g.lineWidth = 3; g.lineJoin = "round";
+          for (let i = 1; i < Math.ceil(shown); i++) {
+            const f = Math.min(1, shown - i);
+            const x0 = X(i - 1), y0 = Y(curve[i - 1]), x1 = X(i), y1 = Y(curve[i]);
+            g.strokeStyle = `hsl(${clamp(curve[i], 0, 1) * 130 + 330},80%,62%)`;
+            g.beginPath(); g.moveTo(x0, y0); g.lineTo(x0 + (x1 - x0) * f, y0 + (y1 - y0) * f); g.stroke();
+          }
+          for (let i = 0; i < Math.floor(shown); i++) {
+            g.fillStyle = `hsl(${clamp(curve[i], 0, 1) * 130 + 330},80%,62%)`;
+            g.beginPath(); g.arc(X(i), Y(curve[i]), 4, 0, Math.PI * 2); g.fill();
+            if (n <= 16 || i % 2 === 0) {
+              g.save(); g.translate(X(i), T + ph + 8); g.rotate(-0.5); g.font = `500 10.5px ${FONT}`; g.fillStyle = "#9b998f"; g.textAlign = "right";
+              g.fillText(words[i], 0, 0); g.restore();
+            }
+          }
+          const fin = curve[Math.max(0, Math.floor(shown) - 1)];
+          // Big score sits in the half of the plot opposite to the latest point.
+          const sy = fin >= 0.5 ? T + ph * 0.62 : T + ph * 0.1;
+          g.textAlign = "right"; g.textBaseline = "top";
+          g.font = `800 30px ${MONO}`; g.fillStyle = fin >= 0.5 ? "#7bd389" : "#f72585";
+          g.fillText(fin.toFixed(2), L + pw - 4, sy);
+          g.font = `600 12.5px ${FONT}`; g.fillText(fin >= 0.5 ? "偏正面" : "偏負面", L + pw - 4, sy + 36);
+        });
+      },
+    },
+
+    // 8 ---------------------------------------------------------------------------------
+    {
+      id: "stress", title: "極限測試", kind: "stress",
+      api: "for (n 次) await model.detect / classify / predict(input)",
+      desc: "同一個輸入連續推論 n 次（一次一張，等上一次完成才送下一次），量出每秒可推論幾次。切換模型後再測一次，右側長條圖會累積各模型的結果；「首次推論」包含 WebGL shader 編譯，通常比之後慢很多。",
+      hint: "先在下方選模型（未下載的會先下載），再按「開始測試」",
+      async mount(ctx) {
+        await startMl5(ctx, "hand", { icon: "⏱️", title: "推論速度極限測試", desc: "連續推論 n 次，量出各模型每秒推論次數" });
+        ctx.html(`<div class="m5-stress m5-box"></div>`);
+        const box = ctx.$(".m5-stress");
+        const tag = memTag(ctx, box);
+        tag.style.cssText = "left:auto;right:10px;top:8px;bottom:auto;";
+        const KEYS = ["hand", "body", "face", "mobilenet", "doodle", "sentiment"];
+        const doodle = h("canvas", { width: 280, height: 280 });
+        { const g = doodle.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, 280, 280); g.lineWidth = 16; g.lineCap = "round"; g.lineJoin = "round"; g.strokeStyle = "#111"; DOODLES[1].strokes.forEach((st) => { g.beginPath(); st.forEach(([x, y], i) => (i ? g.lineTo(x * 280, y * 280) : g.moveTo(x * 280, y * 280))); g.stroke(); }); }
+        const INPUT = {
+          hand: () => loadImage(MP + "thumb_up.jpg"), body: () => loadImage(MP + "pose.jpg"), face: () => loadImage(MP + "portrait.jpg"),
+          mobilenet: () => loadImage("_shared/img/photo-7.jpg"), doodle: async () => doodle, sentiment: async () => SENTENCES[0].en,
+        };
+        const INFER = {
+          hand: (m, x) => m.detect(x), body: (m, x) => m.detect(x), face: (m, x) => m.detect(x),
+          mobilenet: (m, x) => m.classify(x, 5), doodle: (m, x) => m.classify(x, 5), sentiment: (m, x) => m.predict(x),
+        };
+        const results = {}, first = {};
+        let key = "hand", ready = null;
+        const slot = modelSlot(ctx);
+        const view = canvasIn(ctx, box, () => draw());
+        function draw() {
+          const { g, w, h: H } = view;
+          g.clearRect(0, 0, w, H);
+          const L = Math.min(150, w * 0.36), R = 74, T = 46, rowH = Math.min(52, (H - T - 20) / KEYS.length);
+          g.font = `600 13px ${FONT}`; g.fillStyle = "#ecebe6"; g.textAlign = "left"; g.textBaseline = "alphabetic";
+          g.fillText("每秒推論次數（一次一筆，連續呼叫）", 14, 26);
+          const best = Math.max(1, ...Object.values(results).map((r) => r.rate));
+          KEYS.forEach((k, i) => {
+            const y = T + i * rowH, bh = Math.max(10, rowH * 0.42);
+            g.font = `600 12px ${MONO}`; g.textAlign = "right"; g.textBaseline = "middle";
+            g.fillStyle = k === key ? "#f7df1e" : "#ecebe6";
+            g.fillText(NAME[k].replace("bodyPose（MoveNet）", "MoveNet"), L - 10, y + bh / 2);
+            g.fillStyle = "rgba(255,255,255,.06)"; g.fillRect(L, y, w - L - R, bh);
+            const r = results[k];
+            g.textAlign = "left"; g.font = `500 10.5px ${FONT}`; g.fillStyle = "#9b998f";
+            g.fillText(first[k] != null ? `首次推論 ${first[k].toFixed(0)} ms${r ? `・n=${r.n}` : ""}` : "未測", L, y + bh + 10);
+            if (!r) return;
+            g.fillStyle = FINGERS[i % 5].color;
+            g.fillRect(L, y, ((w - L - R) * r.rate) / best, bh);
+            g.font = `700 12.5px ${MONO}`; g.fillStyle = "#ecebe6";
+            g.fillText(r.rate.toFixed(1), L + ((w - L - R) * r.rate) / best + 6, y + bh / 2);
+          });
+        }
+        function choose(k) {
+          key = k; draw();
+          ready = (async () => {
+            const [m, x] = await Promise.all([slot.use(k), INPUT[k]()]);
+            if (first[k] == null) { const t0 = performance.now(); await INFER[k](m, x); first[k] = performance.now() - t0; draw(); }
+            return { m, x, k };
+          })();
+          guard(ctx, ready);
+        }
+        const sel = ctx.select("模型", KEYS.map((k) => ({ value: k, label: `${NAME[k]}（${mbText(MB[k])}）` })), "hand", (v) => choose(v));
+        ctx.controls.classList.add("bottom");
+        choose("hand");
+        const bench = ctx.bench({
+          label: "連續推論", unit: "次", sizes: [1, 5, 10, 25, 50, 100, 200, 400], target: 1000, budget: 3000,
+          note: "一次一筆、等上一次完成才送下一次；時間含讀回結果。右側長條取最大完成級距的速率。",
+          async run(n) {
+            const { m, x, k } = await ready;
+            const n0 = ml5.tf.memory().numTensors;
+            const t0 = performance.now();
+            for (let i = 0; i < n; i++) await INFER[k](m, x);
+            const dt = performance.now() - t0;
+            const rate = n / (dt / 1000);
+            results[k] = { rate, n };
+            draw();
+            const dn = ml5.tf.memory().numTensors - n0;
+            return `${rate.toFixed(1)} 次/秒${dn ? `・張量 +${dn}` : ""}`;
+          },
+        });
+        const runBtn = bench.panel.querySelector("[data-sc-run]");
+        ctx.interval(() => (sel.disabled = runBtn.disabled), 250);
+      },
+    },
+  ],
+});
 </script>
 </body>
 </html>

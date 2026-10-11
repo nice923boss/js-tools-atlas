@@ -3,145 +3,546 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>stats.js 示範：效能壓力測試台</title>
+<title>stats.js 示範：六個場景看懂效能面板與量測方式</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"MB 面板讀取 performance.memory，只有 Chromium 系瀏覽器提供，且預設量化快取、數值很少變動","scenes":["效能壓力台","三種內建面板","自訂面板","多個實例","與 ctx.fps 對照","極限測試"]}</script>
 <style>
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
-  #meters { position: fixed; left: 12px; top: 12px; z-index: 40; display: flex; gap: 10px; flex-wrap: wrap; max-width: calc(100% - 24px); padding: 10px; }
-  .meter { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }
-  .meter > div { position: static !important; opacity: 1 !important; border-radius: 6px; overflow: hidden; box-shadow: 0 6px 18px rgba(0,0,0,.45); }
-  .meter canvas { width: 120px !important; height: 72px !important; image-rendering: pixelated; }
-  .meter span { font-size: 11px; color: var(--fg); padding-left: 2px; }
-  #load { position: fixed; right: 12px; bottom: 12px; z-index: 40; width: 290px; display: grid; gap: 8px; }
-  #load input { min-width: 0; width: 100%; }
-  #load label { display: grid; grid-template-columns: 74px 1fr 52px; align-items: center; gap: 6px; font-size: 12px; }
-  #load output { font: 12px var(--mono); color: var(--accent); text-align: right; }
-  #load .btns { display: flex; gap: 6px; }
-  @media (max-width: 560px) {
-    .meter canvas { width: 80px !important; height: 48px !important; }
-    #load { width: auto; left: 12px; bottom: 50px; }
-  }
+  .full { position: absolute; inset: 0; }
+  .full > canvas, .fill > canvas, .stress-view > canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  .meters { position: absolute; z-index: 105; left: 10px; top: calc(var(--sc-ctl-h, 0px) + 10px); max-width: calc(100% - 20px);
+    display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: flex-start; pointer-events: none; }
+  .meters .stats { pointer-events: auto; cursor: pointer; }
+  .meter { --pw: 120px; margin: 0; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .meter canvas { width: var(--pw) !important; height: calc(var(--pw) * 0.6) !important; image-rendering: pixelated;
+    border-radius: 6px; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45); }
+  .meter .pair { display: flex; gap: 4px; }
+  .meter figcaption { font: 500 11px/1.4 var(--font); color: var(--fg); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9); overflow-wrap: anywhere; contain: inline-size; }
+  .meter figcaption b { font: 700 11px/1.4 var(--font); color: var(--accent); }
+  .meter.na { justify-content: center; padding: 8px; border: 1px dashed var(--line); border-radius: 6px; font-size: 11px; color: var(--muted); }
+  .board { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px 10px; display: flex; flex-direction: column; gap: 10px; }
+  .board > .meters { position: static; max-width: none; }
+  .fill { position: relative; flex: 1; min-height: 60px; border-radius: 10px; overflow: hidden; background: var(--bg-2); border: 1px solid var(--line); }
+  .fill .tag { position: absolute; left: 10px; top: 7px; z-index: 1; font: 500 11px/1.4 var(--font); color: var(--muted); pointer-events: none; }
+  .trio { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; max-width: 660px; }
+  .trio .meter canvas { width: 100% !important; height: auto !important; }
+  .line { font: 500 12px/1.5 var(--font); color: var(--muted); min-height: 18px; }
+  .line b { font: 700 12px/1.5 var(--mono); color: var(--accent); }
+  .stress-view { position: absolute; inset: 8px; border-radius: 10px; overflow: hidden; background: #07080b; }
+  .stress-view .meters { left: auto; right: 10px; top: 10px; padding: 6px; border-radius: 8px; background: rgba(7, 8, 11, 0.82); }
+  .stress-view .meter { --pw: 72px; }
+  @media (min-width: 761px) { .stress-view { inset: 8px 8px 8px 350px; } .stress-view .meter { --pw: 96px; } }
+  @media (max-width: 560px) { .meter { --pw: 72px; } }
 </style>
-</head>
-<body>
-<canvas id="c"></canvas>
-<div id="meters" class="panel"></div>
-<div id="load" class="panel">
-  <label>物件數量 <input id="count" type="range" min="0" max="6000" step="100" value="600"><output id="countOut">600</output></label>
-  <label>CPU 負荷 <input id="cpu" type="range" min="0" max="40" step="1" value="0"><output id="cpuOut">0 ms</output></label>
-  <div class="btns"><button class="btn primary" id="spike">記憶體尖峰</button><button class="btn" id="calm">恢復平穩</button></div>
-</div>
-<div class="hint">拉高負載看曲線變化・點面板可切換顯示項目</div>
-
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js"
 } }
 </script>
+</head>
+<body>
+<script src="_shared/showcase.js"></script>
 <script type="module">
+// stats.js showcase: built-in FPS / MS / MB panels, custom panels, several instances, and a Canvas 2D load ramp.
+// Only scene 1 uses WebGL; its renderer is disposed and the context released on unmount.
 import * as THREE from "three";
 import Stats from "https://cdn.jsdelivr.net/npm/stats.js@0.17.0/src/Stats.js";
 
-// One Stats instance per built-in panel (0 FPS, 1 MS, 2 MB) so all are visible at once,
-// plus a custom Stats.Panel that plots the live object count.
-const meters = document.getElementById("meters");
-const statsList = [];
-const LABELS = ["每秒影格 FPS", "每影格耗時 MS", "JS 記憶體 MB", "自訂：物件數"];
-for (let i = 0; i < 4; i++) {
+const { h, fmt } = Showcase;
+const HEX = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#9d8cff"];
+const HAS_MEM = !!(window.performance && performance.memory);
+const heapMB = () => (HAS_MEM ? performance.memory.usedJSHeapSize / 1048576 : null);
+
+// Spin the main thread for `ms` milliseconds to simulate heavy per-frame JavaScript.
+function busy(ms) {
+  if (ms <= 0) return;
+  const until = performance.now() + ms;
+  while (performance.now() < until);
+}
+
+// stats.js pins its container with position:fixed in the page corner; drop that inline style so it can sit in a layout.
+function makeStats() {
   const s = new Stats();
-  if (i === 3) {
-    s.objPanel = s.addPanel(new Stats.Panel("物件", "#f7df1e", "#1a1a14"));
-    s.showPanel(3);
-  } else {
-    s.showPanel(i);
-  }
-  const wrap = document.createElement("div");
-  wrap.className = "meter";
-  const label = document.createElement("span");
-  label.textContent = LABELS[i];
-  wrap.append(s.dom, label);
-  meters.append(wrap);
-  statsList.push(s);
-}
-const objStats = statsList[3];
-
-// ---- Stress scene: many individual meshes = many draw calls ----
-const canvas = document.getElementById("c");
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(1);
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0e1013);
-scene.fog = new THREE.Fog(0x0e1013, 18, 42);
-const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
-camera.position.set(0, 0, 26);
-scene.add(new THREE.HemisphereLight(0xcfe8ff, 0x221a10, 1.2));
-const sun = new THREE.DirectionalLight(0xffffff, 2);
-sun.position.set(5, 8, 10);
-scene.add(sun);
-
-const COLORS = [0xf7df1e, 0x4cc9f0, 0xf72585, 0x7bd389, 0xff8c42, 0x9d8cff];
-const geos = [new THREE.BoxGeometry(0.7, 0.7, 0.7), new THREE.IcosahedronGeometry(0.45, 0), new THREE.TorusGeometry(0.35, 0.14, 8, 20)];
-const mats = COLORS.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.4, metalness: 0.1 }));
-const group = new THREE.Group();
-scene.add(group);
-
-function setCount(n) {
-  while (group.children.length > n) group.remove(group.children[group.children.length - 1]);
-  while (group.children.length < n) {
-    const m = new THREE.Mesh(geos[group.children.length % 3], mats[(Math.random() * mats.length) | 0]);
-    const r = 4 + Math.random() * 12, a = Math.random() * Math.PI * 2, y = (Math.random() - 0.5) * 16;
-    m.position.set(Math.cos(a) * r, y, Math.sin(a) * r);
-    m.rotation.set(Math.random() * 6, Math.random() * 6, 0);
-    m.userData.spin = 0.5 + Math.random() * 2;
-    group.add(m);
-  }
+  s.dom.removeAttribute("style");
+  s.dom.className = "stats";
+  return s;
 }
 
-// ---- Controls ----
-const countEl = document.getElementById("count");
-const cpuEl = document.getElementById("cpu");
-countEl.addEventListener("input", () => { setCount(+countEl.value); document.getElementById("countOut").textContent = countEl.value; });
-cpuEl.addEventListener("input", () => { document.getElementById("cpuOut").textContent = cpuEl.value + " ms"; });
-let garbage = [];
-document.getElementById("spike").addEventListener("click", () => {
-  // Allocate ~80 MB of typed arrays so the MB panel visibly jumps
-  for (let i = 0; i < 20; i++) garbage.push(new Float64Array(500000).fill(i));
-});
-document.getElementById("calm").addEventListener("click", () => {
-  garbage = [];
-  countEl.value = 300; cpuEl.value = 0;
-  countEl.dispatchEvent(new Event("input"));
-  cpuEl.dispatchEvent(new Event("input"));
-});
-setCount(600);
-
-function resize() {
-  renderer.setSize(innerWidth, innerHeight, false);
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
+// A Stats container shows one panel at a time. Moving the panel canvases out keeps every panel visible:
+// each Panel.update() keeps drawing into its own canvas wherever that canvas lives.
+function panelsOf(stats) {
+  return [...stats.dom.children].map((cv) => { cv.style.display = "block"; return cv; });
 }
-addEventListener("resize", resize);
-resize();
+const pairOf = (stats) => h("div", { class: "pair" }, panelsOf(stats).slice(0, 2));
 
-const clock = new THREE.Clock();
-let lastObj = 0;
-function loop() {
-  for (const s of statsList) s.begin();
-  const dt = clock.getDelta();
-  group.rotation.y += dt * 0.15;
-  for (const m of group.children) { m.rotation.x += dt * m.userData.spin; m.rotation.y += dt * 0.7; }
-  // Busy-wait to simulate heavy per-frame JavaScript work
-  const busy = +cpuEl.value;
-  if (busy) { const until = performance.now() + busy; while (performance.now() < until); }
-  renderer.render(scene, camera);
-  for (const s of statsList) s.end();
-  const now = performance.now();
-  if (now - lastObj > 250) { objStats.objPanel.update(group.children.length, 6000); lastObj = now; }
-  requestAnimationFrame(loop);
+function meter(node, caption) {
+  const cap = h("figcaption");
+  cap.innerHTML = caption;
+  return h("figure", { class: "meter" }, node, cap);
 }
-requestAnimationFrame(loop);
+
+// Canvas 2D sized to its host (CSS pixels, DPR capped at 2). Returns a live { cv, g, w, h } view.
+function canvas2d(ctx, host) {
+  const cv = h("canvas");
+  host.append(cv);
+  const g = cv.getContext("2d");
+  const view = { cv, g, w: 1, h: 1 };
+  const fit = () => {
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    view.w = Math.max(1, host.clientWidth);
+    view.h = Math.max(1, host.clientHeight);
+    cv.width = Math.round(view.w * dpr);
+    cv.height = Math.round(view.h * dpr);
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  };
+  const ro = new ResizeObserver(fit);
+  ro.observe(host);
+  ctx.onCleanup(() => ro.disconnect());
+  fit();
+  return view;
+}
+
+Showcase.run({ scenes: [
+  {
+    id: "rig", title: "效能壓力台",
+    api: "new Stats()・showPanel(i)・addPanel(new Stats.Panel(…))・begin()／end()",
+    desc: "原示範移植：四個 Stats 實例同時量測同一個 three.js 迴圈，分別顯示 FPS、MS、MB 與自訂的「物件」面板。物件越多 draw call 越多，CPU 負荷則在 begin() 與 end() 之間空轉。",
+    hint: "拉高負載看曲線變化，點任一面板可在 FPS／MS／MB 之間切換",
+    mount(ctx) {
+      ctx.html(`<div class="full"></div><div class="meters"></div>`);
+      const host = ctx.$(".full"), box = ctx.$(".meters");
+      const all = [];
+      const add = (show, cap) => {
+        const s = makeStats();
+        s.showPanel(show);
+        all.push(s);
+        box.append(meter(s.dom, cap));
+        return s;
+      };
+      add(0, "<b>FPS</b> 每秒影格");
+      add(1, "<b>MS</b> 每格耗時");
+      if (HAS_MEM) add(2, "<b>MB</b> JS 堆積");
+      const objStats = add(0, "<b>自訂</b> 物件數（個）");
+      const objPanel = objStats.addPanel(new Stats.Panel("個", "#f7df1e", "#1a1a14"));
+      objStats.showPanel(objStats.dom.children.length - 1);
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+      host.append(renderer.domElement);
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x0e1013);
+      scene.fog = new THREE.Fog(0x0e1013, 18, 42);
+      const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
+      camera.position.set(0, 0, 26);
+      scene.add(new THREE.HemisphereLight(0xcfe8ff, 0x221a10, 1.2));
+      const sun = new THREE.DirectionalLight(0xffffff, 2);
+      sun.position.set(5, 8, 10);
+      scene.add(sun);
+      const geos = [new THREE.BoxGeometry(0.7, 0.7, 0.7), new THREE.IcosahedronGeometry(0.45, 0), new THREE.TorusGeometry(0.35, 0.14, 8, 20)];
+      const mats = HEX.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.4, metalness: 0.1 }));
+      const group = new THREE.Group();
+      scene.add(group);
+      ctx.onCleanup(() => {
+        geos.forEach((g) => g.dispose());
+        mats.forEach((m) => m.dispose());
+        renderer.dispose();
+        renderer.forceContextLoss();
+      });
+
+      const setCount = (n) => {
+        while (group.children.length > n) group.remove(group.children[group.children.length - 1]);
+        while (group.children.length < n) {
+          const m = new THREE.Mesh(geos[group.children.length % 3], mats[(Math.random() * mats.length) | 0]);
+          const r = 4 + Math.random() * 12, a = Math.random() * Math.PI * 2, y = (Math.random() - 0.5) * 16;
+          m.position.set(Math.cos(a) * r, y, Math.sin(a) * r);
+          m.rotation.set(Math.random() * 6, Math.random() * 6, 0);
+          m.userData.spin = 0.5 + Math.random() * 2;
+          group.add(m);
+        }
+      };
+      const fit = () => {
+        const w = Math.max(1, host.clientWidth), hh = Math.max(1, host.clientHeight);
+        renderer.setSize(w, hh, false);
+        camera.aspect = w / hh;
+        camera.updateProjectionMatrix();
+      };
+      fit();
+      ctx.onResize(fit);
+
+      let cpu = 0;
+      const countIn = ctx.slider("物件", { min: 0, max: 6000, step: 100, value: 600, format: (v) => fmt(v) }, setCount);
+      const cpuIn = ctx.slider("CPU 負荷", { min: 0, max: 40, step: 1, value: 0, format: (v) => `${v} ms` }, (v) => { cpu = v; });
+      ctx.button("恢復平穩", () => {
+        countIn.value = 300;
+        cpuIn.value = 0;
+        countIn.dispatchEvent(new Event("input"));
+        cpuIn.dispatchEvent(new Event("input"));
+      });
+      setCount(600);
+
+      let lastObj = 0;
+      ctx.raf((t, dt) => {
+        for (const s of all) s.begin();
+        const k = dt / 1000;
+        group.rotation.y += k * 0.15;
+        for (const m of group.children) { m.rotation.x += k * m.userData.spin; m.rotation.y += k * 0.7; }
+        busy(cpu);
+        renderer.render(scene, camera);
+        for (const s of all) s.end();
+        if (t - lastObj > 250) { objPanel.update(group.children.length, 6000); lastObj = t; }
+      });
+    },
+  },
+  {
+    id: "panels", title: "三種內建面板",
+    api: "stats.begin()・stats.end()・performance.memory",
+    desc: "同一個 Stats 實例的三個內建面板並排：FPS 每秒結算一次平均，MS 逐格記錄 begin() 到 end() 的耗時，MB 讀 performance.memory。20 ms 空轉放在量測區間內或區間外，FPS 都會掉，但只有區間內的工作會反映在 MS。",
+    hint: "切換負載位置，看哪個面板有反應；下方圓點間距不均代表掉格",
+    mount(ctx) {
+      ctx.html(`<div class="board"><div class="trio"></div><div class="line"></div><div class="fill"><span class="tag">圓點是最近 40 格的位置，間距不均就是掉格</span></div></div>`);
+      const stats = makeStats();
+      const caps = ["<b>FPS</b> 每秒結算一次，取最近 1 秒平均", "<b>MS</b> begin() 到 end() 的耗時，每格更新", "<b>MB</b> performance.memory 的 JS 堆積"];
+      const trio = ctx.$(".trio");
+      panelsOf(stats).forEach((cv, i) => trio.append(meter(cv, caps[i])));
+      if (!HAS_MEM) trio.append(h("figure", { class: "meter na", text: "此瀏覽器沒有 performance.memory，stats.js 不會建立 MB 面板" }));
+      const view = canvas2d(ctx, ctx.$(".fill"));
+      const line = ctx.$(".line");
+
+      let mode = 0;
+      const hold = [];
+      const heap0 = heapMB();
+      const paintLine = () => {
+        const kept = hold.length * 10;
+        if (!HAS_MEM) { line.innerHTML = `本頁另外保留 <b>${kept} MB</b> 陣列；此瀏覽器不提供 performance.memory`; return; }
+        const mb = heapMB();
+        let s = `performance.memory 回報 <b>${mb.toFixed(1)} MB</b>・本頁另外保留 <b>${kept} MB</b> 陣列`;
+        if (kept && Math.abs(mb - heap0) < 1) s += "；數值沒跟著變，因為 Chrome 預設把這個值量化並長時間快取（以 --enable-precise-memory-info 啟動才會即時）";
+        line.innerHTML = s;
+      };
+      ctx.group(["無負載", "量測內 20 ms", "量測外 20 ms"], 0, (i) => { mode = i; });
+      // Plain JS arrays of doubles live on the V8 heap (typed-array buffers would not count toward usedJSHeapSize).
+      ctx.button("保留 80 MB", () => { for (let i = 0; i < 8; i++) hold.push(new Array(1310720).fill(i + 0.5)); paintLine(); });
+      ctx.button("釋放", () => { hold.length = 0; paintLine(); });
+      ctx.onCleanup(() => { hold.length = 0; });
+      ctx.interval(paintLine, 1000);
+      paintLine();
+
+      const trail = [];
+      const draw = (t) => {
+        const { g, w, h: H } = view;
+        const span = w + 40, x = ((t * w) / 2500) % span - 20, y = H / 2 + 8;
+        trail.push(x);
+        if (trail.length > 40) trail.shift();
+        g.clearRect(0, 0, w, H);
+        g.strokeStyle = "rgba(255, 255, 255, 0.10)";
+        g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
+        g.fillStyle = "#4cc9f0";
+        trail.forEach((tx, i) => {
+          g.globalAlpha = 0.15 + (0.75 * (i + 1)) / trail.length;
+          g.beginPath(); g.arc(tx, y, 3, 0, Math.PI * 2); g.fill();
+        });
+        g.globalAlpha = 1;
+        g.fillStyle = "#f7df1e";
+        g.beginPath(); g.arc(x, y, 10, 0, Math.PI * 2); g.fill();
+      };
+      ctx.raf((t) => {
+        if (mode === 2) busy(20);
+        stats.begin();
+        if (mode === 1) busy(20);
+        draw(t);
+        stats.end();
+      });
+    },
+  },
+  {
+    id: "custom", title: "自訂面板",
+    api: "new Stats.Panel(name, fg, bg)・panel.update(value, maxValue)",
+    desc: "Stats.Panel 可以單獨使用：四個自訂面板追蹤粒子數、平均速度、模擬耗時（微秒）與繪圖占影格預算的百分比。每呼叫一次 update() 曲線往左捲 1 像素，所以更新間隔就是時間軸刻度。",
+    hint: "拖曳畫面移動噴泉，調發射量與面板更新間隔",
+    mount(ctx) {
+      ctx.html(`<div class="full"></div><div class="meters"></div>`);
+      const view = canvas2d(ctx, ctx.$(".full"));
+      const CAP = 6000;
+      const P = [
+        // Panel text is "value name (min-max)" in an 80 px canvas, so names stay short to avoid clipping.
+        { panel: new Stats.Panel("顆", "#f7df1e", "#1d1a05"), cap: "<b>粒子</b> 數量（顆）" },
+        { panel: new Stats.Panel("px/s", "#4cc9f0", "#04161d"), cap: "<b>速度</b> 平均 px/s" },
+        { panel: new Stats.Panel("µs", "#7bd389", "#08170c"), cap: "<b>模擬</b> 物理耗時（µs）" },
+        { panel: new Stats.Panel("%", "#f72585", "#1d0612"), cap: "<b>繪圖</b> 占 16.7 ms 預算 %" },
+      ];
+      const box = ctx.$(".meters");
+      P.forEach((p) => box.append(meter(p.panel.dom, p.cap)));
+
+      const px = new Float32Array(CAP), py = new Float32Array(CAP), vx = new Float32Array(CAP), vy = new Float32Array(CAP), life = new Float32Array(CAP);
+      let n = 0, rate = 24, grav = 1, every = 100, lastPanel = 0, ex = 0.5, ey = 0.9;
+      const spawn = (k) => {
+        for (let i = 0; i < k && n < CAP; i++, n++) {
+          const a = -Math.PI / 2 + (Math.random() - 0.5) * 0.7, s = view.h * (1 + Math.random() * 0.45);
+          px[n] = ex * view.w; py[n] = ey * view.h;
+          vx[n] = Math.cos(a) * s; vy[n] = Math.sin(a) * s;
+          life[n] = 2 + Math.random() * 1.5;
+        }
+      };
+      const step = (dt) => {
+        const W = view.w, H = view.h, g = grav * H * 1.4;
+        let sum = 0;
+        for (let i = 0; i < n;) {
+          life[i] -= dt;
+          if (life[i] <= 0) {
+            n--;
+            px[i] = px[n]; py[i] = py[n]; vx[i] = vx[n]; vy[i] = vy[n]; life[i] = life[n];
+            continue;
+          }
+          vy[i] += g * dt; px[i] += vx[i] * dt; py[i] += vy[i] * dt;
+          if (py[i] > H - 3) { py[i] = H - 3; vy[i] *= -0.55; vx[i] *= 0.85; }
+          if (py[i] < 0) { py[i] = 0; vy[i] = -vy[i] * 0.5; }
+          if (px[i] < 0 || px[i] > W) { vx[i] = -vx[i]; px[i] = Math.min(W, Math.max(0, px[i])); }
+          sum += Math.hypot(vx[i], vy[i]);
+          i++;
+        }
+        return n ? sum / n : 0;
+      };
+      const COLS = ["#9d8cff", "#4cc9f0", "#7bd389", "#f7df1e"];
+      const draw = () => {
+        const { g, w, h: H } = view;
+        g.fillStyle = "rgba(14, 16, 19, 0.35)";
+        g.fillRect(0, 0, w, H);
+        // Bucket particles by speed so each color is a single path and a single fill().
+        for (let c = 0; c < 4; c++) {
+          g.beginPath();
+          for (let i = 0; i < n; i++) {
+            const sp = (Math.abs(vx[i]) + Math.abs(vy[i])) / H;
+            const b = sp < 0.4 ? 0 : sp < 0.8 ? 1 : sp < 1.2 ? 2 : 3;
+            if (b === c) g.rect(px[i] - 1.5, py[i] - 1.5, 3, 3);
+          }
+          g.fillStyle = COLS[c];
+          g.fill();
+        }
+        g.strokeStyle = "rgba(247, 223, 30, 0.8)";
+        g.beginPath(); g.arc(ex * w, ey * H, 9, 0, Math.PI * 2); g.stroke();
+      };
+
+      ctx.slider("發射", { min: 0, max: 80, step: 1, value: rate, format: (v) => `${v}／格` }, (v) => { rate = v; });
+      ctx.slider("重力", { min: 0, max: 2, step: 0.1, value: grav, format: (v) => `${v.toFixed(1)}×` }, (v) => { grav = v; });
+      ctx.group(["每格", "100 ms", "500 ms"], 1, (i) => { every = [0, 100, 500][i]; });
+      const aim = (e) => {
+        const r = view.cv.getBoundingClientRect();
+        ex = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+        ey = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+      };
+      ctx.on(view.cv, "pointerdown", (e) => { view.cv.setPointerCapture(e.pointerId); aim(e); });
+      ctx.on(view.cv, "pointermove", (e) => { if (e.buttons) aim(e); });
+
+      ctx.raf((t, dt) => {
+        spawn(Math.round((rate * dt) / 16.7));
+        const t0 = performance.now();
+        const avg = step(Math.min(dt, 50) / 1000);
+        const t1 = performance.now();
+        draw();
+        const t2 = performance.now();
+        if (every === 0 || t - lastPanel >= every) {
+          lastPanel = t;
+          P[0].panel.update(n, CAP);
+          P[1].panel.update(avg, view.h * 1.6);
+          P[2].panel.update((t1 - t0) * 1000, 2000);
+          P[3].panel.update(((t2 - t1) / 16.7) * 100, 100);
+        }
+      });
+    },
+  },
+  {
+    id: "multi", title: "多個實例",
+    api: "renderStats.begin()／end()・simStats.begin()／end()",
+    desc: "兩個 Stats 實例各量一個迴圈：繪圖跑在 requestAnimationFrame，模擬跑在 setInterval。模擬頻率低時球每隔幾格才移動一次（線段是單次 tick 的位移），兩邊加負載會互相搶主執行緒。",
+    hint: "調模擬頻率與兩邊負載，對照兩組面板",
+    mount(ctx) {
+      ctx.html(`<div class="full"></div><div class="meters"></div>`);
+      const view = canvas2d(ctx, ctx.$(".full"));
+      const rStats = makeStats(), sStats = makeStats();
+      ctx.$(".meters").append(
+        meter(pairOf(rStats), "<b>繪圖</b> requestAnimationFrame 迴圈"),
+        meter(pairOf(sStats), "<b>模擬</b> setInterval 迴圈（FPS＝每秒 tick 數）"),
+      );
+
+      const N = 36;
+      const x = new Float32Array(N), y = new Float32Array(N), ox = new Float32Array(N), oy = new Float32Array(N), vx = new Float32Array(N), vy = new Float32Array(N);
+      for (let i = 0; i < N; i++) {
+        x[i] = ox[i] = 0.1 + Math.random() * 0.8;
+        y[i] = oy[i] = 0.35 + Math.random() * 0.55;
+        const a = Math.random() * Math.PI * 2, s = 0.18 + Math.random() * 0.25;
+        vx[i] = Math.cos(a) * s; vy[i] = Math.sin(a) * s;
+      }
+      let hz = 20, simLoad = 0, drawLoad = 0, lastTick = performance.now(), timer = 0;
+      const tick = () => {
+        sStats.begin();
+        const now = performance.now(), dt = Math.min(0.25, (now - lastTick) / 1000);
+        lastTick = now;
+        for (let i = 0; i < N; i++) {
+          ox[i] = x[i]; oy[i] = y[i];
+          x[i] += vx[i] * dt; y[i] += vy[i] * dt;
+          if (x[i] < 0.03 || x[i] > 0.97) { vx[i] = -vx[i]; x[i] = Math.min(0.97, Math.max(0.03, x[i])); }
+          if (y[i] < 0.3 || y[i] > 0.96) { vy[i] = -vy[i]; y[i] = Math.min(0.96, Math.max(0.3, y[i])); }
+        }
+        busy(simLoad);
+        sStats.end();
+      };
+      const restart = () => { clearInterval(timer); timer = ctx.interval(tick, 1000 / hz); };
+      restart();
+
+      const paint = () => {
+        const { g, w, h: H } = view;
+        g.fillStyle = "#0e1013";
+        g.fillRect(0, 0, w, H);
+        g.lineWidth = 3;
+        for (let i = 0; i < N; i++) {
+          const col = HEX[i % HEX.length];
+          g.strokeStyle = col;
+          g.globalAlpha = 0.45;
+          g.beginPath(); g.moveTo(ox[i] * w, oy[i] * H); g.lineTo(x[i] * w, y[i] * H); g.stroke();
+          g.globalAlpha = 1;
+          g.fillStyle = col;
+          g.beginPath(); g.arc(x[i] * w, y[i] * H, 7, 0, Math.PI * 2); g.fill();
+        }
+      };
+      ctx.raf(() => {
+        rStats.begin();
+        paint();
+        busy(drawLoad);
+        rStats.end();
+      });
+
+      ctx.slider("模擬頻率", { min: 5, max: 120, step: 5, value: hz, format: (v) => `${v} Hz` }, (v) => { hz = v; restart(); });
+      ctx.slider("模擬負載", { min: 0, max: 20, step: 1, value: 0, format: (v) => `${v} ms` }, (v) => { simLoad = v; });
+      ctx.slider("繪圖負載", { min: 0, max: 30, step: 1, value: 0, format: (v) => `${v} ms` }, (v) => { drawLoad = v; });
+    },
+  },
+  {
+    id: "compare", title: "與 ctx.fps 對照",
+    api: "stats.begin()／end()・stats.update()・ctx.fps()",
+    desc: "同一個迴圈接三種量測：begin()／end() 只算區間內的工作，update() 量相鄰兩格的間隔，右下角是展示框架的 ctx.fps（最近 500 ms 平均）。stats.js 的 FPS 每秒才結算一次，短暫卡頓會被攤平；下方長條逐格畫出每一格的間隔。",
+    hint: "切到「每秒卡 150 ms」，比較哪個量測抓得到尖峰",
+    mount(ctx) {
+      ctx.html(`<div class="board"><div class="meters"></div><div class="fill"><span class="tag">每一格的間隔（ms），虛線為 16.7 與 33.3 ms</span></div></div>`);
+      const A = makeStats(), B = makeStats();
+      ctx.$(".meters").append(
+        meter(pairOf(A), "<b>begin()／end()</b> 只量區間內的工作"),
+        meter(pairOf(B), "<b>update()</b> 量相鄰兩格的間隔"),
+      );
+      const view = canvas2d(ctx, ctx.$(".fill"));
+      ctx.fps({ position: "right bottom" });
+
+      const gaps = [];
+      let mode = 0, prev = 0, lastHitch = 0;
+      ctx.group(["平穩", "每秒卡 150 ms", "每格 +25 ms"], 0, (i) => { mode = i; });
+      // Vertical scale follows the largest recent gap so both 16 ms frames and 150 ms hitches stay readable.
+      let scale = 46;
+      const paint = () => {
+        const { g, w, h: H } = view;
+        g.clearRect(0, 0, w, H);
+        const peak = Math.max(40, ...gaps) * 1.15;
+        scale += (peak - scale) * (peak > scale ? 0.5 : 0.03);
+        const top = 28, base = H - 8, y = (ms) => base - (Math.min(ms, scale) / scale) * (base - top);
+        g.font = "11px ui-monospace, Consolas, monospace";
+        g.setLineDash([4, 4]);
+        g.strokeStyle = "rgba(255, 255, 255, 0.25)";
+        g.fillStyle = "rgba(255, 255, 255, 0.5)";
+        for (const ms of [16.7, 33.3]) {
+          g.beginPath(); g.moveTo(0, y(ms)); g.lineTo(w, y(ms)); g.stroke();
+          g.fillText(`${ms} ms`, 8, y(ms) - 4);
+        }
+        g.setLineDash([]);
+        const bw = w / 240;
+        gaps.forEach((ms, i) => {
+          g.fillStyle = ms < 20 ? "#7bd389" : ms < 40 ? "#ff8c42" : "#f72585";
+          const yy = y(ms);
+          g.fillRect(w - (gaps.length - i) * bw, yy, Math.max(1, bw - 0.5), base - yy);
+        });
+      };
+      ctx.raf((t) => {
+        A.begin();
+        if (mode === 1 && t - lastHitch > 1000) { lastHitch = t; busy(150); }
+        if (mode === 2) busy(25);
+        paint();
+        A.end();
+        B.update();
+        const now = performance.now();
+        if (prev) { gaps.push(now - prev); if (gaps.length > 240) gaps.shift(); }
+        prev = now;
+      });
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "stats.begin()／end() + CanvasRenderingContext2D.arc() × n",
+    desc: "每一格用 Canvas 2D 移動並畫出 N 個圓，右上角的 stats.js 面板同步量測 FPS、MS 與自訂的圓數面板。可切換逐一 fill() 或依顏色合併成 6 條路徑。",
+    hint: "按「自動加壓」開始，可切換逐一填色與合併路徑",
+    mount(ctx) {
+      ctx.html(`<div class="stress-view"><div class="meters"></div></div>`);
+      const sv = ctx.$(".stress-view");
+      ctx.controls.classList.add("bottom");
+      const view = canvas2d(ctx, sv);
+      const stats = makeStats();
+      // Counts reach 200,000, which would clip in the 80 px panel text, so the panel shows thousands.
+      const countPanel = stats.addPanel(new Stats.Panel("千圓", "#f7df1e", "#1a1a14"));
+      const cvs = panelsOf(stats);
+      ctx.$(".meters").append(meter(h("div", { class: "pair" }, cvs[0], cvs[1], cvs[cvs.length - 1]), "<b>stats.js</b> FPS・MS・圓數（千）"));
+
+      let N = 0, cap = 0, mode = 0, drawMs = 0, lastP = 0;
+      let X = new Float32Array(0), Y = X, VX = X, VY = X;
+      const ensure = (n) => {
+        if (n <= cap) return;
+        const grow = (a) => { const b = new Float32Array(n); b.set(a); return b; };
+        X = grow(X); Y = grow(Y); VX = grow(VX); VY = grow(VY);
+        for (let i = cap; i < n; i++) {
+          X[i] = Math.random(); Y[i] = Math.random();
+          const a = Math.random() * Math.PI * 2, s = 0.03 + Math.random() * 0.12;
+          VX[i] = Math.cos(a) * s; VY[i] = Math.sin(a) * s;
+        }
+        cap = n;
+      };
+      const R = 2.2, TAU = Math.PI * 2;
+      ctx.raf((t, dt) => {
+        stats.begin();
+        const t0 = performance.now(), k = dt / 1000;
+        for (let i = 0; i < N; i++) {
+          X[i] += VX[i] * k; Y[i] += VY[i] * k;
+          if (X[i] < 0 || X[i] > 1) VX[i] = -VX[i];
+          if (Y[i] < 0 || Y[i] > 1) VY[i] = -VY[i];
+        }
+        const { g, w, h: H } = view;
+        g.fillStyle = "#07080b";
+        g.fillRect(0, 0, w, H);
+        if (mode === 0) {
+          for (let i = 0; i < N; i++) {
+            g.fillStyle = HEX[i % 6];
+            g.beginPath(); g.arc(X[i] * w, Y[i] * H, R, 0, TAU); g.fill();
+          }
+        } else {
+          for (let c = 0; c < 6; c++) {
+            g.beginPath();
+            for (let i = c; i < N; i += 6) { const cx = X[i] * w, cy = Y[i] * H; g.moveTo(cx + R, cy); g.arc(cx, cy, R, 0, TAU); }
+            g.fillStyle = HEX[c];
+            g.fill();
+          }
+        }
+        drawMs = drawMs * 0.9 + (performance.now() - t0) * 0.1;
+        stats.end();
+        if (t - lastP > 250) { lastP = t; countPanel.update(N / 1000, 200); }
+      });
+
+      ctx.group(["逐一 fill()", "合併路徑"], 0, (i) => { mode = i; });
+      ctx.ramp({
+        label: "每格圓數", unit: "個",
+        steps: [1000, 3000, 10000, 30000, 60000, 100000, 200000],
+        minFps: 30,
+        apply(n) { ensure(n); N = n; },
+        metrics: () => ({ 繪圖耗時: `${drawMs.toFixed(1)} ms`, "fill() 次數": mode ? 6 : N }),
+        note: "每一格先更新 N 個圓的位置，再用 Canvas 2D 畫出來。逐一模式每個圓各換一次顏色、各呼叫一次 fill()；合併模式依顏色把圓併成 6 條路徑，呼叫次數固定，瓶頸轉到路徑光柵化。stats.js 本身每格只多兩次 performance.now()，面板每秒重畫一次，幾乎不影響結果。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

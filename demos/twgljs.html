@@ -3,216 +3,897 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TWGL.js 示範：兩千根光柱的漣漪城市</title>
+<title>TWGL.js 示範：六個場景看懂精簡 WebGL2 輔助庫</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["漣漪城市","幾何體圖鑑","全景反射","幀緩衝回饋","共用 Uniform Block","極限測試"]}</script>
 <style>
-  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; }
-  .btn { padding: 7px 10px; font-size: 12px; }
-  .stat { position: fixed; left: 12px; top: 12px; z-index: 50; font: 12px/1.6 var(--mono); color: var(--muted); padding: 8px 10px; }
-  .stat b { color: var(--fg); font-weight: 600; }
-  .stat code { color: var(--accent); }
-  @media (max-width: 520px) { .stat { top: auto; bottom: 48px; } .stat .api { display: none; } }
+  .sc-scene canvas.gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  .info { position: absolute; z-index: 5; left: 10px; top: calc(var(--sc-ctl-h, 0px) + 10px); max-width: min(300px, calc(100% - 20px));
+    padding: 8px 11px; font: 12px/1.6 var(--mono); color: var(--muted); pointer-events: none; }
+  .info b { color: var(--fg); font-weight: 600; }
+  .info code { color: var(--accent); }
+  .tags { position: absolute; inset: 0; z-index: 4; pointer-events: none; }
+  .tags span { position: absolute; left: 0; top: 0; padding: 3px 8px; border-radius: 999px; font: 11px/1.2 var(--mono);
+    color: var(--muted); background: rgba(14, 16, 19, 0.72); white-space: nowrap; transition: color 0.2s; }
+  .tags span.on { color: var(--accent); }
+  .stress-box { position: absolute; inset: 8px 8px 8px 350px; border-radius: 10px; overflow: hidden; }
+  @media (max-width: 760px) { .stress-box { inset: 0; border-radius: 0; } }
 </style>
 </head>
 <body>
-<canvas id="c"></canvas>
-<div class="controls">
-  <button class="btn primary" id="drop" type="button">投下漣漪</button>
-  <button class="btn" id="theme" type="button">配色：霓虹</button>
-  <button class="btn" id="spin" type="button" aria-pressed="true">環繞鏡頭</button>
-</div>
-<div class="stat panel" id="stat"></div>
-<div class="hint">點地面任一處，從那裡掀起一圈波浪</div>
-
+<script src="_shared/showcase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/twgl.js@7.0.0/dist/7.x/twgl-full.js"></script>
 <script>
-const GRID = 48;
-const COUNT = GRID * GRID;
-const MAX_RIPPLES = 8;
-const m4 = twgl.m4;
+const { m4, v3, primitives } = twgl;
+const hexColor = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+const cssColor = (name) => hexColor(getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "#ffffff");
+const hsl = (h, s, l) => {
+  const f = (n) => { const k = (n + h * 12) % 12; return l - s * Math.min(l, 1 - l) * Math.max(-1, Math.min(k - 3, 9 - k, 1)); };
+  return [f(0), f(8), f(4)];
+};
+const FULLSCREEN = { position: { numComponents: 2, data: [-1, -1, 3, -1, -1, 3] } };
 
-const canvas = document.getElementById("c");
-const gl = canvas.getContext("webgl2", { antialias: true });
-if (!gl) {
-  document.getElementById("stat").textContent = "此瀏覽器不支援 WebGL2";
-  throw new Error("WebGL2 not available");
+// One WebGL2 canvas per scene. twgl.resizeCanvasToDisplaySize keeps the drawing buffer matched to
+// the CSS size; the context is released on unmount so switching scenes never exhausts contexts.
+function glStage(ctx, { host = ctx.el, antialias = true } = {}) {
+  const canvas = document.createElement("canvas");
+  canvas.className = "gl";
+  host.append(canvas);
+  const gl = canvas.getContext("webgl2", { antialias });
+  ctx.onCleanup(() => { gl?.getExtension("WEBGL_lose_context")?.loseContext(); canvas.remove(); });
+  if (!gl) { ctx.status("").error("此瀏覽器不支援 WebGL2，無法執行這個場景"); return null; }
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const view = {
+    canvas, gl, dpr, aspect: 1,
+    fit() {
+      twgl.resizeCanvasToDisplaySize(canvas, dpr);
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      view.aspect = canvas.clientWidth / Math.max(1, canvas.clientHeight);
+      return view.aspect;
+    },
+  };
+  return view;
 }
 
-const vs = `#version 300 es
-in vec4 position;
-in vec3 normal;
-in vec2 offset;
-in float seed;
-uniform mat4 u_viewProjection;
-uniform float u_time;
-uniform vec4 u_ripples[${MAX_RIPPLES}];
-out vec3 v_normal;
-out vec3 v_world;
-out float v_height;
-out float v_seed;
-void main() {
-  // Ambient swell plus expanding ripple rings (x, z, start time, strength)
-  float h = 0.35 + 0.25 * sin(offset.x * 0.32 + u_time * 1.1) * cos(offset.y * 0.27 + u_time * 0.8);
-  for (int i = 0; i < ${MAX_RIPPLES}; i++) {
-    vec4 r = u_ripples[i];
-    float age = u_time - r.z;
-    if (age < 0.0 || age > 7.0) continue;
-    float d = distance(offset, r.xy);
-    float ring = d - age * 8.0;
-    h += r.w * 4.0 * exp(-ring * ring * 0.18) * exp(-age * 0.55);
-  }
-  h = max(h, 0.06) * (0.85 + seed * 0.3);
-  vec3 p = position.xyz;
-  p.y = (p.y + 0.5) * h;
-  p.xz *= 0.78;
-  vec3 world = p + vec3(offset.x, 0.0, offset.y);
-  v_world = world;
-  v_height = h;
-  v_normal = normal;
-  v_seed = seed;
-  gl_Position = u_viewProjection * vec4(world, 1.0);
-}`;
-
-const fs = `#version 300 es
-precision highp float;
-in vec3 v_normal;
-in vec3 v_world;
-in float v_height;
-in float v_seed;
-uniform vec3 u_low;
-uniform vec3 u_high;
-uniform vec3 u_bg;
-uniform vec3 u_eye;
-uniform vec2 u_fog;
-out vec4 outColor;
-void main() {
-  vec3 n = normalize(v_normal);
-  vec3 light = normalize(vec3(0.4, 1.0, 0.3));
-  float diff = 0.35 + 0.65 * max(dot(n, light), 0.0);
-  float t = clamp(v_height / 3.2, 0.0, 1.0);
-  vec3 base = mix(u_low, u_high, smoothstep(0.05, 0.9, t));
-  // Glowing caps on tall pillars
-  float cap = step(0.5, n.y) * smoothstep(0.35, 1.0, t);
-  vec3 col = base * diff + u_high * cap * 0.9 + v_seed * 0.03;
-  float fog = smoothstep(u_fog.x, u_fog.y, distance(v_world, u_eye));
-  outColor = vec4(mix(col, u_bg, fog), 1.0);
-}`;
-
-const programInfo = twgl.createProgramInfo(gl, [vs, fs]);
-
-// Unit cube from twgl.primitives plus per-instance attributes (divisor: 1)
-const cube = twgl.primitives.createCubeVertices(1);
-const offsets = new Float32Array(COUNT * 2);
-const seeds = new Float32Array(COUNT);
-for (let z = 0; z < GRID; z++) for (let x = 0; x < GRID; x++) {
-  const i = z * GRID + x;
-  offsets[i * 2] = x - (GRID - 1) / 2;
-  offsets[i * 2 + 1] = z - (GRID - 1) / 2;
-  seeds[i] = Math.random();
-}
-const bufferInfo = twgl.createBufferInfoFromArrays(gl, {
-  position: cube.position,
-  normal: cube.normal,
-  indices: cube.indices,
-  offset: { numComponents: 2, data: offsets, divisor: 1 },
-  seed: { numComponents: 1, data: seeds, divisor: 1 },
-});
-const vertexArrayInfo = twgl.createVertexArrayInfo(gl, programInfo, bufferInfo);
-
-document.getElementById("stat").innerHTML =
-  `光柱 <b>${COUNT.toLocaleString()}</b>・每幀 <b>1</b> 次 instanced draw<br>` +
-  `<span class="api"><code>createBufferInfoFromArrays</code>・<code>drawBufferInfo</code></span>`;
-
-const THEMES = [
-  { name: "霓虹", low: "#1b1f4a", high: "#4cc9f0", bg: "#0b0d14" },
-  { name: "日落", low: "#3a1238", high: "#ff8c42", bg: "#140b10" },
-  { name: "螢光", low: "#10301f", high: "#c8ff4a", bg: "#08110c" },
-];
-const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
-let themeIndex = 0;
-document.getElementById("theme").addEventListener("click", (e) => {
-  themeIndex = (themeIndex + 1) % THEMES.length;
-  e.currentTarget.textContent = `配色：${THEMES[themeIndex].name}`;
-});
-
-// Ripple ring buffer
-const ripples = new Float32Array(MAX_RIPPLES * 4).fill(-100);
-let rippleSlot = 0, now = 0;
-function addRipple(x, z, strength = 1) {
-  ripples.set([x, z, now, strength], rippleSlot * 4);
-  rippleSlot = (rippleSlot + 1) % MAX_RIPPLES;
+function trackPointer(ctx, el) {
+  const p = { x: 0, y: 0, nx: 0, ny: 0, down: false, last: -1e9, idle: (ms = 2000) => performance.now() - p.last > ms };
+  const move = (e) => {
+    const r = el.getBoundingClientRect();
+    p.x = e.clientX - r.left; p.y = e.clientY - r.top;
+    p.nx = (p.x / r.width) * 2 - 1; p.ny = -((p.y / r.height) * 2 - 1);
+    p.last = performance.now();
+  };
+  ctx.on(el, "pointermove", move);
+  ctx.on(el, "pointerdown", (e) => { p.down = true; move(e); });
+  ctx.on(window, "pointerup", () => { p.down = false; });
+  return p;
 }
 
-let spinning = true, angle = 0.7, viewProjection = m4.identity(), eye = [0, 0, 0];
-document.getElementById("spin").addEventListener("click", (e) => {
-  spinning = !spinning;
-  e.currentTarget.setAttribute("aria-pressed", String(spinning));
-});
-let lastAuto = -1;
-document.getElementById("drop").addEventListener("click", () => {
-  addRipple((Math.random() - 0.5) * GRID * 0.6, (Math.random() - 0.5) * GRID * 0.6, 1.2);
-});
-
-// Click: cast a ray through the cursor onto the ground plane y = 0
-canvas.addEventListener("pointerdown", (e) => {
-  const rect = canvas.getBoundingClientRect();
-  const nx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-  const ny = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
+// Cast a ray from normalized device coordinates onto the horizontal plane y = h.
+function hitPlane(viewProjection, nx, ny, h = 0) {
   const inv = m4.inverse(viewProjection);
   const near = m4.transformPoint(inv, [nx, ny, -1]);
   const far = m4.transformPoint(inv, [nx, ny, 1]);
-  const dir = twgl.v3.subtract(far, near);
-  if (Math.abs(dir[1]) < 1e-6) return;
-  const t = -near[1] / dir[1];
-  if (t < 0) return;
-  const hit = twgl.v3.add(near, twgl.v3.mulScalar(dir, t));
-  addRipple(hit[0], hit[2], 1.3);
-  lastAuto = now; // pause auto ripples briefly after user input
-});
-
-gl.enable(gl.DEPTH_TEST);
-gl.enable(gl.CULL_FACE);
-
-function render(ms) {
-  now = ms * 0.001;
-  twgl.resizeCanvasToDisplaySize(gl.canvas, Math.min(devicePixelRatio, 2));
-  gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-  const theme = THEMES[themeIndex];
-  const bg = hex(theme.bg);
-  gl.clearColor(bg[0], bg[1], bg[2], 1);
-  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-
-  if (now - lastAuto > 1.4) {
-    lastAuto = now;
-    addRipple((Math.random() - 0.5) * GRID * 0.7, (Math.random() - 0.5) * GRID * 0.7, 0.8 + Math.random() * 0.5);
-  }
-
-  if (spinning) angle += 0.0025;
-  const aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
-  const dist = aspect < 1 ? 52 : 44;
-  eye = [Math.cos(angle) * dist, aspect < 1 ? 30 : 24, Math.sin(angle) * dist];
-  const projection = m4.perspective((aspect < 1 ? 60 : 45) * Math.PI / 180, aspect, 0.5, 200);
-  const view = m4.inverse(m4.lookAt(eye, [0, 0, 0], [0, 1, 0]));
-  viewProjection = m4.multiply(projection, view);
-
-  gl.useProgram(programInfo.program);
-  twgl.setBuffersAndAttributes(gl, programInfo, vertexArrayInfo);
-  twgl.setUniforms(programInfo, {
-    u_viewProjection: viewProjection,
-    u_time: now,
-    u_ripples: ripples,
-    u_low: hex(theme.low),
-    u_high: hex(theme.high),
-    u_bg: bg,
-    u_eye: eye,
-    u_fog: [dist - 14, dist + 30],
-  });
-  twgl.drawBufferInfo(gl, vertexArrayInfo, gl.TRIANGLES, vertexArrayInfo.numElements, 0, COUNT);
-  requestAnimationFrame(render);
+  const dir = v3.subtract(far, near);
+  if (Math.abs(dir[1]) < 1e-6) return null;
+  const t = (h - near[1]) / dir[1];
+  return t < 0 ? null : v3.add(near, v3.mulScalar(dir, t));
 }
-requestAnimationFrame(render);
+
+// GLSL helper shared by the panorama scene: direction to equirectangular UV (image row 0 is the zenith).
+const EQUIRECT = `
+  vec2 equirect(vec3 d) {
+    return vec2(atan(d.z, d.x) * 0.15915494 + 0.5, 0.5 - asin(clamp(d.y, -1.0, 1.0)) * 0.31830989);
+  }`;
+
+Showcase.run({ scenes: [
+  {
+    id: "city", title: "漣漪城市",
+    api: "createBufferInfoFromArrays({ offset: { divisor: 1 } })・createVertexArrayInfo・drawBufferInfo(…, instanceCount)",
+    desc: "兩千多根光柱共用 twgl.primitives 的一個立方體，格點位置與亂數種子寫成 divisor 1 的實例屬性並包進 VAO，每幀一次 instanced draw。十六組漣漪以 uniform 陣列傳入，高度全在頂點著色器計算。",
+    hint: "點地面掀起一圈波浪・游標掠過會留下小漣漪",
+    mount(ctx) {
+      const GRID = 48, COUNT = GRID * GRID, MAX_RIPPLES = 16;
+      const v = glStage(ctx);
+      if (!v) return;
+      const { gl } = v;
+      const vs = `#version 300 es
+        in vec4 position;
+        in vec3 normal;
+        in vec2 offset;
+        in float seed;
+        uniform mat4 u_viewProjection;
+        uniform float u_time;
+        uniform vec4 u_ripples[${MAX_RIPPLES}];
+        out vec3 v_normal;
+        out vec3 v_world;
+        out float v_height;
+        out float v_seed;
+        void main() {
+          // Ambient swell plus expanding ripple rings (x, z, start time, strength)
+          float h = 0.35 + 0.25 * sin(offset.x * 0.32 + u_time * 1.1) * cos(offset.y * 0.27 + u_time * 0.8);
+          for (int i = 0; i < ${MAX_RIPPLES}; i++) {
+            vec4 r = u_ripples[i];
+            float age = u_time - r.z;
+            if (age < 0.0 || age > 7.0) continue;
+            float ring = distance(offset, r.xy) - age * 8.0;
+            h += r.w * 4.0 * exp(-ring * ring * 0.18) * exp(-age * 0.55);
+          }
+          h = max(h, 0.06) * (0.85 + seed * 0.3);
+          vec3 p = position.xyz;
+          p.y = (p.y + 0.5) * h;
+          p.xz *= 0.78;
+          vec3 world = p + vec3(offset.x, 0.0, offset.y);
+          v_world = world;
+          v_height = h;
+          v_normal = normal;
+          v_seed = seed;
+          gl_Position = u_viewProjection * vec4(world, 1.0);
+        }`;
+      const fs = `#version 300 es
+        precision highp float;
+        in vec3 v_normal;
+        in vec3 v_world;
+        in float v_height;
+        in float v_seed;
+        uniform vec3 u_low, u_high, u_bg, u_eye;
+        uniform vec2 u_fog;
+        out vec4 outColor;
+        void main() {
+          vec3 n = normalize(v_normal);
+          float diff = 0.35 + 0.65 * max(dot(n, normalize(vec3(0.4, 1.0, 0.3))), 0.0);
+          float t = clamp(v_height / 3.2, 0.0, 1.0);
+          vec3 base = mix(u_low, u_high, smoothstep(0.05, 0.9, t));
+          float cap = step(0.5, n.y) * smoothstep(0.35, 1.0, t);
+          vec3 col = base * diff + u_high * cap * 0.9 + v_seed * 0.03;
+          float fog = smoothstep(u_fog.x, u_fog.y, distance(v_world, u_eye));
+          outColor = vec4(mix(col, u_bg, fog), 1.0);
+        }`;
+      const programInfo = twgl.createProgramInfo(gl, [vs, fs]);
+      const cube = primitives.createCubeVertices(1);
+      const offsets = new Float32Array(COUNT * 2), seeds = new Float32Array(COUNT);
+      for (let z = 0; z < GRID; z++) for (let x = 0; x < GRID; x++) {
+        const i = z * GRID + x;
+        offsets[i * 2] = x - (GRID - 1) / 2;
+        offsets[i * 2 + 1] = z - (GRID - 1) / 2;
+        seeds[i] = Math.random();
+      }
+      const bufferInfo = twgl.createBufferInfoFromArrays(gl, {
+        position: cube.position, normal: cube.normal, indices: cube.indices,
+        offset: { numComponents: 2, data: offsets, divisor: 1 },
+        seed: { numComponents: 1, data: seeds, divisor: 1 },
+      });
+      const vao = twgl.createVertexArrayInfo(gl, programInfo, bufferInfo);
+
+      const THEMES = [
+        { name: "霓虹", low: "#1b1f4a", high: "#4cc9f0", bg: "#0b0d14" },
+        { name: "日落", low: "#3a1238", high: "#ff8c42", bg: "#140b10" },
+        { name: "螢光", low: "#10301f", high: "#c8ff4a", bg: "#08110c" },
+      ].map((t) => ({ ...t, low: hexColor(t.low), high: hexColor(t.high), bg: hexColor(t.bg) }));
+      let theme = THEMES[0], spinning = true, angle = 0.7, now = 0, lastAuto = -1, lastTrail = 0;
+      let viewProjection = m4.identity();
+      const ripples = new Float32Array(MAX_RIPPLES * 4).fill(-100);
+      let slot = 0;
+      const addRipple = (x, z, strength) => { ripples.set([x, z, now, strength], slot * 4); slot = (slot + 1) % MAX_RIPPLES; };
+
+      ctx.button("投下漣漪", () => addRipple((Math.random() - 0.5) * GRID * 0.6, (Math.random() - 0.5) * GRID * 0.6, 1.2), { primary: true });
+      ctx.group(THEMES.map((t) => t.name), 0, (i) => { theme = THEMES[i]; });
+      ctx.toggle("環繞鏡頭", true, (on) => { spinning = on; });
+      ctx.fps({ position: "right bottom", extra: () => ({ 光柱: COUNT, "draw call": 1 }) });
+
+      const pointer = trackPointer(ctx, v.canvas);
+      ctx.on(v.canvas, "pointerdown", () => {
+        const hit = hitPlane(viewProjection, pointer.nx, pointer.ny);
+        if (hit) { addRipple(hit[0], hit[2], 1.3); lastAuto = now; }
+      });
+      ctx.on(v.canvas, "pointermove", () => {
+        if (now - lastTrail < 0.25) return;
+        const hit = hitPlane(viewProjection, pointer.nx, pointer.ny);
+        if (hit && Math.abs(hit[0]) < GRID / 2 && Math.abs(hit[2]) < GRID / 2) { lastTrail = now; addRipple(hit[0], hit[2], 0.35); }
+      });
+
+      gl.enable(gl.DEPTH_TEST);
+      gl.enable(gl.CULL_FACE);
+      ctx.raf((t, dt) => {
+        now = t * 0.001;
+        const aspect = v.fit();
+        gl.clearColor(theme.bg[0], theme.bg[1], theme.bg[2], 1);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        if (now - lastAuto > 1.4) {
+          lastAuto = now;
+          addRipple((Math.random() - 0.5) * GRID * 0.7, (Math.random() - 0.5) * GRID * 0.7, 0.8 + Math.random() * 0.5);
+        }
+        if (spinning) angle += dt * 0.00015;
+        const dist = aspect < 1 ? 52 : 44;
+        const eye = [Math.cos(angle) * dist, aspect < 1 ? 30 : 24, Math.sin(angle) * dist];
+        const projection = m4.perspective(((aspect < 1 ? 60 : 45) * Math.PI) / 180, aspect, 0.5, 200);
+        viewProjection = m4.multiply(projection, m4.inverse(m4.lookAt(eye, [0, 0, 0], [0, 1, 0])));
+        gl.useProgram(programInfo.program);
+        twgl.setBuffersAndAttributes(gl, programInfo, vao);
+        twgl.setUniforms(programInfo, {
+          u_viewProjection: viewProjection, u_time: now, u_ripples: ripples,
+          u_low: theme.low, u_high: theme.high, u_bg: theme.bg, u_eye: eye, u_fog: [dist - 14, dist + 30],
+        });
+        twgl.drawBufferInfo(gl, vao, gl.TRIANGLES, vao.numElements, 0, COUNT);
+      });
+    },
+  },
+  {
+    id: "primitives", title: "幾何體圖鑑",
+    api: "primitives.createTorusVertices()・deindexVertices・flattenNormals・drawObjectList",
+    desc: "八種內建幾何體都由 twgl.primitives 產生，附帶位置、法線與 UV；棋盤貼圖直接由 Uint8Array 建立。整組物件交給 drawObjectList，它只在程式或 VAO 改變時才重新綁定。切換平面著色會用 deindexVertices 加 flattenNormals 重建頂點。",
+    hint: "切換著色模式比較法線與 UV・游標移到物件上會放大",
+    mount(ctx) {
+      ctx.html(`<div class="tags"></div>`);
+      const v = glStage(ctx);
+      if (!v) return;
+      const { gl } = v;
+      const programInfo = twgl.createProgramInfo(gl, [`#version 300 es
+        in vec4 position;
+        in vec3 normal;
+        in vec2 texcoord;
+        uniform mat4 u_world, u_worldInverseTranspose, u_viewProjection;
+        out vec3 v_normal;
+        out vec3 v_world;
+        out vec2 v_uv;
+        void main() {
+          vec4 world = u_world * position;
+          v_world = world.xyz;
+          v_normal = mat3(u_worldInverseTranspose) * normal;
+          v_uv = texcoord;
+          gl_Position = u_viewProjection * world;
+        }`, `#version 300 es
+        precision highp float;
+        in vec3 v_normal;
+        in vec3 v_world;
+        in vec2 v_uv;
+        uniform sampler2D u_texture;
+        uniform vec3 u_color, u_eye;
+        uniform int u_mode;
+        out vec4 outColor;
+        void main() {
+          vec3 n = normalize(v_normal);
+          if (!gl_FrontFacing) n = -n;
+          if (u_mode == 1) { outColor = vec4(n * 0.5 + 0.5, 1.0); return; }
+          if (u_mode == 2) { outColor = vec4(fract(v_uv), 0.55, 1.0); return; }
+          vec3 l = normalize(vec3(0.5, 0.8, 0.6));
+          vec3 e = normalize(u_eye - v_world);
+          vec3 base = u_color * texture(u_texture, v_uv).rgb;
+          float diff = max(dot(n, l), 0.0);
+          float spec = pow(max(dot(n, normalize(l + e)), 0.0), 48.0);
+          float rim = pow(1.0 - max(dot(n, e), 0.0), 3.0);
+          outColor = vec4(base * (0.18 + 0.82 * diff) + spec * 0.45 + rim * u_color * 0.35, 1.0);
+        }`]);
+
+      // 8x8 checker texture built from raw bytes
+      const texels = new Uint8Array(8 * 8 * 4);
+      for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+        const c = (x + y) % 2 ? 255 : 105;
+        texels.set([c, c, c, 255], (y * 8 + x) * 4);
+      }
+      const checker = twgl.createTexture(gl, { src: texels, width: 8, height: 8, mag: gl.NEAREST, min: gl.LINEAR_MIPMAP_LINEAR });
+
+      const SHAPES = [
+        ["立方體", () => primitives.createCubeVertices(1.3)],
+        ["球體", () => primitives.createSphereVertices(0.8, 32, 20)],
+        ["環面", () => primitives.createTorusVertices(0.6, 0.24, 40, 16)],
+        ["圓錐", () => primitives.createTruncatedConeVertices(0.75, 0, 1.5, 32, 1)],
+        ["圓柱", () => primitives.createCylinderVertices(0.6, 1.4, 32, 1)],
+        ["新月", () => primitives.reorientVertices(primitives.createCrescentVertices(0.85, 0.85, 0.45, 0.16, 32), m4.translation([0, 0, -0.42]))],
+        ["圓盤", () => primitives.reorientVertices(primitives.createDiscVertices(0.9, 32, 3, 0.3), m4.rotationX(Math.PI / 2))],
+        ["截頭錐", () => primitives.createTruncatedConeVertices(0.75, 0.35, 1.3, 6, 1)],
+      ];
+      const palette = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6", "--c2", "--c3"].map(cssColor);
+      const build = (flat) => SHAPES.map(([, make]) => {
+        const verts = make();
+        const arrays = flat ? primitives.flattenNormals(primitives.deindexVertices(verts)) : verts;
+        return twgl.createVertexArrayInfo(gl, programInfo, twgl.createBufferInfoFromArrays(gl, arrays));
+      });
+      const variants = { smooth: build(false), flat: build(true) };
+      const tagsEl = ctx.$(".tags");
+      const objects = SHAPES.map(([name], i) => {
+        const tag = document.createElement("span");
+        tag.textContent = name;
+        tagsEl.append(tag);
+        return {
+          name, tag, scale: 1, facing: name === "圓盤",
+          programInfo, vertexArrayInfo: variants.smooth[i],
+          uniforms: { u_world: m4.identity(), u_worldInverseTranspose: m4.identity(), u_color: palette[i], u_texture: checker },
+        };
+      });
+
+      let mode = 0;
+      ctx.group(["打光貼圖", "法線", "UV"], 0, (i) => { mode = i; });
+      ctx.toggle("平面著色", false, (on) => objects.forEach((o, i) => { o.vertexArrayInfo = (on ? variants.flat : variants.smooth)[i]; }));
+      ctx.fps({ position: "right bottom", extra: () => ({ 幾何體: SHAPES.length, "draw call": SHAPES.length }) });
+
+      const pointer = trackPointer(ctx, v.canvas);
+      gl.enable(gl.DEPTH_TEST);
+      ctx.raf((t) => {
+        const time = t * 0.001;
+        const aspect = v.fit();
+        gl.clearColor(0.055, 0.063, 0.075, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        const cols = aspect >= 1 ? 4 : 2, rows = SHAPES.length / cols, gap = 2.3;
+        const fov = (40 * Math.PI) / 180, tan = Math.tan(fov / 2);
+        const dist = Math.max((rows * gap + 1.4) / 2 / tan, (cols * gap) / 2 / (tan * aspect)) * 1.1 + 1;
+        const px = pointer.idle() ? Math.sin(time * 0.4) * 0.6 : pointer.nx;
+        const py = pointer.idle() ? Math.cos(time * 0.3) * 0.4 : pointer.ny;
+        const eye = [px * 2.2, py * 1.6, dist];
+        const projection = m4.perspective(fov, aspect, 0.1, 100);
+        const viewProjection = m4.multiply(projection, m4.inverse(m4.lookAt(eye, [0, 0.15, 0], [0, 1, 0])));
+        const W = v.canvas.clientWidth, H = v.canvas.clientHeight;
+        let hovered = -1, best = 70 * 70;
+        objects.forEach((o, i) => {
+          const c = i % cols, r = Math.floor(i / cols);
+          o.pos = [(c - (cols - 1) / 2) * gap, ((rows - 1) / 2 - r) * gap, 0];
+          const s = m4.transformPoint(viewProjection, o.pos);
+          o.sx = (s[0] * 0.5 + 0.5) * W; o.sy = (0.5 - s[1] * 0.5) * H;
+          const d = (o.sx - pointer.x) ** 2 + (o.sy - pointer.y) ** 2;
+          if (!pointer.idle(1500) && d < best) { best = d; hovered = i; }
+        });
+        objects.forEach((o, i) => {
+          o.scale += ((i === hovered ? 1.18 : 1) - o.scale) * 0.15;
+          let w = m4.translation(o.pos);
+          if (o.facing) {
+            // The disc stands in the XY plane and spins about its own axis so it never turns edge-on
+            w = m4.rotateY(w, Math.sin(time * 0.6 + i) * 0.6);
+            w = m4.rotateX(w, Math.sin(time * 0.5 + i) * 0.4 - 0.2);
+            w = m4.rotateZ(w, time * 0.6);
+          } else {
+            w = m4.rotateY(w, time * 0.6 + i * 0.8);
+            w = m4.rotateX(w, Math.sin(time * 0.5 + i) * 0.6 + 0.35);
+          }
+          w = m4.scale(w, [o.scale, o.scale, o.scale]);
+          o.uniforms.u_world = w;
+          o.uniforms.u_worldInverseTranspose = m4.transpose(m4.inverse(w));
+          o.uniforms.u_viewProjection = viewProjection;
+          o.uniforms.u_eye = eye;
+          o.uniforms.u_mode = mode;
+          const below = m4.transformPoint(viewProjection, [o.pos[0], o.pos[1] - 1.05, 0]);
+          o.tag.style.transform = `translate(${(below[0] * 0.5 + 0.5) * W}px, ${(0.5 - below[1] * 0.5) * H}px) translate(-50%, 0)`;
+          o.tag.classList.toggle("on", i === hovered);
+        });
+        twgl.drawObjectList(gl, objects);
+      });
+    },
+  },
+  {
+    id: "panorama", title: "全景反射",
+    api: "createTextures({ env: { src: 'panorama.jpg', min: LINEAR_MIPMAP_LINEAR } }, callback)",
+    desc: "一張 4096×2048 等距長方投影全景圖用 createTextures 非同步載入並自動產生 mipmap，同時當天空背景與環境貼圖。鏡面直接取反射方向，玻璃把 RGB 三色分開折射做出色散，霧面則用 textureLod 讀較小的 mipmap 層。",
+    hint: "拖曳畫面環視・切換材質與形狀",
+    mount(ctx) {
+      const v = glStage(ctx);
+      if (!v) return;
+      const { gl } = v;
+      const status = ctx.status("載入 4096×2048 全景圖…");
+      const textures = twgl.createTextures(gl, {
+        env: { src: "_shared/img/panorama.jpg", min: gl.LINEAR_MIPMAP_LINEAR, mag: gl.LINEAR, wrapS: gl.REPEAT, wrapT: gl.CLAMP_TO_EDGE },
+      }, (err) => {
+        if (!ctx.active) return;
+        if (err) status.error("全景圖載入失敗");
+        else status.done();
+      });
+
+      const skyProg = twgl.createProgramInfo(gl, [`#version 300 es
+        in vec2 position;
+        out vec2 v_ndc;
+        void main() { v_ndc = position; gl_Position = vec4(position, 0.0, 1.0); }`, `#version 300 es
+        precision highp float;
+        in vec2 v_ndc;
+        uniform mat4 u_invViewProjection;
+        uniform sampler2D u_env;
+        out vec4 outColor;
+        ${EQUIRECT}
+        void main() {
+          vec4 p = u_invViewProjection * vec4(v_ndc, 1.0, 1.0);
+          vec3 d = normalize(p.xyz / p.w);
+          outColor = vec4(textureLod(u_env, equirect(d), 0.0).rgb * 0.9, 1.0);
+        }`]);
+      const objProg = twgl.createProgramInfo(gl, [`#version 300 es
+        in vec4 position;
+        in vec3 normal;
+        uniform mat4 u_world, u_worldInverseTranspose, u_viewProjection;
+        out vec3 v_world;
+        out vec3 v_normal;
+        void main() {
+          vec4 w = u_world * position;
+          v_world = w.xyz;
+          v_normal = mat3(u_worldInverseTranspose) * normal;
+          gl_Position = u_viewProjection * w;
+        }`, `#version 300 es
+        precision highp float;
+        in vec3 v_world;
+        in vec3 v_normal;
+        uniform sampler2D u_env;
+        uniform vec3 u_eye;
+        uniform int u_material;
+        out vec4 outColor;
+        ${EQUIRECT}
+        vec3 env(vec3 d, float lod) { return textureLod(u_env, equirect(normalize(d)), lod).rgb; }
+        void main() {
+          vec3 n = normalize(v_normal);
+          vec3 i = normalize(v_world - u_eye);
+          vec3 r = reflect(i, n);
+          float fres = pow(1.0 - max(dot(-i, n), 0.0), 5.0);
+          vec3 col;
+          if (u_material == 0) {
+            col = env(r, 0.0);
+          } else if (u_material == 1) {
+            vec3 refr = vec3(env(refract(i, n, 0.65), 0.0).r, env(refract(i, n, 0.67), 0.0).g, env(refract(i, n, 0.69), 0.0).b);
+            col = mix(refr * vec3(0.93, 0.97, 1.0), env(r, 0.0), 0.06 + 0.94 * fres);
+          } else if (u_material == 2) {
+            col = env(r, 6.5) * 0.95 + fres * 0.25;
+          } else {
+            col = mix(env(r, 2.0) * vec3(1.0, 0.76, 0.38), env(r, 0.0), fres);
+          }
+          outColor = vec4(col, 1.0);
+        }`]);
+      const sky = twgl.createVertexArrayInfo(gl, skyProg, twgl.createBufferInfoFromArrays(gl, FULLSCREEN));
+      const shapes = [
+        twgl.createVertexArrayInfo(gl, objProg, primitives.createSphereBufferInfo(gl, 1, 96, 64)),
+        twgl.createVertexArrayInfo(gl, objProg, primitives.createTorusBufferInfo(gl, 0.85, 0.36, 96, 48)),
+        twgl.createVertexArrayInfo(gl, objProg, primitives.createCubeBufferInfo(gl, 1.45)),
+      ];
+      let material = 0, shape = 0, yaw = 0.4, pitch = 0.12;
+      ctx.group(["鏡面", "玻璃", "霧面", "黃金"], 0, (i) => { material = i; });
+      ctx.group(["球體", "環面", "立方體"], 0, (i) => { shape = i; });
+      ctx.fps({ position: "right bottom", extra: () => ({ 環境貼圖: "4096×2048" }) });
+
+      const pointer = trackPointer(ctx, v.canvas);
+      let lx = 0, ly = 0;
+      ctx.on(v.canvas, "pointerdown", (e) => { lx = e.clientX; ly = e.clientY; });
+      ctx.on(v.canvas, "pointermove", (e) => {
+        if (!pointer.down) return;
+        yaw -= (e.clientX - lx) * 0.006;
+        pitch = Math.max(-1.2, Math.min(1.2, pitch + (e.clientY - ly) * 0.004));
+        lx = e.clientX; ly = e.clientY;
+      });
+
+      gl.enable(gl.DEPTH_TEST);
+      gl.enable(gl.CULL_FACE);
+      ctx.raf((t, dt) => {
+        const time = t * 0.001;
+        const aspect = v.fit();
+        if (!pointer.down && pointer.idle(1500)) yaw += dt * 0.00012;
+        const R = aspect < 1 ? 5.2 : 3.9;
+        const eye = [Math.sin(yaw) * Math.cos(pitch) * R, Math.sin(pitch) * R, Math.cos(yaw) * Math.cos(pitch) * R];
+        const projection = m4.perspective((aspect < 1 ? 70 : 55) * Math.PI / 180, aspect, 0.1, 50);
+        const view = m4.inverse(m4.lookAt(eye, [0, 0, 0], [0, 1, 0]));
+        const rotationOnly = m4.copy(view);
+        rotationOnly[12] = rotationOnly[13] = rotationOnly[14] = 0;
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        gl.depthMask(false);
+        gl.useProgram(skyProg.program);
+        twgl.setBuffersAndAttributes(gl, skyProg, sky);
+        twgl.setUniforms(skyProg, { u_invViewProjection: m4.inverse(m4.multiply(projection, rotationOnly)), u_env: textures.env });
+        twgl.drawBufferInfo(gl, sky);
+        gl.depthMask(true);
+
+        let world = m4.rotationY(time * 0.35);
+        world = m4.rotateX(world, shape === 1 ? 1.1 + Math.sin(time * 0.4) * 0.35 : time * 0.2);
+        gl.useProgram(objProg.program);
+        twgl.setBuffersAndAttributes(gl, objProg, shapes[shape]);
+        twgl.setUniforms(objProg, {
+          u_world: world, u_worldInverseTranspose: m4.transpose(m4.inverse(world)),
+          u_viewProjection: m4.multiply(projection, view), u_eye: eye, u_env: textures.env, u_material: material,
+        });
+        twgl.drawBufferInfo(gl, shapes[shape]);
+      });
+    },
+  },
+  {
+    id: "framebuffer", title: "幀緩衝回饋",
+    api: "createFramebufferInfo(gl, attachments, w, h)・bindFramebufferInfo・resizeFramebufferInfo",
+    desc: "兩個 framebuffer 輪流當畫布與貼圖：這一幀先把場景畫進 A，場景裡的方塊貼著上一幀的 B，再把 A 貼到畫面上的大方塊。來回交換就得到無限遞迴的畫中畫，解析度可即時用 resizeFramebufferInfo 調整。",
+    hint: "切換 framebuffer 解析度・關掉回饋看單層效果",
+    mount(ctx) {
+      ctx.html(`<div class="info panel"></div>`);
+      const v = glStage(ctx);
+      if (!v) return;
+      const { gl } = v;
+      const info = ctx.$(".info");
+      const prog = twgl.createProgramInfo(gl, [`#version 300 es
+        in vec4 position;
+        in vec3 normal;
+        in vec2 texcoord;
+        uniform mat4 u_world, u_viewProjection;
+        out vec3 v_normal;
+        out vec2 v_uv;
+        void main() {
+          v_normal = mat3(u_world) * normal;
+          v_uv = texcoord;
+          gl_Position = u_viewProjection * u_world * position;
+        }`, `#version 300 es
+        precision highp float;
+        in vec3 v_normal;
+        in vec2 v_uv;
+        uniform sampler2D u_texture;
+        uniform vec3 u_color;
+        uniform float u_useTexture;
+        out vec4 outColor;
+        void main() {
+          vec3 n = normalize(v_normal);
+          float diff = 0.55 + 0.45 * max(dot(n, normalize(vec3(0.4, 0.8, 0.6))), 0.0);
+          float edge = min(min(v_uv.x, 1.0 - v_uv.x), min(v_uv.y, 1.0 - v_uv.y));
+          vec3 base = mix(u_color, texture(u_texture, v_uv).rgb, u_useTexture);
+          base = mix(u_color * 1.3, base, smoothstep(0.025, 0.045, edge * u_useTexture + (1.0 - u_useTexture)));
+          outColor = vec4(base * diff, 1.0);
+        }`]);
+      const cube = twgl.createVertexArrayInfo(gl, prog, primitives.createCubeBufferInfo(gl, 1.6));
+      const ball = twgl.createVertexArrayInfo(gl, prog, primitives.createSphereBufferInfo(gl, 0.22, 24, 16));
+      const blank = twgl.createTexture(gl, { src: [40, 44, 60, 255] });
+
+      const SIZES = [128, 256, 512, 1024];
+      let size = 512, feedback = true, cur = 0;
+      const fbos = [0, 1].map(() => twgl.createFramebufferInfo(gl, undefined, size, size));
+      const describe = () => { info.innerHTML = `framebuffer <b>${size}×${size}</b> ×2<br>附件：RGBA 紋理 + 深度模板<br>每幀 <b>2</b> 個繪製階段`; };
+      describe();
+      ctx.group(SIZES.map(String), SIZES.indexOf(size), (i) => {
+        size = SIZES[i];
+        fbos.forEach((f) => twgl.resizeFramebufferInfo(gl, f, undefined, size, size));
+        describe();
+      });
+      ctx.toggle("遞迴回饋", true, (on) => { feedback = on; });
+      ctx.fps({ position: "right bottom", extra: () => ({ 幀緩衝: `${size}²`, "render pass": 2 }) });
+
+      const accents = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6"].map(cssColor);
+      const draw = (vao, uniforms) => {
+        twgl.setBuffersAndAttributes(gl, prog, vao);
+        twgl.setUniforms(prog, uniforms);
+        twgl.drawBufferInfo(gl, vao);
+      };
+      gl.enable(gl.DEPTH_TEST);
+      ctx.raf((t) => {
+        const time = t * 0.001;
+        const aspect = v.fit();
+        const target = fbos[cur], previous = fbos[1 - cur];
+        gl.useProgram(prog.program);
+
+        // Pass 1: render the inner scene into the current framebuffer
+        twgl.bindFramebufferInfo(gl, target);
+        gl.clearColor(0.11, 0.08, 0.2, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        const innerVP = m4.multiply(m4.perspective(0.9, 1, 0.1, 50), m4.inverse(m4.lookAt([0, 0.4, 4.6], [0, 0, 0], [0, 1, 0])));
+        let w = m4.rotationY(time * 0.7);
+        w = m4.rotateX(w, Math.sin(time * 0.5) * 0.5);
+        draw(cube, { u_world: w, u_viewProjection: innerVP, u_texture: feedback ? previous.attachments[0] : blank, u_color: accents[0], u_useTexture: 1 });
+        accents.forEach((color, i) => {
+          const a = time * 1.1 + (i * Math.PI * 2) / accents.length;
+          draw(ball, { u_world: m4.translation([Math.cos(a) * 1.75, Math.sin(a * 2) * 0.5, Math.sin(a) * 1.75]), u_viewProjection: innerVP, u_texture: blank, u_color: color, u_useTexture: 0 });
+        });
+
+        // Pass 2: back to the canvas, show the framebuffer texture on a big cube
+        twgl.bindFramebufferInfo(gl, null);
+        gl.clearColor(0.045, 0.05, 0.065, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        const outerVP = m4.multiply(m4.perspective(aspect < 1 ? 1.05 : 0.8, aspect, 0.1, 50), m4.inverse(m4.lookAt([0, 0.3, aspect < 1 ? 5.4 : 4.4], [0, 0, 0], [0, 1, 0])));
+        let ow = m4.rotationY(time * 0.3 + 0.6);
+        ow = m4.rotateX(ow, 0.42);
+        draw(cube, { u_world: ow, u_viewProjection: outerVP, u_texture: target.attachments[0], u_color: accents[1], u_useTexture: 1 });
+        cur = 1 - cur;
+      });
+    },
+  },
+  {
+    id: "ubo", title: "共用 Uniform Block",
+    api: "createUniformBlockInfo・setBlockUniforms・setUniformBlock・bindUniformBlock",
+    desc: "十六盞點光源的位置與顏色放在一個 std140 uniform block，地板、物件、光點三個著色器程式共用同一塊 GPU 緩衝區，每幀只上傳一次。光點用 gl_InstanceID 直接從 uniform block 讀自己的位置，一次 instanced draw 畫完。",
+    hint: "游標移到場景上會帶著第一盞燈走・調整光源數",
+    mount(ctx) {
+      ctx.html(`<div class="info panel"></div>`);
+      const v = glStage(ctx);
+      if (!v) return;
+      const { gl } = v;
+      const MAX_LIGHTS = 16;
+      const BLOCK = `
+        layout(std140) uniform Lights {
+          vec4 lightPos[${MAX_LIGHTS}];
+          vec4 lightColor[${MAX_LIGHTS}];
+          vec4 lightInfo;
+        };`;
+      const SHADE = `
+        vec3 shade(vec3 p, vec3 n, vec3 albedo, vec3 eye) {
+          vec3 col = albedo * lightInfo.y;
+          vec3 e = normalize(eye - p);
+          int count = int(lightInfo.x);
+          for (int i = 0; i < ${MAX_LIGHTS}; i++) {
+            if (i >= count) break;
+            vec3 L = lightPos[i].xyz - p;
+            float d = length(L);
+            L /= d;
+            float att = pow(clamp(1.0 - d / lightPos[i].w, 0.0, 1.0), 2.0);
+            float diff = max(dot(n, L), 0.0);
+            float spec = pow(max(dot(n, normalize(L + e)), 0.0), 40.0);
+            col += lightColor[i].rgb * lightColor[i].w * att * (albedo * diff + spec * 0.5);
+          }
+          return col;
+        }`;
+      const groundProg = twgl.createProgramInfo(gl, [`#version 300 es
+        in vec4 position;
+        uniform mat4 u_viewProjection;
+        out vec3 v_world;
+        void main() { v_world = position.xyz; gl_Position = u_viewProjection * position; }`, `#version 300 es
+        precision highp float;
+        in vec3 v_world;
+        uniform vec3 u_eye;
+        out vec4 outColor;
+        ${BLOCK}
+        ${SHADE}
+        void main() {
+          vec2 g = v_world.xz / 0.8;
+          vec2 f = abs(fract(g) - 0.5);
+          float grout = smoothstep(0.46, 0.5, max(f.x, f.y));
+          float checker = mod(floor(g.x) + floor(g.y), 2.0);
+          vec3 albedo = mix(vec3(0.3), vec3(0.4), checker) * (1.0 - grout * 0.6);
+          vec3 col = shade(v_world, vec3(0.0, 1.0, 0.0), albedo, u_eye);
+          col *= smoothstep(7.2, 5.0, max(abs(v_world.x), abs(v_world.z)));
+          outColor = vec4(col, 1.0);
+        }`]);
+      const objProg = twgl.createProgramInfo(gl, [`#version 300 es
+        in vec4 position;
+        in vec3 normal;
+        uniform mat4 u_world, u_worldInverseTranspose, u_viewProjection;
+        out vec3 v_world;
+        out vec3 v_normal;
+        void main() {
+          vec4 w = u_world * position;
+          v_world = w.xyz;
+          v_normal = mat3(u_worldInverseTranspose) * normal;
+          gl_Position = u_viewProjection * w;
+        }`, `#version 300 es
+        precision highp float;
+        in vec3 v_world;
+        in vec3 v_normal;
+        uniform vec3 u_eye, u_color;
+        out vec4 outColor;
+        ${BLOCK}
+        ${SHADE}
+        void main() { outColor = vec4(shade(v_world, normalize(v_normal), u_color, u_eye), 1.0); }`]);
+      const markerProg = twgl.createProgramInfo(gl, [`#version 300 es
+        in vec4 position;
+        uniform mat4 u_viewProjection;
+        out vec3 v_color;
+        ${BLOCK}
+        void main() {
+          v_color = lightColor[gl_InstanceID].rgb;
+          gl_Position = u_viewProjection * vec4(position.xyz + lightPos[gl_InstanceID].xyz, 1.0);
+        }`, `#version 300 es
+        precision highp float;
+        in vec3 v_color;
+        out vec4 outColor;
+        void main() { outColor = vec4(v_color * 0.7 + 0.45, 1.0); }`]);
+
+      // One block info (CPU ArrayBuffer + WebGLBuffer) created from one program, bound into all three.
+      const lights = twgl.createUniformBlockInfo(gl, objProg, "Lights");
+      ctx.$(".info").innerHTML = `<code>Lights</code> uniform block・<b>${lights.size}</b> bytes<br>3 個著色器程式共用・每幀上傳 <b>1</b> 次`;
+
+      const ground = twgl.createVertexArrayInfo(gl, groundProg, primitives.createPlaneBufferInfo(gl, 15, 15));
+      const marker = twgl.createVertexArrayInfo(gl, markerProg, primitives.createSphereBufferInfo(gl, 0.09, 14, 10));
+      const meshes = [
+        primitives.createSphereBufferInfo(gl, 0.5, 32, 20),
+        primitives.createTorusBufferInfo(gl, 0.42, 0.17, 32, 14),
+        primitives.createCubeBufferInfo(gl, 0.8),
+        primitives.createTruncatedConeBufferInfo(gl, 0.5, 0.15, 0.9, 24, 1),
+      ].map((b) => twgl.createVertexArrayInfo(gl, objProg, b));
+      const objects = [];
+      for (let z = 0; z < 5; z++) for (let x = 0; x < 5; x++) {
+        const i = z * 5 + x;
+        objects.push({
+          programInfo: objProg, vertexArrayInfo: meshes[(x + z) % meshes.length],
+          pos: [(x - 2) * 1.6, 0.55, (z - 2) * 1.6], spin: Math.random() * 6,
+          uniforms: { u_color: (x + z) % 2 ? [0.82, 0.82, 0.86] : [0.55, 0.57, 0.66], u_world: m4.identity(), u_worldInverseTranspose: m4.identity() },
+        });
+        objects[i].uniforms.u_world = m4.translation(objects[i].pos);
+      }
+
+      const PALETTES = [
+        (i, n) => hsl(i / n, 0.85, 0.55),
+        (i, n) => hsl(0.0 + (i / n) * 0.14, 0.95, 0.55),
+        (i, n) => hsl(0.5 + (i / n) * 0.22, 0.85, 0.58),
+      ];
+      let count = 8, palette = 0;
+      ctx.slider("光源數", { min: 1, max: MAX_LIGHTS, step: 1, value: count }, (x) => { count = x; });
+      ctx.group(["彩虹", "暖色", "冷色"], 0, (i) => { palette = i; });
+      ctx.fps({ position: "right bottom", extra: () => ({ 光源: count, 程式: 3, "draw call": objects.length + 2 }) });
+
+      const pointer = trackPointer(ctx, v.canvas);
+      const posData = new Float32Array(MAX_LIGHTS * 4), colorData = new Float32Array(MAX_LIGHTS * 4);
+      let viewProjection = m4.identity();
+      gl.enable(gl.DEPTH_TEST);
+      gl.enable(gl.CULL_FACE);
+      ctx.raf((t) => {
+        const time = t * 0.001;
+        const aspect = v.fit();
+        gl.clearColor(0.03, 0.033, 0.045, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        const a = time * 0.06 + 0.5, R = aspect < 1 ? 13.5 : 10;
+        const eye = [Math.sin(a) * R, aspect < 1 ? 9.5 : 6.5, Math.cos(a) * R];
+        viewProjection = m4.multiply(m4.perspective(aspect < 1 ? 1.0 : 0.8, aspect, 0.1, 80), m4.inverse(m4.lookAt(eye, [0, 0, 0], [0, 1, 0])));
+
+        for (let i = 0; i < MAX_LIGHTS; i++) {
+          const k = time * (0.25 + (i % 5) * 0.07) + i * 2.4;
+          const r = 1.5 + (i % 4) * 1.1;
+          posData.set([Math.cos(k) * r, 0.9 + Math.sin(time * 1.3 + i) * 0.45, Math.sin(k * (i % 2 ? 1 : -1)) * r, 3.4], i * 4);
+          colorData.set([...PALETTES[palette](i, MAX_LIGHTS), 1.7], i * 4);
+        }
+        if (!pointer.idle(1500)) {
+          const hit = hitPlane(viewProjection, pointer.nx, pointer.ny, 0.9);
+          if (hit) posData.set([hit[0], 0.9, hit[2], 4.2], 0);
+        }
+        twgl.setBlockUniforms(lights, { lightPos: posData, lightColor: colorData, lightInfo: [count, 0.05, 0, 0] });
+        twgl.setUniformBlock(gl, objProg, lights);
+
+        gl.useProgram(groundProg.program);
+        twgl.bindUniformBlock(gl, groundProg, lights);
+        twgl.setBuffersAndAttributes(gl, groundProg, ground);
+        twgl.setUniforms(groundProg, { u_viewProjection: viewProjection, u_eye: eye });
+        twgl.drawBufferInfo(gl, ground);
+
+        objects.forEach((o) => {
+          let w = m4.translation(o.pos);
+          w = m4.rotateY(w, o.spin + time * 0.4);
+          w = m4.rotateX(w, 0.5);
+          o.uniforms.u_world = w;
+          o.uniforms.u_worldInverseTranspose = m4.transpose(m4.inverse(w));
+          o.uniforms.u_viewProjection = viewProjection;
+          o.uniforms.u_eye = eye;
+        });
+        gl.useProgram(objProg.program);
+        twgl.bindUniformBlock(gl, objProg, lights);
+        twgl.drawObjectList(gl, objects);
+
+        gl.useProgram(markerProg.program);
+        twgl.bindUniformBlock(gl, markerProg, lights);
+        twgl.setBuffersAndAttributes(gl, markerProg, marker);
+        twgl.setUniforms(markerProg, { u_viewProjection: viewProjection });
+        twgl.drawBufferInfo(gl, marker, gl.TRIANGLES, marker.numElements, 0, count);
+      });
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "createProgramInfo(gl, srcs, { transformFeedbackVaryings })・createTransformFeedback",
+    desc: "粒子狀態（位置與速度）存在兩個 GPU 緩衝區，每幀用 transform feedback 讓頂點著色器讀 A 寫 B 完成流場模擬，再直接把 B 當頂點畫出來，資料完全不回到 CPU。逐級加粒子直到掉到 30 FPS 以下。",
+    hint: "按「自動加壓」開始；游標在畫面上會攪出漩渦",
+    mount(ctx) {
+      ctx.html(`<div class="stress-box"></div>`);
+      const v = glStage(ctx, { host: ctx.$(".stress-box"), antialias: false });
+      if (!v) return;
+      const { gl } = v;
+      const updateProg = twgl.createProgramInfo(gl, [`#version 300 es
+        precision highp float;
+        in vec4 state;
+        uniform float u_time, u_dt, u_reset, u_aspect;
+        uniform vec3 u_mouse;
+        out vec4 newState;
+        uint hash(uint x) { x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x; }
+        float rnd(uint x) { return float(hash(x)) * (1.0 / 4294967295.0); }
+        // Curl of a sum-of-sines stream function: a divergence-free swirling flow
+        vec2 field(vec2 p, float t) {
+          float s1 = sin(1.7 * p.x + 0.6 * t), c1 = cos(1.7 * p.x + 0.6 * t);
+          float s2 = sin(1.3 * p.y - 0.4 * t), c2 = cos(1.3 * p.y - 0.4 * t);
+          float ph = cos(2.9 * p.y + 2.1 * p.x + 0.5 * t);
+          float dpdx = 1.7 * c1 * c2 + 1.05 * ph;
+          float dpdy = -1.3 * s1 * s2 + 1.45 * ph;
+          return vec2(dpdy, -dpdx);
+        }
+        void main() {
+          uint id = uint(gl_VertexID);
+          uint frame = uint(u_time * 60.0);
+          vec2 p = state.xy, vel = state.zw;
+          bool out_ = abs(p.x) > u_aspect * 1.05 || abs(p.y) > 1.05;
+          if (u_reset > 0.5 || out_ || rnd(id * 747796405u + frame * 2891336453u) < 0.003) {
+            p = vec2((rnd(id * 3u + frame * 7u + 1u) * 2.0 - 1.0) * u_aspect, rnd(id * 5u + frame * 11u + 2u) * 2.0 - 1.0);
+            vel = vec2(0.0);
+          }
+          vec2 target = field(p * 1.3, u_time) * 0.3;
+          vec2 d = p - u_mouse.xy;
+          target += u_mouse.z * vec2(-d.y, d.x) / (dot(d, d) + 0.03) * 0.05;
+          vel = mix(vel, target, clamp(u_dt * 3.0, 0.0, 1.0));
+          newState = vec4(p + vel * u_dt, vel);
+        }`, `#version 300 es
+        precision highp float;
+        out vec4 o;
+        void main() { o = vec4(0.0); }`], { transformFeedbackVaryings: ["newState"] });
+      const drawProg = twgl.createProgramInfo(gl, [`#version 300 es
+        in vec4 state;
+        uniform float u_aspect, u_size, u_gain;
+        out vec3 v_color;
+        void main() {
+          float speed = length(state.zw);
+          v_color = mix(vec3(0.2, 0.45, 1.0), vec3(1.0, 0.5, 0.2), clamp(speed * 1.8, 0.0, 1.0)) * u_gain;
+          gl_Position = vec4(state.x / u_aspect, state.y, 0.0, 1.0);
+          gl_PointSize = u_size;
+        }`, `#version 300 es
+        precision highp float;
+        in vec3 v_color;
+        out vec4 o;
+        void main() { o = vec4(v_color, 1.0); }`]);
+
+      let sets = null, capacity = 0, count = 0, cur = 0, reset = true;
+      const release = () => {
+        if (!sets) return;
+        for (const s of sets) {
+          gl.deleteTransformFeedback(s.tf);
+          gl.deleteVertexArray(s.updateVAO.vertexArrayObject);
+          gl.deleteVertexArray(s.drawVAO.vertexArrayObject);
+          gl.deleteBuffer(s.bufferInfo.attribs.state.buffer);
+        }
+      };
+      const allocate = (n) => {
+        release();
+        sets = [0, 1].map(() => {
+          const bufferInfo = twgl.createBufferInfoFromArrays(gl, { state: { numComponents: 4, data: new Float32Array(n * 4), drawType: gl.DYNAMIC_COPY } });
+          return {
+            bufferInfo,
+            updateVAO: twgl.createVertexArrayInfo(gl, updateProg, bufferInfo),
+            drawVAO: twgl.createVertexArrayInfo(gl, drawProg, bufferInfo),
+            // Map the varying "newState" onto this set's buffer
+            tf: twgl.createTransformFeedback(gl, updateProg, { newState: bufferInfo.attribs.state }),
+          };
+        });
+        // A buffer bound to a transform feedback slot must not stay bound elsewhere during the draw
+        gl.bindBuffer(gl.TRANSFORM_FEEDBACK_BUFFER, null);
+        gl.bindBuffer(gl.ARRAY_BUFFER, null);
+        capacity = n;
+        reset = true;
+      };
+      allocate(50000);
+      count = 50000;
+
+      const pointer = trackPointer(ctx, v.canvas);
+      ctx.raf((t, dt) => {
+        const aspect = v.fit();
+        gl.clearColor(0.025, 0.03, 0.045, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        if (!count) return;
+        const time = t * 0.001;
+        const src = sets[cur], dst = sets[1 - cur];
+        const mouse = pointer.idle(1500)
+          ? [Math.cos(time * 0.5) * 0.5 * aspect, Math.sin(time * 0.7) * 0.45, 0.6]
+          : [pointer.nx * aspect, pointer.ny, 1];
+
+        // Simulation pass: read src, write dst, rasterizer off
+        gl.useProgram(updateProg.program);
+        twgl.setBuffersAndAttributes(gl, updateProg, src.updateVAO);
+        twgl.setUniforms(updateProg, { u_time: time, u_dt: Math.min(dt, 50) * 0.001, u_reset: reset ? 1 : 0, u_aspect: aspect, u_mouse: mouse });
+        gl.enable(gl.RASTERIZER_DISCARD);
+        gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, dst.tf);
+        gl.beginTransformFeedback(gl.POINTS);
+        gl.drawArrays(gl.POINTS, 0, count);
+        gl.endTransformFeedback();
+        gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
+        gl.disable(gl.RASTERIZER_DISCARD);
+        reset = false;
+
+        // Render pass: draw the freshly written buffer as additive points
+        gl.useProgram(drawProg.program);
+        twgl.setBuffersAndAttributes(gl, drawProg, dst.drawVAO);
+        twgl.setUniforms(drawProg, { u_aspect: aspect, u_size: v.dpr, u_gain: Math.min(0.7, 60000 / count) });
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE);
+        twgl.drawBufferInfo(gl, dst.drawVAO, gl.POINTS, count);
+        gl.disable(gl.BLEND);
+        gl.bindVertexArray(null);
+        cur = 1 - cur;
+      });
+
+      ctx.controls.classList.add("bottom");
+      ctx.ramp({
+        label: "粒子", steps: [50000, 100000, 250000, 500000, 1000000, 2000000, 4000000],
+        minFps: 30,
+        apply: (n) => { if (n > capacity) allocate(n); count = n; },
+        metrics: () => ({ GPU緩衝: `${((capacity * 32) / 1048576).toFixed(1)} MB`, "draw call": 2 }),
+        note: "每幀兩次繪製：一次 transform feedback 更新全部粒子，一次把結果畫成點，CPU 只送幾個 uniform。無頭瀏覽器用軟體算繪，數字會遠低於實機。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

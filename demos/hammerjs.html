@@ -3,199 +3,684 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hammer.js 示範：觸控手勢照片卡</title>
+<title>Hammer.js 示範：六個場景看懂觸控手勢辨識與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","note":"手機或觸控螢幕可用雙指縮放、旋轉"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["照片卡堆疊","事件資料","點擊家族","滑動刪除","雙指縮放旋轉","極限測試"],"note":"各場景的自動示範由程式送出合成指標事件，走 Hammer.js 真實的輸入與辨識流程；雙指縮放旋轉為兩組 pointerType: touch 的合成事件"}</script>
 <style>
-  body { background: radial-gradient(70% 60% at 50% 40%, rgba(76,201,240,.10), transparent 70%), var(--bg); }
-  .layout { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 46px; padding: 54px 12px 46px; }
-  .stack { position: relative; width: min(82vw, 440px, calc((100vh - 250px) * 1.3)); aspect-ratio: 4 / 3.35; touch-action: none; }
-  .card {
-    position: absolute; inset: 0; border-radius: 18px; overflow: hidden; background: var(--bg-2);
-    box-shadow: 0 18px 40px rgba(0,0,0,.45); border: 1px solid var(--line);
-    user-select: none; -webkit-user-drag: none; will-change: transform; transform-origin: 50% 60%;
+  .hm-wrap { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); display: flex; flex-direction: column; gap: 9px; min-height: 0; }
+  .hm-head { display: flex; align-items: center; gap: 10px; min-height: 24px; min-width: 0; font-family: var(--font); }
+  .hm-head > b { font-size: 15px; white-space: nowrap; }
+  .hm-evt { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hm-evt code { font-family: var(--mono); color: var(--accent); margin-right: 4px; }
+  .hm-stats { display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .hm-stats span { padding: 4px 9px; border-radius: 99px; background: rgba(255,255,255,.05); border: 1px solid var(--line); white-space: nowrap; }
+  .hm-stats b { color: var(--fg); font: 600 12px var(--mono); }
+  .hm-area { position: relative; flex: 1; min-height: 0; border-radius: 12px; overflow: hidden; background: var(--bg-2); box-shadow: inset 0 0 0 1px var(--line); }
+  .hm-badge { position: absolute; left: 10px; top: 10px; z-index: 6; padding: 4px 9px; border-radius: 8px; font-size: 12px; background: rgba(0,0,0,.55); border: 1px solid var(--line); color: var(--muted); pointer-events: none; }
+  .hm-badge.on { color: var(--accent); border-color: rgba(247,223,30,.5); }
+  /* robot overlay: mouse cursor or touch fingers */
+  .hm-ov { position: absolute; inset: 0; z-index: 300; pointer-events: none; overflow: hidden; opacity: 0; transition: opacity .25s; }
+  .hm-ov.on { opacity: 1; }
+  .hm-ov i { position: absolute; left: 0; top: 0; }
+  .hm-cur svg { display: block; filter: drop-shadow(0 2px 3px rgba(0,0,0,.6)); }
+  .hm-cur::after { content: ""; position: absolute; left: -9px; top: -9px; width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--accent); opacity: 0; transform: scale(.4); transition: opacity .15s, transform .15s; }
+  .hm-ov.down .hm-cur::after { opacity: 1; transform: scale(1); }
+  .hm-fg { width: 34px; height: 34px; margin: -17px; border-radius: 50%; background: rgba(247,223,30,.18); border: 2px solid var(--accent); opacity: .5; }
+  .hm-ov.down .hm-fg { opacity: 1; background: rgba(247,223,30,.3); }
+  .hm-ov svg.hm-fl { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .hm-ov svg.hm-fl line { stroke: #f7df1e; stroke-width: 2; stroke-dasharray: 5 4; }
+  /* 1 photo cards */
+  .hm-score { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .hm-score b { font-family: var(--mono); color: var(--fg); }
+  .hm-deck { container-type: size; background: radial-gradient(60% 60% at 50% 45%, rgba(76,201,240,.10), transparent 70%), var(--bg-2); }
+  .hm-stack { position: absolute; left: 50%; top: 46%; width: min(84cqw, 420px, 100cqh); aspect-ratio: 4 / 3.35; transform: translate(-50%, -50%); touch-action: none; }
+  .hm-card { position: absolute; inset: 0; border-radius: 16px; overflow: hidden; background: var(--bg); box-shadow: 0 16px 36px rgba(0,0,0,.45); border: 1px solid var(--line); user-select: none; will-change: transform; transform-origin: 50% 60%; }
+  .hm-card img { display: block; width: 100%; height: 82%; object-fit: cover; pointer-events: none; }
+  .hm-cap { height: 18%; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; font-size: 14px; font-weight: 600; }
+  .hm-cap span { color: var(--muted); font: 500 12px var(--mono); }
+  .hm-card.hm-top { cursor: grab; }
+  .hm-card.hm-anim { transition: transform .35s cubic-bezier(.2,.8,.2,1), opacity .35s; }
+  .hm-stamp { position: absolute; top: 16px; padding: 4px 12px; border: 3px solid; border-radius: 8px; font-size: 20px; font-weight: 900; opacity: 0; letter-spacing: 2px; background: rgba(0,0,0,.25); }
+  .hm-like { left: 14px; color: var(--c4); transform: rotate(-12deg); }
+  .hm-nope { right: 14px; color: var(--c3); transform: rotate(12deg); }
+  .hm-info { position: absolute; inset: auto 10px 22% 10px; padding: 8px 12px; border-radius: 10px; background: rgba(0,0,0,.7); font-size: 12px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  .hm-info.on { opacity: 1; }
+  .hm-empty { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: var(--muted); border: 2px dashed var(--line); border-radius: 16px; font-size: 14px; }
+  .hm-chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+  .hm-chip { padding: 4px 10px; border-radius: 99px; border: 1px solid var(--line); background: var(--panel); font-size: 12px; color: var(--muted); transition: all .25s; }
+  .hm-chip b { font: 600 11px var(--mono); margin-left: 4px; opacity: .7; }
+  .hm-chip.on { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); transform: translateY(-2px); transition: none; }
+  /* 2 event data */
+  .hm-pad { touch-action: none; cursor: crosshair; background: radial-gradient(circle at 1px 1px, rgba(255,255,255,.07) 1px, transparent 0) 0 0 / 24px 24px, var(--bg-2); }
+  .hm-pad canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .hm-log { position: absolute; right: 10px; bottom: 10px; width: 210px; display: flex; flex-direction: column; gap: 3px; pointer-events: none; }
+  .hm-log div { padding: 3px 8px; border-radius: 6px; background: rgba(0,0,0,.55); font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hm-log code { font-family: var(--mono); color: var(--accent); margin-right: 5px; }
+  .hm-log div:last-child { color: var(--fg); }
+  /* 3 tap family */
+  .hm-taps { display: grid; grid-template-columns: minmax(150px, 30%) 1fr; gap: 10px; flex: 1; min-height: 0; }
+  .hm-tpad { container-type: size; touch-action: none; display: grid; place-items: center; cursor: pointer; user-select: none; }
+  .hm-tpad span { width: min(70cqw, 78cqh, 150px); aspect-ratio: 1; border-radius: 50%; display: grid; place-items: center; font-size: 15px; font-weight: 700; background: radial-gradient(circle at 40% 35%, rgba(247,223,30,.35), rgba(247,223,30,.08)); border: 2px solid rgba(247,223,30,.6); transition: transform .08s; pointer-events: none; }
+  .hm-tpad.down span { transform: scale(.93); }
+  .hm-lanes { display: flex; flex-direction: column; padding: 10px 12px 22px; gap: 6px; }
+  .hm-lane { position: relative; flex: 1; min-height: 26px; display: flex; align-items: center; border-bottom: 1px dashed var(--line); }
+  .hm-lane > label { width: 92px; flex: none; font: 600 12px var(--mono); color: var(--muted); }
+  .hm-lane > label small { display: block; font: 500 10.5px var(--mono); color: var(--accent); }
+  .hm-track { position: relative; flex: 1; height: 100%; }
+  .hm-dot { position: absolute; top: 50%; width: 14px; height: 14px; margin: -7px; border-radius: 50%; background: var(--k, var(--accent)); box-shadow: 0 0 0 3px rgba(0,0,0,.35); }
+  .hm-dot em { position: absolute; left: 50%; top: -15px; transform: translateX(-50%); font: 500 10px var(--mono); font-style: normal; color: var(--muted); white-space: nowrap; }
+  .hm-tick { position: absolute; top: 20%; bottom: 20%; width: 2px; background: var(--c2); }
+  .hm-tick.up { background: var(--c3); }
+  .hm-axis { position: absolute; left: 104px; right: 12px; bottom: 4px; display: flex; justify-content: space-between; font: 500 10px var(--mono); color: var(--muted); }
+  /* 4 swipe list */
+  .hm-inbox { overflow-y: auto; }
+  .hm-list { display: flex; flex-direction: column; }
+  .hm-row { position: relative; overflow: hidden; border-bottom: 1px solid var(--line); flex: none; }
+  .hm-under { position: absolute; inset: 0; display: flex; justify-content: space-between; align-items: center; padding: 0 18px; font-size: 13px; font-weight: 700; background: var(--c4); color: #062; }
+  .hm-under.del { background: var(--c3); color: #fff; }
+  .hm-msg { position: relative; padding: 9px 14px; background: var(--bg-2); display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; user-select: none; cursor: grab; }
+  .hm-msg b { font-size: 13.5px; }
+  .hm-msg time { font: 500 11px var(--mono); color: var(--muted); }
+  .hm-msg p { grid-column: 1 / -1; margin: 0; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hm-msg.hm-anim { transition: transform .3s cubic-bezier(.2,.8,.2,1); }
+  .hm-ring { position: absolute; left: 0; top: 0; border-radius: 50%; border: 2px dashed var(--muted); pointer-events: none; opacity: 0; transition: opacity .2s, border-color .15s; z-index: 5; }
+  .hm-ring.on { opacity: 1; }
+  .hm-ring.go { border-style: solid; border-color: var(--c4); }
+  /* 5 pinch rotate */
+  .hm-pz { touch-action: none; }
+  .hm-photo { position: absolute; left: 0; top: 0; width: 240px; height: 165px; border-radius: 12px; overflow: hidden; box-shadow: 0 16px 34px rgba(0,0,0,.5); transform-origin: 50% 50%; cursor: grab; }
+  .hm-photo img { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+  /* 6 stress */
+  .hm-stress { position: absolute; inset: 8px 8px 8px 350px; display: grid; justify-content: center; align-content: center; gap: 1px; overflow: hidden; border-radius: 10px; background: var(--bg-2); border: 1px solid var(--line); }
+  .hm-stress > div { border-radius: 2px; }
+  @media (max-width: 760px) { .hm-stress { inset: 8px; opacity: .9; } }
+  @media (max-width: 520px) {
+    .hm-head > b { font-size: 13px; }
+    .hm-stats { gap: 5px; font-size: 11px; }
+    .hm-stats span { padding: 3px 7px; }
+    .hm-stats b { font-size: 11px; }
+    .hm-chip { padding: 3px 7px; font-size: 11px; }
+    .hm-chip b { display: none; }
+    .hm-log { width: 160px; }
+    .hm-taps { grid-template-columns: 1fr; grid-template-rows: 34% 1fr; }
+    .hm-lane > label { width: 74px; font-size: 11px; }
+    .hm-axis { left: 86px; }
+    .hm-photo { width: 180px; height: 124px; }
   }
-  .card img { display: block; width: 100%; height: 82%; object-fit: cover; pointer-events: none; }
-  .card .cap { height: 18%; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; font-size: 14px; font-weight: 600; }
-  .card .cap span { color: var(--muted); font: 500 12px var(--mono); }
-  .card.top { cursor: grab; }
-  .card.anim { transition: transform .35s cubic-bezier(.2,.8,.2,1), opacity .35s; }
-  .stamp { position: absolute; top: 18px; padding: 4px 12px; border: 3px solid; border-radius: 8px; font-size: 22px; font-weight: 900; opacity: 0; letter-spacing: 2px; background: rgba(0,0,0,.25); }
-  .stamp.like { left: 16px; color: var(--c4); transform: rotate(-12deg); }
-  .stamp.nope { right: 16px; color: var(--c3); transform: rotate(12deg); }
-  .info { position: absolute; inset: auto 10px 22% 10px; padding: 8px 12px; border-radius: 10px; background: rgba(0,0,0,.65); font-size: 12px; opacity: 0; transition: opacity .2s; pointer-events: none; }
-  .info.show { opacity: 1; }
-  .empty { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: var(--muted); border: 2px dashed var(--line); border-radius: 18px; }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: 660px; }
-  .chip { padding: 5px 11px; border-radius: 99px; border: 1px solid var(--line); background: var(--panel); font-size: 12px; color: var(--muted); transition: all .25s; }
-  .chip b { font: 600 11px var(--mono); margin-left: 4px; opacity: .7; }
-  .chip.flash { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); transform: translateY(-2px); transition: none; }
-  .score { position: fixed; left: 12px; top: 12px; z-index: 50; display: flex; gap: 6px; }
-  .score .btn { pointer-events: none; }
 </style>
 </head>
 <body>
-<div class="score">
-  <span class="btn">♥ 收藏 <b id="nLike">0</b></span>
-  <span class="btn">✕ 略過 <b id="nNope">0</b></span>
-</div>
-<div class="controls">
-  <button class="btn" id="bNope">✕</button>
-  <button class="btn primary" id="bLike">♥</button>
-  <button class="btn" id="bReset">重來</button>
-</div>
-<div class="layout">
-  <div class="stack" id="stack"></div>
-  <div class="chips" id="chips"></div>
-</div>
-<div class="hint">左右甩卡片・雙擊放大・長按看說明・觸控可雙指縮放旋轉</div>
-
 <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Tinder-like photo stack driven by a Hammer.Manager with pan, swipe, pinch, rotate, tap, doubletap and press.
-const PHOTOS = [
-  ["峽灣", "挪威式峽灣，水面倒映山壁"], ["紅岩峽谷", "砂岩層層堆疊的紅色峽谷"],
-  ["綠色山谷公路", "蜿蜒穿過山谷的公路"], ["披毯巴哥犬", "裹著毯子打盹的巴哥"],
-  ["瀑布彩虹", "瀑布水氣折射出彩虹"], ["藍底水母", "在藍色深海漂浮的水母"],
-  ["母獅特寫", "母獅凝視鏡頭的特寫"], ["海象群", "在岸邊曬太陽的海象群"],
-];
-const GESTURES = [["pan", "拖曳"], ["swipe", "甩動"], ["pinch", "捏合"], ["rotate", "旋轉"], ["doubletap", "雙擊"], ["press", "長按"]];
-const stack = document.getElementById("stack");
-const chips = document.getElementById("chips");
-const counts = { like: 0, nope: 0 };
-let t = { x: 0, y: 0, s: 1, r: 0 };   // live transform of the top card
-let base = { ...t };
+// Hammer.js showcase: six scenes from a swipe card stack to a manager-count stress ramp.
+const { h } = Showcase;
+const H = Hammer;
+const ARROW = '<svg viewBox="0 0 24 24" width="22" height="22"><path d="M3 2l6.5 19 2.6-7.6L20 11z" fill="#fff" stroke="#111" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const r0 = (v) => Math.round(v);
+const DIR = { 1: "NONE", 2: "LEFT", 4: "RIGHT", 8: "UP", 16: "DOWN" };
+const evtLine = (el) => (name, text = "") => { el.innerHTML = `<code>${name}</code>${esc(text)}`; };
+const P = (el, fx = 0.5, fy = 0.5) => { const r = el.getBoundingClientRect(); return [r.left + r.width * fx, r.top + r.height * fy]; };
+const line = (a, b) => (k) => [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
+// Manager destroyed when the scene unmounts.
+function mgr(ctx, el, opts) { const m = new H.Manager(el, opts); ctx.onCleanup(() => m.destroy()); return m; }
 
-chips.innerHTML = GESTURES.map(([k, n]) => `<span class="chip" data-g="${k}">${n}<b>${k}</b></span>`).join("");
-function flash(name) {
-  const chip = chips.querySelector(`[data-g="${name}"]`);
-  if (!chip) return;
-  chip.classList.add("flash");
-  clearTimeout(chip._t);
-  chip._t = setTimeout(() => chip.classList.remove("flash"), 260);
-}
-
-function build() {
-  stack.innerHTML = `<div class="empty">看完了！<br>按「重來」再玩一次</div>`;
-  const order = [...PHOTOS.keys()].sort(() => Math.random() - .5);
-  order.forEach((i, n) => {
-    const el = document.createElement("div");
-    el.className = "card";
-    el.innerHTML = `<img src="_shared/img/photo-${i + 1}.jpg" alt="" draggable="false">
-      <div class="cap">${PHOTOS[i][0]}<span>${n + 1} / 8</span></div>
-      <div class="stamp like">收藏</div><div class="stamp nope">略過</div>
-      <div class="info">${PHOTOS[i][1]}</div>`;
-    stack.prepend(el); // first photo ends up on top
+// ---------- robot input ----------
+// Synthetic PointerEvents go through Hammer's real PointerEventInput (pointerdown on the element,
+// pointermove / pointerup on window). The robot mouse uses pointerId 7 so a real hovering mouse
+// (pointerId 1) is ignored by Hammer's pointer store; a real press releases the robot first.
+const ROBOT = 7;
+const USER = new Error("user took over");
+const held = new Map();
+let userAt = 0;
+function fire(type, x, y, id = ROBOT, pointerType = "mouse") {
+  if (type === "pointerdown" || type === "pointermove") held.set(id, [x, y, pointerType]); else held.delete(id);
+  const t = document.elementFromPoint(x, y) || document.body;
+  const ev = new PointerEvent(type, {
+    bubbles: true, cancelable: true, composed: true, pointerId: id, pointerType, isPrimary: id === ROBOT || id === 11,
+    button: type === "pointermove" ? -1 : 0, buttons: type === "pointerup" ? 0 : 1, clientX: x, clientY: y,
   });
-  // stack.prepend put the first card at the bottom of the DOM order, so move the empty note back to the bottom
-  stack.prepend(stack.querySelector(".empty"));
-  restack();
+  t.dispatchEvent(ev);
 }
-function cards() { return [...stack.querySelectorAll(".card")]; }
-function topCard() { const c = cards(); return c[c.length - 1]; }
-
-function restack() {
-  const c = cards();
-  c.forEach((el, i) => {
-    const depth = c.length - 1 - i;
-    el.classList.toggle("top", depth === 0);
-    el.classList.add("anim");
-    if (depth > 0) {
-      const d = Math.min(depth, 3);
-      el.style.transform = `translateY(${d * 10}px) scale(${1 - d * 0.04}) rotate(${(i % 2 ? 1 : -1) * d * 1.5}deg)`;
-      el.style.opacity = depth > 3 ? 0 : 1;
-    }
-  });
-  t = { x: 0, y: 0, s: 1, r: 0 };
-  base = { ...t };
-  if (topCard()) paint(topCard());
+window.addEventListener("pointerdown", (e) => {
+  if (!e.isTrusted) return;
+  userAt = performance.now();
+  for (const [id, [x, y, pt]] of [...held]) fire("pointerup", x, y, id, pt);
+}, true);
+function check(ctx) { if (!ctx.active || userAt > ctx.hmSince) throw USER; }
+// Overlay showing the robot: arrow cursor for the mouse, yellow circles for touch fingers.
+function overlay(ctx, n, touch) {
+  let ov = ctx.el.querySelector(".hm-ov");
+  if (!ov) { ov = h("div", { class: "hm-ov" }); ctx.el.append(ov); }
+  ov.innerHTML = touch ? '<svg class="hm-fl"><line/></svg>' + '<i class="hm-fg"></i>'.repeat(n) : `<i class="hm-cur">${ARROW}</i>`;
+  ov.classList.add("on");
+  const host = ctx.el.getBoundingClientRect(), dots = [...ov.querySelectorAll("i")], ln = ov.querySelector("line");
+  return {
+    place(pts) {
+      pts.forEach(([x, y], i) => { dots[i].style.transform = `translate(${x - host.left}px, ${y - host.top}px)`; });
+      if (ln && pts[1]) { ln.setAttribute("x1", pts[0][0] - host.left); ln.setAttribute("y1", pts[0][1] - host.top); ln.setAttribute("x2", pts[1][0] - host.left); ln.setAttribute("y2", pts[1][1] - host.top); }
+    },
+    down(v) { ov.classList.toggle("down", v); },
+  };
 }
-
-function paint(el) {
-  el.style.transform = `translate(${t.x}px, ${t.y}px) rotate(${t.r + (t.s <= 1.02 ? t.x * 0.06 : 0)}deg) scale(${t.s})`;
-  const k = t.s <= 1.02 ? Math.max(-1, Math.min(1, t.x / 120)) : 0;
-  el.querySelector(".like").style.opacity = Math.max(0, k);
-  el.querySelector(".nope").style.opacity = Math.max(0, -k);
-}
-
-function fling(dir) {
-  const el = topCard();
-  if (!el) return;
-  el.classList.add("anim");
-  t.x = dir * innerWidth * 1.1;
-  t.y += 40;
-  paint(el);
-  el.style.opacity = 0;
-  counts[dir > 0 ? "like" : "nope"]++;
-  document.getElementById("nLike").textContent = counts.like;
-  document.getElementById("nNope").textContent = counts.nope;
-  setTimeout(() => { el.remove(); restack(); }, 330);
-}
-
-// One manager on the stack; gestures always act on the current top card.
-const mc = new Hammer.Manager(stack);
-const pan = new Hammer.Pan({ threshold: 2, pointers: 0 });
-const swipe = new Hammer.Swipe({ velocity: 0.4 });
-const pinch = new Hammer.Pinch();
-const rotate = new Hammer.Rotate();
-const dtap = new Hammer.Tap({ event: "doubletap", taps: 2 });
-const press = new Hammer.Press({ time: 450 });
-swipe.recognizeWith(pan);
-pinch.recognizeWith(rotate);
-pan.recognizeWith([pinch, rotate]);
-mc.add([pan, swipe, rotate, pinch, dtap, press]);
-
-mc.on("panstart pinchstart rotatestart", () => {
-  const el = topCard();
-  if (!el) return;
-  el.classList.remove("anim");
-  base = { ...t };
-});
-mc.on("panmove", (e) => {
-  const el = topCard();
-  if (!el) return;
-  flash("pan");
-  t.x = base.x + e.deltaX;
-  t.y = base.y + e.deltaY;
-  paint(el);
-});
-mc.on("pinchmove", (e) => { const el = topCard(); if (!el) return; flash("pinch"); t.s = Math.max(0.6, Math.min(3, base.s * e.scale)); paint(el); });
-mc.on("rotatemove", (e) => { const el = topCard(); if (!el) return; flash("rotate"); t.r = base.r + e.rotation; paint(el); });
-mc.on("swipeleft swiperight", (e) => flash("swipe"));
-mc.on("panend pancancel pinchend rotateend", (e) => {
-  const el = topCard();
-  if (!el || e.type !== "panend" && e.type !== "pancancel") return;
-  const zoomed = t.s > 1.02;
-  if (!zoomed && (Math.abs(t.x) > stack.offsetWidth * 0.35 || Math.abs(e.velocityX) > 0.6)) {
-    fling(Math.sign(t.x || e.velocityX));
-  } else if (!zoomed) {
-    el.classList.add("anim");
-    t = { x: 0, y: 0, s: 1, r: 0 };
-    paint(el);
+// One gesture: each path maps progress k (0..1) to a client point; several paths = several touch fingers.
+async function gesture(ctx, paths, { ms = 600, hold = 100, ease = true, touch = paths.length > 1 } = {}) {
+  const ov = overlay(ctx, paths.length, touch);
+  const ids = paths.map((_, i) => (touch ? 11 + i : ROBOT)), type = touch ? "touch" : "mouse";
+  let pts = paths.map((p) => p(0));
+  ov.place(pts);
+  await ctx.sleep(180);
+  check(ctx);
+  ov.down(true);
+  pts.forEach((p, i) => fire("pointerdown", p[0], p[1], ids[i], type));
+  const t0 = performance.now();
+  for (let k = 0; k < 1;) {
+    await ctx.sleep(16);
+    if (userAt > ctx.hmSince) ov.down(false);
+    check(ctx);
+    k = ms ? Math.min(1, (performance.now() - t0) / ms) : 1;
+    const e = ease ? (k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2) : k;
+    pts = paths.map((p) => p(e));
+    ov.place(pts);
+    pts.forEach((p, i) => fire("pointermove", p[0], p[1], ids[i], type));
   }
-});
-mc.on("doubletap", () => {
-  const el = topCard();
-  if (!el) return;
-  flash("doubletap");
-  el.classList.add("anim");
-  t = t.s > 1.02 ? { x: 0, y: 0, s: 1, r: 0 } : { x: 0, y: 0, s: 1.8, r: 0 };
-  paint(el);
-});
-mc.on("press", () => {
-  const el = topCard();
-  if (!el) return;
-  flash("press");
-  const info = el.querySelector(".info");
-  info.classList.add("show");
-  setTimeout(() => info.classList.remove("show"), 1600);
-});
+  if (hold) await ctx.sleep(hold);
+  check(ctx);
+  pts.forEach((p, i) => fire("pointerup", p[0], p[1], ids[i], type));
+  ov.down(false);
+  await ctx.sleep(250);
+}
+async function tap(ctx, p, { hold = 60, gap = 0 } = {}) {
+  const ov = overlay(ctx, 1, false);
+  ov.place([p]);
+  await ctx.sleep(gap || 160);
+  check(ctx);
+  ov.down(true); fire("pointerdown", p[0], p[1]);
+  await ctx.sleep(hold);
+  check(ctx);
+  fire("pointerup", p[0], p[1]); ov.down(false);
+}
+async function taps(ctx, p, n) { await tap(ctx, p); for (let i = 1; i < n; i++) await tap(ctx, p, { gap: 90 }); }
+function demoRunner(ctx, fn, delay = 700) {
+  let busy = false;
+  const go = async () => {
+    if (busy) return;
+    busy = true;
+    ctx.hmSince = performance.now(); // a real press any time after this stops the whole run
+    try { await fn(); } catch (err) { if (err !== USER) throw err; } finally {
+      busy = false;
+      const ov = ctx.el.querySelector(".hm-ov"); if (ov) ov.classList.remove("on", "down");
+    }
+  };
+  ctx.timeout(go, delay);
+  return go;
+}
 
-document.getElementById("bLike").onclick = () => fling(1);
-document.getElementById("bNope").onclick = () => fling(-1);
-document.getElementById("bReset").onclick = () => { counts.like = counts.nope = 0; nLike.textContent = nNope.textContent = 0; build(); };
-build();
+const PHOTOS = [
+  ["峽灣", "挪威式峽灣，水面倒映山壁"], ["紅岩峽谷", "砂岩層層堆疊的紅色峽谷"], ["綠色山谷公路", "蜿蜒穿過山谷的公路"], ["披毯巴哥犬", "裹著毯子打盹的巴哥"],
+  ["瀑布彩虹", "瀑布水氣折射出彩虹"], ["藍底水母", "在藍色深海漂浮的水母"], ["母獅特寫", "母獅凝視鏡頭的特寫"], ["海象群", "在岸邊曬太陽的海象群"],
+];
+const MAIL = [
+  ["新竹場窗口", "09:12", "下週二的教室已確認，投影機需要 HDMI 轉接頭"], ["學員 王小姐", "08:47", "請問課程講義可以寄電子檔嗎？"],
+  ["會計部", "昨天", "十月份講師費已入帳，請查收明細"], ["台南學員", "昨天", "發票抬頭要改成公司名稱，統編如下"],
+  ["花蓮場合作", "週一", "場地費報價單附件，請回覆是否續約"], ["系統通知", "週一", "您的雲端空間已使用 82%"],
+  ["助教 小林", "週日", "作業批改完畢，平均分數 86"], ["課程平台", "週六", "新課程上架審核通過"],
+  ["讀書會", "週五", "本月選書投票結果出爐"], ["印刷廠", "週四", "結業證書打樣完成，請確認字型"],
+];
+
+Showcase.run({ scenes: [
+  {
+    id: "cards", title: "照片卡堆疊",
+    api: "new Hammer.Manager(el) + Pan / Swipe / Pinch / Rotate / Tap({ taps: 2 }) / Press，recognizeWith",
+    desc: "一個 Manager 掛在卡片堆上，手勢永遠作用在最上面那張：pan 讓卡片跟手並依水平位移傾斜，放開時位移超過 35% 或 velocityX 夠快就甩出；doubletap 放大、press 450ms 顯示說明；觸控螢幕可雙指 pinch 縮放、rotate 旋轉。swipe.recognizeWith(pan)、pinch.recognizeWith(rotate) 讓這些辨識器在同一次觸控中同時成立，否則同一時間只會有一個辨識器勝出。",
+    hint: "左右甩卡片・雙擊放大・長按看說明・觸控可雙指縮放旋轉",
+    mount(ctx) {
+      const GESTURES = [["pan", "拖曳"], ["swipe", "甩動"], ["pinch", "捏合"], ["rotate", "旋轉"], ["doubletap", "雙擊"], ["press", "長按"]];
+      ctx.html(`<div class="hm-wrap"><div class="hm-head"><b>照片卡</b><span class="hm-evt">左右甩動卡片，右收藏、左略過</span><span class="hm-score">♥ <b class="hm-nl">0</b>　✕ <b class="hm-nn">0</b></span></div>
+        <div class="hm-chips">${GESTURES.map(([k, n]) => `<span class="hm-chip" data-g="${k}">${n}<b>${k}</b></span>`).join("")}</div>
+        <div class="hm-area hm-deck"><div class="hm-stack"></div></div></div>`);
+      const stack = ctx.$(".hm-stack"), evt = evtLine(ctx.$(".hm-evt"));
+      const counts = { like: 0, nope: 0 };
+      let t = { x: 0, y: 0, s: 1, r: 0 }, base = { ...t };
+      const flash = (g) => { const c = ctx.$(`[data-g="${g}"]`); c.classList.add("on"); clearTimeout(c._t); c._t = setTimeout(() => c.classList.remove("on"), 260); };
+      const cards = () => ctx.$$(".hm-card");
+      const top = () => cards().pop();
+      const paint = (el) => {
+        el.style.transform = `translate(${t.x}px, ${t.y}px) rotate(${t.r + (t.s <= 1.02 ? t.x * 0.06 : 0)}deg) scale(${t.s})`;
+        const k = t.s <= 1.02 ? clamp(t.x / 120, -1, 1) : 0;
+        el.querySelector(".hm-like").style.opacity = Math.max(0, k);
+        el.querySelector(".hm-nope").style.opacity = Math.max(0, -k);
+      };
+      const restack = () => {
+        const c = cards();
+        c.forEach((el, i) => {
+          const depth = c.length - 1 - i, d = Math.min(depth, 3);
+          el.classList.toggle("hm-top", depth === 0);
+          el.classList.add("hm-anim");
+          if (depth > 0) { el.style.transform = `translateY(${d * 10}px) scale(${1 - d * 0.04}) rotate(${(i % 2 ? 1 : -1) * d * 1.5}deg)`; el.style.opacity = depth > 3 ? 0 : 1; }
+        });
+        t = { x: 0, y: 0, s: 1, r: 0 }; base = { ...t };
+        if (top()) paint(top());
+      };
+      const build = () => {
+        stack.innerHTML = `<div class="hm-empty">看完了<br>按「重來」再玩一次</div>`;
+        PHOTOS.forEach(([name, info], i) => {
+          const el = h("div", { class: "hm-card" });
+          el.innerHTML = `<img src="_shared/img/photo-${i + 1}.jpg" alt="" draggable="false"><div class="hm-cap">${name}<span>${i + 1} / 8</span></div>
+            <div class="hm-stamp hm-like">收藏</div><div class="hm-stamp hm-nope">略過</div><div class="hm-info">${info}</div>`;
+          stack.querySelector(".hm-empty").after(el); // first photo ends up on top
+        });
+        restack();
+      };
+      const fling = (dir) => {
+        const el = top();
+        if (!el) return;
+        el.classList.add("hm-anim");
+        t.x = dir * stack.offsetWidth * 1.6; t.y += 40;
+        paint(el); el.style.opacity = 0;
+        counts[dir > 0 ? "like" : "nope"]++;
+        ctx.$(".hm-nl").textContent = counts.like; ctx.$(".hm-nn").textContent = counts.nope;
+        ctx.timeout(() => { el.remove(); restack(); }, 330);
+      };
+      const mc = mgr(ctx, stack);
+      const pan = new H.Pan({ threshold: 2, pointers: 0 }), swipe = new H.Swipe({ velocity: 0.4 });
+      const pinch = new H.Pinch(), rotate = new H.Rotate();
+      const dtap = new H.Tap({ event: "doubletap", taps: 2 }), press = new H.Press({ time: 450 });
+      swipe.recognizeWith(pan); pinch.recognizeWith(rotate); pan.recognizeWith([pinch, rotate]);
+      mc.add([pan, swipe, rotate, pinch, dtap, press]);
+      mc.on("panstart pinchstart rotatestart", () => { const el = top(); if (el) { el.classList.remove("hm-anim"); base = { ...t }; } });
+      mc.on("panmove", (e) => { const el = top(); if (!el) return; flash("pan"); t.x = base.x + e.deltaX; t.y = base.y + e.deltaY; paint(el); });
+      mc.on("pinchmove", (e) => { const el = top(); if (!el) return; flash("pinch"); t.s = clamp(base.s * e.scale, 0.6, 3); paint(el); });
+      mc.on("rotatemove", (e) => { const el = top(); if (!el) return; flash("rotate"); t.r = base.r + e.rotation; paint(el); });
+      mc.on("swipeleft swiperight", (e) => { flash("swipe"); evt(e.type, ` overallVelocityX ${e.overallVelocityX.toFixed(2)} px/ms`); });
+      mc.on("panend pancancel", (e) => {
+        const el = top();
+        if (!el || t.s > 1.02) return;
+        const vx = Math.abs(e.velocityX) > Math.abs(e.overallVelocityX) ? e.velocityX : e.overallVelocityX;
+        const out = Math.abs(t.x) > stack.offsetWidth * 0.35 || Math.abs(vx) > 0.6;
+        evt("panend", ` deltaX ${r0(e.deltaX)}　velocityX ${vx.toFixed(2)} px/ms → ${out ? (Math.sign(t.x || vx) > 0 ? "收藏" : "略過") : "彈回"}`);
+        if (out) fling(Math.sign(t.x || vx));
+        else { el.classList.add("hm-anim"); t = { x: 0, y: 0, s: 1, r: 0 }; paint(el); }
+      });
+      mc.on("doubletap", () => {
+        const el = top();
+        if (!el) return;
+        flash("doubletap");
+        el.classList.add("hm-anim");
+        t = t.s > 1.02 ? { x: 0, y: 0, s: 1, r: 0 } : { x: 0, y: 0, s: 1.8, r: 0 };
+        evt("doubletap", t.s > 1 ? " 放大 1.8 倍（放大時不會甩出）" : " 還原");
+        paint(el);
+      });
+      mc.on("press", () => {
+        const el = top();
+        if (!el) return;
+        flash("press"); evt("press", " 按住 450ms 顯示說明");
+        const info = el.querySelector(".hm-info");
+        info.classList.add("on");
+        ctx.timeout(() => info.classList.remove("on"), 1600);
+      });
+      build();
+      const go = demoRunner(ctx, async () => {
+        const mid = () => P(stack, 0.5, 0.45);
+        let a = mid(); await gesture(ctx, [line(a, [a[0] + 70, a[1] + 8])], { ms: 500, hold: 200 });
+        await ctx.sleep(500);
+        a = mid(); await gesture(ctx, [line(a, [a[0] + 210, a[1] + 20])], { ms: 130, hold: 0, ease: false });
+        await ctx.sleep(600);
+        await taps(ctx, mid(), 2); await ctx.sleep(1000);
+        await taps(ctx, mid(), 2); await ctx.sleep(600);
+        a = mid(); await gesture(ctx, [() => a], { ms: 0, hold: 700 });
+        await ctx.sleep(1300);
+        a = mid(); await gesture(ctx, [line(a, [a[0] - 210, a[1] + 10])], { ms: 130, hold: 0, ease: false });
+      });
+      ctx.button("✕", () => fling(-1));
+      ctx.button("♥", () => fling(1), { primary: true });
+      ctx.button("重來", () => { counts.like = counts.nope = 0; ctx.$(".hm-nl").textContent = ctx.$(".hm-nn").textContent = 0; build(); });
+      ctx.button("自動示範", go);
+    },
+  },
+  {
+    id: "data", title: "事件資料",
+    api: "mc.on('hammer.input pan swipe tap press', e => e.center, e.velocity, e.angle, e.direction, e.distance)",
+    desc: "每個 Hammer 事件都帶同一組計算好的資料：center（多指時為中心點）、deltaX/deltaY 與 distance（相對按下點）、angle、velocity（px/ms，每 25ms 重算一次）、direction、deltaTime。軌跡顏色代表當下速度（青色慢、黃色快），虛線是起點到終點，箭頭是 overallVelocity。慢慢拖只會有 pan，快速甩出且速度超過 0.3 px/ms 才會再多一個 swipe。",
+    hint: "在面板上慢拖、快甩、點一下、長按，比較事件資料",
+    mount(ctx) {
+      const KEYS = [["delta", "d"], ["distance", "s"], ["angle", "a"], ["velocity", "v"], ["direction", "r"], ["deltaTime", "t"]];
+      ctx.html(`<div class="hm-wrap"><div class="hm-head"><b>事件資料</b><span class="hm-evt">慢拖、快甩、點擊、長按</span></div>
+        <div class="hm-stats">${KEYS.map(([k, c]) => `<span>${k} <b class="hm-k${c}">-</b></span>`).join("")}</div>
+        <div class="hm-area hm-pad"><canvas></canvas><div class="hm-log"></div></div></div>`);
+      const pad = ctx.$(".hm-pad"), cv = ctx.$("canvas"), g = cv.getContext("2d"), log = ctx.$(".hm-log"), evt = evtLine(ctx.$(".hm-evt"));
+      const fit = () => { const d = devicePixelRatio || 1; cv.width = pad.clientWidth * d; cv.height = pad.clientHeight * d; g.setTransform(d, 0, 0, d, 0, 0); };
+      fit(); ctx.onResize(fit);
+      let last = null, start = null, lastType = "", rep = 0;
+      const loc = (c) => { const r = cv.getBoundingClientRect(); return [c.x - r.left, c.y - r.top]; };
+      const addLog = (type, text) => {
+        if (type === lastType && type.endsWith("move")) { rep++; log.lastChild.innerHTML = `<code>${type}</code>×${rep} ${esc(text)}`; return; }
+        lastType = type; rep = 1;
+        log.append(h("div", {}, [])); log.lastChild.innerHTML = `<code>${type}</code>${esc(text)}`;
+        while (log.children.length > 7) log.firstChild.remove();
+      };
+      const ring = (p, r, color, fill) => { g.beginPath(); g.arc(p[0], p[1], r, 0, 7); if (fill) { g.fillStyle = color; g.fill(); } else { g.strokeStyle = color; g.lineWidth = 2.5; g.stroke(); } };
+      const label = (p, text, color) => { g.font = "600 13px ui-monospace, monospace"; g.fillStyle = color; g.fillText(text, p[0] + 10, p[1] - 10); };
+      const show = (e) => {
+        ctx.$(".hm-kd").textContent = `${r0(e.deltaX)}, ${r0(e.deltaY)}`;
+        ctx.$(".hm-ks").textContent = `${r0(e.distance)} px`;
+        ctx.$(".hm-ka").textContent = `${r0(e.angle)}°`;
+        ctx.$(".hm-kv").textContent = `${e.velocity.toFixed(2)} px/ms`;
+        ctx.$(".hm-kr").textContent = DIR[e.direction] || "-";
+        ctx.$(".hm-kt").textContent = `${e.deltaTime} ms`;
+      };
+      const mc = mgr(ctx, pad);
+      const pan = new H.Pan({ threshold: 4 }), swipe = new H.Swipe({ velocity: 0.3 }), tp = new H.Tap(), pr = new H.Press({ time: 500 });
+      swipe.recognizeWith(pan);
+      mc.add([pan, swipe, tp, pr]);
+      mc.on("hammer.input", (e) => {
+        const p = loc(e.center);
+        if (e.isFirst) {
+          g.save(); g.globalCompositeOperation = "destination-out"; g.fillStyle = "rgba(0,0,0,.6)"; g.fillRect(0, 0, cv.width, cv.height); g.restore();
+          start = last = p; ring(p, 5, "#fff", true);
+        } else if (last) {
+          const v = Math.min(1, Math.abs(e.velocity) / 1.5);
+          g.strokeStyle = `hsl(${190 - v * 140} 90% 60%)`; g.lineWidth = 2 + v * 5; g.lineCap = "round";
+          g.beginPath(); g.moveTo(last[0], last[1]); g.lineTo(p[0], p[1]); g.stroke();
+          last = p;
+        }
+        show(e);
+        if (e.isFinal && start && e.distance > 8) {
+          g.setLineDash([5, 5]); g.strokeStyle = "rgba(255,255,255,.5)"; g.lineWidth = 1.5;
+          g.beginPath(); g.moveTo(start[0], start[1]); g.lineTo(p[0], p[1]); g.stroke(); g.setLineDash([]);
+          const len = Math.min(120, e.overallVelocity === 0 ? 0 : 40 + Math.hypot(e.overallVelocityX, e.overallVelocityY) * 60);
+          const ang = Math.atan2(e.overallVelocityY, e.overallVelocityX), q = [p[0] + Math.cos(ang) * len, p[1] + Math.sin(ang) * len];
+          if (len) {
+            g.strokeStyle = "#f7df1e"; g.lineWidth = 3; g.beginPath(); g.moveTo(p[0], p[1]); g.lineTo(q[0], q[1]);
+            for (const s of [-0.45, 0.45]) { g.moveTo(q[0], q[1]); g.lineTo(q[0] - Math.cos(ang + s) * 12, q[1] - Math.sin(ang + s) * 12); }
+            g.stroke();
+          }
+          label(p, `${r0(e.angle)}°  ${e.overallVelocity.toFixed(2)} px/ms`, "#e8e8e8");
+        }
+      });
+      mc.on("panstart panmove panend", (e) => { addLog(e.type, e.type === "panend" ? ` ${r0(e.distance)}px / ${e.deltaTime}ms` : ""); if (e.type !== "panmove") evt(e.type, ` direction ${DIR[e.direction]}　velocity ${e.velocity.toFixed(2)} px/ms`); });
+      mc.on("swipe", (e) => { const d = DIR[e.offsetDirection]; addLog(`swipe${d.toLowerCase()}`, ` ${e.overallVelocity.toFixed(2)} px/ms`); evt("swipe", ` offsetDirection ${d}，overallVelocity ${e.overallVelocity.toFixed(2)} px/ms 超過 0.3`); label(loc(e.center).map((v, i) => v + (i ? 18 : 0)), `swipe${d.toLowerCase()}`, "#f7df1e"); });
+      mc.on("tap", (e) => { const p = loc(e.center); ring(p, 16, "#4cc9f0"); label(p, "tap", "#4cc9f0"); addLog("tap", ` ${r0(e.center.x)}, ${r0(e.center.y)}`); evt("tap", ` 按住 ${e.deltaTime}ms，移動 ${r0(e.distance)}px（上限 250ms、9px）`); });
+      mc.on("press", (e) => { const p = loc(e.center); ring(p, 22, "rgba(255,107,107,.35)", true); label(p, "press", "#ff6b6b"); addLog("press", " 500ms"); evt("press", " 按住超過 500ms 且移動不到 9px"); });
+      const go = demoRunner(ctx, async () => {
+        const f = (fx, fy) => P(pad, fx, fy);
+        const a = f(0.1, 0.65), b = f(0.55, 0.35);
+        await gesture(ctx, [(k) => [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k - Math.sin(k * Math.PI * 2) * 50]], { ms: 1500, hold: 120, ease: false });
+        await ctx.sleep(700);
+        const c = f(0.2, 0.8);
+        await gesture(ctx, [line(c, [c[0] + 190, c[1] - 110])], { ms: 120, hold: 0, ease: false });
+        await ctx.sleep(700);
+        await tap(ctx, f(0.75, 0.3));
+        await ctx.sleep(500);
+        const d = f(0.82, 0.62);
+        await gesture(ctx, [() => d], { ms: 0, hold: 650 });
+      });
+      ctx.button("清除", () => { g.clearRect(0, 0, cv.width, cv.height); log.replaceChildren(); });
+      ctx.button("自動示範", go);
+    },
+  },
+  {
+    id: "taps", title: "點擊家族",
+    api: "Tap({ taps: 1 | 2 | 3, interval }) + requireFailure() / recognizeWith()",
+    desc: "同一個元素同時辨識單擊、雙擊、三擊與長按。requireFailure 模式：單擊要等雙擊、三擊都失敗才送出，所以每次單擊都晚 interval 毫秒（預設 300ms）；三個 Tap 必須依三擊、雙擊、單擊的順序加入，失敗計時器才會先到。recognizeWith 模式：全部即時送出，三擊時會連帶收到 3 次 tap 與 1 次 doubletap。時間軸上的數字是放開手指到事件送出的延遲。",
+    hint: "上方切換模式，再對圓形按鈕單擊、雙擊、三擊或長按",
+    mount(ctx) {
+      const LANES = [["raw", "pointer"], ["tap", ""], ["doubletap", ""], ["tripletap", ""], ["press", ""]];
+      const COLOR = { tap: "var(--c2)", doubletap: "var(--accent)", tripletap: "var(--c5)", press: "var(--c3)" };
+      ctx.html(`<div class="hm-wrap"><div class="hm-head"><b>點擊家族</b><span class="hm-evt"></span></div>
+        <div class="hm-taps"><div class="hm-area hm-tpad"><span>點我</span></div>
+        <div class="hm-area hm-lanes">${LANES.map(([k, s]) => `<div class="hm-lane" data-l="${k}"><label>${k}<small>${s}</small></label><div class="hm-track"></div></div>`).join("")}
+        <div class="hm-axis"><span>0</span><span>1 秒</span><span>2 秒</span><span>3 秒</span><span>4 秒</span><span>5 秒</span></div></div></div></div>`);
+      const pad = ctx.$(".hm-tpad"), evt = evtLine(ctx.$(".hm-evt"));
+      const WIN = 5000;
+      let strict = true, interval = 300, mc = null, t0 = 0, lastIn = 0, lastUp = 0;
+      const track = (k) => ctx.$(`[data-l="${k}"] .hm-track`);
+      const clear = () => ctx.$$(".hm-track").forEach((x) => x.replaceChildren());
+      const pos = (now) => {
+        if (!t0 || now - lastIn > 2500 || now - t0 > WIN) { t0 = now; clear(); ctx.$$(".hm-lane small").forEach((s, i) => { if (i) s.textContent = ""; }); }
+        lastIn = now;
+        return `${((now - t0) / WIN) * 100}%`;
+      };
+      const raw = (e) => {
+        if (!(e.isFirst || e.isFinal)) return;
+        const now = performance.now(), x = pos(now);
+        pad.classList.toggle("down", !e.isFinal);
+        if (e.isFinal) lastUp = now;
+        track("raw").append(h("i", { class: `hm-tick${e.isFinal ? " up" : ""}`, style: `left:${x}` }));
+      };
+      const mark = (e) => {
+        const now = performance.now(), lat = e.type === "press" ? null : r0(now - lastUp);
+        const dot = h("i", { class: "hm-dot", style: `left:${pos(now)};--k:${COLOR[e.type]}` });
+        dot.innerHTML = `<em>${lat === null ? "500" : "+" + lat}</em>`;
+        track(e.type).append(dot);
+        ctx.$(`[data-l="${e.type}"] small`).textContent = lat === null ? "按住 500ms" : `延遲 ${lat} ms`;
+        evt(e.type, lat === null ? " 按住超過 500ms" : ` tapCount ${e.tapCount}，放開後 ${lat} ms 才送出`);
+      };
+      const build = () => {
+        if (mc) mc.destroy();
+        mc = new H.Manager(pad);
+        const triple = new H.Tap({ event: "tripletap", taps: 3, interval }), dbl = new H.Tap({ event: "doubletap", taps: 2, interval });
+        const single = new H.Tap({ event: "tap", interval }), press = new H.Press({ time: 500 });
+        mc.add([triple, dbl, single, press]);
+        triple.recognizeWith([dbl, single]); dbl.recognizeWith(single);
+        if (strict) { dbl.requireFailure(triple); single.requireFailure([triple, dbl]); }
+        mc.on("hammer.input", raw);
+        mc.on("tap doubletap tripletap press", mark);
+        evt("模式", strict ? ` requireFailure：單擊等雙擊、三擊失敗（interval ${interval}ms）` : " recognizeWith：全部即時送出，可能重複");
+      };
+      ctx.onCleanup(() => mc && mc.destroy());
+      build();
+      ctx.group(["requireFailure", "recognizeWith"], 0, (i) => { strict = i === 0; build(); });
+      ctx.slider("interval", { min: 150, max: 600, step: 50, value: interval, format: (v) => `${v} ms` }, (v) => { interval = v; build(); });
+      const go = demoRunner(ctx, async () => {
+        const c = () => P(pad);
+        await taps(ctx, c(), 1); await ctx.sleep(750);
+        await taps(ctx, c(), 2); await ctx.sleep(750);
+        await taps(ctx, c(), 3); await ctx.sleep(650);
+        await gesture(ctx, [c], { ms: 0, hold: 650 });
+      });
+      ctx.button("自動示範", go);
+    },
+  },
+  {
+    id: "swipelist", title: "滑動刪除",
+    api: "Pan({ direction: DIRECTION_HORIZONTAL, threshold }) + Swipe，touch-action 自動算成 pan-y",
+    desc: "每列訊息有自己的 Manager，Pan 只收水平方向，所以 Hammer 把該列的 touch-action 設成 pan-y：觸控螢幕上垂直滑動仍交給瀏覽器原生捲動，水平才由 Hammer 接手。向左拖過 40% 或快速甩出刪除、向右封存。虛線圈是 threshold 半徑，手指移出圈外才送 panstart（變實線）。切到「全部方向」時 touch-action 變成 none，觸控時清單就無法原生捲動。",
+    hint: "左右拖曳訊息・調 threshold・切換方向看 touch-action 變化",
+    mount(ctx) {
+      ctx.html(`<div class="hm-wrap"><div class="hm-head"><b>收件匣</b><span class="hm-evt">左滑刪除、右滑封存</span></div>
+        <div class="hm-stats"><span>touch-action <b class="hm-ta">-</b></span><span>direction <b class="hm-dr">HORIZONTAL</b></span><span>threshold <b class="hm-th">10 px</b></span><span>刪除 <b class="hm-nd">0</b></span><span>封存 <b class="hm-na">0</b></span></div>
+        <div class="hm-area hm-inbox"><div class="hm-list"></div><div class="hm-ring"></div></div></div>`);
+      const list = ctx.$(".hm-list"), box = ctx.$(".hm-inbox"), ringEl = ctx.$(".hm-ring"), evt = evtLine(ctx.$(".hm-evt"));
+      let thr = 10, all = false, mcs = [], done = { d: 0, a: 0 };
+      const dirOf = () => (all ? H.DIRECTION_ALL : H.DIRECTION_HORIZONTAL);
+      const showTA = () => { ctx.$(".hm-ta").textContent = list.firstElementChild ? list.firstElementChild.style.touchAction || "auto" : "-"; };
+      const ring = (c, on, go) => {
+        const r = box.getBoundingClientRect(), d = Math.max(6, thr * 2);
+        Object.assign(ringEl.style, { width: `${d}px`, height: `${d}px`, transform: `translate(${c.x - r.left - d / 2}px, ${c.y - r.top + box.scrollTop - d / 2}px)` });
+        ringEl.classList.toggle("on", on); ringEl.classList.toggle("go", go);
+      };
+      const remove = (row, msg, dir) => {
+        msg.classList.add("hm-anim"); msg.style.transform = `translateX(${dir * 110}%)`;
+        done[dir < 0 ? "d" : "a"]++;
+        ctx.$(".hm-nd").textContent = done.d; ctx.$(".hm-na").textContent = done.a;
+        ctx.timeout(() => row.animate([{ height: `${row.offsetHeight}px` }, { height: "0px" }], { duration: 200 }).onfinish = () => row.remove(), 260);
+      };
+      const build = () => {
+        mcs.forEach((m) => m.destroy()); mcs = [];
+        done = { d: 0, a: 0 }; ctx.$(".hm-nd").textContent = ctx.$(".hm-na").textContent = 0;
+        list.replaceChildren();
+        for (const [who, when, text] of MAIL) {
+          const row = h("div", { class: "hm-row" });
+          row.innerHTML = `<div class="hm-under"><span>封存</span><span>刪除</span></div><div class="hm-msg"><b>${who}</b><time>${when}</time><p>${text}</p></div>`;
+          list.append(row);
+          const msg = row.querySelector(".hm-msg"), under = row.querySelector(".hm-under");
+          const mc = new H.Manager(row);
+          const pan = new H.Pan({ direction: dirOf(), threshold: thr }), swipe = new H.Swipe({ direction: dirOf() });
+          swipe.recognizeWith(pan);
+          mc.add([swipe, pan]);
+          let x = 0, swiped = 0, started = false;
+          mc.on("hammer.input", (e) => {
+            if (e.isFirst) { started = false; swiped = 0; }
+            ring(e.center, !e.isFinal, started);
+            if (e.isFinal && !started) evt("hammer.input", ` 位移 ${r0(e.deltaX)}, ${r0(e.deltaY)}：${all ? "未超過 threshold" : "未超過 threshold 或方向不是水平"}，pan 沒有觸發`);
+          });
+          mc.on("panstart", (e) => { started = true; ring(e.center, true, true); msg.classList.remove("hm-anim"); evt("panstart", ` 移動 ${r0(e.distance)}px 超過 threshold ${thr}px，方向 ${DIR[e.direction]}`); });
+          mc.on("panmove", (e) => { x = e.deltaX; msg.style.transform = `translateX(${x}px)`; under.classList.toggle("del", x < 0); });
+          mc.on("swipeleft swiperight", (e) => { swiped = e.type === "swipeleft" ? -1 : 1; });
+          mc.on("panend pancancel", (e) => {
+            const dir = swiped || (Math.abs(x) > row.offsetWidth * 0.4 ? Math.sign(x) : 0);
+            evt(swiped ? (swiped < 0 ? "swipeleft" : "swiperight") : "panend", ` deltaX ${r0(x)}（列寬 ${row.offsetWidth}）→ ${dir < 0 ? "刪除" : dir > 0 ? "封存" : "彈回"}`);
+            if (dir) remove(row, msg, dir); else { msg.classList.add("hm-anim"); msg.style.transform = ""; }
+            x = 0;
+          });
+          mcs.push(mc);
+        }
+        showTA();
+      };
+      ctx.onCleanup(() => mcs.forEach((m) => m.destroy()));
+      build();
+      const setAll = () => {
+        for (const m of mcs) { m.get("pan").set({ direction: dirOf(), threshold: thr }); m.get("swipe").set({ direction: dirOf() }); }
+        ctx.$(".hm-dr").textContent = all ? "ALL" : "HORIZONTAL"; ctx.$(".hm-th").textContent = `${thr} px`;
+        showTA();
+      };
+      ctx.group(["水平", "全部方向"], 0, (i) => { all = i === 1; setAll(); evt("set", ` direction ${all ? "ALL" : "HORIZONTAL"}，touch-action 變成 ${ctx.$(".hm-ta").textContent}`); });
+      ctx.slider("threshold", { min: 0, max: 60, value: thr, format: (v) => `${v} px` }, (v) => { thr = v; setAll(); });
+      ctx.button("重置清單", build);
+      const go = demoRunner(ctx, async () => {
+        const rows = () => ctx.$$(".hm-row");
+        let a = P(rows()[2], 0.5, 0.5);
+        await gesture(ctx, [line(a, [a[0] + 4, a[1] + 70])], { ms: 500, hold: 150 });
+        await ctx.sleep(900);
+        a = P(rows()[0], 0.6, 0.5);
+        await gesture(ctx, [line(a, [a[0] - rows()[0].offsetWidth * 0.28, a[1]])], { ms: 700, hold: 300 });
+        await ctx.sleep(700);
+        a = P(rows()[1], 0.7, 0.5);
+        await gesture(ctx, [line(a, [a[0] - 150, a[1] + 4])], { ms: 110, hold: 0, ease: false });
+        await ctx.sleep(900);
+        a = P(rows()[2], 0.25, 0.5);
+        await gesture(ctx, [line(a, [a[0] + rows()[2].offsetWidth * 0.5, a[1]])], { ms: 800, hold: 200 });
+      });
+      ctx.button("自動示範", go);
+    },
+  },
+  {
+    id: "pinch", title: "雙指縮放旋轉",
+    api: "Pinch() + Rotate()，pinch.recognizeWith(rotate) 或 dropRecognizeWith(rotate)",
+    desc: "Pinch 與 Rotate 都需要兩個指標，也就是觸控螢幕的兩根手指；桌機滑鼠只有一個指標（觸控板的雙指縮放在瀏覽器裡是 ctrl + wheel，不是指標事件），所以這裡由程式送出兩組 pointerType: touch 的合成事件（黃色圓圈）。開啟 recognizeWith 時一邊旋轉一邊縮放兩者同時生效；關閉時兩邊都要 dropRecognizeWith（這個方法只拆單邊），之後同一次手勢只會有先成立的 pinch 勝出，rotatemove 次數停在 0。單指可拖移，雙擊還原。",
+    hint: "觸控螢幕兩指操作・桌機按上方「模擬」按鈕・切換 recognizeWith 比較",
+    mount(ctx) {
+      ctx.html(`<div class="hm-wrap"><div class="hm-head"><b>雙指縮放旋轉</b><span class="hm-evt">需要兩指觸控；滑鼠可單指拖移</span></div>
+        <div class="hm-stats"><span>scale <b class="hm-p1">1.00</b></span><span>rotation <b class="hm-p2">0°</b></span><span>center <b class="hm-p3">-</b></span><span>pinchmove <b class="hm-p4">0</b></span><span>rotatemove <b class="hm-p5">0</b></span></div>
+        <div class="hm-area hm-pz"><span class="hm-badge">真實觸控或合成觸控事件皆可</span><div class="hm-photo"><img src="_shared/img/photo-1.jpg" alt="峽灣"></div></div></div>`);
+      const area = ctx.$(".hm-pz"), photo = ctx.$(".hm-photo"), badge = ctx.$(".hm-badge"), evt = evtLine(ctx.$(".hm-evt"));
+      const st = { x: 0, y: 0, a: 0, s: 1 };
+      let base = { ...st }, c0 = null, nP = 0, nR = 0, together = true;
+      const apply = () => { photo.style.transform = `translate(${st.x}px, ${st.y}px) rotate(${st.a}deg) scale(${st.s})`; };
+      const reset = () => { Object.assign(st, { x: area.clientWidth / 2 - photo.offsetWidth / 2, y: area.clientHeight / 2 - photo.offsetHeight / 2, a: 0, s: 1 }); apply(); };
+      reset(); ctx.onResize(reset);
+      const mc = mgr(ctx, area);
+      const pinch = new H.Pinch(), rotate = new H.Rotate(), pan = new H.Pan({ pointers: 1 }), dbl = new H.Tap({ event: "doubletap", taps: 2 });
+      pinch.recognizeWith(rotate);
+      mc.add([pinch, rotate, pan, dbl]);
+      const begin = (e) => { base = { ...st }; c0 = e.type === "panstart" ? { x: e.center.x - e.deltaX, y: e.center.y - e.deltaY } : e.center; if (e.type !== "panstart") { nP = nR = 0; ctx.$(".hm-p4").textContent = ctx.$(".hm-p5").textContent = 0; } };
+      const follow = (e) => { st.x = base.x + e.center.x - c0.x; st.y = base.y + e.center.y - c0.y; ctx.$(".hm-p3").textContent = `${r0(e.center.x)}, ${r0(e.center.y)}`; };
+      mc.on("pinchstart rotatestart panstart", begin);
+      mc.on("pinchmove", (e) => { st.s = clamp(base.s * e.scale, 0.4, 3); follow(e); apply(); ctx.$(".hm-p1").textContent = e.scale.toFixed(2); ctx.$(".hm-p4").textContent = ++nP; evt("pinchmove", ` scale ${e.scale.toFixed(2)}　pointers ${e.pointers.length}`); });
+      mc.on("rotatemove", (e) => { st.a = base.a + e.rotation; if (!together || !pinch.state) follow(e); apply(); ctx.$(".hm-p2").textContent = `${e.rotation.toFixed(1)}°`; ctx.$(".hm-p5").textContent = ++nR; });
+      mc.on("panmove", (e) => { follow(e); apply(); evt("panmove", " 單一指標：只能移動"); });
+      mc.on("pinchend rotateend", () => evt("end", ` pinchmove ${nP} 次、rotatemove ${nR} 次${together ? "" : "（未設 recognizeWith，只有一個辨識器勝出）"}`));
+      mc.on("doubletap", () => { reset(); evt("doubletap", " 還原"); });
+      const twoFinger = async (turn, spread) => {
+        badge.textContent = "合成觸控事件：pointerType 'touch' × 2"; badge.classList.add("on");
+        const c = P(photo), a0 = -0.5;
+        const f = (sgn) => (k) => { const a = a0 + (turn * Math.PI / 180) * k, r = 50 + spread * k; return [c[0] + sgn * r * Math.cos(a), c[1] + sgn * r * Math.sin(a)]; };
+        try { await gesture(ctx, [f(1), f(-1)], { ms: 1300, hold: 150 }); } finally { badge.classList.remove("on"); badge.textContent = "真實觸控或合成觸控事件皆可"; }
+      };
+      const go = demoRunner(ctx, async () => { await twoFinger(80, 40); await ctx.sleep(500); await twoFinger(-30, -25); });
+      ctx.toggle("recognizeWith", together, (v) => { together = v; if (v) pinch.recognizeWith(rotate); else { pinch.dropRecognizeWith(rotate); rotate.dropRecognizeWith(pinch); } evt("set", v ? " pinch 與 rotate 同時辨識" : " 雙向 dropRecognizeWith（只拆一邊不會生效）：同一次手勢只會有一個辨識器"); });
+      const sim = (turn, spread) => () => { ctx.hmSince = performance.now(); twoFinger(turn, spread).catch((err) => { if (err !== USER) throw err; }); };
+      ctx.button("模擬旋轉＋放大", sim(80, 40), { primary: true });
+      ctx.button("模擬只捏合", sim(0, -30));
+      ctx.button("重設", reset);
+      ctx.button("自動示範", go);
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "new Hammer(el)  ×  N 個元素，指標事件持續輸入",
+    desc: "放入 N 個色塊，每個 new Hammer(el)（預設 7 個辨識器），程式每一幀送出合成指標事件：按下隨機色塊、拖 12 幀、放開、再移動 6 幀（hover），逐級加量直到掉到 30 FPS 以下。量建立與 destroy 耗時，以及 pointerdown、拖曳 move、hover move 交給 Hammer 處理的同步耗時。可切換成「父層單一 Manager」比較。",
+    hint: "按「自動加壓」開始・切換父層單一 Manager 比較",
+    mount(ctx) {
+      ctx.html(`<div class="hm-stress"></div>`);
+      const box = ctx.$(".hm-stress");
+      let one = false, mcs = [], parent = null, n = 0, initMs = 0, killMs = 0;
+      const T = { down: [], drag: [], hover: [] };
+      const avg = (a) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : 0);
+      const push = (a, v) => { a.push(v); if (a.length > 90) a.shift(); };
+      const kill = () => {
+        const t0 = performance.now();
+        if (parent) { parent.destroy(); parent = null; }
+        for (const m of mcs) m.destroy();
+        mcs = [];
+        killMs = performance.now() - t0;
+      };
+      ctx.onCleanup(kill);
+      const onPan = (e) => { const el = e.target.closest(".hm-stress > div"); if (el) el.style.translate = e.type === "panend" ? "" : `${e.deltaX}px ${e.deltaY}px`; };
+      const build = (count) => {
+        kill(); n = count;
+        T.down.length = T.drag.length = T.hover.length = 0;
+        const W = box.clientWidth - 8, Hh = box.clientHeight - 8;
+        const side = Math.max(3, Math.floor(Math.sqrt((W * Hh) / n)) - 1);
+        box.style.gridTemplateColumns = `repeat(${Math.max(1, Math.floor(W / (side + 1)))}, ${side}px)`;
+        box.style.gridAutoRows = `${side}px`;
+        const frag = document.createDocumentFragment();
+        for (let i = 0; i < n; i++) { const d = document.createElement("div"); d.style.background = `hsl(${(i / n) * 300} 70% 55%)`; frag.append(d); }
+        box.replaceChildren(frag);
+        const t0 = performance.now();
+        if (one) { parent = new H(box); parent.on("panmove panend", onPan); } else for (const d of box.children) { const m = new H(d); m.on("panmove panend", onPan); mcs.push(m); }
+        initMs = performance.now() - t0;
+      };
+      const timed = (type, x, y) => { const t0 = performance.now(); fire(type, x, y); return performance.now() - t0; };
+      const bot = { phase: 0, k: 0, x: 0, y: 0, a: 0 };
+      ctx.raf(() => {
+        if (!n || !box.children.length) return;
+        if (bot.phase === 0) {
+          const d = box.children[(Math.random() * box.children.length) | 0], r = d.getBoundingClientRect();
+          bot.x = r.left + r.width / 2; bot.y = r.top + r.height / 2; bot.a = Math.random() * 6.28; bot.k = 0; bot.phase = 1;
+          push(T.down, timed("pointerdown", bot.x, bot.y));
+        } else if (bot.phase === 1) {
+          bot.x += Math.cos(bot.a) * 5; bot.y += Math.sin(bot.a) * 5;
+          push(T.drag, timed("pointermove", bot.x, bot.y));
+          if (++bot.k >= 12) { fire("pointerup", bot.x, bot.y); bot.phase = 2; bot.k = 0; }
+        } else {
+          bot.x += 7; bot.y += 3;
+          const t0 = performance.now();
+          (document.elementFromPoint(bot.x, bot.y) || box).dispatchEvent(new PointerEvent("pointermove", { bubbles: true, pointerId: ROBOT, pointerType: "mouse", button: -1, buttons: 0, clientX: bot.x, clientY: bot.y }));
+          push(T.hover, performance.now() - t0);
+          if (++bot.k >= 6) bot.phase = 0;
+        }
+      });
+      ctx.controls.classList.add("bottom");
+      ctx.toggle("父層單一 Manager", one, (v) => { one = v; build(n || 100); });
+      ctx.ramp({
+        label: "Hammer 元素", steps: [100, 300, 1000, 3000, 10000, 20000], minFps: 30,
+        apply: (c) => build(c),
+        metrics: () => ({
+          "建立": Showcase.fmtMs(initMs), "destroy": Showcase.fmtMs(killMs),
+          "pointerdown": Showcase.fmtMs(avg(T.down)), "拖曳 move": Showcase.fmtMs(avg(T.drag)), "hover move": Showcase.fmtMs(avg(T.hover)),
+          "綁定方式": one ? "父層單一" : "逐一 new Hammer",
+        }),
+        note: "Hammer 2 的 PointerEventInput 在每個 Manager 的元素上聽 pointerdown，但 pointermove / pointerup 是掛在 window 上，所以 N 個 Manager 就有 N 個 window 監聽器，每一次滑鼠移動（即使只是 hover）都要跑 N 次；建立時每個 Manager 還要產生 7 個辨識器並計算 touch-action。父層單一 Manager 再用 e.target 找出色塊，成本與 N 無關。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

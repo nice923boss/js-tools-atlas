@@ -3,170 +3,1549 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>KAPLAY 示範：豆豆躲隕石</title>
+<title>KAPLAY 示範：8 個場景看懂 2D 遊戲函式庫與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["豆豆躲隕石","關卡與平台","元件組合","守衛 AI","光線投射","著色器","補間與粒子","極限測試"]}</script>
 <style>
-  canvas { position: fixed; inset: 0; width: 100% !important; height: 100% !important; display: block; outline: none; touch-action: none; }
+  .kp-box { position: absolute; inset: 0; overflow: hidden; }
+  .kp-box canvas, .stress-box canvas { display: block; outline: none; touch-action: none; }
+  .sc-scene.kp-night { background: radial-gradient(120% 90% at 50% 0%, #1d2540 0%, #12151d 55%, #0e1013 100%); }
+  .sc-scene.kp-studio { background: radial-gradient(70% 90% at 50% 40%, #20232c, #0e1013); }
+  .sc-scene.kp-paper { background: #15181e radial-gradient(rgba(255,255,255,.10) 1px, transparent 1.6px) 0 0 / 22px 22px; }
+  .readout {
+    position: absolute; left: 10px; bottom: 10px; z-index: 20; max-width: calc(100% - 20px); padding: 6px 10px; border-radius: 8px;
+    background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(6px); pointer-events: none;
+    font: 500 11.5px/1.45 var(--font); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .readout b { font-family: var(--mono); color: var(--accent); font-weight: 600; }
+  .readout code { font-family: var(--mono); color: var(--fg); }
+  .kp-msg {
+    position: absolute; left: 50%; top: 22%; transform: translateX(-50%); z-index: 15; pointer-events: none; white-space: nowrap;
+    font: 800 22px/1.2 var(--font); color: var(--accent); text-shadow: 0 3px 12px rgba(0,0,0,.6); opacity: 0; transition: opacity .3s;
+  }
+  .kp-msg.show { opacity: 1; }
+  .kp-pad { position: absolute; right: 10px; bottom: 10px; z-index: 25; display: none; gap: 8px; }
+  .kp-pad .btn { width: 52px; height: 46px; padding: 0; font-size: 18px; touch-action: none; user-select: none; }
+  .kp-pad .btn.primary { width: 64px; font: 700 15px var(--font); }
+  @media (pointer: coarse) { .kp-pad { display: flex; } .kp-has-pad .readout { bottom: 66px; } }
+  .kp-err {
+    position: absolute; left: 50%; bottom: 52px; transform: translateX(-50%); z-index: 18; width: min(560px, calc(100% - 20px));
+    padding: 8px 12px; border-radius: 10px; background: var(--panel); border: 1px solid rgba(247,37,133,.55); backdrop-filter: blur(6px);
+    font: 500 12.5px/1.55 var(--font); color: var(--fg); pointer-events: none;
+  }
+  .kp-err[hidden] { display: none; }
+  .kp-err code { display: block; font: 12px/1.45 var(--mono); color: #ff7aa8; white-space: normal; word-break: break-word; margin-bottom: 4px; }
+  .stress-box {
+    position: absolute; top: 8px; right: 8px; bottom: calc(var(--sc-ctl-b, 0px) + 8px); left: 350px;
+    border-radius: 12px; border: 1px solid var(--line); background: rgba(255,255,255,.02); overflow: hidden;
+  }
+  @media (max-width: 760px) { .stress-box { left: 8px; } }
 </style>
 </head>
 <body>
-<div class="hint">← → 或按住拖曳移動，躲開隕石、接住金幣</div>
-
 <script src="https://cdn.jsdelivr.net/npm/kaplay@3001.0.19/dist/kaplay.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// KAPLAY dodge game: built-in bean sprite, scenes, area collisions, addKaboom explosion, lifespan particles.
-kaplay({ background: [14, 16, 19], font: "sans-serif", crisp: false });
-loadBean();
+// KAPLAY showcase: eight scenes from the original meteor-dodging game to an object-count stress ramp.
+const rootCss = getComputedStyle(document.documentElement);
+const cssVar = (name, fallback) => rootCss.getPropertyValue(name).trim() || fallback;
+const C = {
+  c1: cssVar("--c1", "#f7df1e"), c2: cssVar("--c2", "#4cc9f0"), c3: cssVar("--c3", "#f72585"),
+  c4: cssVar("--c4", "#7bd389"), c5: cssVar("--c5", "#ff8c42"), c6: cssVar("--c6", "#9d8cff"),
+};
+const COLORS = [C.c1, C.c2, C.c3, C.c4, C.c5, C.c6];
+const FONT = cssVar("--font", "sans-serif");
+const MONO = cssVar("--mono", "monospace");
+const DPR = Math.min(2, devicePixelRatio || 1);
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const rnd = (lo, hi) => lo + Math.random() * (hi - lo);
+const fmtN = (n) => n.toLocaleString("en-US");
+// Y just below the top-right control cluster, so scene content starts under the buttons.
+const belowControls = (ctx) => ctx.controls.offsetHeight + 20;
+const PHOTO = (i) => `_shared/img/photo-${i}.jpg`;
+const unmounted = () => new DOMException("Scene unmounted", "AbortError");
 
-const FONT = "sans-serif";
-const ROCKS = ["#f72585", "#ff8c42", "#9d8cff", "#4cc9f0"];
-let best = 0;
-
-// parallax star backdrop as a custom draw component
-function starfield() {
-  const stars = Array.from({ length: 90 }, () => ({ x: rand(0, 1), y: rand(0, 1), r: rand(0.6, 2.2), v: rand(0.02, 0.12) }));
-  add([z(-10), {
-    update() { for (const s of stars) { s.y += s.v * dt(); if (s.y > 1) s.y -= 1; } },
-    draw() {
-      for (const s of stars) drawCircle({ pos: vec2(s.x * width(), s.y * height()), radius: s.r, color: rgb(255, 255, 255), opacity: 0.25 + s.r * 0.2 });
-    },
-  }]);
+function canvas2d(w, h, draw) {
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  draw(c.getContext("2d"), w, h);
+  return c;
 }
-
-function spawnRock(speedMul = 1) {
-  const r = rand(12, 30);
-  const rock = add([
-    pos(rand(r, width() - r), -r - 10),
-    circle(r),
-    anchor("center"),
-    color(Color.fromHex(choose(ROCKS))),
-    outline(3, Color.fromHex("#1a1a14")),
-    area(),
-    rotate(0),
-    "rock",
-    { vy: rand(150, 250) * speedMul, spin: rand(-200, 200) },
-  ]);
-  rock.onUpdate(() => {
-    rock.pos.y += rock.vy * dt();
-    rock.angle += rock.spin * dt();
-    if (rand() < 0.45) {
-      add([pos(rock.pos.add(rand(-r, r) * 0.5, -r * 0.6)), circle(rand(2, 5)), anchor("center"),
-        color(rock.color), opacity(0.6), lifespan(0.35, { fade: 0.3 }), z(-1)]);
-    }
-    if (rock.pos.y > height() + r + 10) destroy(rock);
-  });
-  return rock;
-}
-
-function spawnCoin() {
-  const c = add([pos(rand(20, width() - 20), -20), circle(11), anchor("center"), color(Color.fromHex("#f7df1e")),
-    outline(3, Color.fromHex("#8a7a00")), area(), scale(1), "coin", { vy: rand(120, 170) }]);
-  c.onUpdate(() => {
-    c.pos.y += c.vy * dt();
-    c.scale = vec2(Math.abs(Math.sin(time() * 5)) * 0.8 + 0.2, 1);
-    if (c.pos.y > height() + 30) destroy(c);
+// Soft white dot; tinted per particle.
+function glowCanvas(s, core = 0.25) {
+  return canvas2d(s, s, (g) => {
+    const r = s / 2, grd = g.createRadialGradient(r, r, 0, r, r, r);
+    grd.addColorStop(0, "rgba(255,255,255,1)");
+    grd.addColorStop(core, "rgba(255,255,255,0.8)");
+    grd.addColorStop(1, "rgba(255,255,255,0)");
+    g.fillStyle = grd;
+    g.fillRect(0, 0, s, s);
   });
 }
-
-function popText(p, msg, col) {
-  add([pos(p), text(msg, { size: 22, font: FONT }), anchor("center"), color(Color.fromHex(col)), opacity(1),
-    move(UP, 70), lifespan(0.7, { fade: 0.5 })]);
+// Six shaded balls in one 96x16 strip (sliceX: 6).
+function ballAtlas() {
+  return canvas2d(96, 16, (g) => COLORS.forEach((c, i) => {
+    const grd = g.createRadialGradient(i * 16 + 6, 6, 1, i * 16 + 8, 8, 8);
+    grd.addColorStop(0, "#ffffff");
+    grd.addColorStop(0.35, c);
+    grd.addColorStop(1, c);
+    g.fillStyle = grd;
+    g.beginPath();
+    g.arc(i * 16 + 8, 8, 7.5, 0, Math.PI * 2);
+    g.fill();
+  }));
 }
-
-scene("title", () => {
-  starfield();
-  const demo = () => { spawnRock(0.8); wait(rand(0.25, 0.6), demo); };
-  demo();
-  const bean = add([sprite("bean"), pos(center().add(0, -height() * 0.2)), anchor("center"), scale(1.6), rotate(0)]);
-  bean.onUpdate(() => {
-    bean.pos = center().add(Math.sin(time() * 2) * 30, -height() * 0.2 + Math.sin(time() * 4) * 8);
-    bean.angle = Math.sin(time() * 2) * 10;
-  });
-  const title = add([text("豆豆躲隕石", { size: Math.min(56, width() / 7), font: FONT }), pos(center().add(0, 20)), anchor("center"),
-    color(Color.fromHex("#f7df1e")), outline(4, Color.fromHex("#1a1a14")), z(5)]);
-  add([text("躲開彩色隕石，接住金幣加分", { size: 18, font: FONT }), pos(center().add(0, 70)), anchor("center"),
-    color(Color.fromHex("#ecebe6")), z(5)]);
-  const go1 = add([text("按任意鍵或點擊開始", { size: 18, font: FONT }), pos(center().add(0, 106)), anchor("center"),
-    color(Color.fromHex("#4cc9f0")), opacity(1), z(5)]);
-  go1.onUpdate(() => { go1.opacity = 0.55 + Math.sin(time() * 5) * 0.45; });
-  title.onUpdate(() => { title.scale = vec2(1 + Math.sin(time() * 3) * 0.03); });
-  onKeyPress(() => go("game"));
-  onMousePress(() => go("game"));
-  onResize(() => go("title"));
-});
-
-scene("game", () => {
-  starfield();
-  let score = 0, alive = true, elapsed = 0;
-  const player = add([sprite("bean"), pos(width() / 2, height() - 70), anchor("center"), area({ scale: 0.72 }), scale(1), rotate(0), "player"]);
-  const hud = add([text("分數 0", { size: 22, font: FONT }), pos(16, 14), color(Color.fromHex("#f7df1e")), z(10)]);
-  const lvl = add([text("", { size: 15, font: FONT }), pos(16, 44), color(Color.fromHex("#9b998f")), z(10)]);
-
-  const loopRocks = () => {
-    if (!alive) return;
-    spawnRock(1 + elapsed * 0.03);
-    if (elapsed > 12 && rand() < 0.3) spawnRock(1.2 + elapsed * 0.03);
-    wait(Math.max(0.16, 0.6 - elapsed * 0.012), loopRocks);
+// Status line in the bottom-left corner; returns a setter that takes HTML.
+function readout(ctx, parent = ctx.el) {
+  const el = document.createElement("div");
+  el.className = "readout";
+  parent.append(el);
+  return (html) => { el.innerHTML = html; };
+}
+// Centred toast; returns a function that shows a line of text for 1.8 s.
+function message(ctx) {
+  const el = document.createElement("div");
+  el.className = "kp-msg";
+  ctx.el.append(el);
+  let id = 0;
+  ctx.onCleanup(() => clearTimeout(id));
+  return (text) => {
+    el.textContent = text;
+    el.classList.add("show");
+    clearTimeout(id);
+    id = setTimeout(() => el.classList.remove("show"), 1800);
   };
-  loopRocks();
-  loop(1.6, () => { if (alive) spawnCoin(); });
+}
+// Touch pad (left / right / jump) shown on coarse pointers; returns the shared input state.
+function touchPad(ctx, onPress) {
+  ctx.el.classList.add("kp-has-pad");
+  const pad = document.createElement("div");
+  pad.className = "kp-pad";
+  pad.innerHTML = `<button class="btn" data-k="left" aria-label="向左">◀</button><button class="btn" data-k="right" aria-label="向右">▶</button><button class="btn primary" data-k="jump">跳</button>`;
+  ctx.el.append(pad);
+  const touch = { left: false, right: false, jump: false };
+  for (const b of pad.querySelectorAll(".btn")) {
+    const key = b.dataset.k;
+    b.addEventListener("pointerdown", (e) => { e.preventDefault(); touch[key] = true; onPress(); });
+    for (const ev of ["pointerup", "pointerleave", "pointercancel"]) b.addEventListener(ev, () => { if (key !== "jump") touch[key] = false; });
+  }
+  return touch;
+}
 
-  player.onUpdate(() => {
-    if (!alive) return;
-    elapsed += dt();
-    score += dt() * 10;
-    hud.text = `分數 ${Math.floor(score)}`;
-    lvl.text = `速度 ×${(1 + elapsed * 0.03).toFixed(1)}`;
-    let dir = 0;
-    if (isKeyDown("left") || isKeyDown("a")) dir -= 1;
-    if (isKeyDown("right") || isKeyDown("d")) dir += 1;
-    player.pos.x += dir * 440 * dt();
-    if (isMouseDown()) player.pos.x = lerp(player.pos.x, mousePos().x, Math.min(1, dt() * 12));
-    player.pos.x = clamp(player.pos.x, 30, width() - 30);
-    player.pos.y = height() - 70;
-    player.angle = lerp(player.angle, dir * 14, 0.2);
-    player.scale = vec2(1 + Math.sin(time() * 14) * 0.04, 1 - Math.sin(time() * 14) * 0.04);
+// ---------- one KAPLAY instance per scene ----------
+let kpN = 0;
+// KAPLAY keeps its current instance in module state (kaplay() quits the previous one with a warning) and
+// caches text atlases module-wide by font family, so each scene gets unique family names, stops its loop
+// synchronously and releases its WebGL and audio contexts on cleanup.
+function kaplayIn(ctx, box, opt = {}) {
+  const canvas = document.createElement("canvas");
+  box.append(canvas);
+  const n = ++kpN, font = `"kp${n}", ${FONT}`;
+  const k = kaplay({
+    canvas, root: box, global: false, focus: false, loadingScreen: false, debug: false, crisp: false,
+    tagsAsComponents: true, pixelDensity: DPR, font, background: [14, 16, 19], ...opt,
   });
-
-  player.onCollide("coin", (c) => {
-    destroy(c);
-    score += 50;
-    popText(c.pos, "+50", "#f7df1e");
-    for (let i = 0; i < 10; i++) {
-      add([pos(c.pos), circle(rand(2, 4)), anchor("center"), color(Color.fromHex("#f7df1e")), opacity(1),
-        move(rand(0, 360), rand(80, 220)), lifespan(0.4, { fade: 0.3 })]);
-    }
+  k.FONT = font;
+  k.MONO = `"kpm${n}", ${MONO}`;
+  const { app, audio } = k._k, gl = canvas.getContext("webgl");
+  // KAPLAY listens for keys on the canvas itself
+  canvas.addEventListener("pointerdown", () => canvas.focus({ preventScroll: true }));
+  ctx.onCleanup(() => {
+    app.quit();
+    if (k._k.k === k) k._k.k = null;
+    // the AudioContext is still decoding the built-in burp sound right after start-up
+    const close = (tries) => {
+      if (audio.burpSnd?.buf || tries > 20) audio.ctx.close().catch(() => {});
+      else setTimeout(() => close(tries + 1), 150);
+    };
+    close(0);
+    const ext = gl && gl.getExtension("WEBGL_lose_context");
+    if (ext) ext.loseContext();
   });
-
-  player.onCollide("rock", () => {
-    if (!alive) return;
-    alive = false;
-    addKaboom(player.pos);
-    shake(16);
-    destroy(player);
-    best = Math.max(best, Math.floor(score));
-    wait(1.1, () => go("over", Math.floor(score)));
-  });
+  return k;
+}
+const ready = (ctx, k) => new Promise((resolve, reject) => {
+  k.onLoad(resolve);
+  ctx.onCleanup(() => reject(unmounted()));
 });
-
-scene("over", (score) => {
-  starfield();
-  add([text("撞到隕石了！", { size: Math.min(46, width() / 8), font: FONT }), pos(center().add(0, -60)), anchor("center"),
-    color(Color.fromHex("#f72585")), outline(4, Color.fromHex("#1a1a14"))]);
-  add([text(`分數 ${score}　最高 ${best}`, { size: 24, font: FONT }), pos(center().add(0, 0)), anchor("center"), color(Color.fromHex("#ecebe6"))]);
-  const again = add([text("按任意鍵或點擊再玩一次", { size: 18, font: FONT }), pos(center().add(0, 46)), anchor("center"),
-    color(Color.fromHex("#4cc9f0")), opacity(1)]);
-  again.onUpdate(() => { again.opacity = 0.55 + Math.sin(time() * 5) * 0.45; });
-  onResize(() => go("over", score));
-  wait(0.4, () => {
-    onKeyPress(() => go("game"));
-    onMousePress(() => go("game"));
+// Canvas text is rasterised into a glyph atlas on first use, so wait for the web fonts first.
+async function fontsReady(ctx) {
+  await document.fonts.ready;
+  if (!ctx.active) throw unmounted();
+}
+// Layout-dependent KAPLAY scenes rebuild once a new size settles. Call inside the scene function:
+// go() clears every event handler registered by the previous scene.
+function restartOnResize(ctx, k, name, ...args) {
+  const w0 = k.width(), h0 = k.height();
+  let id = 0;
+  k.onResize(() => {
+    clearTimeout(id);
+    id = setTimeout(() => {
+      if (ctx.active && k.getSceneName() === name && (k.width() !== w0 || k.height() !== h0)) k.go(name, ...args);
+    }, 200);
   });
-});
+}
+const fpsOf = (k) => Math.round(k.debug.fps());
 
-go("title");
+// ---------- scene 2 level data ----------
+const TS = 32, LV_W = 64, LV_H = 14;
+const LV_PITS = new Set([14, 15, 16, 33, 34, 35, 50, 51]);
+const LV_COINS = [[4, 11], [5, 11], [7, 8], [9, 8], [13, 7], [15, 7], [17, 7], [15, 10], [23, 5], [25, 5], [29, 7],
+  [34, 10], [37, 5], [39, 5], [40, 8], [44, 9], [48, 7], [51, 7], [50, 10], [56, 5], [58, 5], [61, 11]];
+const LV_CHECKPOINTS = [2, 11, 18, 22, 37, 47, 52];
+const LV_SLIMES = [[4, 12], [27, 31.5], [55, 60]];
+function levelRows() {
+  const g = Array.from({ length: LV_H }, () => Array(LV_W).fill(" "));
+  for (let x = 0; x < LV_W; x++) if (!LV_PITS.has(x)) { g[12][x] = "="; g[13][x] = "%"; }
+  for (const x of [24, 25, 44, 45]) g[11][x] = "^";
+  for (const y of [10, 11]) g[y][20] = "#";
+  for (const y of [9, 10, 11]) g[y][40] = "#";
+  for (const [a, b, y] of [[6, 10, 9], [12, 18, 8], [27, 31, 8], [36, 41, 6], [47, 52, 8], [55, 59, 6]]) {
+    for (let x = a; x <= b; x++) g[y][x] = "-";
+  }
+  for (let x = 22; x <= 26; x++) g[6][x] = "B";
+  for (const [x, y] of LV_COINS) g[y][x] = "$";
+  g[11][62] = "F";
+  return g.map((r) => r.join(""));
+}
+function levelSprites(k) {
+  const spr = (name, w, h, draw) => k.loadSprite(name, canvas2d(w, h, draw));
+  spr("grass", 32, 32, (g) => {
+    g.fillStyle = "#262c3a"; g.fillRect(0, 0, 32, 32);
+    g.fillStyle = "#30384a"; g.fillRect(5, 16, 6, 6); g.fillRect(20, 24, 7, 5);
+    g.fillStyle = "#7bd389"; g.fillRect(0, 0, 32, 8);
+    g.fillStyle = "#5cb06b"; g.fillRect(0, 8, 32, 3);
+  });
+  spr("dirt", 32, 32, (g) => {
+    g.fillStyle = "#262c3a"; g.fillRect(0, 0, 32, 32);
+    g.fillStyle = "#30384a"; g.fillRect(4, 6, 6, 6); g.fillRect(19, 18, 8, 6);
+  });
+  spr("plank", 32, 12, (g) => {
+    g.fillStyle = "#343c50"; g.fillRect(0, 0, 32, 12);
+    g.fillStyle = "#4cc9f0"; g.fillRect(0, 0, 32, 4);
+    g.fillStyle = "#2a3040"; g.fillRect(31, 0, 1, 12);
+  });
+  spr("wall", 32, 32, (g) => {
+    g.fillStyle = "#3a4256"; g.fillRect(0, 0, 32, 32);
+    g.strokeStyle = "#262c3a"; g.lineWidth = 2; g.strokeRect(1, 1, 30, 30);
+    g.fillStyle = "#4a5470"; g.fillRect(4, 4, 24, 4);
+  });
+  spr("brick", 32, 32, (g) => {
+    g.fillStyle = "#ff8c42"; g.fillRect(0, 0, 32, 32);
+    g.fillStyle = "#c9652a"; g.fillRect(0, 15, 32, 2); g.fillRect(15, 0, 2, 15); g.fillRect(7, 17, 2, 15); g.fillRect(23, 17, 2, 15);
+  });
+  spr("spike", 32, 32, (g) => {
+    g.fillStyle = "#c9c7bd";
+    const s = 32 / 3;
+    for (let i = 0; i < 3; i++) { g.beginPath(); g.moveTo(i * s, 32); g.lineTo(i * s + s / 2, 14); g.lineTo(i * s + s, 32); g.fill(); }
+  });
+  spr("kcoin", 32, 32, (g) => {
+    g.fillStyle = "#8a7a00"; g.beginPath(); g.arc(16, 16, 11, 0, Math.PI * 2); g.fill();
+    g.fillStyle = C.c1; g.beginPath(); g.arc(16, 16, 8.5, 0, Math.PI * 2); g.fill();
+  });
+  spr("slime", 30, 22, (g) => {
+    g.fillStyle = C.c3; g.beginPath(); g.roundRect(0, 0, 30, 22, [11, 11, 3, 3]); g.fill();
+    g.fillStyle = "#ffffff"; g.beginPath(); g.arc(10, 9, 4, 0, Math.PI * 2); g.arc(20, 9, 4, 0, Math.PI * 2); g.fill();
+    g.fillStyle = "#1a1a14"; g.beginPath(); g.arc(11, 10, 2, 0, Math.PI * 2); g.arc(21, 10, 2, 0, Math.PI * 2); g.fill();
+  });
+  spr("flag", 32, 96, (g) => {
+    g.fillStyle = "#c9c7bd"; g.fillRect(4, 2, 3, 94);
+    g.fillStyle = C.c4; g.beginPath(); g.moveTo(7, 6); g.lineTo(30, 17); g.lineTo(7, 28); g.fill();
+  });
+}
+
+const ROCKS = ["#f72585", "#ff8c42", "#9d8cff", "#4cc9f0"];
+
+Showcase.run({ scenes: [
+  {
+    id: "dodge", title: "豆豆躲隕石",
+    api: "kaplay({ canvas, global: false })・scene() / go()・add([sprite(), area(), …])・onCollide()・lifespan()・addKaboom()・shake()",
+    desc: "原版小遊戲：用 scene() 拆成標題、遊戲、結束三個場景，每個物件都是元件陣列組成的 GameObj。隕石拖尾是帶 lifespan() 的小圓點，撞到就 addKaboom() 加 shake()。自動示範每格預測隕石落點，挑最安全的位置。",
+    hint: "← → 或按住拖曳移動・躲開隕石、接住金幣・點一下畫面或按方向鍵即接手",
+    async mount(ctx) {
+      ctx.el.classList.add("kp-night");
+      ctx.html(`<div class="kp-box"></div>`);
+      const say = message(ctx), show = readout(ctx);
+      let auto = true, k = null, best = 0;
+      const autoBtn = ctx.toggle("自動示範", true, (v) => { auto = v; say(v ? "自動示範中" : "手動操作中"); });
+      ctx.button("重新開始", () => k && k.go("title"));
+      const takeOver = () => {
+        if (!auto) return;
+        auto = false;
+        autoBtn.setAttribute("aria-pressed", "false");
+        say("手動操作中");
+      };
+      await fontsReady(ctx);
+      k = kaplayIn(ctx, ctx.$(".kp-box"), { background: [0, 0, 0, 0] });
+      k.loadBean();
+      const { vec2, rand } = k;
+      const hex = (s) => k.Color.fromHex(s);
+      const INK = hex("#1a1a14");
+      const label = (str, size, comps) => k.add([k.text(str, { size, font: k.FONT }), k.anchor("center"), ...comps]);
+
+      // parallax star backdrop as a custom draw component
+      const starfield = () => {
+        const stars = Array.from({ length: 90 }, () => ({ x: rand(0, 1), y: rand(0, 1), r: rand(0.6, 2.2), v: rand(0.02, 0.12) }));
+        k.add([k.z(-10), {
+          update() { for (const s of stars) { s.y += s.v * k.dt(); if (s.y > 1) s.y -= 1; } },
+          draw() {
+            for (const s of stars) k.drawCircle({ pos: vec2(s.x * k.width(), s.y * k.height()), radius: s.r, color: k.WHITE, opacity: 0.25 + s.r * 0.2 });
+          },
+        }]);
+      };
+      const spawnRock = (mul = 1) => {
+        const r = rand(12, 30);
+        const rock = k.add([
+          k.pos(rand(r, k.width() - r), -r - 10), k.circle(r), k.anchor("center"), k.color(hex(k.choose(ROCKS))),
+          k.outline(3, INK), k.area(), k.rotate(0), "rock", { vy: rand(150, 250) * mul, spin: rand(-200, 200) },
+        ]);
+        rock.onUpdate(() => {
+          rock.pos.y += rock.vy * k.dt();
+          rock.angle += rock.spin * k.dt();
+          if (rand() < 0.45) {
+            k.add([k.pos(rock.pos.add(rand(-r, r) * 0.5, -r * 0.6)), k.circle(rand(2, 5)), k.anchor("center"),
+              k.color(rock.color), k.opacity(0.6), k.lifespan(0.35, { fade: 0.3 }), k.z(-1)]);
+          }
+          if (rock.pos.y > k.height() + r + 10) k.destroy(rock);
+        });
+      };
+      const spawnCoin = () => {
+        const c = k.add([k.pos(rand(20, k.width() - 20), -20), k.circle(11), k.anchor("center"), k.color(hex("#f7df1e")),
+          k.outline(3, hex("#8a7a00")), k.area(), k.scale(1), "coin", { vy: rand(120, 170) }]);
+        c.onUpdate(() => {
+          c.pos.y += c.vy * k.dt();
+          c.scale = vec2(Math.abs(Math.sin(k.time() * 5)) * 0.8 + 0.2, 1);
+          if (c.pos.y > k.height() + 30) k.destroy(c);
+        });
+      };
+      const popText = (p, msg, col) => k.add([k.pos(p), k.text(msg, { size: 22, font: k.FONT }), k.anchor("center"),
+        k.color(hex(col)), k.opacity(1), k.move(k.UP, 70), k.lifespan(0.7, { fade: 0.5 })]);
+
+      // Autopilot: score candidate x positions by simulating every rock's fall for the next 1.4 s.
+      const planX = (player) => {
+        const w = k.width(), py = player.pos.y, x0 = player.pos.x;
+        const rocks = k.get("rock"), coins = k.get("coin");
+        let bestX = x0, bestCost = Infinity;
+        for (let x = 30; x <= w - 30; x += 20) {
+          let cost = 0.05 * Math.abs(x - x0) + 0.02 * Math.abs(x - w / 2);
+          if (Math.abs(x - x0) < 25) cost -= 5;
+          for (const r of rocks) {
+            for (let t = 0; t <= 1.4; t += 0.05) {
+              const ry = r.pos.y + r.vy * t;
+              if (Math.abs(ry - py) >= r.radius + 20) continue;
+              const bx = x0 + clamp(x - x0, -440 * t, 440 * t);
+              if (Math.abs(bx - r.pos.x) < r.radius + 26) cost += 1000 / (t + 0.1);
+            }
+          }
+          for (const c of coins) {
+            const t = (py - c.pos.y) / c.vy;
+            if (t > 0 && t < 1.4 && Math.abs(c.pos.x - x) < 25 && Math.abs(c.pos.x - x0) < 440 * t + 20) cost -= 40;
+          }
+          if (cost < bestCost) { bestCost = cost; bestX = x; }
+        }
+        return bestX;
+      };
+
+      k.scene("title", () => {
+        starfield();
+        const demo = () => { spawnRock(0.8); k.wait(rand(0.25, 0.6), demo); };
+        demo();
+        const c = k.center(), w = k.width();
+        const bean = k.add([k.sprite("bean"), k.pos(c), k.anchor("center"), k.scale(1.6), k.rotate(0)]);
+        bean.onUpdate(() => {
+          bean.pos = k.center().add(Math.sin(k.time() * 2) * 30, -k.height() * 0.2 + Math.sin(k.time() * 4) * 8);
+          bean.angle = Math.sin(k.time() * 2) * 10;
+        });
+        const title = label("豆豆躲隕石", Math.min(56, w / 7), [k.pos(c.add(0, 20)), k.color(hex("#f7df1e")), k.outline(4, INK), k.scale(1), k.z(5)]);
+        label("躲開彩色隕石，接住金幣加分", 18, [k.pos(c.add(0, 70)), k.color(hex("#ecebe6")), k.z(5)]);
+        const go1 = label("按任意鍵或點擊開始", 18, [k.pos(c.add(0, 106)), k.color(hex("#4cc9f0")), k.opacity(1), k.z(5)]);
+        go1.onUpdate(() => { go1.opacity = 0.55 + Math.sin(k.time() * 5) * 0.45; });
+        title.onUpdate(() => { title.scale = vec2(1 + Math.sin(k.time() * 3) * 0.03); });
+        const t0 = k.time();
+        let leaving = false;
+        const start = () => { if (!leaving) { leaving = true; k.go("game"); } };
+        k.onUpdate(() => { if (auto && k.time() - t0 > 1.2) start(); });
+        k.onKeyPress(() => { takeOver(); start(); });
+        k.onMousePress(() => { takeOver(); start(); });
+        restartOnResize(ctx, k, "title");
+      });
+
+      k.scene("game", () => {
+        starfield();
+        let score = 0, alive = true, elapsed = 0;
+        const player = k.add([k.sprite("bean"), k.pos(k.width() / 2, k.height() - 70), k.anchor("center"), k.area({ scale: 0.72 }),
+          k.scale(1), k.rotate(0), "player"]);
+        const hud = k.add([k.text("分數 0", { size: 22, font: k.FONT }), k.pos(16, 14), k.color(hex("#f7df1e")), k.z(10)]);
+        const lvl = k.add([k.text("", { size: 15, font: k.FONT }), k.pos(16, 44), k.color(hex("#9b998f")), k.z(10)]);
+
+        const loopRocks = () => {
+          if (!alive) return;
+          spawnRock(1 + elapsed * 0.03);
+          if (elapsed > 12 && rand() < 0.3) spawnRock(1.2 + elapsed * 0.03);
+          k.wait(Math.max(0.16, 0.6 - elapsed * 0.012), loopRocks);
+        };
+        loopRocks();
+        k.loop(1.6, () => { if (alive) spawnCoin(); });
+        k.onKeyPress(["left", "right", "a", "d"], takeOver);
+        k.onMousePress(takeOver);
+
+        player.onUpdate(() => {
+          if (!alive) return;
+          const dt = k.dt();
+          elapsed += dt;
+          score += dt * 10;
+          hud.text = `分數 ${Math.floor(score)}`;
+          lvl.text = `速度 ×${(1 + elapsed * 0.03).toFixed(1)}`;
+          let dir = 0;
+          if (auto) {
+            const dx = planX(player) - player.pos.x;
+            if (Math.abs(dx) > 6) { dir = Math.sign(dx); player.pos.x += clamp(dx, -440 * dt, 440 * dt); }
+          } else {
+            if (k.isKeyDown("left") || k.isKeyDown("a")) dir -= 1;
+            if (k.isKeyDown("right") || k.isKeyDown("d")) dir += 1;
+            player.pos.x += dir * 440 * dt;
+            if (k.isMouseDown()) player.pos.x = k.lerp(player.pos.x, k.mousePos().x, Math.min(1, dt * 12));
+          }
+          player.pos.x = clamp(player.pos.x, 30, k.width() - 30);
+          player.pos.y = k.height() - 70;
+          player.angle = k.lerp(player.angle, dir * 14, 0.2);
+          player.scale = vec2(1 + Math.sin(k.time() * 14) * 0.04, 1 - Math.sin(k.time() * 14) * 0.04);
+        });
+        player.onCollide("coin", (c) => {
+          k.destroy(c);
+          score += 50;
+          popText(c.pos, "+50", "#f7df1e");
+          for (let i = 0; i < 10; i++) {
+            k.add([k.pos(c.pos), k.circle(rand(2, 4)), k.anchor("center"), k.color(hex("#f7df1e")), k.opacity(1),
+              k.move(rand(0, 360), rand(80, 220)), k.lifespan(0.4, { fade: 0.3 })]);
+          }
+        });
+        player.onCollide("rock", () => {
+          if (!alive) return;
+          alive = false;
+          k.addKaboom(player.pos);
+          k.shake(16);
+          k.destroy(player);
+          best = Math.max(best, Math.floor(score));
+          k.wait(1.1, () => k.go("over", Math.floor(score)));
+        });
+      });
+
+      k.scene("over", (score) => {
+        starfield();
+        const c = k.center();
+        label("撞到隕石了！", Math.min(46, k.width() / 8), [k.pos(c.add(0, -60)), k.color(hex("#f72585")), k.outline(4, INK)]);
+        label(`分數 ${score}　最高 ${best}`, 24, [k.pos(c), k.color(hex("#ecebe6"))]);
+        const again = label(auto ? "自動示範即將重新開始" : "按任意鍵或點擊再玩一次", 18, [k.pos(c.add(0, 46)), k.color(hex("#4cc9f0")), k.opacity(1)]);
+        again.onUpdate(() => { again.opacity = 0.55 + Math.sin(k.time() * 5) * 0.45; });
+        const t0 = k.time();
+        let leaving = false;
+        const restart = () => { if (!leaving) { leaving = true; k.go("game"); } };
+        k.onUpdate(() => { if (auto && k.time() - t0 > 1.6) restart(); });
+        k.wait(0.4, () => {
+          k.onKeyPress(() => { takeOver(); restart(); });
+          k.onMousePress(() => { takeOver(); restart(); });
+        });
+        restartOnResize(ctx, k, "over", score);
+      });
+
+      await ready(ctx, k);
+      k.go("title");
+      const paint = () => show(`場景 <code>${k.getSceneName() || "…"}</code>・物件 <b>${k.debug.numObjects()}</b>・最高分 <b>${best}</b>・${auto ? "自動示範" : "手動操作"}・<b>${fpsOf(k)}</b> FPS`);
+      paint();
+      ctx.interval(paint, 250);
+    },
+  },
+  {
+    id: "level", title: "關卡與平台",
+    api: "addLevel(rows, { tiles })・body({ isStatic })・doubleJump()・onBeforePhysicsResolve() + preventResolution()・patrol({ waypoints })・setCamPos() / setCamScale()・fixed()",
+    desc: "用字串陣列畫出 64×14 格的關卡，addLevel() 依符號生成地面、牆、尖刺、金幣與終點旗。藍色木板是單向平台：在 onBeforePhysicsResolve() 裡判斷從下方或側面穿過就取消碰撞解算。史萊姆用 patrol() 來回巡邏，背景山脈是 fixed() 物件依攝影機位置做視差。",
+    hint: "← → 移動・↑ 或空白鍵跳（可二段跳）・從上方踩扁史萊姆・按方向鍵即接手",
+    async mount(ctx) {
+      ctx.el.classList.add("kp-night");
+      ctx.html(`<div class="kp-box"></div>`);
+      const say = message(ctx), show = readout(ctx);
+      let auto = true, k = null;
+      const stats = { coins: 0, stomps: 0, fails: 0 };
+      const autoBtn = ctx.toggle("自動示範", true, (v) => { auto = v; say(v ? "自動示範中" : "手動操作中"); });
+      ctx.button("重新開始", () => k && k.go("level"));
+      const takeOver = () => {
+        if (!auto) return;
+        auto = false;
+        autoBtn.setAttribute("aria-pressed", "false");
+        say("手動操作中");
+      };
+      const touch = touchPad(ctx, takeOver);
+      await fontsReady(ctx);
+      k = kaplayIn(ctx, ctx.$(".kp-box"), { background: [0, 0, 0, 0] });
+      k.loadBean();
+      levelSprites(k);
+      const ROWS = levelRows(), LW = LV_W * TS, LH = LV_H * TS, GROUND = 12 * TS;
+      const SOLID = "=%#B";
+      const charAt = (px, py) => (ROWS[Math.floor(py / TS)] || "")[Math.floor(px / TS)] || " ";
+      const ridge = (x) => 0.5 + 0.3 * Math.sin(x * 0.006) + 0.2 * Math.sin(x * 0.017 + 1.3);
+      const RIDGES = [[0.12, 0.62, 0.2, k.rgb(26, 32, 51)], [0.3, 0.8, 0.16, k.rgb(33, 41, 62)]];
+      const SKY = Array.from({ length: 40 }, () => ({ x: Math.random(), y: Math.random() * 0.55, r: rnd(0.6, 1.8) }));
+
+      k.scene("level", () => {
+        k.setGravity(1600);
+        stats.coins = 0; stats.stomps = 0; stats.fails = 0;
+        let camX = null, safeUntil = 0, won = false, usedAir = false, stuck = 0, lastX = 0;
+
+        // parallax ridges: a fixed() object draws in screen space and offsets by the camera position itself
+        k.add([k.fixed(), k.z(-10), {
+          draw() {
+            const w = k.width(), h = k.height(), cx = camX ?? 0;
+            for (const s of SKY) {
+              const x = (((s.x * w - cx * 0.04) % w) + w) % w;
+              k.drawCircle({ pos: k.vec2(x, s.y * h), radius: s.r, color: k.WHITE, opacity: 0.45 });
+            }
+            for (const [f, base, amp, color] of RIDGES) {
+              const step = 24, off = cx * f;
+              for (let x = 0; x < w; x += step) {
+                const y0 = h * base - ridge(x + off) * amp * h, y1 = h * base - ridge(x + step + off) * amp * h;
+                k.drawPolygon({ pts: [k.vec2(x, y0), k.vec2(x + step, y1), k.vec2(x + step, h), k.vec2(x, h)], color });
+              }
+            }
+          },
+        }]);
+
+        k.addLevel(ROWS, {
+          tileWidth: TS, tileHeight: TS,
+          tiles: {
+            "=": () => [k.sprite("grass"), k.area(), k.body({ isStatic: true })],
+            "%": () => [k.sprite("dirt")],
+            "#": () => [k.sprite("wall"), k.area(), k.body({ isStatic: true })],
+            "B": () => [k.sprite("brick"), k.area(), k.body({ isStatic: true })],
+            "-": () => [k.sprite("plank"), k.area({ shape: new k.Rect(k.vec2(0), TS, 10) }), k.body({ isStatic: true }), "oneway"],
+            "^": () => [k.sprite("spike"), k.area({ shape: new k.Rect(k.vec2(3, 18), 26, 14) }), "spike"],
+            "$": () => [k.sprite("kcoin"), k.pos(16, 16), k.anchor("center"), k.area({ scale: 0.7 }), k.scale(1), "coin"],
+            "F": () => [k.sprite("flag"), k.pos(0, -64), k.area({ shape: new k.Rect(k.vec2(4, 0), 24, 96) }), "flag"],
+          },
+        });
+        k.onUpdate("coin", (c) => { c.scale = k.vec2(Math.abs(Math.sin(k.time() * 4 + c.pos.x * 0.05)) * 0.8 + 0.2, 1); });
+
+        for (const [a, b] of LV_SLIMES) {
+          const s = k.add([k.sprite("slime"), k.pos(a * TS, GROUND), k.anchor("bot"), k.area(), k.scale(1),
+            k.patrol({ waypoints: [k.vec2(a * TS, GROUND), k.vec2(b * TS, GROUND)], speed: 60, endBehavior: "ping-pong" }),
+            "slime", { lastX: a * TS }]);
+          s.onUpdate(() => {
+            if (s.pos.x !== s.lastX) s.flipX = s.pos.x < s.lastX;
+            s.lastX = s.pos.x;
+            s.scale = k.vec2(1, 1 + Math.sin(k.time() * 12 + a) * 0.08);
+          });
+        }
+
+        const player = k.add([k.sprite("bean"), k.pos(2 * TS + 16, GROUND - 4), k.anchor("bot"), k.scale(0.5),
+          k.area({ scale: k.vec2(0.65, 0.85) }), k.body({ jumpForce: 600 }), k.doubleJump(2), k.opacity(1), "player"]);
+
+        // one-way planks: only resolve when the feet were above the plank top before this physics step
+        player.onBeforePhysicsResolve((col) => {
+          const t = col.target;
+          if (!t.is("oneway")) return;
+          const feetBefore = player.pos.y - player.vel.y * k.fixedDt();
+          if (player.vel.y < 0 || feetBefore > t.worldPos().y + 2) col.preventResolution();
+        });
+        const respawn = (msg) => {
+          if (won || k.time() < safeUntil) return;
+          stats.fails++;
+          say(msg);
+          k.addKaboom(player.pos.sub(0, 12), { scale: 0.5 });
+          const cx = LV_CHECKPOINTS.filter((c) => c * TS <= player.pos.x).pop() ?? LV_CHECKPOINTS[0];
+          player.pos = k.vec2(cx * TS + 16, GROUND - 4);
+          player.vel = k.vec2(0, 0);
+          safeUntil = k.time() + 1;
+        };
+        player.onCollide("coin", (c) => { k.destroy(c); stats.coins++; });
+        player.onCollide("spike", () => respawn("踩到尖刺了！"));
+        player.onCollide("slime", (s) => {
+          if (player.vel.y > 0 && player.pos.y < s.pos.y - 22 + 14) {
+            k.destroy(s);
+            k.addKaboom(s.pos.sub(0, 10), { scale: 0.4 });
+            player.jump(420);
+            stats.stomps++;
+          } else respawn("被史萊姆撞到了！");
+        });
+        player.onCollide("flag", () => {
+          if (won) return;
+          won = true;
+          say("抵達終點！");
+          k.wait(1.5, () => k.go("level"));
+        });
+        k.onKeyPress(["space", "up", "w"], () => { takeOver(); if (!won) player.doubleJump(); });
+        k.onKeyPress(["left", "right", "a", "d"], takeOver);
+
+        // Autopilot: run right; jump at walls, spikes, ledges and slimes; spend the air jump over pits or walls.
+        const pilot = () => {
+          const p = player.pos;
+          if (player.isGrounded()) {
+            usedAir = false;
+            const front = charAt(p.x + 40, p.y - 8), edge = charAt(p.x + 24, p.y + 4);
+            const foe = k.get("slime").some((s) => s.pos.x - p.x > 0 && s.pos.x - p.x < 80 && Math.abs(s.pos.y - p.y) < 30);
+            if (SOLID.includes(front) || front === "^" || (!SOLID.includes(edge) && edge !== "-") || foe || stuck > 0.6) {
+              player.doubleJump();
+              stuck = 0;
+            }
+          } else if (!usedAir && player.vel.y > -60) {
+            const wall = SOLID.includes(charAt(p.x + 30, p.y - 8));
+            const pit = LV_PITS.has(Math.floor(p.x / TS)) || LV_PITS.has(Math.floor((p.x + 20) / TS));
+            if (wall || pit) { usedAir = true; player.doubleJump(); }
+          }
+          return 1;
+        };
+
+        player.onUpdate(() => {
+          const dt = k.dt();
+          let dir = 0;
+          if (!won) {
+            if (auto) dir = pilot();
+            else {
+              dir = (k.isKeyDown("right") || k.isKeyDown("d") || touch.right ? 1 : 0) - (k.isKeyDown("left") || k.isKeyDown("a") || touch.left ? 1 : 0);
+              if (touch.jump) player.doubleJump();
+            }
+          }
+          touch.jump = false;
+          player.vel.x = dir * 200;
+          if (dir) player.flipX = dir < 0;
+          player.pos.x = clamp(player.pos.x, 12, LW - 12);
+          stuck = player.isGrounded() && Math.abs(player.pos.x - lastX) < 0.5 ? stuck + dt : 0;
+          lastX = player.pos.x;
+          player.opacity = k.time() < safeUntil ? (Math.floor(k.time() * 12) % 2 ? 0.3 : 1) : 1;
+          if (player.pos.y > LH + 60) respawn("掉下去了！");
+
+          // camera: fit the level height, follow x within the level bounds
+          const s = k.height() / LH, half = k.width() / (2 * s);
+          const target = LW <= half * 2 ? LW / 2 : clamp(player.pos.x, half, LW - half);
+          camX = camX == null ? target : camX + (target - camX) * Math.min(1, dt * 6);
+          k.setCamScale(s);
+          k.setCamPos(camX, LH / 2);
+        });
+      });
+
+      await ready(ctx, k);
+      k.go("level");
+      const paint = () => show(`金幣 <b>${stats.coins}</b> / ${LV_COINS.length}・踩扁 <b>${stats.stomps}</b>・失誤 <b>${stats.fails}</b>・${auto ? "自動示範" : "手動操作"}・<b>${fpsOf(k)}</b> FPS`);
+      paint();
+      ctx.interval(paint, 250);
+    },
+  },
+  {
+    id: "comps", title: "元件組合",
+    api: "obj.use(comp)・obj.unuse(id)・obj.has(id)・{ id, require, update, draw, destroy, inspect }・health()・obj.inspect()",
+    desc: "KAPLAY 的物件就是一包元件：自訂元件只是帶 id、require、update、draw 的普通物件，執行中可以 use() 加上、unuse() 拿掉。角色下方列出 inspect() 回報的自訂元件；require 不滿足時 use() 與 unuse() 都會直接拋錯。",
+    hint: "點角色選取（掛著 health 時順便扣血）・選元件後按 use() 或 unuse()・對沒有 health 的角色加 hpbar 會看到相依錯誤",
+    async mount(ctx) {
+      ctx.el.classList.add("kp-paper");
+      ctx.html(`<div class="kp-box"></div><div class="kp-err" hidden></div>`);
+      const show = readout(ctx), errBox = ctx.$(".kp-err");
+      const IDS = ["wobble", "hop", "spin", "blink", "orbit", "health", "hpbar"];
+      const ZH = { wobble: "搖擺", hop: "彈跳", spin: "旋轉", blink: "閃爍", orbit: "衛星", health: "生命值", hpbar: "血條" };
+      let k = null, auto = true, sel = null, blobs = [], last = "", lastFail = false, errId = 0;
+      const autoBtn = ctx.toggle("自動示範", true, (v) => { auto = v; });
+      const takeOver = () => {
+        if (!auto) return;
+        auto = false;
+        autoBtn.setAttribute("aria-pressed", "false");
+      };
+      const pick = ctx.select("元件", IDS.map((id) => ({ value: id, label: `${ZH[id]} ${id}` })), "hpbar", takeOver);
+      ctx.button("use()", () => { takeOver(); act("use", sel, pick.value); });
+      ctx.button("unuse()", () => { takeOver(); act("unuse", sel, pick.value); });
+      ctx.onCleanup(() => clearTimeout(errId));
+      const showErr = (msg, why) => {
+        errBox.innerHTML = "<code></code><span></span>";
+        errBox.firstChild.textContent = msg;
+        errBox.lastChild.textContent = why;
+        errBox.hidden = false;
+        clearTimeout(errId);
+        errId = setTimeout(() => { errBox.hidden = true; }, 4500);
+      };
+
+      await fontsReady(ctx);
+      k = kaplayIn(ctx, ctx.$(".kp-box"), { background: [0, 0, 0, 0] });
+      const hex = (s) => k.Color.fromHex(s);
+      const INK = hex("#1a1a14"), YELLOW = hex(C.c1), GRAY = hex("#9b998f"), RED = hex(C.c3), GREEN = hex(C.c4);
+      COLORS.slice(1).forEach((c, i) => k.loadSprite(`blob${i}`, canvas2d(128, 112, (g) => {
+        g.scale(2, 2); // drawn at 2x and shown at 64x56 so scaled-up blobs stay sharp
+        g.fillStyle = "#1a1a14"; g.beginPath(); g.roundRect(2, 4, 60, 50, [26, 26, 14, 14]); g.fill();
+        g.fillStyle = c; g.beginPath(); g.roundRect(5, 7, 54, 44, [23, 23, 11, 11]); g.fill();
+        g.fillStyle = "rgba(255,255,255,.28)"; g.beginPath(); g.ellipse(20, 17, 9, 4.5, -0.4, 0, Math.PI * 2); g.fill();
+        g.fillStyle = "#ffffff"; g.beginPath(); g.arc(23, 28, 6, 0, Math.PI * 2); g.arc(41, 28, 6, 0, Math.PI * 2); g.fill();
+        g.fillStyle = "#1a1a14"; g.beginPath(); g.arc(24, 29, 3, 0, Math.PI * 2); g.arc(42, 29, 3, 0, Math.PI * 2); g.fill();
+        g.fillRect(28, 39, 8, 3);
+      })));
+
+      // Custom components: plain objects. `this` is the game object; field names must be unique across components.
+      const MAKE = {
+        wobble: () => ({
+          id: "wobble", require: ["scale"], wobT: rnd(0, 6),
+          update() { this.wobT += k.dt() * 7; const s = Math.sin(this.wobT) * 0.1; this.scale = k.vec2(this.baseS * (1 + s), this.baseS * (1 - s)); },
+          destroy() { this.scale = k.vec2(this.baseS); },
+        }),
+        hop: () => ({
+          id: "hop", require: ["pos"], hopT: 0,
+          update() { this.hopT += k.dt(); this.pos.y = this.homeY - Math.abs(Math.sin(this.hopT * 4)) * 34 * this.baseS; },
+          destroy() { this.pos.y = this.homeY; },
+          inspect() { return `hop: ${Math.round(this.homeY - this.pos.y)}px`; },
+        }),
+        spin: () => ({
+          id: "spin", require: ["rotate"],
+          update() { this.angle = (this.angle + 160 * k.dt()) % 360; },
+          destroy() { this.angle = 0; },
+        }),
+        blink: () => ({
+          id: "blink", require: ["opacity"],
+          update() { this.opacity = Math.sin(k.time() * 9) > 0 ? 1 : 0.3; },
+          destroy() { this.opacity = 1; },
+        }),
+        orbit: () => ({
+          id: "orbit",
+          draw() {
+            for (let i = 0; i < 3; i++) {
+              const a = k.time() * 3 + i * 2.094;
+              k.drawCircle({ pos: k.vec2(Math.cos(a) * 44, Math.sin(a) * 16 - 4), radius: 6, color: hex(COLORS[i]), outline: { width: 2, color: INK } });
+            }
+          },
+          inspect() { return "orbit: 3"; },
+        }),
+        health: () => k.health(5, 5),
+        hpbar: () => ({
+          id: "hpbar", require: ["health"],
+          draw() {
+            // undo the object's rotation and scale so the bar stays level and the same size
+            const sx = this.scale.x, sy = this.scale.y, top = -28 * sy - 16, f = Math.max(0, this.hp() / (this.maxHP() || 1));
+            k.pushTransform();
+            k.pushRotate(-this.angle);
+            k.pushScale(1 / sx, 1 / sy);
+            k.drawRect({ pos: k.vec2(-27, top), width: 54, height: 10, radius: 5, color: INK });
+            k.drawRect({ pos: k.vec2(-25, top + 2), width: 50 * f, height: 6, radius: 3, color: f > 0.4 ? GREEN : RED });
+            k.popTransform();
+          },
+        }),
+      };
+      const act = (kind, b, id) => {
+        if (!b) return;
+        try {
+          if (kind === "use") {
+            if (b.has(id)) return;
+            b.use(MAKE[id]());
+          } else {
+            if (!b.has(id)) return;
+            b.unuse(id);
+          }
+          lastFail = false;
+          errBox.hidden = true;
+        } catch (e) {
+          // use() attaches the component before it checks `require`, so roll the half-added component back
+          if (kind === "use" && b.has(id)) b.unuse(id);
+          lastFail = true;
+          showErr(`Error: ${e.message}`, kind === "use"
+            ? "hpbar 宣告了 require: [\"health\"]，這個角色沒有 health，use() 當場拋錯；先 use(health()) 再加血條。"
+            : "hpbar 還 require 著 health，要先 unuse(\"hpbar\") 才能拿掉 health。");
+        }
+        last = `${kind}(${id})`;
+      };
+      const pop = (b, str) => k.add([k.pos(b.pos.add(0, -44 * b.baseS)), k.text(str, { size: 20, font: k.MONO }), k.anchor("center"),
+        k.color(RED), k.opacity(1), k.move(k.UP, 60), k.lifespan(0.6, { fade: 0.4 }), k.z(6)]);
+      const hurt = (b) => {
+        b.hurt(1);
+        pop(b, "-1");
+        if (b.hp() <= 0) {
+          k.addKaboom(b.pos, { scale: 0.6 });
+          b.setHP(b.maxHP());
+        }
+      };
+
+      k.scene("comps", () => {
+        blobs = [0, 1, 2, 3, 4].map((i) => {
+          const b = k.add([k.sprite(`blob${i}`, { width: 64, height: 56 }), k.pos(0, 0), k.anchor("center"), k.scale(1), k.rotate(0), k.opacity(1), k.area(), k.z(2),
+            "blob", { idx: i, homeY: 0, baseS: 1, lab: null }]);
+          b.lab = k.add([k.text("", { size: 13, font: k.MONO, align: "center" }), k.pos(0, 0), k.anchor("top"), k.color(GRAY), k.z(3)]);
+          return b;
+        });
+        sel = blobs[3];
+        const layout = () => {
+          const w = k.width(), h = k.height(), top = belowControls(ctx);
+          const col = w / 5, s = clamp(Math.min(col / 120, (h - top) / 260), 0.55, 1.6), y = top + (h - top - 70) * 0.42;
+          for (const b of blobs) {
+            b.baseS = s;
+            b.homeY = y;
+            b.pos.x = col * (b.idx + 0.5);
+            if (!b.has("hop")) b.pos.y = y;
+            if (!b.has("wobble")) b.scale = k.vec2(s);
+            b.lab.pos = k.vec2(b.pos.x, y + 30 * s + 22);
+            b.lab.textSize = s < 0.8 ? 11 : 13;
+          }
+        };
+        layout();
+        k.onResize(layout);
+        [["wobble"], ["hop", "orbit"], ["spin", "blink"], ["health", "hpbar"], ["wobble", "hop", "orbit"]]
+          .forEach((ids, i) => ids.forEach((id) => blobs[i].use(MAKE[id]())));
+
+        // spotlight under the selected object
+        k.add([k.z(0), {
+          draw() {
+            if (!sel) return;
+            const s = sel.baseS;
+            k.drawEllipse({ pos: k.vec2(sel.pos.x, sel.homeY + 32 * s), radiusX: 46 * s, radiusY: 10 * s, color: YELLOW, opacity: 0.35 });
+          },
+        }]);
+        k.onClick("blob", (b) => {
+          takeOver();
+          sel = b;
+          if (b.has("health")) hurt(b);
+        });
+        k.loop(0.2, () => {
+          for (const b of blobs) {
+            const ins = b.inspect(), lines = IDS.filter((id) => b.has(id)).map((id) => ins[id] || id);
+            const txt = lines.length ? lines.join("\n") : "（無自訂元件）";
+            if (b.lab.text !== txt) {
+              b.lab.text = txt;
+              b.lab.font = lines.length ? k.MONO : k.FONT;
+            }
+            b.lab.color = b === sel ? YELLOW : GRAY;
+          }
+        });
+      });
+
+      await ready(ctx, k);
+      k.go("comps");
+      ctx.interval(() => {
+        if (!auto || !blobs.length) return;
+        const b = k.choose(blobs);
+        sel = b;
+        if (b.has("health") && Math.random() < 0.4) { hurt(b); return; }
+        const id = k.choose(IDS);
+        pick.value = id;
+        act(b.has(id) ? "unuse" : "use", b, id);
+      }, 1300);
+      const paint = () => {
+        const total = blobs.reduce((n, b) => n + IDS.filter((id) => b.has(id)).length, 0);
+        show(`選取 <b>#${sel ? sel.idx + 1 : 0}</b>・上一步 <code>${last || "無"}</code>${lastFail ? " 拋錯" : ""}・自訂元件共 <b>${total}</b>・${auto ? "自動示範" : "手動操作"}・<b>${fpsOf(k)}</b> FPS`);
+      };
+      paint();
+      ctx.interval(paint, 250);
+    },
+  },
+  {
+    id: "guards", title: "守衛 AI",
+    api: "addLevel() + tile({ isObstacle })・agent({ speed })・setTarget()・state(\"patrol\", […])・onStateEnter() / onStateUpdate()・level.raycast()",
+    desc: "迷宮用 tile({ isObstacle: true }) 標出牆，守衛與小偷都掛 agent()，setTarget() 交給內建 A* 找路。守衛是 state() 狀態機，在 patrol、chase、search 三態間切換；視野扇形每格用 level.raycast() 打 25 條射線，被牆擋住的地方看不到。",
+    hint: "點地板指定小偷要去的位置・扇形是守衛視野，被牆擋住就看不到・被看見時守衛從 patrol 切到 chase",
+    async mount(ctx) {
+      ctx.el.classList.add("kp-studio");
+      ctx.html(`<div class="kp-box"></div>`);
+      const say = message(ctx), show = readout(ctx);
+      let k = null, auto = true, guards = [], thief = null;
+      const stats = { gems: 0, caught: 0 };
+      const autoBtn = ctx.toggle("自動示範", true, (v) => { auto = v; say(v ? "自動示範中" : "點地板指揮小偷"); });
+      ctx.button("重新開始", () => k && k.go("maze"));
+      const takeOver = () => {
+        if (!auto) return;
+        auto = false;
+        autoBtn.setAttribute("aria-pressed", "false");
+        say("點地板指揮小偷");
+      };
+      await fontsReady(ctx);
+      k = kaplayIn(ctx, ctx.$(".kp-box"), { background: [0, 0, 0, 0] });
+      const hex = (s) => k.Color.fromHex(s);
+      const spr = (name, w, h, draw) => k.loadSprite(name, canvas2d(w, h, draw));
+      spr("mwall", 32, 32, (g) => {
+        g.fillStyle = "#3a4256"; g.fillRect(0, 0, 32, 32);
+        g.fillStyle = "#4a5470"; g.fillRect(0, 0, 32, 4);
+        g.fillStyle = "#2a3040"; g.fillRect(0, 28, 32, 4);
+      });
+      spr("guard", 26, 26, (g) => {
+        g.fillStyle = "#1a1a14"; g.beginPath(); g.arc(13, 13, 12.5, 0, Math.PI * 2); g.fill();
+        g.fillStyle = C.c2; g.beginPath(); g.arc(13, 13, 10.5, 0, Math.PI * 2); g.fill();
+        g.fillStyle = "#1a1a14"; g.fillRect(6, 9, 14, 5);
+      });
+      spr("thief", 24, 24, (g) => {
+        g.fillStyle = "#1a1a14"; g.beginPath(); g.arc(12, 12, 11.5, 0, Math.PI * 2); g.fill();
+        g.fillStyle = C.c6; g.beginPath(); g.arc(12, 12, 9.5, 0, Math.PI * 2); g.fill();
+        g.fillStyle = "#ffffff"; g.beginPath(); g.arc(9, 11, 2.2, 0, Math.PI * 2); g.arc(15, 11, 2.2, 0, Math.PI * 2); g.fill();
+      });
+      spr("gem", 16, 16, (g) => {
+        g.fillStyle = C.c1; g.beginPath(); g.moveTo(8, 1); g.lineTo(15, 8); g.lineTo(8, 15); g.lineTo(1, 8); g.fill();
+        g.fillStyle = "rgba(255,255,255,.6)"; g.beginPath(); g.moveTo(8, 3); g.lineTo(11, 7); g.lineTo(8, 7); g.fill();
+      });
+      const MAZE = [
+        "#####################",
+        "#.........#.........#",
+        "#.###.###.#.###.###.#",
+        "#...................#",
+        "#.###.#.#####.#.###.#",
+        "#.....#...#...#.....#",
+        "###.#.###.#.###.#.###",
+        "#...#.....#.....#...#",
+        "#.###.#.#####.#.###.#",
+        "#.....#.......#.....#",
+        "#.###.###.#.###.###.#",
+        "#...................#",
+        "#####################",
+      ];
+      const LW = MAZE[0].length * TS, LH = MAZE.length * TS, START = [12, 5];
+      const FREE = [];
+      MAZE.forEach((row, y) => [...row].forEach((ch, x) => { if (ch === ".") FREE.push([x, y]); }));
+      const tc = ([x, y]) => k.vec2(x * TS + TS / 2, y * TS + TS / 2);
+      const HALF = 0.62, RANGE = 5.5 * TS, RAYS = 24;
+      const STATE_COL = { patrol: hex(C.c1), chase: hex(C.c3), search: hex(C.c5) };
+      const turnTo = (a, b, step) => a + clamp(Math.atan2(Math.sin(b - a), Math.cos(b - a)), -step, step);
+
+      k.scene("maze", () => {
+        stats.gems = 0;
+        stats.caught = 0;
+        let flagAt = null;
+        const level = k.addLevel(MAZE, { tileWidth: TS, tileHeight: TS, tiles: { "#": () => [k.sprite("mwall"), k.tile({ isObstacle: true })] } });
+        // every child of a level must carry tile(); free-standing scenery lives in the root, which shares the level origin
+        level.use(k.z(2));
+        k.add([k.z(-1), {
+          draw() {
+            k.drawRect({ width: LW, height: LH, color: k.rgb(24, 27, 34) });
+            for (let x = TS; x < LW; x += TS) k.drawLine({ p1: k.vec2(x, 0), p2: k.vec2(x, LH), width: 1, color: k.WHITE, opacity: 0.04 });
+            for (let y = TS; y < LH; y += TS) k.drawLine({ p1: k.vec2(0, y), p2: k.vec2(LW, y), width: 1, color: k.WHITE, opacity: 0.04 });
+          },
+        }]);
+
+        thief = level.spawn([k.sprite("thief"), k.pos(TS / 2, TS / 2), k.anchor("center"), k.agent({ speed: 95, allowDiagonals: false }),
+          k.opacity(1), k.z(10), "thief", { hideUntil: 0, plan: 0, goal: null }], START[0], START[1]);
+        const gems = [];
+        const addGem = () => {
+          const far = FREE.filter((t) => tc(t).dist(thief.pos) > 4 * TS && !gems.some((g) => g.cell === t));
+          const cell = k.choose(far.length ? far : FREE);
+          gems.push(k.add([k.sprite("gem"), k.pos(tc(cell)), k.anchor("center"), k.scale(1), k.z(1), { cell }]));
+        };
+        for (let i = 0; i < 5; i++) addGem();
+
+        // a cell-by-cell DDA over the tile grid: stops at the first tile whose isObstacle is true
+        const fovPts = (g) => {
+          const pts = [g.pos.clone()];
+          for (let i = 0; i <= RAYS; i++) {
+            const a = g.facing - HALF + (2 * HALF * i) / RAYS, d = k.vec2(Math.cos(a), Math.sin(a));
+            const hit = level.raycast(g.pos, d.scale(RANGE));
+            pts.push(g.pos.add(d.scale(hit ? Math.min(RANGE, hit.point.dist(g.pos)) : RANGE)));
+          }
+          return pts;
+        };
+        const sees = (g) => {
+          if (k.time() < thief.hideUntil) return false;
+          const to = thief.pos.sub(g.pos), d = to.len();
+          if (d < 24) return true;
+          if (d > RANGE) return false;
+          const da = Math.atan2(to.y, to.x) - g.facing;
+          if (Math.abs(Math.atan2(Math.sin(da), Math.cos(da))) > HALF) return false;
+          const hit = level.raycast(g.pos, to);
+          return !hit || hit.point.dist(g.pos) >= d - 4;
+        };
+        const caught = () => {
+          stats.caught++;
+          say("小偷被抓到了！");
+          k.addKaboom(thief.pos, { scale: 0.6 });
+          thief.pos = tc(START);
+          thief.setTarget(thief.pos.clone());
+          thief.goal = null;
+          thief.hideUntil = k.time() + 2;
+          flagAt = null;
+          for (const g of guards) g.enterState("patrol");
+        };
+
+        const ROUTES = [
+          [[1, 1], [9, 1], [9, 3], [19, 3], [19, 1], [11, 1], [11, 3], [1, 3]],
+          [[1, 11], [19, 11], [19, 9], [15, 7], [11, 7], [7, 9], [1, 9]],
+        ];
+        guards = ROUTES.map((route) => {
+          const g = level.spawn([k.sprite("guard"), k.pos(TS / 2, TS / 2), k.anchor("center"), k.agent({ speed: 60, allowDiagonals: false }),
+            k.state("patrol", ["patrol", "chase", "search"]), k.z(10), "guard",
+            { route, wp: 0, facing: 0, prevPos: null, lastSeen: null, retarget: 0, lostT: 0, lookT: 0 }], route[0][0], route[0][1]);
+          g.prevPos = g.pos.clone();
+          g.onStateEnter("patrol", () => { g.agentSpeed = 60; g.setTarget(tc(g.route[g.wp])); });
+          g.onTargetReached(() => {
+            if (g.state !== "patrol") return;
+            g.wp = (g.wp + 1) % g.route.length;
+            g.setTarget(tc(g.route[g.wp]));
+          });
+          g.onStateUpdate("patrol", () => {
+            if (sees(g)) { g.lastSeen = thief.pos.clone(); g.enterState("chase"); }
+          });
+          g.onStateEnter("chase", () => { g.agentSpeed = 105; g.retarget = 0; g.lostT = 0; });
+          g.onStateUpdate("chase", () => {
+            if (sees(g)) { g.lastSeen = thief.pos.clone(); g.lostT = 0; }
+            else if ((g.lostT += k.dt()) > 0.4) { g.enterState("search"); return; }
+            if ((g.retarget -= k.dt()) <= 0) { g.retarget = 0.3; g.setTarget(g.lastSeen); }
+          });
+          g.onStateEnter("search", () => { g.agentSpeed = 80; g.lookT = 0; g.setTarget(g.lastSeen); });
+          g.onStateUpdate("search", () => {
+            if (sees(g)) { g.lastSeen = thief.pos.clone(); g.enterState("chase"); return; }
+            if (g.isNavigationFinished() && (g.lookT += k.dt()) > 2.5) g.enterState("patrol");
+          });
+          g.onUpdate(() => {
+            const mv = g.pos.sub(g.prevPos);
+            g.prevPos = g.pos.clone();
+            if (g.state === "search" && g.isNavigationFinished()) g.facing += 2.4 * k.dt();
+            else if (mv.len() > 0.05) g.facing = turnTo(g.facing, Math.atan2(mv.y, mv.x), 8 * k.dt());
+            if (k.time() > thief.hideUntil && g.pos.dist(thief.pos) < 20) caught();
+          });
+          return g;
+        });
+
+        thief.onUpdate(() => {
+          const t = k.time();
+          thief.opacity = t < thief.hideUntil ? (Math.floor(t * 10) % 2 ? 0.25 : 0.9) : 1;
+          for (const gem of gems.slice()) {
+            if (gem.pos.dist(thief.pos) > 14) continue;
+            gems.splice(gems.indexOf(gem), 1);
+            k.destroy(gem);
+            stats.gems++;
+            if (thief.goal === gem) thief.goal = null;
+            addGem();
+          }
+          for (const gem of gems) gem.scale = k.vec2(1 + Math.sin(t * 5 + gem.cell[0]) * 0.12);
+          if (!auto || (thief.plan -= k.dt()) > 0) return;
+          thief.plan = 0.5;
+          if (guards.some((g) => g.state === "chase")) {
+            // flee: sample free cells and keep the one farthest from every guard
+            let best = null, bestScore = -Infinity;
+            for (let i = 0; i < 14; i++) {
+              const p = tc(k.choose(FREE));
+              const score = Math.min(...guards.map((g) => g.pos.dist(p))) - thief.pos.dist(p) * 0.3;
+              if (score > bestScore) { bestScore = score; best = p; }
+            }
+            thief.goal = null;
+            thief.setTarget(best);
+          } else if (!thief.goal || thief.isNavigationFinished()) {
+            thief.goal = gems.reduce((a, b) => (a.pos.dist(thief.pos) < b.pos.dist(thief.pos) ? a : b));
+            thief.setTarget(thief.goal.pos.clone());
+          }
+        });
+
+        // field of view, planned paths and state markers: root space shares the level origin and sits under walls and actors
+        k.add([k.z(1), {
+          draw() {
+            for (const g of guards) {
+              const col = STATE_COL[g.state];
+              k.drawPolygon({ pts: fovPts(g), color: col, opacity: 0.2 });
+              const path = (g.getPath() || []).filter((p, i, a) => i === 0 || p.dist(a[i - 1]) > 1);
+              if (path.length > 1) k.drawLines({ pts: path, width: 2, color: col, opacity: 0.35 });
+              if (g.state !== "patrol") k.drawText({ text: g.state === "chase" ? "!" : "?", pos: g.pos.add(0, -24), size: 20, anchor: "center", color: col, font: k.FONT });
+            }
+            if (flagAt && !auto) k.drawCircle({ pos: flagAt, radius: 6, color: hex(C.c6), opacity: 0.8 });
+          },
+        }]);
+
+        k.onMousePress(() => {
+          takeOver();
+          const p = k.toWorld(k.mousePos()), cx = Math.floor(p.x / TS), cy = Math.floor(p.y / TS);
+          if ((MAZE[cy] || "")[cx] !== ".") return;
+          flagAt = tc([cx, cy]);
+          thief.goal = null;
+          thief.setTarget(flagAt.clone());
+        });
+        // fit the maze between the controls and the status line
+        k.onUpdate(() => {
+          const w = k.width(), h = k.height(), top = belowControls(ctx), availH = Math.max(80, h - top - 44);
+          const s = Math.min(w / LW, availH / LH) * 0.97;
+          k.setCamScale(s);
+          k.setCamPos(LW / 2, LH / 2 - (top + availH / 2 - h / 2) / s);
+        });
+      });
+
+      await ready(ctx, k);
+      k.go("maze");
+      const paint = () => show(`守衛 <code>${guards.map((g) => g.state).join(" / ")}</code>・寶石 <b>${stats.gems}</b>・被抓 <b>${stats.caught}</b>・${auto ? "自動示範" : "手動操作"}・<b>${fpsOf(k)}</b> FPS`);
+      paint();
+      ctx.interval(paint, 250);
+    },
+  },
+  {
+    id: "rays", title: "光線投射",
+    api: "raycast(origin, dir)・area() + worldArea()・RaycastHit { point, normal, fraction, object }・Vec2.reflect()・drawPolygon()",
+    desc: "raycast() 對場上每個帶 area() 的物件做射線檢測，回傳最近的交點、法線與命中物件。可視範圍模式朝四周打一圈射線，把交點連成多邊形當光照；雷射模式拿法線做 reflect()，最多反彈 8 次，會轉的方塊讓路徑一直改變。",
+    hint: "移動滑鼠控制光源或雷射方向，停 3 秒回到自動・射線越多輪廓越準，raycast 耗時也跟著上升",
+    async mount(ctx) {
+      ctx.el.classList.add("kp-night");
+      ctx.html(`<div class="kp-box"></div>`);
+      const show = readout(ctx);
+      let k = null, mode = 0, rays = 240, showRays = false, manualUntil = 0;
+      const stats = { ms: 0, hits: 0, bounces: 0, len: 0, mouse: false };
+      ctx.group(["可視範圍", "雷射反射"], 0, (i) => { mode = i; raySlider.disabled = i === 1; });
+      const raySlider = ctx.slider("射線數", { min: 32, max: 720, step: 8, value: rays }, (v) => { rays = v; });
+      ctx.toggle("顯示射線", false, (v) => { showRays = v; });
+      await fontsReady(ctx);
+      k = kaplayIn(ctx, ctx.$(".kp-box"), { background: [0, 0, 0, 0] });
+      const hex = (s) => k.Color.fromHex(s);
+      const INK = hex("#1a1a14"), LIGHT = hex(C.c1), LASER = hex(C.c3), CORE = hex("#ffd6e8");
+      k.loadSprite("glow", glowCanvas(128, 0.12));
+
+      k.scene("rays", () => {
+        const w = k.width(), h = k.height(), top = belowControls(ctx), H = Math.max(120, h - 44 - top);
+        const s = clamp(Math.min(w / 900, H / 420), 0.45, 1.3), R = Math.hypot(w, h);
+        const P = (fx, fy) => k.vec2(fx * w, top + fy * H);
+        // the screen edges are invisible walls, so every ray stops somewhere
+        const wall = (x, y, ww, hh) => k.add([k.pos(x, y), k.area({ shape: new k.Rect(k.vec2(0), ww, hh) }), "wall"]);
+        wall(-40, -40, w + 80, 40); wall(-40, h, w + 80, 40); wall(-40, 0, 40, h); wall(w, 0, 40, h);
+        const block = (fx, fy, shape, col, spin) => k.add([k.pos(P(fx, fy)), ...shape, k.rotate(rnd(-25, 25)), k.color(hex(col)),
+          k.outline(3, INK), k.area(), k.z(2), "block", { spin }]);
+        const box = (bw, bh) => [k.rect(bw * s, bh * s, { radius: 3 }), k.anchor("center")];
+        const ngon = (n, r) => [k.polygon(Array.from({ length: n }, (_, i) => k.Vec2.fromAngle((i * 360) / n - 90).scale(r * s)))];
+        block(0.16, 0.26, box(130, 24), C.c2, 0);
+        block(0.3, 0.7, box(28, 120), C.c5, 0);
+        block(0.5, 0.42, box(74, 74), C.c6, 45);
+        block(0.7, 0.24, ngon(3, 52), C.c4, -30);
+        block(0.86, 0.66, box(150, 22), C.c3, 0);
+        block(0.64, 0.8, ngon(6, 36), C.c2, 20);
+        block(0.1, 0.8, box(48, 48), C.c4, -60);
+        block(0.4, 0.14, ngon(4, 30), C.c3, 0);
+        k.onUpdate("block", (b) => { b.angle += b.spin * k.dt(); });
+
+        const emitter = P(0.04, 0.5);
+        let src = P(0.5, 0.55), vis = [], path = [], normals = [];
+        k.onMouseMove(() => { manualUntil = k.time() + 3; });
+        k.onUpdate(() => {
+          const t = k.time(), m = k.mousePos(), t0 = performance.now();
+          stats.mouse = t < manualUntil;
+          if (mode === 0) {
+            src = stats.mouse ? m.clone() : P(0.5 + 0.4 * Math.sin(t * 0.45), 0.5 + 0.42 * Math.sin(t * 0.71 + 1));
+            vis = [src];
+            let hits = 0;
+            for (let i = 0; i <= rays; i++) {
+              const d = k.Vec2.fromAngle((i / rays) * 360).scale(R), hit = k.raycast(src, d);
+              if (hit && hit.object.is("block")) hits++;
+              vis.push(hit ? hit.point : src.add(d));
+            }
+            stats.hits = hits;
+          } else {
+            const aim = stats.mouse ? m : P(0.55 + 0.3 * Math.sin(t * 0.3), 0.5 + 0.45 * Math.sin(t * 0.52));
+            let o = emitter, d = aim.dist(emitter) > 1 ? aim.sub(emitter).unit() : k.vec2(1, 0), len = 0, b = 0;
+            path = [o];
+            normals = [];
+            for (;;) {
+              const hit = k.raycast(o, d.scale(R));
+              if (!hit) { path.push(o.add(d.scale(R))); break; }
+              path.push(hit.point);
+              len += hit.point.dist(o);
+              let n = hit.normal.unit();
+              if (n.dot(d) > 0) n = n.scale(-1);
+              normals.push([hit.point, n]);
+              if (b === 8) break;
+              d = d.reflect(n);
+              // step off the surface along the new direction so the next ray does not hit it again at distance 0
+              o = hit.point.add(d.scale(0.5));
+              b++;
+            }
+            stats.bounces = b;
+            stats.len = len;
+          }
+          stats.ms += (performance.now() - t0 - stats.ms) * 0.1;
+        });
+        k.add([k.z(3), {
+          draw() {
+            if (mode === 0) {
+              if (vis.length > 2) k.drawPolygon({ pts: vis, color: LIGHT, opacity: 0.18 });
+              if (showRays) {
+                const step = Math.max(1, Math.round(rays / 180));
+                for (let i = 1; i < vis.length; i += step) k.drawLine({ p1: src, p2: vis[i], width: 1, color: LIGHT, opacity: 0.3 });
+              }
+              k.drawSprite({ sprite: "glow", pos: src, anchor: "center", width: 340 * s, height: 340 * s, color: LIGHT, opacity: 0.45 });
+              k.drawCircle({ pos: src, radius: 7, color: k.WHITE, outline: { width: 3, color: LIGHT } });
+            } else if (path.length > 1) {
+              k.drawLines({ pts: path, width: 9, color: LASER, opacity: 0.3 });
+              k.drawLines({ pts: path, width: 2.5, color: CORE });
+              for (let i = 1; i < path.length - 1; i++) k.drawCircle({ pos: path[i], radius: 4, color: CORE });
+              if (showRays) for (const [p, n] of normals) k.drawLine({ p1: p, p2: p.add(n.scale(26)), width: 2, color: LIGHT });
+              k.drawRect({ pos: emitter, width: 26, height: 18, anchor: "center", radius: 4, color: INK, outline: { width: 2, color: LASER } });
+            }
+          },
+        }]);
+        restartOnResize(ctx, k, "rays");
+      });
+
+      await ready(ctx, k);
+      k.go("rays");
+      const paint = () => show(mode === 0
+        ? `射線 <b>${rays}</b>・打到方塊 <b>${stats.hits}</b>・raycast <b>${stats.ms.toFixed(2)}</b> ms/格・${stats.mouse ? "跟隨滑鼠" : "自動移動"}・<b>${fpsOf(k)}</b> FPS`
+        : `雷射反彈 <b>${stats.bounces}</b> 次・路徑 <b>${fmtN(Math.round(stats.len))}</b> px・raycast <b>${stats.ms.toFixed(2)}</b> ms/格・${stats.mouse ? "滑鼠瞄準" : "自動掃描"}・<b>${fpsOf(k)}</b> FPS`);
+      paint();
+      ctx.interval(paint, 250);
+    },
+  },
+  {
+    id: "shaders", title: "著色器",
+    api: "loadShader(name, null, frag)・shader(name, () => ({ u_time }))・usePostEffect(name, uniforms)・loadSprite(name, src, { singular: true })",
+    desc: "四張照片各掛一個 shader() 元件，片段著色器每格依 u_time 算出水波、溶解、色相旋轉與掃光。usePostEffect() 再把整個畫面當成一張貼圖跑一次後製；照片用 singular 單獨載入，uv 才剛好是 0 到 1。",
+    hint: "切換後製效果並拉動強度・後製套在整個 KAPLAY 畫面上，卡片自己的著色器同時在跑",
+    async mount(ctx) {
+      ctx.el.classList.add("kp-studio");
+      ctx.html(`<div class="kp-box"></div>`);
+      const show = readout(ctx);
+      const POST = [null, "crt", "pixel", "rgbsplit"];
+      let k = null, post = 1, amt = 0.6;
+      const setPost = () => k && k.usePostEffect(POST[post], () => ({ u_amt: amt, u_res: k.vec2(k.width(), k.height()), u_time: k.time() }));
+      ctx.group(["無", "CRT", "像素化", "色差"], post, (i) => { post = i; setPost(); });
+      ctx.slider("強度", { min: 0, max: 1, step: 0.05, value: amt }, (v) => { amt = v; });
+      const loadImage = (src) => new Promise((resolve, reject) => {
+        const im = new Image();
+        im.onload = () => resolve(im);
+        im.onerror = () => reject(new Error(`圖片載入失敗：${src}`));
+        im.src = src;
+      });
+      await fontsReady(ctx);
+      const imgs = await Promise.all([1, 3, 5, 7].map((i) => loadImage(PHOTO(i))));
+      if (!ctx.active) throw unmounted();
+      k = kaplayIn(ctx, ctx.$(".kp-box"), { background: [17, 19, 25] });
+      const hex = (s) => k.Color.fromHex(s);
+      // downscaled to roughly twice the card size; singular keeps each photo in its own texture so uv spans 0..1
+      imgs.forEach((im, i) => k.loadSprite(`ph${i}`, canvas2d(480, 320, (g) => g.drawImage(im, 0, 0, 480, 320)), { singular: true }));
+      const OUT = "return vec4(c.rgb * color.rgb, c.a) * color.a;";
+      k.loadShader("wave", null, `
+uniform float u_time;
+vec4 frag(vec2 pos, vec2 uv, vec4 color, sampler2D tex) {
+  vec2 p = uv + vec2(sin(uv.y * 18.0 + u_time * 3.0), cos(uv.x * 14.0 + u_time * 2.2)) * 0.012;
+  vec4 c = texture2D(tex, clamp(p, 0.002, 0.998));
+  ${OUT}
+}`);
+      k.loadShader("dissolve", null, `
+uniform float u_time;
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float noise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+vec4 frag(vec2 pos, vec2 uv, vec4 color, sampler2D tex) {
+  float n = noise(uv * 9.0) * 0.65 + noise(uv * 23.0) * 0.35;
+  float t = 0.5 + 0.56 * sin(u_time * 0.9);
+  if (n < t - 0.06) return vec4(0.0);
+  vec4 c = texture2D(tex, uv);
+  if (n < t) c.rgb = mix(vec3(1.0, 0.45, 0.1), vec3(1.0, 0.95, 0.55), (n - t + 0.06) / 0.06);
+  ${OUT}
+}`);
+      k.loadShader("hue", null, `
+uniform float u_time;
+vec4 frag(vec2 pos, vec2 uv, vec4 color, sampler2D tex) {
+  vec4 c = texture2D(tex, uv);
+  vec3 a = vec3(0.57735);
+  float s = sin(u_time * 1.2), co = cos(u_time * 1.2);
+  c.rgb = c.rgb * co + cross(a, c.rgb) * s + a * dot(a, c.rgb) * (1.0 - co);
+  ${OUT}
+}`);
+      k.loadShader("shine", null, `
+uniform float u_time;
+vec4 frag(vec2 pos, vec2 uv, vec4 color, sampler2D tex) {
+  vec4 c = texture2D(tex, uv);
+  float x = uv.x + uv.y * 0.5 - mod(u_time * 0.7, 2.6) + 0.5;
+  c.rgb += smoothstep(0.14, 0.0, abs(x)) * 0.6;
+  ${OUT}
+}`);
+      k.loadShader("crt", null, `
+uniform float u_amt;
+uniform vec2 u_res;
+uniform float u_time;
+vec4 frag(vec2 pos, vec2 uv, vec4 color, sampler2D tex) {
+  vec2 d = uv - 0.5;
+  vec2 p = uv + d * dot(d, d) * 0.45 * u_amt;
+  if (p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0) return vec4(0.0, 0.0, 0.0, 1.0);
+  vec4 c = texture2D(tex, p);
+  float scan = 0.5 + 0.5 * sin(p.y * u_res.y * 2.0 - u_time * 8.0);
+  c.rgb *= (1.0 - u_amt * 0.45 * scan) * (1.0 - dot(d, d) * 1.8 * u_amt);
+  c.rgb += vec3(0.0, 0.03, 0.015) * u_amt;
+  return c;
+}`);
+      k.loadShader("pixel", null, `
+uniform float u_amt;
+uniform vec2 u_res;
+vec4 frag(vec2 pos, vec2 uv, vec4 color, sampler2D tex) {
+  vec2 cells = u_res / (1.0 + u_amt * 15.0);
+  return texture2D(tex, (floor(uv * cells) + 0.5) / cells);
+}`);
+      k.loadShader("rgbsplit", null, `
+uniform float u_amt;
+uniform float u_time;
+vec4 frag(vec2 pos, vec2 uv, vec4 color, sampler2D tex) {
+  vec2 off = (uv - 0.5) * 0.035 * u_amt + vec2(0.004 * sin(u_time * 3.0) * u_amt, 0.0);
+  vec4 g = texture2D(tex, uv);
+  return vec4(texture2D(tex, uv + off).r, g.g, texture2D(tex, uv - off).b, g.a);
+}`);
+      const CARDS = [{ sh: "wave", zh: "水波" }, { sh: "dissolve", zh: "溶解" }, { sh: "hue", zh: "色相旋轉" }, { sh: "shine", zh: "掃光" }];
+
+      k.scene("cards", () => {
+        const w = k.width(), h = k.height(), top = belowControls(ctx), bot = h - 48, GAP = 24;
+        // pick the column count (4, 2 or 1) that gives the largest 3:2 cards
+        const fit = (cols) => {
+          const rows = 4 / cols;
+          return { cols, cw: Math.min((w - 40 - (cols - 1) * GAP) / cols, ((bot - top) / rows - 44) * 1.5) };
+        };
+        const { cols, cw } = [fit(4), fit(2), fit(1)].reduce((a, b) => (b.cw > a.cw ? b : a));
+        const ch = cw / 1.5, rows = 4 / cols;
+        const x0 = (w - cols * cw - (cols - 1) * GAP) / 2 + cw / 2;
+        const y0 = top + (bot - top - rows * (ch + 44)) / 2 + ch / 2;
+        k.add([k.z(-1), {
+          draw() {
+            for (let x = 16; x < w; x += 32) k.drawLine({ p1: k.vec2(x, 0), p2: k.vec2(x, h), width: 1, color: k.WHITE, opacity: 0.05 });
+            for (let y = 16; y < h; y += 32) k.drawLine({ p1: k.vec2(0, y), p2: k.vec2(w, y), width: 1, color: k.WHITE, opacity: 0.05 });
+          },
+        }]);
+        CARDS.forEach((c, i) => {
+          const x = x0 + (i % cols) * (cw + GAP), y = y0 + Math.floor(i / cols) * (ch + 44);
+          k.add([k.rect(cw + 10, ch + 10, { radius: 8 }), k.pos(x, y + 6), k.anchor("center"), k.color(0, 0, 0), k.opacity(0.4)]);
+          k.add([k.sprite(`ph${i}`, { width: cw, height: ch }), k.pos(x, y), k.anchor("center"), k.shader(c.sh, () => ({ u_time: k.time() + i * 1.7 })), k.z(1)]);
+          const api = `shader("${c.sh}")`;
+          // small cards: the shader name goes on a second line instead of overlapping the caption
+          const stack = c.zh.length * 15 + api.length * 7.4 + 12 > cw;
+          k.add([k.text(c.zh, { size: 15, font: k.FONT }), k.pos(x - cw / 2, y + ch / 2 + 10), k.color(hex("#ecebe6")), k.z(1)]);
+          k.add([k.text(api, { size: stack ? 11 : 12, font: k.MONO }), stack ? k.pos(x - cw / 2, y + ch / 2 + 29) : k.pos(x + cw / 2, y + ch / 2 + 12),
+            k.anchor(stack ? "topleft" : "topright"), k.color(hex("#9b998f")), k.z(1)]);
+        });
+        restartOnResize(ctx, k, "cards");
+      });
+
+      await ready(ctx, k);
+      k.go("cards");
+      setPost();
+      const paint = () => show(`後製 <code>${POST[post] || "無"}</code>・強度 <b>${amt.toFixed(2)}</b>・卡片著色器 <b>4</b> 個・<b>${fpsOf(k)}</b> FPS`);
+      paint();
+      ctx.interval(paint, 250);
+    },
+  },
+  {
+    id: "fx", title: "補間與粒子",
+    api: "tween(from, to, duration, setValue, easings.easeOutBack)・TweenController.onEnd() / cancel()・particles(popt, eopt)・emit(n)・mask(\"intersect\")",
+    desc: "左邊六顆球同時用 tween() 從 0 補到 1，只差在 easings 曲線，小圖畫出曲線本身和目前進度。右邊每次爆發建立一個 particles() 發射器，emit() 一次噴出整批火花，受重力與阻尼影響後淡出，發射器在 onEnd() 時自我銷毀；外框用 mask() 把火花裁在區域內。",
+    hint: "點右邊區域引爆粒子・拉動「每次爆發」與「重力」，再按「重播補間」比較六種緩動",
+    async mount(ctx) {
+      ctx.el.classList.add("kp-night");
+      ctx.html(`<div class="kp-box"></div>`);
+      const show = readout(ctx);
+      const EASE = ["linear", "easeInOutSine", "easeOutBack", "easeOutElastic", "easeOutBounce", "easeInOutExpo"];
+      const DUR = 1.6, HOLD = 0.8;
+      let k = null, perBurst = 120, grav = 300, lastClick = -10, bursts = 0, replay = () => {};
+      ctx.slider("每次爆發", { min: 20, max: 300, step: 10, value: perBurst }, (v) => { perBurst = v; });
+      ctx.slider("重力", { min: 0, max: 800, step: 20, value: grav }, (v) => { grav = v; });
+      ctx.button("重播補間", () => replay());
+      await fontsReady(ctx);
+      k = kaplayIn(ctx, ctx.$(".kp-box"), { background: [0, 0, 0, 0] });
+      const hex = (s) => k.Color.fromHex(s);
+      k.loadSprite("spark", glowCanvas(32, 0.18));
+
+      k.scene("fx", () => {
+        const w = k.width(), h = k.height(), top = belowControls(ctx), bot = h - 50;
+        // lanes beside the particle field on wide screens, stacked above it on narrow ones
+        const wide = w >= 560;
+        const L = wide ? { x: 24, y: top, w: Math.min(520, w * 0.46), h: bot - top } : { x: 14, y: top, w: w - 28, h: Math.min(320, (bot - top) * 0.55) };
+        const F = wide ? { x: L.x + L.w + 28, y: top, w: w - L.x - L.w - 28 - 16, h: bot - top } : { x: 12, y: L.y + L.h + 10, w: w - 24, h: bot - L.y - L.h - 10 };
+        const rh = L.h / EASE.length, ps = clamp(rh - 12, 22, 60), tx = L.x + ps + 18, span = (L.x + L.w - tx - 10) / 1.4;
+        const r = clamp(rh * 0.15, 5, 9), FAINT = hex("#2a3040"), GREY = hex("#9b998f");
+        // plot y spans -0.2..1.4 so the overshooting curves stay inside their box
+        const plotY = (y0, v) => y0 + ps - ((v + 0.2) / 1.6) * ps;
+        const lanes = EASE.map((name, i) => {
+          const cy = L.y + rh * (i + 0.5), py = cy - ps / 2, f = k.easings[name], col = hex(COLORS[i]);
+          const curve = Array.from({ length: 41 }, (_, j) => k.vec2(L.x + (j / 40) * ps, plotY(py, f(j / 40))));
+          k.add([k.text(name, { size: ps < 34 ? 11 : 12, font: k.MONO }), k.pos(tx, cy - r - 18), k.color(GREY)]);
+          return { name, f, col, cy, py, curve, v: 0 };
+        });
+        let phase = 0, tws = [], hold = null;
+        const play = () => {
+          tws.forEach((t) => t.cancel());
+          if (hold) hold.cancel();
+          phase = 0;
+          tws = lanes.map((ln) => k.tween(0, 1, DUR, (v) => { ln.v = v; }, k.easings[ln.name]));
+          const clock = k.tween(0, 1, DUR, (t) => { phase = t; });
+          clock.onEnd(() => { hold = k.wait(HOLD, play); });
+          tws.push(clock);
+        };
+        replay = play;
+        k.add([k.z(1), {
+          draw() {
+            for (const ln of lanes) {
+              k.drawRect({ pos: k.vec2(L.x, ln.py), width: ps, height: ps, radius: 4, color: k.WHITE, opacity: 0.04, outline: { width: 1, color: FAINT } });
+              k.drawLine({ p1: k.vec2(L.x, plotY(ln.py, 1)), p2: k.vec2(L.x + ps, plotY(ln.py, 1)), width: 1, color: FAINT });
+              k.drawLines({ pts: ln.curve, width: 2, color: ln.col });
+              k.drawCircle({ pos: k.vec2(L.x + phase * ps, plotY(ln.py, ln.f(phase))), radius: 3.5, color: k.WHITE });
+              const y = ln.cy + 4;
+              k.drawLine({ p1: k.vec2(tx, y), p2: k.vec2(tx + span, y), width: 2, color: FAINT });
+              k.drawRect({ pos: k.vec2(tx + span, y), width: 2, height: 14, anchor: "center", color: GREY });
+              k.drawCircle({ pos: k.vec2(tx + ln.v * span, y), radius: r, color: ln.col, outline: { width: 2, color: k.WHITE } });
+            }
+            k.drawRect({ pos: k.vec2(F.x, F.y), width: F.w, height: F.h, radius: 12, color: k.WHITE, opacity: 0.03, outline: { width: 1, color: FAINT } });
+          },
+        }]);
+        k.add([k.text("particles() + emit(n)", { size: 12, font: k.MONO }), k.pos(F.x + 12, F.y + 10), k.color(GREY), k.z(1)]);
+        // the rect is only drawn into the stencil; children render inside it
+        const field = k.add([k.pos(F.x, F.y), k.rect(F.w, F.h, { radius: 12 }), k.mask("intersect"), k.z(2)]);
+        const spark = k.getSprite("spark").data;
+        const burst = (p) => {
+          const n = perBurst, col = hex(COLORS[bursts++ % COLORS.length]);
+          // one emitter per burst: emit() reuses dead slots without resetting their age, so emitters are not recycled
+          const e = field.add([k.pos(p), k.z(2), "burst", k.particles({
+            max: n, lifeTime: [0.6, 1.4], speed: [80, 360], angle: [0, 360], angularVelocity: [-240, 240],
+            acceleration: [k.vec2(0, grav), k.vec2(0, grav)], damping: [0.4, 1.6],
+            colors: [k.WHITE, col, col.darken(80)], opacities: [1, 0.9, 0], scales: [0.75, 0.5, 0.25],
+            texture: spark.tex, quads: [spark.frames[0]],
+          }, { lifetime: 1.5, rate: 0, direction: -90, spread: 180 })]);
+          e.emit(n);
+          e.onEnd(() => e.destroy());
+          const ring = field.add([k.pos(p), k.z(1), {
+            rt: 0,
+            draw() { k.drawCircle({ pos: k.vec2(0), radius: 8 + this.rt * 70, fill: false, opacity: 1 - this.rt, outline: { width: 3 - this.rt * 2, color: col } }); },
+          }]);
+          k.tween(0, 1, 0.55, (v) => { ring.rt = v; }, k.easings.easeOutCubic).onEnd(() => ring.destroy());
+        };
+        const randomBurst = () => burst(k.vec2(rnd(0.2, 0.8) * F.w, rnd(0.25, 0.6) * F.h));
+        k.onMousePress(() => {
+          const m = k.mousePos().sub(F.x, F.y);
+          if (m.x < 0 || m.y < 0 || m.x > F.w || m.y > F.h) return;
+          lastClick = k.time();
+          burst(m);
+        });
+        k.loop(1.2, () => { if (k.time() - lastClick > 4) randomBurst(); });
+        randomBurst();
+        play();
+        restartOnResize(ctx, k, "fx");
+      });
+
+      await ready(ctx, k);
+      k.go("fx");
+      const paint = () => {
+        let live = 0, emitters = 0;
+        for (const e of k.get("burst", { recursive: true })) { emitters++; live += parseInt(e.inspect().particles.slice(7), 10) || 0; }
+        show(`存活粒子 <b>${fmtN(live)}</b>・發射器 <b>${emitters}</b>・每次 <b>${perBurst}</b>・重力 <b>${grav}</b>・${k.time() - lastClick > 4 ? "自動引爆" : "點擊引爆"}・<b>${fpsOf(k)}</b> FPS`);
+      };
+      paint();
+      ctx.interval(paint, 250);
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "add([sprite(), pos(), area()])・onCollide(tag, tag, fn)・drawSprite() in draw()・getTreeRoot()・debug.drawCalls()",
+    desc: "同一張 6 色圖集的小球逐級加量，直到掉到 30 FPS 以下。可切換：每顆都是帶 area() 的遊戲物件並互相碰撞、只當遊戲物件不碰撞，或完全不建物件、在一個 draw() 裡用 drawSprite() 直接畫，比較物件系統、碰撞與繪製各自的成本。",
+    hint: "按「自動加壓」開始・切換三種模式再測一次比較",
+    async mount(ctx) {
+      ctx.html(`<div class="stress-box"></div>`);
+      ctx.controls.classList.add("bottom");
+      const MODES = ["area 碰撞", "純物件", "onDraw 即時繪製"];
+      let mode = 0, ctl = null;
+      ctx.group(MODES, 0, (i) => { mode = i; if (ctl) ctl.set(ctl.value); });
+      const k = kaplayIn(ctx, ctx.$(".stress-box"));
+      k.loadSprite("balls", ballAtlas(), { sliceX: 6 });
+      await ready(ctx, k);
+      let W = k.width(), H = k.height();
+      k.onResize(() => { W = k.width(); H = k.height(); });
+
+      const MAX = 50000, CHUNK = 1500;
+      const px = new Float32Array(MAX), py = new Float32Array(MAX), vx = new Float32Array(MAX), vy = new Float32Array(MAX), fr = new Uint8Array(MAX);
+      for (let i = 0; i < MAX; i++) {
+        const a = Math.random() * Math.PI * 2, s = rnd(60, 160);
+        vx[i] = Math.cos(a) * s; vy[i] = Math.sin(a) * s; fr[i] = i % 6;
+      }
+      let holder = null, count = 0, built = -1, hits = 0, cps = 0;
+      // shared update for every ball object; `this` is the game object
+      function driftUpdate() {
+        const d = k.dt(), p = this.pos;
+        let x = p.x + this.vx * d, y = p.y + this.vy * d;
+        if (x < 8) { x = 8; this.vx = Math.abs(this.vx); } else if (x > W - 8) { x = W - 8; this.vx = -Math.abs(this.vx); }
+        if (y < 8) { y = 8; this.vy = Math.abs(this.vy); } else if (y > H - 8) { y = H - 8; this.vy = -Math.abs(this.vy); }
+        p.x = x; p.y = y;
+      }
+      async function apply(n) {
+        const m = mode;
+        // destroying one holder is linear; removing many root children one by one is quadratic, so shrink by rebuilding
+        if (built !== m || n < count) {
+          if (holder) holder.destroy();
+          holder = null; count = 0; built = m;
+        }
+        if (m === 2) {
+          for (let i = count; i < n; i++) { px[i] = rnd(8, W - 8); py[i] = rnd(8, H - 8); }
+          count = n;
+          return;
+        }
+        if (!holder) holder = k.add([]);
+        while (count < n) {
+          const end = Math.min(n, count + CHUNK);
+          for (let i = count; i < end; i++) {
+            const comps = [k.sprite("balls", { frame: fr[i] }), k.pos(rnd(8, W - 8), rnd(8, H - 8)), k.anchor("center"),
+              { id: "drift", vx: vx[i], vy: vy[i], update: driftUpdate }, "ball"];
+            if (m === 0) comps.push(k.area());
+            holder.add(comps);
+          }
+          count = end;
+          if (count < n) {
+            await ctx.frame();
+            if (!ctx.active) throw unmounted();
+          }
+        }
+      }
+      k.onCollide("ball", "ball", (a) => { a.frame = (a.frame + 1) % 6; hits++; });
+      ctx.interval(() => { cps = hits; hits = 0; }, 1000);
+      // onDraw mode: plain arrays and one draw() that calls drawSprite() per ball, no game objects
+      const opt = { sprite: "balls", frame: 0, pos: k.vec2(0), anchor: "center" };
+      k.add([k.z(1), {
+        id: "raw",
+        update() {
+          if (built !== 2) return;
+          const d = k.dt();
+          for (let i = 0; i < count; i++) {
+            let x = px[i] + vx[i] * d, y = py[i] + vy[i] * d;
+            if (x < 8) { x = 8; vx[i] = Math.abs(vx[i]); } else if (x > W - 8) { x = W - 8; vx[i] = -Math.abs(vx[i]); }
+            if (y < 8) { y = 8; vy[i] = Math.abs(vy[i]); } else if (y > H - 8) { y = H - 8; vy[i] = -Math.abs(vy[i]); }
+            px[i] = x; py[i] = y;
+          }
+        },
+        draw() {
+          if (built !== 2) return;
+          for (let i = 0; i < count; i++) {
+            opt.pos.x = px[i]; opt.pos.y = py[i]; opt.frame = fr[i];
+            k.drawSprite(opt);
+          }
+        },
+      }]);
+
+      // Time the frame phases by wrapping the root: fixed step + update, the gap where KAPLAY runs
+      // collision checks (after each fixed step and after update), and draw through the end of the frame.
+      const root = k.getTreeRoot(), now = () => performance.now();
+      const fixed0 = root.fixedUpdate.bind(root), update0 = root.update.bind(root), draw0 = root.draw.bind(root);
+      let fixedEnd = 0, updEnd = 0, fixMs = 0, colMs = 0, upd = 0, col = 0, drw = 0;
+      root.fixedUpdate = () => {
+        const t = now();
+        if (fixedEnd) colMs += t - fixedEnd;
+        fixed0();
+        fixedEnd = now();
+        fixMs += fixedEnd - t;
+      };
+      root.update = () => {
+        const t = now();
+        if (fixedEnd) { colMs += t - fixedEnd; fixedEnd = 0; }
+        update0();
+        updEnd = now();
+        upd += (updEnd - t + fixMs - upd) * 0.1;
+        fixMs = 0;
+      };
+      root.draw = () => {
+        const t = now();
+        colMs += t - updEnd;
+        col += (colMs - col) * 0.1;
+        colMs = 0;
+        draw0();
+        // the frame callback finishes with the batch flush and the framebuffer blit; a microtask runs right after it
+        queueMicrotask(() => { drw += (now() - t - drw) * 0.1; });
+      };
+
+      ctl = ctx.ramp({
+        label: "小球", unit: "顆", steps: [200, 500, 1000, 2000, 5000, 10000, 20000, 50000], minFps: 30,
+        apply,
+        metrics: () => ({
+          更新: `${upd.toFixed(1)} ms`,
+          碰撞: built === 0 ? `${col.toFixed(1)} ms` : "未啟用",
+          繪製: `${drw.toFixed(1)} ms`,
+          "draw call": String(k.debug.drawCalls()),
+          小球物件: built === 2 ? "0" : fmtN(count),
+          "碰撞事件/秒": built === 0 ? fmtN(cps) : "未啟用",
+          模式: MODES[mode],
+        }),
+        note: "更新量的是根節點 update() 加上固定步長 fixedUpdate() 的時間：每個遊戲物件每格都要走過自己的元件 update 與事件分派，欄位也經過 getter 讀寫，數量一多就跟著線性變慢。碰撞量的是更新與繪製之間的空檔，KAPLAY 在每個固定步長後與每格更新後都會把帶 area() 的物件放進雜湊格子，同一格裡的物件逐對算出 worldArea() 再做多邊形重疊測試並觸發 onCollide，越密配對越多。繪製量的是 root.draw() 到這一格結束，同一張圖集的小球會合併成少數幾次 draw call，CPU 主要花在逐一走訪物件、計算變形並填頂點。onDraw 模式不建遊戲物件，只用陣列搬座標再呼叫 drawSprite()，可以看出物件系統本身的額外開銷。GPU 是非同步執行，實際瓶頸也可能在顯示卡。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

@@ -3,225 +3,700 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ONNX Runtime Web 示範：手寫數字辨識</title>
+<title>ONNX Runtime Web 示範：六個場景看懂瀏覽器內推論</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","size":"約 3 MB","note":"MNIST 模型（26 KB，MIT 授權）以 WebAssembly 在瀏覽器內推論"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["手寫數字","即時濾鏡","運算子實驗","圖最佳化","執行環境","極限測試"],"note":"MNIST 模型 26 KB；其餘模型在頁面內用 JS 直接組成 ONNX 位元組"}</script>
 <style>
-  #app { position: fixed; inset: 0; overflow: auto; padding: 14px 16px 50px; display: grid; grid-template-columns: auto 270px; gap: 16px; justify-content: center; align-content: start; }
-  #pad { display: block; border-radius: 14px; border: 1px solid var(--line); background: #000; cursor: crosshair; touch-action: none; }
-  .padwrap { position: relative; }
-  .padwrap .tip { position: absolute; left: 0; right: 0; top: 46%; text-align: center; color: rgba(255,255,255,.35); font-size: 14px; pointer-events: none; }
-  .side { display: grid; gap: 12px; align-content: start; }
-  .result { display: flex; align-items: center; gap: 14px; }
-  .result b { font: 800 64px/1 var(--mono); color: var(--accent); min-width: 48px; text-align: center; }
-  .result div { font-size: 13px; color: var(--muted); }
-  .result strong { display: block; font: 700 18px var(--mono); color: var(--fg); }
-  #bars { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; align-items: end; height: 110px; padding: 0 2px; }
-  #bars div { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 3px; }
-  #bars i { display: block; width: 100%; border-radius: 4px 4px 2px 2px; background: var(--c2); opacity: .55; height: 2%; transition: height .18s ease-out, opacity .18s, background .18s; }
-  #bars div.top i { background: var(--accent); opacity: 1; }
-  #bars span { font: 12px var(--mono); color: var(--muted); }
-  #bars div.top span { color: var(--fg); font-weight: 700; }
-  .see { display: flex; gap: 12px; align-items: center; font-size: 12px; color: var(--muted); }
-  #small { width: 84px; height: 84px; image-rendering: pixelated; border-radius: 6px; border: 1px solid var(--line); background: #000; flex: none; }
-  .see b { color: var(--fg); font-family: var(--mono); }
-  .row { display: flex; gap: 8px; flex-wrap: wrap; }
-  @media (max-width: 640px) {
-    /* stacked layout scrolls under the fixed hint: show it briefly, then fade it out */
-    .hint { animation: hint-fade .5s 8s forwards; }
-    #app { grid-template-columns: minmax(0, 1fr); padding: 10px 10px 46px; gap: 10px; justify-items: center; }
-    .side { width: 100%; }
-    .result b { font-size: 46px; }
-    #bars { height: 70px; }
-    #small { width: 56px; height: 56px; }
-  }
+  .ox-pad { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 12px calc(var(--sc-ctl-b, 0px) + 10px); }
+  .sc-scene.scroll > .ox-pad { position: relative; min-height: 100%; box-sizing: border-box; }
+  .ox-card { position: relative; min-width: 0; min-height: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-2); }
+  .ox-k { font-size: 12px; color: var(--muted); }
+  .ox-num { font: 600 13px/1.4 var(--mono); color: var(--fg); }
+  .ox-acc { color: var(--accent); }
+  .ox-tag { position: absolute; left: 8px; top: 8px; padding: 2px 7px; border-radius: 6px; background: rgba(14, 16, 19, .75); font: 600 11px/1.5 var(--mono); color: var(--fg); pointer-events: none; }
+
+  /* 1. digits */
+  .ox-digits { display: grid; grid-template-columns: auto 240px; gap: 16px; justify-content: center; align-content: center; }
+  .ox-digits.stack { grid-template-columns: minmax(0, 1fr); justify-items: center; align-content: start; gap: 10px; }
+  .ox-padwrap { position: relative; }
+  .ox-draw { display: block; border-radius: 14px; border: 1px solid var(--line); background: #000; cursor: crosshair; touch-action: none; }
+  .ox-tip { position: absolute; left: 0; right: 0; top: 46%; text-align: center; color: rgba(255, 255, 255, .35); font-size: 14px; pointer-events: none; }
+  .ox-side { display: grid; gap: 12px; align-content: start; width: 100%; }
+  .ox-result { display: flex; align-items: center; gap: 14px; }
+  .ox-result b { font: 800 60px/1 var(--mono); color: var(--accent); min-width: 48px; text-align: center; }
+  .ox-result div { font-size: 13px; color: var(--muted); }
+  .ox-result strong { display: block; font: 700 17px var(--mono); color: var(--fg); }
+  .ox-bars { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; align-items: end; height: 100px; }
+  .ox-bars div { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 3px; }
+  .ox-bars i { display: block; width: 100%; border-radius: 4px 4px 2px 2px; background: var(--c2); opacity: .55; height: 2%; transition: height .18s ease-out; }
+  .ox-bars div.top i { background: var(--accent); opacity: 1; }
+  .ox-bars span { font: 12px var(--mono); color: var(--muted); }
+  .ox-see { display: flex; gap: 12px; align-items: center; font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .ox-small { width: 72px; height: 72px; image-rendering: pixelated; border-radius: 6px; border: 1px solid var(--line); background: #000; flex: none; }
+  .ox-see b { color: var(--fg); font-family: var(--mono); }
+  .ox-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .ox-digits.stack .ox-result b { font-size: 44px; }
+  .ox-digits.stack .ox-bars { height: 64px; }
+
+  /* 2. filter */
+  .ox-duo { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ox-duo.rows { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+  .ox-duo .ox-card { overflow: hidden; background: #000; }
+  .ox-duo canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .ox-timing { position: absolute; right: 8px; bottom: 8px; padding: 4px 8px; border-radius: 6px; background: rgba(14, 16, 19, .78); font: 11px/1.6 var(--mono); color: var(--fg); pointer-events: none; text-align: right; }
+
+  /* 3. ops */
+  .ox-ops { display: flex; flex-wrap: wrap; gap: 14px; align-content: flex-start; align-items: flex-start; }
+  .ox-sig { flex-basis: 100%; font: 600 14px var(--mono); color: var(--accent); }
+  .ox-sig small { display: block; margin-top: 3px; font: 12px var(--font); color: var(--muted); }
+  .ox-t { padding: 8px; }
+  .ox-t header { font-size: 12px; color: var(--muted); margin-bottom: 6px; line-height: 1.5; }
+  .ox-t header b { font: 600 12px var(--mono); color: var(--fg); }
+  .ox-cells { display: grid; gap: 2px; }
+  .ox-cells span { min-width: 38px; height: 26px; display: grid; place-items: center; border-radius: 4px; font: 11px var(--mono); color: #0e1013; }
+  .ox-arrow { align-self: center; font: 600 20px var(--mono); color: var(--muted); }
+  @media (max-width: 640px) { .ox-cells span { min-width: 34px; height: 24px; font-size: 10.5px; } .ox-arrow { display: none; } }
+
+  /* 4. optimization */
+  .ox-opt { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-content: start; }
+  .ox-graph { padding: 8px; }
+  .ox-graph svg { width: 100%; height: auto; display: block; }
+  .ox-graph p, .ox-res p { margin: 6px 4px 0; font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .ox-res { padding: 10px 12px; }
+  .ox-lv { display: grid; grid-template-columns: 6.6em minmax(0, 1fr) 5.4em; gap: 8px; align-items: center; margin: 6px 0; font-size: 12px; }
+  .ox-lv .nm { font: 600 12px var(--mono); }
+  .ox-lv .tr { height: 14px; border-radius: 4px; background: rgba(127, 127, 127, .14); overflow: hidden; }
+  .ox-lv .tr i { display: block; height: 100%; background: var(--c2); width: 0; transition: width .3s; }
+  .ox-lv.fast .tr i { background: var(--c4); }
+  .ox-lv .v { font: 12px var(--mono); text-align: right; }
+  .ox-lv .c { grid-column: 2 / 4; margin-top: -4px; font: 11px var(--mono); color: var(--muted); }
+  @media (max-width: 640px) { .ox-opt { grid-template-columns: minmax(0, 1fr); } }
+
+  /* 5. environment */
+  .ox-env { display: grid; gap: 10px; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); align-content: start; }
+  .ox-caps { padding: 8px 12px; }
+  .ox-cap { display: grid; grid-template-columns: 1.3em minmax(0, 1fr); gap: 2px 8px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+  .ox-cap:last-child { border-bottom: 0; }
+  .ox-cap .ic { font: 700 14px var(--mono); }
+  .ox-cap .ic.y { color: var(--c4); } .ox-cap .ic.n { color: var(--c3); } .ox-cap .ic.m { color: var(--c5); }
+  .ox-cap small { grid-column: 2; color: var(--muted); line-height: 1.5; font-size: 11.5px; }
+  .ox-cap code { font: 11.5px var(--mono); }
+  .ox-lat { padding: 10px 12px; display: grid; gap: 8px; align-content: start; }
+  .ox-hist { position: relative; height: 130px; }
+  .ox-hist canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .ox-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; text-align: center; }
+  .ox-stats div { font-size: 11px; color: var(--muted); }
+  .ox-stats b { display: block; font: 600 14px var(--mono); color: var(--fg); }
+  .ox-meta { font: 11.5px/1.7 var(--mono); color: var(--fg); overflow-x: auto; white-space: nowrap; }
+  .ox-meta span { color: var(--muted); font-family: var(--font); }
+  @media (max-width: 640px) { .ox-env { grid-template-columns: minmax(0, 1fr); } }
+
+  /* 6. stress */
+  .ox-stress { position: absolute; inset: 8px 8px 8px 350px; }
+  .ox-stress canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  @media (max-width: 760px) { .ox-stress { inset: 8px; opacity: .9; } }
 </style>
 </head>
 <body>
-<div id="app">
-  <div class="padwrap"><canvas id="pad" width="280" height="280"></canvas><div class="tip" id="padTip">在這裡寫一個 0 到 9 的數字</div></div>
-  <div class="side">
-    <div class="result"><b id="digit">?</b><div>模型判斷<strong id="conf">載入中…</strong></div></div>
-    <div id="bars"></div>
-    <div class="see"><canvas id="small" width="28" height="28"></canvas><div>模型實際看到的 28×28 灰階影像<br>推論 <b id="ms">-</b> ms・<b id="ep">WASM</b><br>模型 <b>26 KB</b>・CNN 卷積網路</div></div>
-    <div class="row">
-      <button class="btn primary" id="clear">清除</button>
-      <button class="btn" id="sample">隨機範例</button>
-    </div>
-  </div>
-</div>
-<div class="hint" id="hint">用滑鼠或手指寫數字，邊寫邊辨識</div>
-
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort.wasm.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// ONNX Runtime Web: MNIST CNN (onnx/models mnist-12) running on the WebAssembly execution provider.
-const $ = (id) => document.getElementById(id);
+// ONNX Runtime Web showcase: a real MNIST model plus small ONNX graphs assembled in-page,
+// run on the WebAssembly execution provider (single thread: GitHub Pages is not cross-origin isolated).
 ort.env.wasm.numThreads = 1;
 ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/";
 
-const pad = $("pad");
-const pctx = pad.getContext("2d", { willReadFrequently: true });
-const small = $("small");
-const sctx = small.getContext("2d", { willReadFrequently: true });
-const work = document.createElement("canvas");
-work.width = work.height = 28;
-const wctx = work.getContext("2d", { willReadFrequently: true });
-
-$("bars").innerHTML = Array.from({ length: 10 }, (_, i) => `<div><i></i><span>${i}</span></div>`).join("");
-const bars = [...$("bars").children];
-
-let session, inputName, outputName;
-let dirty = false;
-let busy = false;
-
-function clearPad() {
-  pctx.fillStyle = "#000";
-  pctx.fillRect(0, 0, 280, 280);
-  sctx.clearRect(0, 0, 28, 28);
-  $("digit").textContent = "?";
-  $("conf").textContent = session ? "請寫一個數字" : "載入中…";
-  bars.forEach((b) => { b.classList.remove("top"); b.firstChild.style.height = "2%"; });
-  $("padTip").style.display = "";
-}
-
-// MNIST-style preprocessing: crop the ink, fit it in a 20x20 box, center it in 28x28.
-function toInput() {
-  const { data } = pctx.getImageData(0, 0, 280, 280);
-  let x0 = 280, y0 = 280, x1 = -1, y1 = -1;
-  for (let y = 0; y < 280; y++) {
-    for (let x = 0; x < 280; x++) {
-      if (data[(y * 280 + x) * 4] > 30) {
-        if (x < x0) x0 = x; if (x > x1) x1 = x;
-        if (y < y0) y0 = y; if (y > y1) y1 = y;
-      }
-    }
+const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function rng(seed) { let s = seed >>> 0 || 1; return () => ((s = (s * 16807) % 2147483647) - 1) / 2147483646; }
+function fit(canvas) {
+  const dpr = Math.min(2, devicePixelRatio || 1);
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.max(1, Math.round(w * dpr)); canvas.height = Math.max(1, Math.round(h * dpr));
   }
-  if (x1 < 0) return null;
-  const w = x1 - x0 + 1, h = y1 - y0 + 1;
-  const s = 20 / Math.max(w, h);
-  wctx.fillStyle = "#000";
-  wctx.fillRect(0, 0, 28, 28);
-  wctx.imageSmoothingEnabled = true;
-  wctx.imageSmoothingQuality = "high";
-  wctx.drawImage(pad, x0, y0, w, h, 14 - (w * s) / 2, 14 - (h * s) / 2, w * s, h * s);
-  const px = wctx.getImageData(0, 0, 28, 28);
-  sctx.putImageData(px, 0, 0);
-  const input = new Float32Array(28 * 28);
-  for (let i = 0; i < input.length; i++) input[i] = px.data[i * 4] / 255;
-  return input;
+  const g = canvas.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { g, w, h };
 }
+const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
 
-async function predict() {
-  if (!session || busy) { dirty = !!session; return; }
-  busy = true;
-  dirty = false;
-  const input = toInput();
-  if (input) {
-    const t0 = performance.now();
-    const out = await session.run({ [inputName]: new ort.Tensor("float32", input, [1, 1, 28, 28]) });
-    const ms = performance.now() - t0;
-    const logits = out[outputName].data;
-    const max = Math.max(...logits);
-    const exps = Array.from(logits, (v) => Math.exp(v - max));
-    const sum = exps.reduce((a, b) => a + b, 0);
-    const probs = exps.map((v) => v / sum);
-    const best = probs.indexOf(Math.max(...probs));
-    $("digit").textContent = best;
-    $("conf").textContent = `信心 ${(probs[best] * 100).toFixed(1)}%`;
-    $("ms").textContent = ms.toFixed(1);
-    bars.forEach((b, i) => {
-      b.classList.toggle("top", i === best);
-      b.firstChild.style.height = `${Math.max(2, probs[i] * 100)}%`;
-    });
-  }
-  busy = false;
-  if (dirty) requestAnimationFrame(predict);
-}
-
-// Drawing
-let drawing = false;
-let last = null;
-function pos(e) {
-  const r = pad.getBoundingClientRect();
-  return { x: ((e.clientX - r.left) / r.width) * 280, y: ((e.clientY - r.top) / r.height) * 280 };
-}
-function stroke(a, b) {
-  pctx.strokeStyle = "#fff";
-  pctx.lineWidth = 19;
-  pctx.lineCap = pctx.lineJoin = "round";
-  pctx.shadowColor = "rgba(255,255,255,.6)";
-  pctx.shadowBlur = 6;
-  pctx.beginPath();
-  pctx.moveTo(a.x, a.y);
-  pctx.lineTo(b.x, b.y);
-  pctx.stroke();
-  pctx.shadowBlur = 0;
-}
-pad.addEventListener("pointerdown", (e) => {
-  drawing = true;
-  last = pos(e);
-  stroke(last, last);
-  $("padTip").style.display = "none";
-  pad.setPointerCapture(e.pointerId);
-  predict();
-});
-pad.addEventListener("pointermove", (e) => {
-  if (!drawing) return;
-  const p = pos(e);
-  stroke(last, p);
-  last = p;
-  predict();
-});
-const end = () => { if (drawing) { drawing = false; predict(); } };
-pad.addEventListener("pointerup", end);
-pad.addEventListener("pointercancel", end);
-
-// Random sample digit rendered with a handwriting-like font and a small random tilt
-let seed = 9;
-const rand = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
-function drawSample(d = Math.floor(rand() * 10)) {
-  clearPad();
-  $("padTip").style.display = "none";
-  pctx.save();
-  pctx.translate(140, 150);
-  pctx.rotate((rand() - 0.5) * 0.35);
-  pctx.fillStyle = "#fff";
-  pctx.strokeStyle = "#fff";
-  pctx.lineWidth = 6;
-  pctx.textAlign = "center";
-  pctx.textBaseline = "middle";
-  pctx.font = `${170 + Math.round(rand() * 40)}px "Segoe Print", "Comic Sans MS", "Bradley Hand", cursive`;
-  pctx.fillText(String(d), 0, 0);
-  pctx.strokeText(String(d), 0, 0);
-  pctx.restore();
-  predict();
-}
-
-$("clear").addEventListener("click", clearPad);
-$("sample").addEventListener("click", () => drawSample());
-
-function layout() {
-  const narrow = innerWidth <= 640;
-  const size = Math.max(180, Math.floor(narrow ? Math.min(innerWidth - 22, innerHeight - 290) : Math.min(innerWidth - 330, innerHeight - 70, 460)));
-  pad.style.width = pad.style.height = `${size}px`;
-}
-addEventListener("resize", layout);
-layout();
-clearPad();
-
-(async () => {
-  try {
-    session = await ort.InferenceSession.create("assets/onnx-runtime-web/mnist-12.onnx", { executionProviders: ["wasm"] });
-    [inputName] = session.inputNames;
-    [outputName] = session.outputNames;
-    $("hint").textContent = `模型輸入 ${inputName} [1,1,28,28]・用滑鼠或手指寫數字，邊寫邊辨識`;
-    drawSample(3);
-  } catch (err) {
-    console.warn(err);
-    $("conf").textContent = `載入失敗：${err.message}`;
-  }
+// ---------- minimal protobuf writer for ONNX ModelProto ----------
+// Field numbers follow onnx.proto (ModelProto, GraphProto, NodeProto, TensorProto, ValueInfoProto).
+const Onnx = (() => {
+  const te = new TextEncoder();
+  const varint = (v) => { let b = BigInt.asUintN(64, BigInt(v)); const o = []; do { let x = Number(b & 0x7fn); b >>= 7n; if (b) x |= 0x80; o.push(x); } while (b); return o; };
+  const cat = (parts) => { let n = 0; for (const p of parts) n += p.length; const o = new Uint8Array(n); let k = 0; for (const p of parts) { o.set(p, k); k += p.length; } return o; };
+  const key = (f, w) => varint((f << 3) | w);
+  const V = (f, v) => Uint8Array.from([...key(f, 0), ...varint(v)]);
+  const B = (f, bytes) => cat([Uint8Array.from(key(f, 2)), Uint8Array.from(varint(bytes.length)), bytes]);
+  const S = (f, s) => B(f, te.encode(s));
+  const F32 = (f, x) => { const o = new Uint8Array(5); o[0] = (f << 3) | 5; new DataView(o.buffer).setFloat32(1, x, true); return o; };
+  const DT = { float32: 1, uint8: 2, int32: 6, int64: 7, bool: 9 };
+  const api = {
+    tensor: (name, dtype, dims, data) => cat([...dims.map((d) => V(1, d)), V(2, DT[dtype]), S(8, name), B(9, new Uint8Array(data.buffer, data.byteOffset, data.byteLength))]),
+    value(name, dtype, dims) {
+      const parts = [V(1, DT[dtype])];
+      if (dims) parts.push(B(2, cat(dims.map((d) => B(1, typeof d === "string" ? S(2, d) : V(1, d))))));
+      return cat([S(1, name), B(2, B(1, cat(parts)))]);
+    },
+    attr(name, v) {
+      if (Array.isArray(v)) return cat([S(1, name), ...v.map((x) => V(8, x)), V(20, 7)]);
+      if (typeof v === "object") return cat([S(1, name), F32(2, v.f), V(20, 1)]);
+      return cat([S(1, name), V(3, v), V(20, 2)]);
+    },
+    node: (op, inputs, outputs, attrs = {}) => cat([...inputs.map((s) => S(1, s)), ...outputs.map((s) => S(2, s)), S(4, op), ...Object.entries(attrs).map(([k, v]) => B(5, api.attr(k, v)))]),
+    model({ nodes, inputs, outputs, inits = [], opset = 17 }) {
+      const graph = cat([...nodes.map((n) => B(1, n)), S(2, "g"), ...inits.map((t) => B(5, t)), ...inputs.map((v) => B(11, v)), ...outputs.map((v) => B(12, v))]);
+      return cat([V(1, 8), S(2, "js-tools-atlas"), B(7, graph), B(8, cat([S(1, ""), V(2, opset)]))]);
+    },
+  };
+  return api;
 })();
+const N = Onnx.node;
+
+// Shared MNIST session (scenes 1 and 5).
+let mnistPromise;
+const mnist = () => (mnistPromise ||= ort.InferenceSession.create("assets/onnx-runtime-web/mnist-12.onnx", { executionProviders: ["wasm"] }));
+const softmax = (logits) => { const m = Math.max(...logits); const e = Array.from(logits, (v) => Math.exp(v - m)); const s = e.reduce((a, b) => a + b, 0); return e.map((v) => v / s); };
+
+// Heat colour for tensor cells: dark blue -> cyan -> yellow.
+function heat(t) {
+  const stops = [[38, 70, 120], [76, 201, 240], [247, 223, 30]];
+  const x = Math.max(0, Math.min(1, t)) * 2, i = Math.min(1, Math.floor(x)), f = x - i;
+  const c = stops[i].map((v, k) => Math.round(v + (stops[i + 1][k] - v) * f));
+  return `rgb(${c})`;
+}
+
+Showcase.run({ scenes: [
+  {
+    id: "digits", title: "手寫數字",
+    api: "await ort.InferenceSession.create(url) → session.run({ Input3: tensor })",
+    desc: "載入真正的 ONNX 檔（ONNX Model Zoo 的 MNIST CNN，26 KB），每畫一筆就把畫布縮成 28×28 灰階，包成 float32 [1,1,28,28] 的 Tensor 丟進 WebAssembly 執行，輸出 10 個 logits 再做 softmax。",
+    hint: "用滑鼠或手指寫數字，邊寫邊辨識",
+    mount(ctx) {
+      ctx.html(`
+        <div class="ox-pad ox-digits">
+          <div class="ox-padwrap"><canvas class="ox-draw" width="280" height="280"></canvas><div class="ox-tip">在這裡寫一個 0 到 9 的數字</div></div>
+          <div class="ox-side">
+            <div class="ox-result"><b class="dg">?</b><div>模型判斷<strong class="cf">載入中…</strong></div></div>
+            <div class="ox-bars">${Array.from({ length: 10 }, (_, i) => `<div><i></i><span>${i}</span></div>`).join("")}</div>
+            <div class="ox-see"><canvas class="ox-small" width="28" height="28"></canvas><div>模型實際看到的 28×28 影像<br>推論 <b class="ms">-</b> ms・WASM<br>輸入 <b class="io">-</b></div></div>
+            <div class="ox-row"><button class="btn primary clear" type="button">清除</button><button class="btn sample" type="button">隨機範例</button></div>
+          </div>
+        </div>`);
+      const pad = ctx.$(".ox-draw"), pg = pad.getContext("2d", { willReadFrequently: true });
+      const sg = ctx.$(".ox-small").getContext("2d");
+      const work = document.createElement("canvas"); work.width = work.height = 28;
+      const wg = work.getContext("2d", { willReadFrequently: true });
+      const bars = [...ctx.$(".ox-bars").children];
+      let session, inName, outName, busy = false, dirty = false;
+
+      const clearPad = () => {
+        pg.fillStyle = "#000"; pg.fillRect(0, 0, 280, 280);
+        sg.clearRect(0, 0, 28, 28);
+        ctx.$(".dg").textContent = "?";
+        ctx.$(".cf").textContent = session ? "請寫一個數字" : "載入中…";
+        bars.forEach((b) => { b.classList.remove("top"); b.firstChild.style.height = "2%"; });
+        ctx.$(".ox-tip").style.display = "";
+      };
+      // MNIST-style preprocessing: crop the ink, fit it in 20x20, centre it in 28x28.
+      const toInput = () => {
+        const { data } = pg.getImageData(0, 0, 280, 280);
+        let x0 = 280, y0 = 280, x1 = -1, y1 = -1;
+        for (let y = 0; y < 280; y++) for (let x = 0; x < 280; x++) {
+          if (data[(y * 280 + x) * 4] > 30) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+        }
+        if (x1 < 0) return null;
+        const w = x1 - x0 + 1, h = y1 - y0 + 1, s = 20 / Math.max(w, h);
+        wg.fillStyle = "#000"; wg.fillRect(0, 0, 28, 28);
+        wg.imageSmoothingQuality = "high";
+        wg.drawImage(pad, x0, y0, w, h, 14 - (w * s) / 2, 14 - (h * s) / 2, w * s, h * s);
+        const px = wg.getImageData(0, 0, 28, 28);
+        sg.putImageData(px, 0, 0);
+        const input = new Float32Array(784);
+        for (let i = 0; i < 784; i++) input[i] = px.data[i * 4] / 255;
+        return input;
+      };
+      const predict = async () => {
+        if (!session || busy) { dirty = !!session; return; }
+        busy = true; dirty = false;
+        const input = toInput();
+        if (input) {
+          const t0 = performance.now();
+          const out = await session.run({ [inName]: new ort.Tensor("float32", input, [1, 1, 28, 28]) });
+          const ms = performance.now() - t0;
+          if (!ctx.active) return;
+          const probs = softmax(out[outName].data);
+          const best = probs.indexOf(Math.max(...probs));
+          ctx.$(".dg").textContent = best;
+          ctx.$(".cf").textContent = `信心 ${(probs[best] * 100).toFixed(1)}%`;
+          ctx.$(".ms").textContent = ms.toFixed(1);
+          bars.forEach((b, i) => { b.classList.toggle("top", i === best); b.firstChild.style.height = `${Math.max(2, probs[i] * 100)}%`; });
+        }
+        busy = false;
+        if (dirty) requestAnimationFrame(predict);
+      };
+      let drawing = false, last = null;
+      const pos = (e) => { const r = pad.getBoundingClientRect(); return { x: ((e.clientX - r.left) / r.width) * 280, y: ((e.clientY - r.top) / r.height) * 280 }; };
+      const stroke = (a, b) => {
+        pg.strokeStyle = "#fff"; pg.lineWidth = 19; pg.lineCap = pg.lineJoin = "round";
+        pg.shadowColor = "rgba(255,255,255,.6)"; pg.shadowBlur = 6;
+        pg.beginPath(); pg.moveTo(a.x, a.y); pg.lineTo(b.x, b.y); pg.stroke();
+        pg.shadowBlur = 0;
+      };
+      ctx.on(pad, "pointerdown", (e) => { drawing = true; last = pos(e); stroke(last, last); ctx.$(".ox-tip").style.display = "none"; pad.setPointerCapture(e.pointerId); predict(); });
+      ctx.on(pad, "pointermove", (e) => { if (!drawing) return; const p = pos(e); stroke(last, p); last = p; predict(); });
+      const end = () => { if (drawing) { drawing = false; predict(); } };
+      ctx.on(pad, "pointerup", end);
+      ctx.on(pad, "pointercancel", end);
+      const r = rng(9);
+      const drawSample = (d = Math.floor(r() * 10)) => {
+        clearPad();
+        ctx.$(".ox-tip").style.display = "none";
+        pg.save();
+        pg.translate(140, 150); pg.rotate((r() - 0.5) * 0.35);
+        pg.fillStyle = pg.strokeStyle = "#fff"; pg.lineWidth = 6;
+        pg.textAlign = "center"; pg.textBaseline = "middle";
+        pg.font = `${170 + Math.round(r() * 40)}px "Segoe Print", "Comic Sans MS", "Bradley Hand", cursive`;
+        pg.fillText(String(d), 0, 0); pg.strokeText(String(d), 0, 0);
+        pg.restore();
+        predict();
+      };
+      ctx.on(ctx.$(".clear"), "click", clearPad);
+      ctx.on(ctx.$(".sample"), "click", () => drawSample());
+
+      const layout = ({ width: w, height: h }) => {
+        const stack = w < 540;
+        ctx.$(".ox-digits").classList.toggle("stack", stack);
+        ctx.el.classList.toggle("scroll", stack);
+        const size = Math.floor(stack ? Math.min(w - 24, 300) : Math.min(w - 300, h - 24, 460));
+        pad.style.width = pad.style.height = `${Math.max(160, size)}px`;
+      };
+      layout(ctx.size());
+      ctx.onResize(layout);
+      clearPad();
+      mnist().then((s) => {
+        if (!ctx.active) return;
+        session = s;
+        [inName] = s.inputNames; [outName] = s.outputNames;
+        const m = s.inputMetadata[0];
+        ctx.$(".io").textContent = `${inName} ${m.type} [${m.shape.join(",")}]`;
+        drawSample(3);
+      }, (err) => { ctx.$(".cf").textContent = `載入失敗：${err.message}`; throw err; });
+    },
+  },
+  {
+    id: "filter", title: "即時濾鏡",
+    api: "Tensor.fromImage(imageData) → run → tensor.toImageData()",
+    desc: "頁面內用 JS 組出一個 Conv（group=3 逐通道卷積）加 Clip 的 ONNX 模型，高寬宣告成符號維度 H、W，所以視窗大小改變也不用重建 session。卷積核本身是模型輸入，拖強度滑桿就是換一個輸入張量。左邊是動畫原圖，右邊是每一幀推論的輸出。",
+    hint: "切換卷積核・拖強度・改變視窗大小，[1,3,H,W] 會跟著變",
+    mount(ctx) {
+      ctx.html(`
+        <div class="ox-pad ox-duo">
+          <div class="ox-card src"><span class="ox-tag">輸入 ImageData</span></div>
+          <div class="ox-card dst"><span class="ox-tag shape">輸出</span><div class="ox-timing">-</div></div>
+        </div>`);
+      const embed3 = (k3) => { const k = new Array(25).fill(0); for (let j = 0; j < 3; j++) for (let i = 0; i < 3; i++) k[(j + 1) * 5 + i + 1] = k3[j * 3 + i]; return k; };
+      const g1 = [1, 4, 6, 4, 1];
+      const KERNELS = [
+        { label: "高斯模糊", k: g1.flatMap((a) => g1.map((b) => (a * b) / 256)) },
+        { label: "銳化", k: embed3([0, -1, 0, -1, 5, -1, 0, -1, 0]) },
+        { label: "浮雕", k: embed3([-2, -1, 0, -1, 1, 1, 0, 1, 2]) },
+        { label: "邊緣", k: embed3([-1, -1, -1, -1, 8, -1, -1, -1, -1]), abs: true },
+      ];
+      const ID = embed3([0, 0, 0, 0, 1, 0, 0, 0, 0]);
+      const build = (abs) => Onnx.model({
+        nodes: [N("Conv", ["x", "w", "b"], ["c"], { group: 3, pads: [2, 2, 2, 2] }), ...(abs ? [N("Abs", ["c"], ["a"])] : []), N("Clip", [abs ? "a" : "c", "lo", "hi"], ["y"])],
+        inputs: [Onnx.value("x", "float32", [1, 3, "H", "W"]), Onnx.value("w", "float32", [3, 1, 5, 5]), Onnx.value("b", "float32", [3])],
+        outputs: [Onnx.value("y", "float32", [1, 3, "H", "W"])],
+        inits: [Onnx.tensor("lo", "float32", [], new Float32Array([0])), Onnx.tensor("hi", "float32", [], new Float32Array([1]))],
+      });
+      let sessions = null, kIdx = 0, strength = 1, busy = false, W = 0, H = 0, avg = null;
+      const src = Showcase.h("canvas"), dst = Showcase.h("canvas");
+      ctx.$(".src").prepend(src); ctx.$(".dst").prepend(dst);
+      const sg = src.getContext("2d", { willReadFrequently: true }), dg = dst.getContext("2d");
+      const layout = () => {
+        const box = ctx.$(".ox-duo");
+        const { width, height } = ctx.size();
+        box.classList.toggle("rows", width < height * 1.15);
+        const cw = src.parentNode.clientWidth, ch = src.parentNode.clientHeight;
+        W = Math.max(32, Math.round(Math.min(cw, 400))); H = Math.max(24, Math.round((W * ch) / Math.max(1, cw)));
+        src.width = dst.width = W; src.height = dst.height = H;
+      };
+      ctx.group(KERNELS.map((k) => k.label), 0, (i) => { kIdx = i; });
+      ctx.slider("強度", { min: 0, max: 1.5, step: 0.05, value: 1, format: (v) => v.toFixed(2) }, (v) => { strength = v; });
+      layout();
+      ctx.onResize(layout);
+
+      const kernelTensor = () => {
+        const K = KERNELS[kIdx];
+        const k = K.abs ? K.k.map((v) => v * strength) : K.k.map((v, i) => ID[i] + strength * (v - ID[i]));
+        const w = new Float32Array(75);
+        for (let c = 0; c < 3; c++) w.set(k, c * 25);
+        return new ort.Tensor("float32", w, [3, 1, 5, 5]);
+      };
+      const bias = new ort.Tensor("float32", new Float32Array(3), [3]);
+      const font = cssVar("--font");
+      const paint = (t) => {
+        const grd = sg.createLinearGradient(0, 0, W, H);
+        grd.addColorStop(0, "#1d3557"); grd.addColorStop(0.55, "#9d4edd"); grd.addColorStop(1, "#f4a261");
+        sg.fillStyle = grd; sg.fillRect(0, 0, W, H);
+        sg.fillStyle = "rgba(255,255,255,.10)";
+        const off = (t * 0.02) % 24;
+        for (let x = -H; x < W + 24; x += 24) { sg.beginPath(); sg.moveTo(x + off, 0); sg.lineTo(x + off + 10, 0); sg.lineTo(x + off + 10 + H, H); sg.lineTo(x + off + H, H); sg.fill(); }
+        const cols = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ffffff"];
+        for (let i = 0; i < 5; i++) {
+          const a = t * 0.0005 * (i + 1) + i * 1.3;
+          sg.fillStyle = cols[i];
+          sg.beginPath(); sg.arc(W / 2 + Math.cos(a) * W * 0.32, H / 2 + Math.sin(a * 1.4) * H * 0.3, Math.max(5, Math.min(W, H) * (0.04 + i * 0.015)), 0, Math.PI * 2); sg.fill();
+        }
+        sg.fillStyle = "#fff"; sg.textAlign = "center"; sg.textBaseline = "middle";
+        sg.font = `800 ${Math.round(Math.min(W / 6, H / 4))}px ${font}`;
+        sg.fillText("ONNX 濾鏡", W / 2, H / 2);
+        for (let j = 0; j < 4; j++) for (let i = 0; i < 6; i++) { sg.fillStyle = (i + j) % 2 ? "#000" : "#fff"; sg.fillRect(8 + i * 5, H - 28 + j * 5, 5, 5); }
+      };
+      const step = async (t) => {
+        busy = true;
+        try {
+          paint(t);
+          const t0 = performance.now();
+          const x = await ort.Tensor.fromImage(sg.getImageData(0, 0, W, H));
+          const t1 = performance.now();
+          const out = await sessions[KERNELS[kIdx].abs ? 1 : 0].run({ x, w: kernelTensor(), b: bias });
+          const t2 = performance.now();
+          if (!ctx.active) return;
+          dg.putImageData(out.y.toImageData(), 0, 0);
+          const t3 = performance.now();
+          const cur = [t1 - t0, t2 - t1, t3 - t2];
+          avg = avg ? avg.map((v, i) => v * 0.9 + cur[i] * 0.1) : cur;
+          ctx.$(".shape").textContent = `y：float32 [${out.y.dims.join(",")}]`;
+          ctx.$(".ox-timing").innerHTML = `fromImage ${avg[0].toFixed(1)} ms<br>session.run ${avg[1].toFixed(1)} ms<br>toImageData ${avg[2].toFixed(1)} ms`;
+        } finally { busy = false; }
+      };
+      const st = ctx.status("建立 session…");
+      Promise.all([ort.InferenceSession.create(build(false)), ort.InferenceSession.create(build(true))]).then((s) => {
+        if (!ctx.active) { s.forEach((x) => x.release()); return; }
+        sessions = s; st.done();
+        ctx.onCleanup(() => s.forEach((x) => x.release()));
+        ctx.raf((t) => { if (!busy) step(t); });
+      }, (e) => { st.error(`建立失敗：${e.message}`); throw e; });
+    },
+  },
+  {
+    id: "ops", title: "運算子實驗",
+    api: "new ort.Tensor('float32', data, [4, 6]) → int64／bool 輸出",
+    desc: "每個運算子各組成一個單節點（或兩節點）ONNX 模型。輸入是 4×6 的 float32 張量；輸出可能是 float32、int64（JS 端拿到 BigInt64Array）或 bool（Uint8Array）。標頭列出 session.outputMetadata 推得的形狀與實際的 TypedArray 類別。",
+    hint: "選運算子・按「隨機輸入」看輸出怎麼變",
+    mount(ctx) {
+      ctx.el.classList.add("scroll");
+      ctx.html(`<div class="ox-pad ox-ops"></div>`);
+      const OPS = [
+        { label: "Softmax", sig: "Softmax(x, axis=-1)", note: "每一列各自正規化成總和 1 的機率。", nodes: [N("Softmax", ["x"], ["y"], { axis: -1 })], outs: [["y", "float32"]] },
+        { label: "TopK", sig: "TopK(x, k=3, axis=-1)", note: "一次輸出兩個張量：前 3 大的值，以及它們的位置（int64）。", nodes: [N("TopK", ["x", "k"], ["values", "indices"], { axis: -1 })], outs: [["values", "float32"], ["indices", "int64"]], inits: [Onnx.tensor("k", "int64", [1], new BigInt64Array([3n]))] },
+        { label: "ArgMax", sig: "ArgMax(x, axis=1, keepdims=0)", note: "每列最大值的欄位索引，int64 在 JS 是 BigInt。", nodes: [N("ArgMax", ["x"], ["y"], { axis: 1, keepdims: 0 })], outs: [["y", "int64"]] },
+        { label: "Greater", sig: "Greater(x, 0.5)", note: "逐元素比較，純量 0.5 透過廣播套到整個張量，輸出 bool。", nodes: [N("Greater", ["x", "half"], ["y"])], outs: [["y", "bool"]], inits: [Onnx.tensor("half", "float32", [], new Float32Array([0.5]))] },
+        { label: "Transpose", sig: "Transpose(x, perm=[1,0])", note: "形狀 [4,6] 變 [6,4]，資料重新排列。", nodes: [N("Transpose", ["x"], ["y"], { perm: [1, 0] })], outs: [["y", "float32"]] },
+        { label: "MatMul", sig: "MatMul(x, Transpose(x))", note: "兩個節點串接：先轉置再矩陣乘法，得到 4×4 的 Gram 矩陣（列與列的內積）。", nodes: [N("Transpose", ["x"], ["xt"], { perm: [1, 0] }), N("MatMul", ["x", "xt"], ["y"])], outs: [["y", "float32"]] },
+        { label: "ReduceMean", sig: "ReduceMean(x, axes=[1], keepdims=1)", note: "沿著第 1 軸取平均，keepdims 保留維度成 [4,1]。", nodes: [N("ReduceMean", ["x"], ["y"], { axes: [1], keepdims: 1 })], outs: [["y", "float32"]] },
+      ];
+      const cache = new Map();
+      let op = 0, x;
+      const r = rng(21);
+      const randomX = () => { x = new ort.Tensor("float32", Float32Array.from({ length: 24 }, () => Math.round(r() * 100) / 100), [4, 6]); };
+      const grid = (t) => {
+        const dims = t.dims.length === 1 ? [t.dims[0], 1] : t.dims;
+        const cols = dims[dims.length - 1];
+        const vals = Array.from(t.data, Number);
+        const lo = Math.min(...vals), hi = Math.max(...vals);
+        const cells = vals.map((v) => {
+          const txt = t.type === "bool" ? (v ? "true" : "false") : t.type === "int64" ? String(v) : v.toFixed(2);
+          const c = t.type === "bool" ? (v ? heat(1) : "rgba(127,127,127,.25)") : heat(hi > lo ? (v - lo) / (hi - lo) : 0.5);
+          return `<span style="background:${c}${t.type === "bool" && !v ? ";color:var(--muted)" : ""}">${txt}</span>`;
+        }).join("");
+        return `<div class="ox-cells" style="grid-template-columns:repeat(${cols},auto)">${cells}</div>`;
+      };
+      const block = (name, t, shape) => `<div class="ox-card ox-t"><header><b>${name}</b>・${t.type}・[${t.dims.join(",")}]<br>${t.data.constructor.name}${shape ? `・metadata [${shape.join(",")}]` : ""}</header>${grid(t)}</div>`;
+      const render = async () => {
+        const o = OPS[op];
+        let entry = cache.get(op);
+        if (!entry) {
+          const bytes = Onnx.model({ nodes: o.nodes, inputs: [Onnx.value("x", "float32", [4, 6])], outputs: o.outs.map(([n, t]) => Onnx.value(n, t)), inits: o.inits || [] });
+          const t0 = performance.now();
+          const session = await ort.InferenceSession.create(bytes);
+          entry = { session, bytes: bytes.length, create: performance.now() - t0 };
+          cache.set(op, entry);
+        }
+        const t0 = performance.now();
+        const out = await entry.session.run({ x });
+        const runMs = performance.now() - t0;
+        if (!ctx.active) return;
+        const meta = Object.fromEntries(entry.session.outputMetadata.map((m) => [m.name, m.shape]));
+        ctx.$(".ox-ops").innerHTML = `
+          <div class="ox-sig">${o.sig}<small>${o.note}　模型 ${entry.bytes} bytes・建立 session ${entry.create.toFixed(1)} ms・run ${runMs.toFixed(2)} ms</small></div>
+          ${block("x（輸入）", x)}<span class="ox-arrow">→</span>
+          ${o.outs.map(([n]) => block(n, out[n], meta[n])).join("")}`;
+      };
+      ctx.select("運算子", OPS.map((o, i) => ({ value: String(i), label: o.label })), "0", (v) => { op = +v; render(); });
+      ctx.button("隨機輸入", () => { randomX(); render(); });
+      ctx.onCleanup(() => cache.forEach((e) => e.session.release()));
+      randomX();
+      render();
+    },
+  },
+  {
+    id: "optimize", title: "圖最佳化",
+    api: "InferenceSession.create(model, { graphOptimizationLevel })",
+    desc: "同一個模型用四種 graphOptimizationLevel 各建一個 session。模型裡 W = MatMul(A, B) × 0.1 只依賴常數，開啟最佳化（basic 以上）時 ORT 會在建立 session 時先算好（constant folding），之後每次 run 只剩 x·W 與 Relu；disabled 則每次 run 都重算 N×N×N 的矩陣乘法。",
+    hint: "換矩陣大小後自動重新量測",
+    mount(ctx) {
+      ctx.el.classList.add("scroll");
+      const LEVELS = ["disabled", "basic", "extended", "all"];
+      ctx.html(`
+        <div class="ox-pad ox-opt">
+          <div class="ox-card ox-graph">
+            <svg viewBox="0 0 520 176" role="img" aria-label="計算圖">
+              <rect x="4" y="6" width="300" height="118" rx="10" fill="rgba(123,211,137,.07)" stroke="#7bd389" stroke-dasharray="5 4"/>
+              <text x="14" y="116" fill="#7bd389" font-size="11">常數子圖：建立 session 時即可算完</text>
+              ${[["A [N,N]", 14, 18], ["B [N,N]", 14, 66], ["MatMul", 112, 42], ["Mul ×0.1", 206, 42], ["x [1,N]", 206, 136], ["MatMul", 318, 88], ["Relu", 420, 88]].map(([t, x, y], i) =>
+                `<rect x="${x}" y="${y}" width="${i < 2 || i === 4 ? 80 : 84}" height="30" rx="7" fill="${i < 2 ? "#3a3f47" : i === 4 ? "rgba(76,201,240,.25)" : "#232830"}" stroke="#9b998f"/><text x="${x + 42}" y="${y + 19}" text-anchor="middle" fill="#ecebe6" font-size="12" font-family="monospace">${t}</text>`).join("")}
+              <g stroke="#9b998f" fill="none" stroke-width="1.4">
+                <path d="M94 33 L112 52"/><path d="M94 81 L112 62"/><path d="M196 57 L206 57"/>
+                <path d="M290 57 C306 57 306 98 318 98"/><path d="M286 151 C306 151 306 108 318 108"/><path d="M402 103 L420 103"/><path d="M504 103 L514 103"/>
+              </g>
+            </svg>
+            <p>A、B 是隨機產生並寫進模型的 initializer，x 是唯一的執行時輸入。</p>
+          </div>
+          <div class="ox-card ox-res">
+            <div class="ox-k">每次 session.run 的中位數耗時（N = <b class="ox-num nn">-</b>）</div>
+            ${LEVELS.map((l) => `<div class="ox-lv" data-l="${l}"><span class="nm">${l}</span><span class="tr"><i></i></span><span class="v">-</span><span class="c">-</span></div>`).join("")}
+            <p class="sum">量測中…</p>
+          </div>
+        </div>`);
+      let size = 512, token = 0;
+      const run = async () => {
+        const my = ++token;
+        const n = size;
+        ctx.$(".nn").textContent = n;
+        ctx.$(".sum").textContent = "量測中…";
+        ctx.$$(".ox-lv").forEach((row) => { row.querySelector(".v").textContent = "-"; row.querySelector(".c").textContent = "等待中"; row.querySelector("i").style.width = "0"; row.classList.remove("fast"); });
+        const r = rng(n);
+        const rnd = () => Float32Array.from({ length: n * n }, () => (r() - 0.5) / Math.sqrt(n));
+        const bytes = Onnx.model({
+          nodes: [N("MatMul", ["A", "B"], ["W"]), N("Mul", ["W", "sc"], ["W2"]), N("MatMul", ["x", "W2"], ["m"]), N("Relu", ["m"], ["y"])],
+          inputs: [Onnx.value("x", "float32", [1, n])], outputs: [Onnx.value("y", "float32", [1, n])],
+          inits: [Onnx.tensor("A", "float32", [n, n], rnd()), Onnx.tensor("B", "float32", [n, n], rnd()), Onnx.tensor("sc", "float32", [], new Float32Array([0.1]))],
+        });
+        const x = new ort.Tensor("float32", Float32Array.from({ length: n }, () => r()), [1, n]);
+        const res = {};
+        for (const lvl of LEVELS) {
+          await ctx.frame(2);
+          if (my !== token || !ctx.active) return;
+          const t0 = performance.now();
+          const s = await ort.InferenceSession.create(bytes, { graphOptimizationLevel: lvl });
+          const create = performance.now() - t0;
+          await s.run({ x });
+          // Time chunks of runs so each sample spans several ms (performance.now() is coarse without isolation).
+          const a0 = performance.now(); await s.run({ x });
+          const chunk = Math.min(200, Math.max(1, Math.ceil(5 / Math.max(0.01, performance.now() - a0))));
+          const times = [];
+          const tStart = performance.now();
+          while (times.length < 15 && (times.length < 3 || performance.now() - tStart < 600)) {
+            const a = performance.now();
+            for (let i = 0; i < chunk; i++) await s.run({ x });
+            times.push((performance.now() - a) / chunk);
+          }
+          await s.release();
+          if (my !== token || !ctx.active) return;
+          res[lvl] = { create, run: median(times), count: times.length * chunk };
+          const max = Math.max(...Object.values(res).map((v) => v.run));
+          for (const [k, v] of Object.entries(res)) {
+            const row = ctx.$(`.ox-lv[data-l="${k}"]`);
+            row.querySelector("i").style.width = `${Math.max(1.5, (v.run / max) * 100)}%`;
+            row.querySelector(".v").textContent = Showcase.fmtMs(v.run);
+            row.querySelector(".c").textContent = `建立 session ${Showcase.fmtMs(v.create)}・量 ${v.count} 次`;
+            row.classList.toggle("fast", v.run < max / 3);
+          }
+        }
+        const speed = res.disabled.run / res.all.run;
+        ctx.$(".sum").innerHTML = `all 比 disabled 快約 <b class="ox-num ox-acc">${speed >= 10 ? Math.round(speed) : speed.toFixed(1)} 倍</b>。disabled 每次 run 要做 ${Showcase.fmtCompact(n * n * n + n * n)} 次乘加；折疊後只剩 ${Showcase.fmtCompact(n * n)} 次。模型 ${Showcase.fmt(Math.round(bytes.length / 1024))} KB，全部在頁面內組出。`;
+      };
+      ctx.select("矩陣大小 N", [{ value: "256", label: "256" }, { value: "512", label: "512" }, { value: "1024", label: "1024" }], "512", (v) => { size = +v; run(); });
+      ctx.button("重新量測", run);
+      run();
+    },
+  },
+  {
+    id: "env", title: "執行環境",
+    api: "ort.env.versions / ort.env.wasm / session.inputMetadata",
+    desc: "ONNX Runtime Web 依 executionProviders 清單挑後端：wasm（CPU）、webgpu、webnn。這裡實際偵測瀏覽器能力，並量 MNIST 第一次推論（冷啟動）與連續 200 次的延遲分佈。此頁只載入 ort.wasm.min.js，因此實際執行的永遠是 wasm EP。",
+    hint: "按「再量一次」重跑 200 次推論",
+    mount(ctx) {
+      ctx.el.classList.add("scroll");
+      ctx.html(`
+        <div class="ox-pad ox-env">
+          <div class="ox-card ox-caps"></div>
+          <div class="ox-card ox-lat">
+            <div class="ox-k">MNIST session.run 延遲分佈（wasm EP，1 執行緒）</div>
+            <div class="ox-hist"><canvas></canvas></div>
+            <div class="ox-stats"><div>第一次<b class="cold">-</b></div><div>最快<b class="min">-</b></div><div>中位數<b class="p50">-</b></div><div>p95<b class="p95">-</b></div></div>
+            <div class="ox-k">頁面沒有跨來源隔離時，performance.now() 精度約 0.1 ms，所以分佈會呈階梯狀。</div>
+            <div class="ox-meta">-</div>
+          </div>
+        </div>`);
+      const SIMD = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]);
+      const cap = (ok, title, note) => `<div class="ox-cap"><span class="ic ${ok === true ? "y" : ok === false ? "n" : "m"}">${ok === true ? "✓" : ok === false ? "✕" : "!"}</span><span>${title}</span><small>${note}</small></div>`;
+      const caps = async () => {
+        const simd = WebAssembly.validate(SIMD);
+        const coi = self.crossOriginIsolated === true;
+        const webgl2 = !!document.createElement("canvas").getContext("webgl2");
+        let gpu = null;
+        if (navigator.gpu) {
+          try {
+            const a = await navigator.gpu.requestAdapter();
+            if (a) gpu = { vendor: a.info?.vendor || "未知", arch: a.info?.architecture || "", f16: a.features.has("shader-f16") };
+          } catch { gpu = null; }
+        }
+        if (!ctx.active) return;
+        ctx.$(".ox-caps").innerHTML = [
+          cap(true, `onnxruntime-web <code>${ort.env.versions.web}</code>・wasm EP（此頁使用）`, `ort.wasm.min.js 只包含 CPU（WebAssembly）後端。numThreads 實際為 ${ort.env.wasm.numThreads}。`),
+          cap(simd, "WebAssembly SIMD", simd ? "支援 128 位元 SIMD，矩陣運算可一次處理 4 個 float32。" : "不支援 SIMD，ORT 1.30 的 wasm 檔需要 SIMD，可能無法執行。"),
+          cap(coi ? true : null, `多執行緒（crossOriginIsolated = ${coi}）`, coi ? `可設 ort.env.wasm.numThreads，最多 ${navigator.hardwareConcurrency} 核。` : `需要伺服器送出 COOP／COEP 標頭才能用 SharedArrayBuffer；GitHub Pages 做不到，所以固定 1 執行緒（本機有 ${navigator.hardwareConcurrency || "?"} 核）。`),
+          cap(gpu ? true : navigator.gpu ? null : false, "WebGPU（webgpu EP）", gpu ? `adapter：${gpu.vendor} ${gpu.arch}・shader-f16 ${gpu.f16 ? "有" : "無"}。要用它得改載 ort.webgpu.min.js（另需約 28 MB 的 JSEP wasm）。` : navigator.gpu ? "有 navigator.gpu，但拿不到 adapter（多半是被停用或沒有 GPU）。" : "瀏覽器沒有 navigator.gpu。"),
+          cap("ml" in navigator ? true : false, "WebNN（webnn EP）", "ml" in navigator ? "有 navigator.ml，可交給系統的 NPU／GPU 推論，需改載含 webnn 的 bundle。" : "沒有 navigator.ml；WebNN 目前多半要在瀏覽器旗標中開啟。"),
+          cap(webgl2 ? null : false, "WebGL2（webgl EP）", webgl2 ? "瀏覽器支援 WebGL2，但 ORT 的 WebGL EP 已停止維護，官方建議改用 WebGPU。" : "不支援 WebGL2。"),
+        ].join("");
+      };
+      const cv = ctx.$(".ox-hist canvas");
+      let times = [];
+      const draw = () => {
+        const { g, w, h } = fit(cv);
+        g.clearRect(0, 0, w, h);
+        if (!times.length) return;
+        const lo = Math.min(...times), hi = Math.max(median(times) * 3, lo + 0.1);
+        const bins = 28, counts = new Array(bins).fill(0);
+        for (const t of times) counts[Math.min(bins - 1, Math.floor(((t - lo) / (hi - lo)) * bins))]++;
+        const max = Math.max(...counts), bw = (w - 8) / bins;
+        counts.forEach((c, i) => { g.fillStyle = "#4cc9f0"; g.fillRect(4 + i * bw + 1, h - 16 - (c / max) * (h - 24), bw - 2, (c / max) * (h - 24)); });
+        g.fillStyle = cssVar("--muted"); g.font = `11px ${cssVar("--mono")}`; g.textBaseline = "bottom";
+        g.textAlign = "left"; g.fillText(`${lo.toFixed(2)} ms`, 4, h);
+        g.textAlign = "right"; g.fillText(`${hi.toFixed(2)} ms+`, w - 4, h);
+      };
+      ctx.onResize(draw);
+      const measure = async (cold) => {
+        const s = await mnist();
+        const [inName] = s.inputNames;
+        const r = rng(3);
+        const x = new ort.Tensor("float32", Float32Array.from({ length: 784 }, () => (r() > 0.85 ? 1 : 0)), [1, 1, 28, 28]);
+        if (cold != null) ctx.$(".cold").textContent = Showcase.fmtMs(cold);
+        times = [];
+        for (let i = 0; i < 200; i++) {
+          const t0 = performance.now(); await s.run({ [inName]: x }); times.push(performance.now() - t0);
+          if (i % 40 === 39) { await ctx.frame(1); if (!ctx.active) return; draw(); }
+        }
+        const sorted = [...times].sort((a, b) => a - b);
+        ctx.$(".min").textContent = Showcase.fmtMs(sorted[0]);
+        ctx.$(".p50").textContent = Showcase.fmtMs(sorted[100]);
+        ctx.$(".p95").textContent = Showcase.fmtMs(sorted[189]);
+        const im = s.inputMetadata[0], om = s.outputMetadata[0];
+        ctx.$(".ox-meta").innerHTML = `<span>inputMetadata</span> ${im.name}・${im.type}・[${im.shape.join(",")}]<br><span>outputMetadata</span> ${om.name}・${om.type}・[${om.shape.join(",")}]`;
+        draw();
+      };
+      ctx.button("再量一次", () => measure(null));
+      caps();
+      // The first run after creating a fresh session shows the cold-start cost (kernel setup, allocations).
+      (async () => {
+        const s = await mnist();
+        const x = new ort.Tensor("float32", new Float32Array(784), [1, 1, 28, 28]);
+        const fresh = await ort.InferenceSession.create("assets/onnx-runtime-web/mnist-12.onnx");
+        const t0 = performance.now(); await fresh.run({ [s.inputNames[0]]: x }); const cold = performance.now() - t0;
+        await fresh.release();
+        if (ctx.active) await measure(cold);
+      })();
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "session.run({ x: new ort.Tensor('float32', data, [batch, 784]) })",
+    desc: "一個 784→256→128→10 的全連接網路（MatMul + Add + Relu，權重隨機），batch 維度宣告成符號 \"batch\"，同一個 session 吃 1 到 16384 筆。每一級先暖機一次，再量一次完整 run，換算 GFLOPS 與每秒樣本數。",
+    hint: "選網路寬度後按「開始測試」",
+    mount(ctx) {
+      ctx.html(`<div class="ox-stress ox-card"><canvas></canvas></div>`);
+      const NETS = {
+        s: { label: "小 784→64→10", sizes: [784, 64, 10] },
+        m: { label: "中 784→256→128→10", sizes: [784, 256, 128, 10] },
+        l: { label: "大 784→1024→1024→10", sizes: [784, 1024, 1024, 10] },
+      };
+      let key = "m", session = null, flops = 0;
+      const build = async () => {
+        const sz = NETS[key].sizes, r = rng(5), nodes = [], inits = [];
+        let prev = "x";
+        flops = 0;
+        for (let i = 1; i < sz.length; i++) {
+          const a = sz[i - 1], b = sz[i], sc = Math.sqrt(2 / a);
+          inits.push(Onnx.tensor(`W${i}`, "float32", [a, b], Float32Array.from({ length: a * b }, () => (r() - 0.5) * 2 * sc)));
+          inits.push(Onnx.tensor(`b${i}`, "float32", [b], new Float32Array(b)));
+          nodes.push(N("MatMul", [prev, `W${i}`], [`m${i}`]), N("Add", [`m${i}`, `b${i}`], [`z${i}`]));
+          prev = `z${i}`;
+          if (i < sz.length - 1) { nodes.push(N("Relu", [prev], [`h${i}`])); prev = `h${i}`; }
+          flops += 2 * a * b;
+        }
+        nodes.push(N("Identity", [prev], ["y"]));
+        const old = session; session = null;
+        if (old) await old.release();
+        session = await ort.InferenceSession.create(Onnx.model({ nodes, inits, inputs: [Onnx.value("x", "float32", ["batch", 784])], outputs: [Onnx.value("y", "float32", ["batch", 10])] }));
+      };
+      ctx.controls.classList.add("bottom");
+      ctx.select("網路", Object.entries(NETS).map(([value, n]) => ({ value, label: n.label })), key, (v) => { key = v; build(); });
+      ctx.onCleanup(() => session && session.release());
+      const ready = build();
+      const r = rng(11);
+      const b = ctx.bench({
+        label: "batch", unit: "筆", sizes: [1, 16, 128, 1024, 4096, 16384],
+        async prepare(n) {
+          await ready;
+          while (!session) await ctx.frame(1);
+          const x = new ort.Tensor("float32", Float32Array.from({ length: n * 784 }, () => r()), [n, 784]);
+          await session.run({ x });
+          return x;
+        },
+        async run(n, x) {
+          await session.run({ x });
+        },
+        note: "全部在 wasm EP 單執行緒上計算（此頁無法開多執行緒）。batch 小時固定開銷（JS 與 wasm 之間的資料搬移、排程）占大部分時間，batch 變大後才接近運算極限。",
+      });
+      const cv = ctx.$("canvas");
+      ctx.raf(() => {
+        const { g, w, h } = fit(cv);
+        g.clearRect(0, 0, w, h);
+        const left = w > 420 ? 16 : 10;
+        g.fillStyle = cssVar("--fg"); g.font = `600 14px ${cssVar("--font")}`;
+        g.textBaseline = "top"; g.textAlign = "left";
+        g.fillText("運算吞吐量（GFLOPS）", left, 14);
+        g.font = `12px ${cssVar("--mono")}`; g.fillStyle = cssVar("--muted");
+        g.fillText(`${NETS[key].label}・每筆 ${Showcase.fmtCompact(flops)} FLOP`, left, 36);
+        const res = b.results;
+        if (!res.length) { g.fillText("尚未測試", left, 64); return; }
+        const gf = res.map((x) => (x.n * flops) / (x.ms / 1000) / 1e9);
+        const max = Math.max(...gf, 0.001);
+        const label = (x, i) => `${gf[i].toFixed(2)} GFLOPS・${Showcase.fmtCompact(x.n / (x.ms / 1000))}/秒`;
+        const labelW = Math.max(...res.map((x, i) => g.measureText(label(x, i)).width));
+        const top = 66, rowH = Math.min(44, (h - top - 20) / 6);
+        res.forEach((x, i) => {
+          const y = top + i * rowH;
+          const bw = Math.max(2, (gf[i] / max) * (w - left * 2 - 104 - labelW));
+          g.fillStyle = cssVar("--muted"); g.textBaseline = "middle";
+          g.fillText(`batch ${Showcase.fmtCompact(x.n)}`, left, y + rowH / 2);
+          g.fillStyle = x.ms <= 1000 ? "#7bd389" : x.ms <= 2000 ? "#ff8c42" : "#f72585";
+          g.fillRect(left + 86, y + rowH * 0.22, bw, rowH * 0.56);
+          g.fillStyle = cssVar("--fg");
+          g.fillText(label(x, i), left + 92 + bw, y + rowH / 2);
+        });
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

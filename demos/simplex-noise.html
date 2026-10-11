@@ -3,298 +3,1092 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>simplex-noise 示範：會緩慢演化的等高線地形圖</title>
+<title>simplex-noise 示範：八個場景看懂連續雜訊</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["島嶼地形圖","2D／3D／4D","fBm 疊加","流場粒子","無縫循環","域扭曲","平滑亂數","極限測試"]}</script>
 <style>
-  body { background: #efe6d2; }
-  #map { position: fixed; inset: 0; display: block; cursor: grab; touch-action: none; }
-  #map.drag { cursor: grabbing; }
-  .cart, .legend {
-    position: fixed; z-index: 40; color: #3b2d1f;
+  .board { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); display: grid; gap: 8px; min-height: 0; }
+  .pane { position: relative; min-width: 0; min-height: 0; overflow: hidden; border-radius: 10px; background: #07080b; border: 1px solid var(--line); }
+  .pane > canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .tagl, .tagr { position: absolute; z-index: 2; padding: 3px 8px; border-radius: 6px; background: rgba(0, 0, 0, 0.62); color: #f2f0ea; line-height: 1.35; pointer-events: none; max-width: calc(100% - 12px); }
+  .tagl { left: 6px; top: 6px; font-size: 11.5px; }
+  .tagl b.fn { display: block; font: 600 12px var(--mono); color: #8fd9f5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tagl span { display: block; }
+  .tagl span i { font-style: normal; font-weight: 700; }
+  .tagr { right: 6px; bottom: 6px; font: 10.5px var(--mono); color: rgba(255, 255, 255, 0.82); }
+  .tagl span:empty, .tagr:empty { display: none; }
+
+  /* 1. island map */
+  .isle { position: absolute; inset: 0; background: #efe6d2; }
+  .isle canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+  .isle canvas.drag { cursor: grabbing; }
+  .isle .cart, .isle .legend {
+    position: absolute; z-index: 5; color: #3b2d1f; pointer-events: none;
     background: rgba(246, 239, 222, 0.92); border: 1px solid #8a6d4b; border-radius: 4px;
     box-shadow: 0 0 0 3px rgba(246, 239, 222, 0.92), 0 0 0 4px #8a6d4b;
   }
-  .cart { left: 22px; top: 22px; padding: 6px 12px; line-height: 1.35; }
-  .cart b { display: block; font-size: 16px; letter-spacing: 2px; font-family: "Noto Serif TC", "PMingLiU", serif; }
-  .cart span { font-size: 11px; color: #7a6248; }
-  .legend { right: 22px; bottom: 22px; padding: 6px 10px 4px; font-size: 10px; width: 190px; }
-  .legend .bar { height: 9px; border: 1px solid #8a6d4b; margin: 3px 0 2px; }
-  .legend .ticks { position: relative; height: 13px; font-family: var(--mono); color: #6b553d; }
-  .legend .ticks span { position: absolute; top: 0; transform: translateX(-50%); }
-  .legend .ticks span:first-child { transform: none; }
-  .legend .ticks span:last-child { transform: translateX(-100%); }
-  .hint { left: 22px; bottom: 22px; }
-  .controls { top: 22px; right: 22px; }
+  .isle .cart { left: 22px; top: 22px; padding: 6px 12px; line-height: 1.35; }
+  .isle .cart b { display: block; font-size: 16px; letter-spacing: 2px; font-family: "Noto Serif TC", "PMingLiU", serif; }
+  .isle .cart span { font-size: 11px; color: #7a6248; }
+  .isle .legend { right: 22px; bottom: 22px; padding: 6px 10px 4px; font-size: 10px; width: 190px; }
+  .isle .legend .bar { height: 9px; border: 1px solid #8a6d4b; margin: 3px 0 2px; }
+  .isle .legend .ticks { position: relative; height: 13px; font-family: var(--mono); color: #6b553d; }
+  .isle .legend .ticks span { position: absolute; top: 0; transform: translateX(-50%); }
+  .isle .legend .ticks span:first-child { transform: none; }
+  .isle .legend .ticks span:last-child { transform: translateX(-100%); }
   @media (max-width: 560px) {
-    .cart { top: 66px; }
-    .legend { bottom: 66px; width: 170px; }
+    .isle .cart { left: 18px; top: calc(var(--sc-ctl-h, 0px) + 10px); }
+    .isle .legend { right: 18px; bottom: 18px; width: 160px; }
+    .isle .legend .ticks span:nth-child(3) { display: none; }
   }
+
+  /* 2. dimensions, 5. seamless loops */
+  .dims, .loops { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+
+  /* 3. fBm */
+  .fbm { grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); grid-template-rows: minmax(0, 1fr) 118px; }
+  .fbm .layers { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: 6px; min-height: 0; min-width: 0; }
+  .fbm .oct { position: relative; min-height: 0; border-radius: 8px; overflow: hidden; background: #07080b; border: 1px solid var(--line); transition: opacity 0.2s; }
+  .fbm .oct.off { opacity: 0.22; }
+  .fbm .oct canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .fbm .oct span { position: absolute; left: 5px; top: 3px; font: 600 10.5px var(--mono); color: #fff; text-shadow: 0 1px 2px #000, 0 0 4px #000; white-space: nowrap; }
+  .fbm .oct i { position: absolute; left: 5px; right: 5px; bottom: 4px; height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.2); }
+  .fbm .oct i b { display: block; height: 100%; border-radius: 2px; background: var(--accent); }
+  .fbm .sec { grid-column: 1 / 3; }
+  .fbm .xline { position: absolute; left: 0; right: 0; top: 50%; height: 0; border-top: 1px dashed rgba(255, 255, 255, 0.85); pointer-events: none; z-index: 1; }
+  .fbm .pane > canvas { cursor: crosshair; }
+  @media (max-height: 520px) { .fbm { grid-template-rows: minmax(0, 1fr) 84px; } }
+  @media (max-width: 560px) {
+    .fbm { grid-template-columns: minmax(0, 1fr); grid-template-rows: 88px minmax(0, 1fr) 70px; gap: 6px; }
+    .fbm .sec { grid-column: 1; }
+    .fbm .layers { gap: 4px; }
+    .fbm .oct span { font-size: 9.5px; left: 3px; top: 1px; }
+  }
+
+  /* 4. flow field, 6. domain warp */
+  .flow, .warp { position: absolute; inset: 0; background: #050608; }
+  .flow canvas, .warp canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .warp .tagl { top: calc(var(--sc-ctl-h, 0px) + 2px); left: 10px; }
+  .flow .tagr, .warp .tagr { right: 10px; bottom: 10px; }
+
+  /* 7. smooth randomness */
+  .smooth { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto repeat(3, minmax(0, 1fr)); }
+  .smooth .head { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 13px; }
+  .smooth .head b { font-family: var(--mono); white-space: nowrap; }
+  .smooth .head b.r { color: #ff6fae; }
+  .smooth .head b.n { color: #6fd6f7; }
+  .smooth .head code { font: 11.5px var(--font); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  @media (max-width: 560px) {
+    .smooth .head code { display: none; }
+    .smooth .tagl b.fn { font-size: 10.5px; }
+  }
+
+  /* 8. stress */
+  .bv { position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px); border-radius: 10px; background: #050608; overflow: hidden; }
+  @media (min-width: 761px) { .bv { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 350px; } }
+  .bv canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; }
+  .bv .tag { position: absolute; right: 10px; top: 10px; max-width: calc(100% - 20px); padding: 3px 9px; border-radius: 6px; background: rgba(0, 0, 0, 0.62); color: #fff; font-size: 11.5px; }
 </style>
 </head>
-<body class="paper">
-<canvas id="map"></canvas>
-<div class="cart"><b>虛構島嶼地形圖</b><span>示意資料・simplex noise 即時生成</span></div>
-<div class="legend">
-  <div>海拔（公尺）</div>
-  <div class="bar" id="bar"></div>
-  <div class="ticks" id="ticks"></div>
-</div>
-<div class="controls">
-  <button class="btn" id="play" aria-pressed="true">演化中</button>
-  <button class="btn" id="lines" aria-pressed="true">等高線</button>
-  <button class="btn primary" id="seed">新島嶼</button>
-</div>
-<div class="hint">拖曳平移地圖・游標顯示海拔</div>
-
+<body>
+<script src="_shared/showcase.js"></script>
 <script type="module">
-import { createNoise3D } from "https://cdn.jsdelivr.net/npm/simplex-noise@4.0.3/+esm";
+import { createNoise2D, createNoise3D, createNoise4D } from "https://cdn.jsdelivr.net/npm/simplex-noise@4.0.3/+esm";
 
-// Heightfield = fractal sum of 3D simplex noise (x, y, slowly moving time) shaped into an island.
-// Colours come from a hypsometric lookup table, contours from marching squares on the same grid.
-const CELL = 4;
-const PEAK_M = 3950;
-const STOPS = [
-  [-1.0, "#24527a"], [-0.4, "#4a86b4"], [-0.08, "#9cc9df"], [0.0, "#e8dcae"], [0.04, "#a9cb8c"],
-  [0.2, "#84b06c"], [0.38, "#cdb97e"], [0.56, "#ad8253"], [0.74, "#8d6e58"], [0.9, "#f5f1e8"],
-];
-const cv = document.getElementById("map");
-const ctx = cv.getContext("2d");
-const off = document.createElement("canvas");
-const octx = off.getContext("2d");
-let W, H, dpr, cols, rows, field, img;
-let seed = 2026, noise3D, t = 0, playing = true, showLines = true, ox = 0, oy = 0, hover = null;
+const { h, fmt, fmtCompact } = Showcase;
+const TAU = Math.PI * 2;
+const clamp = (v, a = 0, b = 1) => (v < a ? a : v > b ? b : v);
 
+// Seeded PRNG: simplex-noise takes any () => [0, 1) function, so a fixed seed gives a fixed picture.
 function mulberry32(a) {
   return () => {
     a = (a + 0x6d2b79f5) | 0;
-    let r = Math.imul(a ^ (a >>> 15), 1 | a);
-    r = (r + Math.imul(r ^ (r >>> 7), 61 | r)) ^ r;
-    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-function reseed() { noise3D = createNoise3D(mulberry32(seed)); }
+const noises = (seed) => ({
+  n2: createNoise2D(mulberry32(seed)),
+  n3: createNoise3D(mulberry32(seed + 1)),
+  n4: createNoise4D(mulberry32(seed + 2)),
+});
 
-// 512-entry colour lookup for elevation -1..1
-const LUT = new Uint8ClampedArray(512 * 3);
-(function buildLut() {
-  const rgb = STOPS.map(([e, hex]) => [e, parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]);
-  for (let k = 0; k < 512; k++) {
-    const e = k / 255.5 - 1;
+// Colour lookup table: stops [[position, "#rrggbb"], ...] sampled into n RGB entries over [lo, hi].
+function lut(stops, n = 256, lo = 0, hi = 1) {
+  const rgb = stops.map(([p, hex]) => [p, parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)]);
+  const out = new Uint8ClampedArray(n * 3);
+  for (let k = 0; k < n; k++) {
+    const p = lo + ((hi - lo) * k) / (n - 1);
     let s = 0;
-    while (s < rgb.length - 2 && e > rgb[s + 1][0]) s++;
-    const [e0, r0, g0, b0] = rgb[s], [e1, r1, g1, b1] = rgb[s + 1];
-    const f = Math.max(0, Math.min(1, (e - e0) / (e1 - e0)));
-    LUT[k * 3] = r0 + (r1 - r0) * f; LUT[k * 3 + 1] = g0 + (g1 - g0) * f; LUT[k * 3 + 2] = b0 + (b1 - b0) * f;
+    while (s < rgb.length - 2 && p > rgb[s + 1][0]) s++;
+    const [p0, r0, g0, b0] = rgb[s], [p1, r1, g1, b1] = rgb[s + 1];
+    const f = clamp((p - p0) / (p1 - p0));
+    out[k * 3] = r0 + (r1 - r0) * f; out[k * 3 + 1] = g0 + (g1 - g0) * f; out[k * 3 + 2] = b0 + (b1 - b0) * f;
   }
-  // Legend spans elevation -0.4..0.92, ticks placed at their true positions
-  const pos = (e) => (((e + 0.4) / 1.32) * 100).toFixed(1) + "%";
-  const css = STOPS.filter(([e]) => e >= -0.4).map(([e, hex]) => `${hex} ${pos(e)}`).join(",");
-  document.getElementById("bar").style.background = `linear-gradient(90deg, ${css})`;
-  document.getElementById("ticks").innerHTML = [-800, 0, 1000, 2000, 3950]
-    .map((m) => `<span style="left:${pos(m < 0 ? m / 2000 : (m / PEAK_M) * 0.92)}">${m}</span>`).join("");
-})();
+  return out;
+}
+const GRAY = lut([[0, "#0b1020"], [0.5, "#55657f"], [1, "#f4efe2"]]);
+const INK = lut([[0, "#0e1120"], [0.4, "#2f416c"], [0.58, "#6f9cc4"], [0.78, "#e7d6ad"], [1, "#fff8ea"]]);
+const PLANET = lut([[0, "#0a2340"], [0.47, "#22679a"], [0.5, "#dccb8e"], [0.53, "#79a45a"], [0.66, "#3e6c36"], [0.78, "#8b7661"], [0.88, "#f2efe8"], [1, "#ffffff"]]);
+const GAS = lut([[0, "#2a1640"], [0.3, "#8c3f5d"], [0.55, "#e09f3e"], [0.75, "#f3d9a4"], [1, "#fff8e8"]]);
+const TERRAIN = lut([[0, "#14324f"], [0.36, "#2f6f95"], [0.46, "#8cc0d6"], [0.48, "#e6d9a8"], [0.53, "#9cc47f"], [0.66, "#5f9150"], [0.8, "#a68a5b"], [0.9, "#7d6656"], [1, "#f6f3ec"]]);
+const MAGMA = lut([[0, "#000004"], [0.2, "#2c115f"], [0.4, "#721f81"], [0.6, "#b73779"], [0.8, "#f1605d"], [0.92, "#feb078"], [1, "#fcfdbf"]]);
+const VIRIDIS = lut([[0, "#440154"], [0.25, "#3b528b"], [0.5, "#21918c"], [0.75, "#5ec962"], [1, "#fde725"]]);
 
-// Paper grain, generated once
-const grain = (() => {
-  const g = document.createElement("canvas");
-  g.width = g.height = 128;
-  const gx = g.getContext("2d");
-  const d = gx.createImageData(128, 128);
-  for (let i = 0; i < d.data.length; i += 4) {
-    const v = 120 + Math.random() * 135;
-    d.data[i] = v; d.data[i + 1] = v * 0.95; d.data[i + 2] = v * 0.85; d.data[i + 3] = 255;
-  }
-  gx.putImageData(d, 0, 0);
-  return ctx.createPattern(g, "repeat");
-})();
-
-function elevation(px, py) {
-  const s = 1 / (Math.min(W, H) * 0.55);
-  const x = (px + ox) * s, y = (py + oy) * s;
-  let amp = 1, f = 1, sum = 0, norm = 0;
-  for (let o = 0; o < 5; o++) {
-    sum += amp * noise3D(x * f, y * f, t + o * 7.3);
-    norm += amp; amp *= 0.5; f *= 2.03;
-  }
-  const dx = (px - W / 2) / (W * 0.5), dy = (py - H / 2) / (H * 0.5);
-  return (sum / norm) * 1.15 + 0.3 - (dx * dx + dy * dy) * 0.8;
+// Write one pixel from a LUT; v in [0, 1], optional brightness factor (Uint8ClampedArray clamps the result).
+function put(d, o, L, v, shade = 1) {
+  const li = ((v < 0 ? 0 : v > 1 ? 1 : v) * 255 + 0.5 | 0) * 3;
+  d[o] = L[li] * shade; d[o + 1] = L[li + 1] * shade; d[o + 2] = L[li + 2] * shade; d[o + 3] = 255;
 }
 
-function toMeters(e) { return Math.round(e > 0 ? Math.min(1, e / 0.92) * PEAK_M : e * 2000); }
-
-function computeField() {
-  let peak = { e: -Infinity, i: 0, j: 0 };
-  for (let j = 0; j < rows; j++) {
-    for (let i = 0; i < cols; i++) {
-      const e = elevation(i * CELL, j * CELL);
-      field[j * cols + i] = e;
-      if (e > peak.e && i > 4 && j > 4 && i < cols - 5 && j < rows - 5) peak = { e, i, j };
-    }
-  }
-  return peak;
+// Size a canvas to its CSS box (DPR capped at 2) and return a context in CSS pixels.
+function fit(cv) {
+  const w = cv.clientWidth, hh = cv.clientHeight, dpr = Math.min(devicePixelRatio || 1, 2);
+  const W = Math.max(1, Math.round(w * dpr)), H = Math.max(1, Math.round(hh * dpr));
+  if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { g, w, h: hh };
 }
 
-function paintRelief() {
-  const d = img.data;
-  for (let j = 0; j < rows; j++) {
-    for (let i = 0; i < cols; i++) {
-      const k = j * cols + i, e = field[k];
-      const li = Math.max(0, Math.min(511, Math.round((e + 1) * 255.5))) * 3;
-      let shade = 1;
-      if (e > 0 && i > 0 && j > 0 && i < cols - 1 && j < rows - 1) {
-        // Hillshade with light from the north-west
-        const gx = field[k + 1] - field[k - 1], gy = field[k + cols] - field[k - cols];
-        shade = Math.max(0.6, Math.min(1.25, 0.95 + (gx + gy) * 9));
+// Small pixel buffer scaled up onto a display canvas: noise is evaluated per cell, not per screen pixel.
+function lowres() {
+  const off = document.createElement("canvas");
+  const og = off.getContext("2d");
+  let img = null;
+  return {
+    size(cols, rows) {
+      if (!img || img.width !== cols || img.height !== rows) { off.width = cols; off.height = rows; img = og.createImageData(cols, rows); }
+      return img;
+    },
+    blit(g, w, hh) {
+      this.commit();
+      this.draw(g, 0, 0, w, hh);
+    },
+    commit() { og.putImageData(img, 0, 0); },
+    draw(g, x, y, w, hh) {
+      g.imageSmoothingEnabled = true;
+      g.imageSmoothingQuality = "high";
+      g.drawImage(off, x, y, w, hh);
+    },
+  };
+}
+
+function board(ctx, cls) {
+  const b = h("div", { class: `board ${cls}` });
+  ctx.el.append(b);
+  return b;
+}
+
+// Dark panel with a canvas, a caption (function + note) and a stats chip.
+function pane(fnText, subText) {
+  const cv = h("canvas");
+  const fn = h("b", { class: "fn", text: fnText });
+  const sub = h("span", { text: subText || "" });
+  const stat = h("div", { class: "tagr" });
+  const el = h("div", { class: "pane" }, cv, h("div", { class: "tagl" }, fn, sub), stat);
+  return { el, cv, fn, sub, stat };
+}
+
+// ---------- 1. island map ----------
+const PEAK_M = 3950;
+const ISLE_STOPS = [
+  [-1.0, "#24527a"], [-0.4, "#4a86b4"], [-0.08, "#9cc9df"], [0.0, "#e8dcae"], [0.04, "#a9cb8c"],
+  [0.2, "#84b06c"], [0.38, "#cdb97e"], [0.56, "#ad8253"], [0.74, "#8d6e58"], [0.9, "#f5f1e8"],
+];
+const ISLE_LUT = lut(ISLE_STOPS, 512, -1, 1);
+const toMeters = (e) => Math.round(e > 0 ? Math.min(1, e / 0.92) * PEAK_M : e * 2000);
+
+// ---------- 8. stress ----------
+const BOPS = [
+  { label: "noise2D", fn: "noise2D(x, y)" },
+  { label: "noise3D", fn: "noise3D(x, y, 0.5)" },
+  { label: "noise4D", fn: "noise4D(x, y, 0.5, 0.25)" },
+  { label: "Math.random", fn: "Math.random() 對照組" },
+];
+
+Showcase.run({ scenes: [
+  {
+    id: "island", title: "島嶼地形圖", paper: true,
+    api: "createNoise3D(mulberry32(seed))・五層 fBm・marching squares 等高線",
+    desc: "高度是五層 3D simplex noise 的疊加（x、y 是地圖座標，第三維是緩慢前進的時間），再減去離中心的距離塑成島嶼。顏色查 512 階分層設色表，等高線用 marching squares 從同一張高度格網抽出，山體陰影取相鄰格的高差。傳入固定種子的亂數函式，同一個種子永遠長出同一座島。",
+    hint: "拖曳平移地圖，游標顯示海拔",
+    mount(ctx) {
+      const cv = h("canvas");
+      const seedEl = h("span");
+      const bar = h("div", { class: "bar" });
+      const ticks = h("div", { class: "ticks" });
+      const wrap = h("div", { class: "isle" }, cv,
+        h("div", { class: "cart" }, h("b", { text: "虛構島嶼地形圖" }), seedEl),
+        h("div", { class: "legend" }, h("div", { text: "海拔（公尺）" }), bar, ticks));
+      ctx.el.append(wrap);
+
+      // Legend spans elevation -0.4..0.92, ticks placed at their true positions
+      const pos = (e) => `${(((e + 0.4) / 1.32) * 100).toFixed(1)}%`;
+      bar.style.background = `linear-gradient(90deg, ${ISLE_STOPS.filter(([e]) => e >= -0.4).map(([e, c]) => `${c} ${pos(e)}`).join(",")})`;
+      for (const m of [-800, 0, 1000, 2000, 3950]) {
+        const s = h("span", { text: String(m) });
+        s.style.left = pos(m < 0 ? m / 2000 : (m / PEAK_M) * 0.92);
+        ticks.append(s);
       }
-      d[k * 4] = LUT[li] * shade; d[k * 4 + 1] = LUT[li + 1] * shade; d[k * 4 + 2] = LUT[li + 2] * shade; d[k * 4 + 3] = 255;
-    }
-  }
-  octx.putImageData(img, 0, 0);
-}
 
-// Marching squares: one path per level, linear interpolation along cell edges
-function contour(level) {
-  const lerp = (p, q) => (level - p) / (q - p || 1e-9);
-  ctx.beginPath();
-  for (let j = 0; j < rows - 1; j++) {
-    for (let i = 0; i < cols - 1; i++) {
-      const k = j * cols + i;
-      const a = field[k], b = field[k + 1], c = field[k + cols + 1], d = field[k + cols];
-      const idx = (a > level ? 8 : 0) | (b > level ? 4 : 0) | (c > level ? 2 : 0) | (d > level ? 1 : 0);
-      if (idx === 0 || idx === 15) continue;
-      const x = i * CELL, y = j * CELL;
-      const T = () => [x + CELL * lerp(a, b), y];
-      const R = () => [x + CELL, y + CELL * lerp(b, c)];
-      const B = () => [x + CELL * lerp(d, c), y + CELL];
-      const L = () => [x, y + CELL * lerp(a, d)];
-      const seg = (p, q) => { ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); };
-      switch (idx) {
-        case 1: case 14: seg(L(), B()); break;
-        case 2: case 13: seg(B(), R()); break;
-        case 3: case 12: seg(L(), R()); break;
-        case 4: case 11: seg(T(), R()); break;
-        case 6: case 9: seg(T(), B()); break;
-        case 7: case 8: seg(T(), L()); break;
-        case 5: seg(T(), R()); seg(L(), B()); break;
-        case 10: seg(T(), L()); seg(B(), R()); break;
+      const g = cv.getContext("2d");
+      const off = document.createElement("canvas");
+      const og = off.getContext("2d");
+      const CELL = 4;
+      let W = 0, H = 0, dpr = 1, cols = 0, rows = 0, field, img;
+      let seed = 2026, noise3D, t = 0, playing = true, showLines = true, ox = 0, oy = 0, hover = null, drag = null, dirty = true, frame = 0;
+      const reseed = () => { noise3D = createNoise3D(mulberry32(seed)); seedEl.textContent = `示意資料・種子 ${seed}`; };
+
+      // Paper grain, generated once
+      const grain = (() => {
+        const c = document.createElement("canvas");
+        c.width = c.height = 128;
+        const cg = c.getContext("2d");
+        const d = cg.createImageData(128, 128);
+        const r = mulberry32(99);
+        for (let i = 0; i < d.data.length; i += 4) {
+          const v = 120 + r() * 135;
+          d.data[i] = v; d.data[i + 1] = v * 0.95; d.data[i + 2] = v * 0.85; d.data[i + 3] = 255;
+        }
+        cg.putImageData(d, 0, 0);
+        return g.createPattern(c, "repeat");
+      })();
+
+      function elevation(px, py) {
+        const s = 1 / (Math.min(W, H) * 0.55);
+        const x = (px + ox) * s, y = (py + oy) * s;
+        let amp = 1, f = 1, sum = 0, norm = 0;
+        for (let o = 0; o < 5; o++) {
+          sum += amp * noise3D(x * f, y * f, t + o * 7.3);
+          norm += amp; amp *= 0.5; f *= 2.03;
+        }
+        const dx = (px - W / 2) / (W * 0.5), dy = (py - H / 2) / (H * 0.5);
+        return (sum / norm) * 1.15 + 0.3 - (dx * dx + dy * dy) * 0.8;
       }
-    }
-  }
-  ctx.stroke();
-}
 
-function labelText(str, x, y, size, align) {
-  ctx.font = `600 ${size}px "Noto Sans TC", "Microsoft JhengHei", sans-serif`;
-  ctx.textAlign = align || "left";
-  ctx.lineWidth = 3; ctx.strokeStyle = "rgba(246,239,222,0.9)"; ctx.strokeText(str, x, y);
-  ctx.fillStyle = "#3b2d1f"; ctx.fillText(str, x, y);
-}
+      function computeField() {
+        let peak = { e: -Infinity, i: 0, j: 0 };
+        for (let j = 0; j < rows; j++) {
+          for (let i = 0; i < cols; i++) {
+            const e = elevation(i * CELL, j * CELL);
+            field[j * cols + i] = e;
+            if (e > peak.e && i > 4 && j > 4 && i < cols - 5 && j < rows - 5) peak = { e, i, j };
+          }
+        }
+        return peak;
+      }
 
-function draw() {
-  const peak = computeField();
-  paintRelief();
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(off, -CELL / 2, -CELL / 2, cols * CELL, rows * CELL);
+      function paintRelief() {
+        const d = img.data;
+        for (let j = 0; j < rows; j++) {
+          for (let i = 0; i < cols; i++) {
+            const k = j * cols + i, e = field[k];
+            const li = Math.max(0, Math.min(511, Math.round((e + 1) * 255.5))) * 3;
+            let shade = 1;
+            if (e > 0 && i > 0 && j > 0 && i < cols - 1 && j < rows - 1) {
+              // Hillshade with light from the north-west
+              const gx = field[k + 1] - field[k - 1], gy = field[k + cols] - field[k - cols];
+              shade = Math.max(0.6, Math.min(1.25, 0.95 + (gx + gy) * 9));
+            }
+            d[k * 4] = ISLE_LUT[li] * shade; d[k * 4 + 1] = ISLE_LUT[li + 1] * shade; d[k * 4 + 2] = ISLE_LUT[li + 2] * shade; d[k * 4 + 3] = 255;
+          }
+        }
+        og.putImageData(img, 0, 0);
+      }
 
-  // Graticule
-  ctx.strokeStyle = "rgba(70,50,30,0.12)"; ctx.lineWidth = 1;
-  ctx.beginPath();
-  for (let x = 80; x < W; x += 80) { ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, H); }
-  for (let y = 80; y < H; y += 80) { ctx.moveTo(0, y + 0.5); ctx.lineTo(W, y + 0.5); }
-  ctx.stroke();
+      // Marching squares: one path per level, linear interpolation along cell edges
+      function contour(level) {
+        const lerp = (p, q) => (level - p) / (q - p || 1e-9);
+        g.beginPath();
+        for (let j = 0; j < rows - 1; j++) {
+          for (let i = 0; i < cols - 1; i++) {
+            const k = j * cols + i;
+            const a = field[k], b = field[k + 1], c = field[k + cols + 1], d = field[k + cols];
+            const idx = (a > level ? 8 : 0) | (b > level ? 4 : 0) | (c > level ? 2 : 0) | (d > level ? 1 : 0);
+            if (idx === 0 || idx === 15) continue;
+            const x = i * CELL, y = j * CELL;
+            const T = () => [x + CELL * lerp(a, b), y];
+            const R = () => [x + CELL, y + CELL * lerp(b, c)];
+            const B = () => [x + CELL * lerp(d, c), y + CELL];
+            const L = () => [x, y + CELL * lerp(a, d)];
+            const seg = (p, q) => { g.moveTo(p[0], p[1]); g.lineTo(q[0], q[1]); };
+            switch (idx) {
+              case 1: case 14: seg(L(), B()); break;
+              case 2: case 13: seg(B(), R()); break;
+              case 3: case 12: seg(L(), R()); break;
+              case 4: case 11: seg(T(), R()); break;
+              case 6: case 9: seg(T(), B()); break;
+              case 7: case 8: seg(T(), L()); break;
+              case 5: seg(T(), R()); seg(L(), B()); break;
+              case 10: seg(T(), L()); seg(B(), R()); break;
+            }
+          }
+        }
+        g.stroke();
+      }
 
-  if (showLines) {
-    ctx.lineJoin = "round";
-    ctx.strokeStyle = "rgba(255,255,255,0.45)"; ctx.lineWidth = 0.8;
-    contour(-0.18); contour(-0.4);
-    for (let k = 1; k <= 9; k++) {
-      const index = k % 3 === 0;
-      ctx.strokeStyle = index ? "rgba(92,58,28,0.75)" : "rgba(92,58,28,0.4)";
-      ctx.lineWidth = index ? 1.3 : 0.7;
-      contour(k * 0.1);
-    }
-  }
-  ctx.strokeStyle = "#35546d"; ctx.lineWidth = 1.5;
-  contour(0);
+      function labelText(str, x, y, size, align) {
+        g.font = `600 ${size}px "Noto Sans TC", "Microsoft JhengHei", sans-serif`;
+        g.textAlign = align || "left";
+        g.lineWidth = 3; g.strokeStyle = "rgba(246,239,222,0.9)"; g.strokeText(str, x, y);
+        g.fillStyle = "#3b2d1f"; g.fillText(str, x, y);
+      }
 
-  // Summit marker
-  if (peak.e > 0.05) {
-    const px = peak.i * CELL, py = peak.j * CELL;
-    ctx.fillStyle = "#3b2d1f";
-    ctx.beginPath(); ctx.moveTo(px, py - 7); ctx.lineTo(px + 6, py + 4); ctx.lineTo(px - 6, py + 4); ctx.closePath(); ctx.fill();
-    labelText(`主峰 ${toMeters(peak.e).toLocaleString("zh-TW")} 公尺`, px + 9, py + 4, 12);
-  }
+      function draw() {
+        const peak = computeField();
+        paintRelief();
+        g.setTransform(dpr, 0, 0, dpr, 0, 0);
+        g.imageSmoothingEnabled = true;
+        g.imageSmoothingQuality = "high";
+        g.drawImage(off, -CELL / 2, -CELL / 2, cols * CELL, rows * CELL);
 
-  // Paper grain and double frame
-  ctx.globalCompositeOperation = "multiply";
-  ctx.globalAlpha = 0.18; ctx.fillStyle = grain; ctx.fillRect(0, 0, W, H);
-  ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over";
-  ctx.strokeStyle = "#5b4630"; ctx.lineWidth = 2; ctx.strokeRect(8, 8, W - 16, H - 16);
-  ctx.lineWidth = 0.8; ctx.strokeRect(13, 13, W - 26, H - 26);
+        // Graticule
+        g.strokeStyle = "rgba(70,50,30,0.12)"; g.lineWidth = 1;
+        g.beginPath();
+        for (let x = 80; x < W; x += 80) { g.moveTo(x + 0.5, 0); g.lineTo(x + 0.5, H); }
+        for (let y = 80; y < H; y += 80) { g.moveTo(0, y + 0.5); g.lineTo(W, y + 0.5); }
+        g.stroke();
 
-  if (hover) {
-    const e = elevation(hover.x, hover.y), m = toMeters(e);
-    const txt = e > 0 ? `海拔 ${m.toLocaleString("zh-TW")} 公尺` : `水深 ${(-m).toLocaleString("zh-TW")} 公尺`;
-    ctx.strokeStyle = "#3b2d1f"; ctx.lineWidth = 1.2;
-    ctx.beginPath(); ctx.arc(hover.x, hover.y, 7, 0, Math.PI * 2);
-    ctx.moveTo(hover.x - 13, hover.y); ctx.lineTo(hover.x - 4, hover.y); ctx.moveTo(hover.x + 4, hover.y); ctx.lineTo(hover.x + 13, hover.y);
-    ctx.moveTo(hover.x, hover.y - 13); ctx.lineTo(hover.x, hover.y - 4); ctx.moveTo(hover.x, hover.y + 4); ctx.lineTo(hover.x, hover.y + 13);
-    ctx.stroke();
-    const right = hover.x < W - 150;
-    labelText(txt, hover.x + (right ? 16 : -16), hover.y - 12, 13, right ? "left" : "right");
-  }
-}
+        if (showLines) {
+          g.lineJoin = "round";
+          g.strokeStyle = "rgba(255,255,255,0.45)"; g.lineWidth = 0.8;
+          contour(-0.18); contour(-0.4);
+          for (let k = 1; k <= 9; k++) {
+            const index = k % 3 === 0;
+            g.strokeStyle = index ? "rgba(92,58,28,0.75)" : "rgba(92,58,28,0.4)";
+            g.lineWidth = index ? 1.3 : 0.7;
+            contour(k * 0.1);
+          }
+        }
+        g.strokeStyle = "#35546d"; g.lineWidth = 1.5;
+        contour(0);
 
-function resize() {
-  dpr = Math.min(devicePixelRatio || 1, 2);
-  W = innerWidth; H = innerHeight;
-  cv.width = W * dpr; cv.height = H * dpr;
-  cv.style.width = W + "px"; cv.style.height = H + "px";
-  cols = Math.ceil(W / CELL) + 2; rows = Math.ceil(H / CELL) + 2;
-  field = new Float32Array(cols * rows);
-  off.width = cols; off.height = rows;
-  img = octx.createImageData(cols, rows);
-  draw();
-}
+        // Summit marker
+        if (peak.e > 0.05) {
+          const px = peak.i * CELL, py = peak.j * CELL;
+          g.fillStyle = "#3b2d1f";
+          g.beginPath(); g.moveTo(px, py - 7); g.lineTo(px + 6, py + 4); g.lineTo(px - 6, py + 4); g.closePath(); g.fill();
+          labelText(`主峰 ${toMeters(peak.e).toLocaleString("zh-TW")} 公尺`, px + 9, py + 4, 12);
+        }
 
-let frame = 0, dirty = false;
-function loop() {
-  frame++;
-  if (playing) { t += 0.0024; dirty = true; }
-  // Redraw at ~30 fps; the noise field is the expensive part
-  if (dirty && frame % 2 === 0) { dirty = false; draw(); }
-  requestAnimationFrame(loop);
-}
+        // Paper grain and double frame
+        g.globalCompositeOperation = "multiply";
+        g.globalAlpha = 0.18; g.fillStyle = grain; g.fillRect(0, 0, W, H);
+        g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
+        g.strokeStyle = "#5b4630"; g.lineWidth = 2; g.strokeRect(8, 8, W - 16, H - 16);
+        g.lineWidth = 0.8; g.strokeRect(13, 13, W - 26, H - 26);
 
-let drag = null;
-cv.addEventListener("pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY, ox, oy }; cv.classList.add("drag"); cv.setPointerCapture(e.pointerId); });
-cv.addEventListener("pointermove", (e) => {
-  hover = { x: e.clientX, y: e.clientY };
-  if (drag) { ox = drag.ox - (e.clientX - drag.x); oy = drag.oy - (e.clientY - drag.y); }
-  dirty = true;
-});
-cv.addEventListener("pointerup", () => { drag = null; cv.classList.remove("drag"); });
-cv.addEventListener("pointerleave", () => { hover = null; dirty = true; });
+        if (hover) {
+          const e = elevation(hover.x, hover.y), m = toMeters(e);
+          const txt = e > 0 ? `海拔 ${m.toLocaleString("zh-TW")} 公尺` : `水深 ${(-m).toLocaleString("zh-TW")} 公尺`;
+          g.strokeStyle = "#3b2d1f"; g.lineWidth = 1.2;
+          g.beginPath(); g.arc(hover.x, hover.y, 7, 0, TAU);
+          g.moveTo(hover.x - 13, hover.y); g.lineTo(hover.x - 4, hover.y); g.moveTo(hover.x + 4, hover.y); g.lineTo(hover.x + 13, hover.y);
+          g.moveTo(hover.x, hover.y - 13); g.lineTo(hover.x, hover.y - 4); g.moveTo(hover.x, hover.y + 4); g.lineTo(hover.x, hover.y + 13);
+          g.stroke();
+          const right = hover.x < W - 150;
+          labelText(txt, hover.x + (right ? 16 : -16), hover.y - 12, 13, right ? "left" : "right");
+        }
+      }
 
-const playBtn = document.getElementById("play");
-playBtn.addEventListener("click", () => {
-  playing = !playing;
-  playBtn.setAttribute("aria-pressed", playing);
-  playBtn.textContent = playing ? "演化中" : "已暫停";
-});
-const linesBtn = document.getElementById("lines");
-linesBtn.addEventListener("click", () => { showLines = !showLines; linesBtn.setAttribute("aria-pressed", showLines); dirty = true; });
-document.getElementById("seed").addEventListener("click", () => { seed = Math.floor(Math.random() * 1e9); reseed(); ox = oy = 0; dirty = true; });
+      function resize() {
+        dpr = Math.min(devicePixelRatio || 1, 2);
+        W = Math.max(1, wrap.clientWidth); H = Math.max(1, wrap.clientHeight);
+        cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+        cols = Math.ceil(W / CELL) + 2; rows = Math.ceil(H / CELL) + 2;
+        field = new Float32Array(cols * rows);
+        off.width = cols; off.height = rows;
+        img = og.createImageData(cols, rows);
+        draw();
+      }
 
-let rt;
-addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(resize, 120); });
-reseed();
-resize();
-loop();
+      const local = (e) => { const r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+      ctx.on(cv, "pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY, ox, oy }; cv.classList.add("drag"); cv.setPointerCapture(e.pointerId); });
+      ctx.on(cv, "pointermove", (e) => {
+        hover = local(e);
+        if (drag) { ox = drag.ox - (e.clientX - drag.x); oy = drag.oy - (e.clientY - drag.y); }
+        dirty = true;
+      });
+      ctx.on(cv, "pointerup", () => { drag = null; cv.classList.remove("drag"); });
+      ctx.on(cv, "pointerleave", () => { hover = null; dirty = true; });
+
+      const playBtn = ctx.toggle("演化中", true, (v) => { playing = v; playBtn.textContent = v ? "演化中" : "已暫停"; });
+      ctx.toggle("等高線", true, (v) => { showLines = v; dirty = true; });
+      ctx.button("新島嶼", () => { seed = Math.floor(Math.random() * 1e9); reseed(); ox = oy = 0; dirty = true; }, { primary: true });
+
+      ctx.raf((now, dt) => {
+        frame++;
+        if (playing) { t += 0.0024 * (dt / 16.7); dirty = true; }
+        // Redraw at ~30 fps; the noise field is the expensive part
+        if (dirty && frame % 2 === 0) { dirty = false; draw(); }
+      });
+      ctx.onResize(resize);
+      reseed();
+      resize();
+    },
+  },
+
+  {
+    id: "dims", title: "2D／3D／4D",
+    api: "createNoise2D()・createNoise3D()・createNoise4D()",
+    desc: "同一個函式庫的三種維度。2D 適合靜態平面；把第三維當時間，平面圖樣會原地變形而不是滑動；在球面上取 (x, y, z) 三維座標，就能得到沒有接縫、極點也不擠壓的星球貼圖；再加第四維當時間，球面雲帶就能原地翻湧。每格右下角是每幀的取樣次數與實測耗時，維度越高，單次取樣越貴。",
+    hint: "比較四格右下角的取樣次數與耗時",
+    mount(ctx) {
+      let seed = 7, nz = noises(seed), playing = true, t = 0, frame = 0, dirty = true;
+      const b = board(ctx, "dims");
+      const P = [
+        pane("noise2D(x, y)", "平面，平移取樣視窗"),
+        pane("noise3D(x, y, t)", "第三維當時間"),
+        pane("noise3D(x, y, z)", "球面取樣，無接縫"),
+        pane("noise4D(x, y, z, t)", "球面加時間"),
+      ];
+      b.append(...P.map((p) => p.el));
+      const bufs = P.map(() => lowres());
+      const perf = P.map(() => ({ ms: 0, calls: 0 }));
+      const CELL = 2, UNIT = 70; // CSS px per noise unit on the flat panels
+
+      const fbm3 = (x, y, z) => {
+        let s = 0, a = 1, f = 1;
+        for (let o = 0; o < 4; o++) { s += a * nz.n3(x * f, y * f, z * f); a *= 0.5; f *= 2.1; }
+        return s / 1.875;
+      };
+      const fbm4 = (x, y, z, w) => {
+        let s = 0, a = 1, f = 1;
+        for (let o = 0; o < 3; o++) { s += a * nz.n4(x * f, y * f, z * f, w * f); a *= 0.5; f *= 2.1; }
+        return s / 1.75;
+      };
+
+      function flat(img, fn) {
+        const d = img.data, cols = img.width, rows = img.height, s = CELL / UNIT;
+        for (let j = 0, o = 0; j < rows; j++) for (let i = 0; i < cols; i++, o += 4) put(d, o, GRAY, fn(i * s, j * s) * 0.5 + 0.5);
+        return cols * rows;
+      }
+      // Orthographic sphere: each pixel inside the disc is a point on the unit sphere, tilted then spun around Y.
+      function sphere(img, spin, sampler, L, perPoint) {
+        const d = img.data, cols = img.width, rows = img.height;
+        const cx = cols / 2, cy = rows / 2, R = Math.min(cols, rows) * 0.44;
+        const ca = Math.cos(spin), sa = Math.sin(spin), cb = Math.cos(0.4), sb = Math.sin(0.4);
+        let n = 0;
+        for (let j = 0, o = 0; j < rows; j++) for (let i = 0; i < cols; i++, o += 4) {
+          const nx = (i + 0.5 - cx) / R, ny = (j + 0.5 - cy) / R, d2 = nx * nx + ny * ny;
+          if (d2 >= 1) { d[o] = 7; d[o + 1] = 8; d[o + 2] = 11; d[o + 3] = 255; continue; }
+          const nzv = Math.sqrt(1 - d2);
+          const y1 = ny * cb - nzv * sb, z1 = ny * sb + nzv * cb;
+          const x2 = nx * ca + z1 * sa, z2 = -nx * sa + z1 * ca;
+          const light = 0.18 + 0.9 * clamp(-0.45 * nx - 0.5 * ny + 0.74 * nzv);
+          put(d, o, L, sampler(x2, y1, z2), light);
+          n++;
+        }
+        return n * perPoint;
+      }
+      const renderers = [
+        (img) => flat(img, (x, y) => nz.n2(x + t * 0.35, y)),
+        (img) => flat(img, (x, y) => nz.n3(x, y, t * 0.3)),
+        (img) => sphere(img, t * 0.35, (x, y, z) => fbm3(x * 1.7, y * 1.7, z * 1.7) * 0.62 + 0.47, PLANET, 4),
+        (img) => sphere(img, 0, (x, y, z) => fbm4(x * 1.3, y * 3.4, z * 1.3, t * 0.22) * 0.55 + 0.5, GAS, 3),
+      ];
+
+      function render() {
+        P.forEach((p, k) => {
+          const { g, w, h: hh } = fit(p.cv);
+          const cols = Math.ceil(w / CELL), rows = Math.ceil(hh / CELL);
+          const img = bufs[k].size(cols, rows);
+          const t0 = performance.now();
+          const calls = renderers[k](img);
+          const ms = performance.now() - t0;
+          perf[k].ms = perf[k].ms ? perf[k].ms * 0.85 + ms * 0.15 : ms;
+          perf[k].calls = calls;
+          bufs[k].blit(g, cols * CELL, rows * CELL);
+        });
+      }
+      const showStats = () => P.forEach((p, k) => (p.stat.textContent = `${fmtCompact(perf[k].calls)} 次／幀・${perf[k].ms.toFixed(1)} ms`));
+
+      const playBtn = ctx.toggle("播放中", true, (v) => { playing = v; playBtn.textContent = v ? "播放中" : "已暫停"; });
+      ctx.button("換種子", () => { seed += 101; nz = noises(seed); dirty = true; });
+      ctx.raf((now, dt) => {
+        if (playing) { t += dt / 1000; dirty = true; }
+        if (dirty && ++frame % 2 === 0) { dirty = false; render(); }
+      });
+      ctx.onResize(() => (dirty = true));
+      ctx.interval(showStats, 500);
+      render();
+      showStats();
+    },
+  },
+
+  {
+    id: "fbm", title: "fBm 疊加",
+    api: "Σ gainᵏ · noise2D(x · lacunarityᵏ, y · lacunarityᵏ)",
+    desc: "fBm（分形布朗運動）把同一個雜訊以不同頻率疊加：每多一層，頻率乘上倍頻（lacunarity），振幅乘上衰減（gain）。左側是各層單獨的樣子，黃條是該層振幅；右側是加總後的地形（顯示時自動拉伸到整個色階）；下方是虛線那一列的剖面，細線是各層貢獻，粗線是總和。ridged 取 (1 - |n|)² 做出山脊，turbulence 取 |n| 做出雲煙。",
+    hint: "拖動層數，看高頻層怎麼只加細節；游標移到地形上換剖面",
+    mount(ctx) {
+      let nz = noises(41), oct = 5, lac = 2, gain = 0.5, variant = 0, rowY = null, dirty = true, dirtyG = true;
+      const VARIANTS = ["fBm", "ridged", "turbulence"];
+      const OCT_COLORS = Array.from({ length: 8 }, (_, k) => `hsl(${195 + k * 20}, 85%, 63%)`);
+      const b = board(ctx, "fbm");
+      const thumbs = Array.from({ length: 8 }, () => {
+        const cv = h("canvas"), label = h("span"), amp = h("b");
+        return { el: h("div", { class: "oct" }, cv, label, h("i", {}, amp)), cv, label, amp, buf: lowres() };
+      });
+      const S = pane("fBm", "");
+      const xline = h("div", { class: "xline" });
+      S.el.append(xline);
+      const G = pane("剖面：細線各層、粗線總和", "");
+      G.el.classList.add("sec");
+      b.append(h("div", { class: "layers" }, thumbs.map((x) => x.el)), S.el, G.el);
+      const sbuf = lowres();
+      const SPAN = 3.2;
+      const shape = (n) => (variant === 0 ? n : variant === 1 ? (1 - Math.abs(n)) ** 2 : Math.abs(n));
+      const fmtF = (f) => String(+f.toFixed(f < 10 ? 2 : 0));
+      const octs = () => {
+        const fr = [], am = [];
+        let norm = 0;
+        for (let k = 0; k < oct; k++) { fr.push(lac ** k); am.push(gain ** k); norm += gain ** k; }
+        return { fr, am, norm };
+      };
+
+      function renderThumbs() {
+        thumbs.forEach((th, k) => {
+          th.el.classList.toggle("off", k >= oct);
+          const f = lac ** k, a = gain ** k;
+          th.label.textContent = `第${k + 1}層 ×${fmtF(f)}`;
+          th.amp.style.width = `${Math.max(2, a * 100)}%`;
+          const { g, w, h: hh } = fit(th.cv);
+          const c = 2, cols = Math.ceil(w / c), rows = Math.ceil(hh / c);
+          const img = th.buf.size(cols, rows), d = img.data, s = (SPAN / Math.max(1, w)) * c;
+          for (let j = 0, o = 0; j < rows; j++) for (let i = 0; i < cols; i++, o += 4) {
+            const v = shape(nz.n2(i * s * f + k * 19.19, j * s * f + k * 7.07));
+            put(d, o, GRAY, variant === 0 ? v * 0.5 + 0.5 : v);
+          }
+          th.buf.blit(g, cols * c, rows * c);
+        });
+      }
+
+      function renderSum() {
+        const { g, w, h: hh } = fit(S.cv);
+        const CELL = 2, cols = Math.ceil(w / CELL), rows = Math.ceil(hh / CELL);
+        const img = sbuf.size(cols, rows), d = img.data;
+        const s = (SPAN / Math.max(1, w)) * CELL;
+        const { fr, am, norm } = octs();
+        const F = new Float32Array(cols * rows);
+        let lo = Infinity, hi = -Infinity;
+        const t0 = performance.now();
+        for (let j = 0, k = 0; j < rows; j++) for (let i = 0; i < cols; i++, k++) {
+          const x = i * s, y = j * s;
+          let v = 0;
+          for (let q = 0; q < oct; q++) v += am[q] * shape(nz.n2(x * fr[q] + q * 19.19, y * fr[q] + q * 7.07));
+          v /= norm;
+          F[k] = v;
+          if (v < lo) lo = v;
+          if (v > hi) hi = v;
+        }
+        const ms = performance.now() - t0;
+        const span = hi - lo || 1, L = variant === 2 ? MAGMA : TERRAIN;
+        for (let j = 0, k = 0; j < rows; j++) for (let i = 0; i < cols; i++, k++) {
+          let sh = 1;
+          if (i > 0 && j > 0 && i < cols - 1 && j < rows - 1) {
+            // Hillshade from the north-west so the octaves read as relief
+            sh = clamp(1 + ((F[k + 1] - F[k - 1] + F[k + cols] - F[k - cols]) / span) * 4, 0.62, 1.3);
+          }
+          put(d, k * 4, L, (F[k] - lo) / span, sh);
+        }
+        sbuf.blit(g, cols * CELL, rows * CELL);
+        S.fn.textContent = `${VARIANTS[variant]}・${oct} 層`;
+        S.sub.textContent = `倍頻 ${lac.toFixed(2)}・衰減 ${gain.toFixed(2)}`;
+        S.stat.textContent = `${fmtCompact(cols * rows * oct)} 次 noise2D・${ms.toFixed(1)} ms`;
+      }
+
+      function renderGraph() {
+        const { g, w, h: hh } = fit(G.cv);
+        g.clearRect(0, 0, w, hh);
+        const sw = Math.max(1, S.cv.clientWidth), sh = S.cv.clientHeight;
+        const ry = rowY == null ? sh / 2 : rowY;
+        xline.style.top = `${ry}px`;
+        const y0 = ry * (SPAN / sw);
+        const N = Math.max(60, Math.min(480, Math.floor(w / 1.5)));
+        const { fr, am, norm } = octs();
+        const top = 32, bot = hh - 6, signed = variant === 0;
+        const Y = (v) => (signed ? (top + bot) / 2 - (v * (bot - top)) / 2 : bot - v * (bot - top));
+        g.strokeStyle = "rgba(255,255,255,0.18)"; g.lineWidth = 1;
+        g.beginPath(); g.moveTo(0, Y(0)); g.lineTo(w, Y(0)); g.stroke();
+        const sums = new Float32Array(N);
+        for (let k = 0; k < oct; k++) {
+          g.beginPath();
+          for (let q = 0; q < N; q++) {
+            const x = (q / (N - 1)) * SPAN;
+            const c = (am[k] * shape(nz.n2(x * fr[k] + k * 19.19, y0 * fr[k] + k * 7.07))) / norm;
+            sums[q] += c;
+            const px = (q / (N - 1)) * w;
+            if (q) g.lineTo(px, Y(c)); else g.moveTo(px, Y(c));
+          }
+          g.strokeStyle = OCT_COLORS[k]; g.globalAlpha = 0.75; g.lineWidth = 1; g.stroke();
+        }
+        g.globalAlpha = 1;
+        g.beginPath();
+        for (let q = 0; q < N; q++) { const px = (q / (N - 1)) * w; if (q) g.lineTo(px, Y(sums[q])); else g.moveTo(px, Y(sums[q])); }
+        g.strokeStyle = "#ffffff"; g.lineWidth = 2.2; g.stroke();
+      }
+
+      ctx.slider("層數", { min: 1, max: 8, step: 1, value: oct }, (v) => { oct = v; dirty = true; });
+      ctx.slider("倍頻", { min: 1.5, max: 3, step: 0.05, value: lac }, (v) => { lac = v; dirty = true; });
+      ctx.slider("衰減", { min: 0.3, max: 0.8, step: 0.05, value: gain }, (v) => { gain = v; dirty = true; });
+      ctx.group(VARIANTS, 0, (i) => { variant = i; dirty = true; });
+      ctx.on(S.cv, "pointermove", (e) => { rowY = e.offsetY; dirtyG = true; });
+      ctx.onResize(() => (dirty = true));
+      ctx.raf(() => {
+        if (dirty) { dirty = false; dirtyG = true; renderThumbs(); renderSum(); }
+        if (dirtyG) { dirtyG = false; renderGraph(); }
+      });
+    },
+  },
+
+  {
+    id: "flow", title: "流場粒子",
+    api: "angle = noise3D(x · s, y · s, t) × 2π",
+    desc: "每顆粒子每幀查一次 noise3D，把結果換算成前進方向。雜訊在空間上連續，相鄰粒子的方向相近，軌跡就自然匯成河流般的流線；第三維 t 緩慢增加，整個流場跟著漂移。顏色代表前進方向，粒子壽命到了或出界就在隨機位置重生。",
+    hint: "開啟向量格，對照流線與方向場",
+    mount(ctx) {
+      const cv = h("canvas"), ov = h("canvas"), stat = h("div", { class: "tagr" });
+      ctx.el.append(h("div", { class: "flow" }, cv, ov, stat));
+      const MAX = 8000, BUCKETS = 12;
+      const px = new Float32Array(MAX), py = new Float32Array(MAX), age = new Uint16Array(MAX), life = new Uint16Array(MAX);
+      const rnd = mulberry32(9);
+      let seed = 13, nz = noises(seed), count = 2500, scale = 1.6, arrows = false, t = 0, frame = 0, W = 1, H = 1, g, og, ms = 0;
+      const colors = Array.from({ length: BUCKETS }, (_, k) => `hsla(${Math.round(190 + (k / BUCKETS) * 360) % 360}, 85%, 63%, 0.6)`);
+      const spawn = (i) => { px[i] = rnd() * W; py[i] = rnd() * H; age[i] = 0; life[i] = 90 + rnd() * 240; };
+      const angle = (x, y) => nz.n3(x * scale * 0.0025, y * scale * 0.0025, t) * TAU;
+
+      function drawArrows() {
+        og.clearRect(0, 0, W, H);
+        if (!arrows) return;
+        const S = 30;
+        og.strokeStyle = "rgba(255,255,255,0.6)"; og.lineWidth = 1;
+        og.beginPath();
+        for (let y = S / 2; y < H; y += S) for (let x = S / 2; x < W; x += S) {
+          const a = angle(x, y), dx = Math.cos(a) * 10, dy = Math.sin(a) * 10;
+          og.moveTo(x - dx, y - dy); og.lineTo(x + dx, y + dy);
+          og.lineTo(x + dx - Math.cos(a - 0.5) * 5, y + dy - Math.sin(a - 0.5) * 5);
+          og.moveTo(x + dx, y + dy); og.lineTo(x + dx - Math.cos(a + 0.5) * 5, y + dy - Math.sin(a + 0.5) * 5);
+        }
+        og.stroke();
+      }
+      function reset() {
+        ({ g, w: W, h: H } = fit(cv));
+        og = fit(ov).g;
+        g.fillStyle = "#050608"; g.fillRect(0, 0, W, H);
+        for (let i = 0; i < MAX; i++) spawn(i);
+        drawArrows();
+      }
+      function step(dt) {
+        const sp = 1.4 * (dt / 16.7);
+        g.fillStyle = "rgba(5, 6, 8, 0.07)"; g.fillRect(0, 0, W, H);
+        const paths = colors.map(() => new Path2D());
+        for (let i = 0; i < count; i++) {
+          const a = angle(px[i], py[i]);
+          const x1 = px[i] + Math.cos(a) * sp, y1 = py[i] + Math.sin(a) * sp;
+          const bk = Math.min(BUCKETS - 1, ((((a / TAU) % 1) + 1) % 1) * BUCKETS | 0);
+          paths[bk].moveTo(px[i], py[i]); paths[bk].lineTo(x1, y1);
+          px[i] = x1; py[i] = y1;
+          if (++age[i] > life[i] || x1 < 0 || y1 < 0 || x1 > W || y1 > H) spawn(i);
+        }
+        g.lineWidth = 1.2; g.lineCap = "round";
+        paths.forEach((p, k) => { g.strokeStyle = colors[k]; g.stroke(p); });
+      }
+
+      ctx.slider("粒子", { min: 200, max: MAX, step: 100, value: count, format: (v) => fmt(v) }, (v) => { for (let i = count; i < v; i++) spawn(i); count = v; });
+      ctx.slider("尺度", { min: 0.5, max: 4, step: 0.1, value: scale }, (v) => { scale = v; drawArrows(); });
+      ctx.toggle("向量格", false, (v) => { arrows = v; drawArrows(); });
+      ctx.button("重新播種", () => { seed += 17; nz = noises(seed); reset(); });
+      ctx.onResize(reset);
+      ctx.raf((now, dt) => {
+        t += 0.0001 * dt;
+        const t0 = performance.now();
+        step(dt);
+        ms = ms ? ms * 0.9 + (performance.now() - t0) * 0.1 : performance.now() - t0;
+        if (arrows && ++frame % 8 === 0) drawArrows();
+      });
+      ctx.interval(() => (stat.textContent = `${fmt(count)} 顆粒子・每幀 ${fmt(count)} 次 noise3D・${ms.toFixed(1)} ms`), 500);
+      reset();
+    },
+  },
+
+  {
+    id: "loop", title: "無縫循環",
+    api: "noise4D(cos u·R, sin u·R, cos v·R, sin v·R)・noise4D(x, y, cos θ·r, sin θ·r)",
+    desc: "要讓貼圖上下左右都接得起來，把 u、v 各映射成一個圓，兩個圓合起來是 4D 空間裡的環面，取樣自然首尾相接；直接用 noise2D 平鋪，接縫處就會斷開（說明列是實際算出的接縫平均落差，對照一般相鄰格的落差）。動畫同理：讓時間在兩個額外維度上繞圓，第 0 幀和最後一幀取到同一點，可以無限循環；直線時間在迴圈接點會跳一下。",
+    hint: "看左上兩格中間的十字接縫，再比較右上同一位置",
+    mount(ctx) {
+      let seed = 3, nz = noises(seed), playing = true, phase = 0, r = 0.55, frame = 0, tiles = null, loopDiff = { wrap: 0, step: 0 };
+      const b = board(ctx, "loops");
+      const A = pane("noise2D(u·k, v·k)", "");
+      const B = pane("noise4D(cos u, sin u, cos v, sin v)", "");
+      const C = pane("noise4D(x, y, cos θ, sin θ)", "時間繞圓，首尾相接");
+      const D = pane("同一點的值隨時間", "");
+      D.sub.innerHTML = "<i style=\"color:#4cc9f0\">━</i> 環形時間　<i style=\"color:#ff5c9a\">━</i> 直線時間";
+      b.append(A.el, B.el, C.el, D.el);
+      const T = 96, TR = 0.7, K = TAU * TR, PX = 0.37, PY = 0.61, FRAMES = 120;
+      const bufA = lowres(), bufB = lowres(), bufC = lowres();
+      const fbm2 = (x, y) => (nz.n2(x, y) + 0.5 * nz.n2(x * 2 + 5.3, y * 2 + 1.9) + 0.25 * nz.n2(x * 4 + 9.1, y * 4 + 3.7)) / 1.75;
+      const fbm4 = (x, y, z, w) => (nz.n4(x, y, z, w) + 0.5 * nz.n4(x * 2, y * 2, z * 2, w * 2) + 0.25 * nz.n4(x * 4, y * 4, z * 4, w * 4)) / 1.75;
+      // Looping animation value: time walks a circle of radius r in the 3rd and 4th dimensions.
+      const ring = (x, y, p) => {
+        const cz = Math.cos(TAU * p) * r, sz = Math.sin(TAU * p) * r;
+        return (nz.n4(x, y, cz, sz) + 0.5 * nz.n4(x * 2 + 3.3, y * 2 + 1.1, cz * 2, sz * 2)) / 1.5;
+      };
+      // Same path length, but time runs in a straight line and restarts at 0 every loop.
+      const straight = (x, y, p) => {
+        const z = (p % 1) * TAU * r;
+        return (nz.n3(x, y, z) + 0.5 * nz.n3(x * 2 + 3.3, y * 2 + 1.1, z * 2)) / 1.5;
+      };
+
+      function tileField(torus) {
+        const F = new Float32Array(T * T);
+        for (let j = 0; j < T; j++) for (let i = 0; i < T; i++) {
+          const u = i / T, v = j / T;
+          F[j * T + i] = torus
+            ? fbm4(Math.cos(TAU * u) * TR, Math.sin(TAU * u) * TR, Math.cos(TAU * v) * TR, Math.sin(TAU * v) * TR)
+            : fbm2(u * K, v * K);
+        }
+        return F;
+      }
+      // Mean jump across the wrap-around edges vs mean jump between ordinary neighbours.
+      function seams(F) {
+        let seam = 0, inner = 0, ni = 0;
+        for (let j = 0; j < T; j++) for (let i = 0; i < T; i++) {
+          const v = F[j * T + i];
+          const dr = Math.abs(F[j * T + ((i + 1) % T)] - v), dd = Math.abs(F[((j + 1) % T) * T + i] - v);
+          if (i === T - 1) seam += dr; else { inner += dr; ni++; }
+          if (j === T - 1) seam += dd; else { inner += dd; ni++; }
+        }
+        return { seam: seam / (2 * T), inner: inner / ni };
+      }
+      function tileImage(buf, F) {
+        const img = buf.size(T, T), d = img.data;
+        for (let k = 0; k < T * T; k++) put(d, k * 4, INK, F[k] * 0.6 + 0.5);
+        buf.commit();
+      }
+      function build() {
+        const FA = tileField(false), FB = tileField(true);
+        tileImage(bufA, FA); tileImage(bufB, FB);
+        const sa = seams(FA), sb = seams(FB);
+        A.sub.textContent = `直接平鋪・接縫落差 ${sa.seam.toFixed(3)}（相鄰格 ${sa.inner.toFixed(3)}）`;
+        B.sub.textContent = `環面映射・接縫落差 ${sb.seam.toFixed(3)}（相鄰格 ${sb.inner.toFixed(3)}）`;
+        tiles = true;
+        // Change from the last frame back to frame 0, against the average change between ordinary frames.
+        let wrap = 0, step = 0;
+        for (let j = 0; j < 16; j++) for (let i = 0; i < 16; i++) {
+          const x = i * 0.17, y = j * 0.17;
+          wrap += Math.abs(ring(x, y, 0) - ring(x, y, (FRAMES - 1) / FRAMES));
+          for (const f of [10, 40, 70, 100]) step += Math.abs(ring(x, y, (f + 1) / FRAMES) - ring(x, y, f / FRAMES));
+        }
+        loopDiff = { wrap: wrap / 256, step: step / 1024 };
+        const ja = Math.abs(ring(PX, PY, 1) - ring(PX, PY, 0)), jb = Math.abs(straight(PX, PY, 1 - 1e-9) - straight(PX, PY, 0));
+        D.stat.textContent = `接點落差 環形 ${ja.toFixed(3)}｜直線 ${jb.toFixed(3)}`;
+      }
+      function drawTile(p, buf, seamColor) {
+        const { g, w, h: hh } = fit(p.cv);
+        // Tile small enough that both a vertical and a horizontal seam fall inside the pane
+        const S = Math.max(40, Math.round(Math.min(w, hh) * 0.62));
+        for (let y = 0; y < hh; y += S) for (let x = 0; x < w; x += S) buf.draw(g, x, y, S, S);
+        // Edge markers point at the tile seams without covering them
+        g.fillStyle = seamColor;
+        const tri = (x, y, dx, dy) => { g.beginPath(); g.moveTo(x, y); g.lineTo(x - dy * 6 + dx * 9, y + dx * 6 + dy * 9); g.lineTo(x + dy * 6 + dx * 9, y - dx * 6 + dy * 9); g.closePath(); g.fill(); };
+        for (let x = S; x < w; x += S) tri(x, hh, 0, -1);
+        for (let y = S; y < hh; y += S) tri(w, y, -1, 0);
+        g.font = "600 11px sans-serif";
+        g.textAlign = "center";
+        if (S < w) g.fillText("接縫", S, hh - 13);
+      }
+      function drawLoop() {
+        const { g, w, h: hh } = fit(C.cv);
+        const c = 3, cols = Math.ceil(w / c), rows = Math.ceil(hh / c);
+        const img = bufC.size(cols, rows), d = img.data, s = c / 80;
+        for (let j = 0, o = 0; j < rows; j++) for (let i = 0; i < cols; i++, o += 4) put(d, o, INK, ring(i * s, j * s, phase) * 0.6 + 0.5);
+        bufC.blit(g, cols * c, rows * c);
+        // Progress ring
+        const X = w - 22, Yc = 22;
+        g.lineWidth = 3;
+        g.strokeStyle = "rgba(255,255,255,0.25)"; g.beginPath(); g.arc(X, Yc, 12, 0, TAU); g.stroke();
+        g.strokeStyle = "#f7df1e"; g.beginPath(); g.arc(X, Yc, 12, -Math.PI / 2, -Math.PI / 2 + TAU * phase); g.stroke();
+        const k = Math.floor(phase * FRAMES);
+        C.stat.textContent = `第 ${k} / ${FRAMES} 幀・接點變化 ${loopDiff.wrap.toFixed(3)}（平常 ${loopDiff.step.toFixed(3)}）`;
+      }
+      function drawGraph() {
+        const { g, w, h: hh } = fit(D.cv);
+        g.clearRect(0, 0, w, hh);
+        // Leave room at the bottom for the loop-point label and the stats chip
+        const top = 46, bot = hh - D.stat.offsetHeight - 30, N = 240;
+        const X = (p) => 8 + (p / 2) * (w - 16), Y = (v) => (top + bot) / 2 - v * (bot - top) * 0.55;
+        g.strokeStyle = "rgba(255,255,255,0.15)"; g.lineWidth = 1;
+        g.beginPath(); g.moveTo(8, Y(0)); g.lineTo(w - 8, Y(0)); g.stroke();
+        g.setLineDash([4, 4]); g.strokeStyle = "rgba(255,255,255,0.5)";
+        g.beginPath(); g.moveTo(X(1), top - 6); g.lineTo(X(1), bot + 4); g.stroke(); g.setLineDash([]);
+        g.fillStyle = "rgba(255,255,255,0.7)"; g.font = "11px sans-serif"; g.textAlign = "center";
+        g.fillText("迴圈接點", X(1), bot + 17);
+        for (const [fn, col] of [[straight, "#ff5c9a"], [ring, "#4cc9f0"]]) {
+          g.beginPath();
+          for (let q = 0; q <= N; q++) {
+            const p = (q / N) * 2;
+            // Break the straight-time line at the loop point so the jump is visible as a gap
+            const v = fn(PX, PY, p === 2 ? 2 - 1e-9 : p);
+            if (q === 0 || (fn === straight && q === N / 2)) g.moveTo(X(p), Y(v)); else g.lineTo(X(p), Y(v));
+          }
+          g.strokeStyle = col; g.lineWidth = 2; g.stroke();
+        }
+        g.strokeStyle = "rgba(247,223,30,0.8)"; g.lineWidth = 1;
+        g.beginPath();
+        for (const p of [phase, phase + 1]) { g.moveTo(X(p), top - 6); g.lineTo(X(p), bot + 4); }
+        g.stroke();
+      }
+
+      const playBtn = ctx.toggle("播放中", true, (v) => { playing = v; playBtn.textContent = v ? "播放中" : "已暫停"; });
+      ctx.slider("時間圓半徑", { min: 0.2, max: 1.5, step: 0.05, value: r }, (v) => { r = v; tiles = null; });
+      ctx.button("換種子", () => { seed += 31; nz = noises(seed); tiles = null; });
+      ctx.raf((now, dt) => {
+        if (playing) phase = (phase + dt / 4000) % 1;
+        if (!tiles) build();
+        if (++frame % 2 && playing) return;
+        drawTile(A, bufA, "#ff5c9a");
+        drawTile(B, bufB, "rgba(255,255,255,0.55)");
+        drawLoop();
+        drawGraph();
+      });
+    },
+  },
+
+  {
+    id: "warp", title: "域扭曲",
+    api: "fbm(p + k · fbm(p + k · fbm(p)))",
+    desc: "域扭曲（domain warping）先用一組 fBm 算出位移向量 q，把座標推開後再取樣，還可以疊第二次（r）。每像素最多 15 次 noise2D，就能長出大理石、煙霧與流體般的紋理。上色參考 Inigo Quilez 的作法：主色看 f（深藍到米白），再依中間場 |q| 混入青綠、依 r.x 混入橙色，所以切換扭曲次數時顏色層次也會跟著增減。強度不必大：每扭曲一次，斜率就再放大一次，k 超過 1.5 就會碎成雜點。",
+    hint: "切換扭曲次數，拖動強度",
+    mount(ctx) {
+      const cv = h("canvas");
+      const fnEl = h("b", { class: "fn" }), subEl = h("span");
+      const stat = h("div", { class: "tagr" });
+      ctx.el.append(h("div", { class: "warp" }, cv, h("div", { class: "tagl" }, fnEl, subEl), stat));
+      let seed = 21, nz = noises(seed), level = 2, k = 0.8, playing = true, t = 0, frame = 0, dirty = true, ms = 0, calls = 0;
+      const buf = lowres();
+      const FORM = ["f = fbm(p)", "f = fbm(p + k·q)，q = fbm(p)", "f = fbm(p + k·r)，r = fbm(p + k·q)"];
+      const PER = [3, 9, 15];
+      const fbm = (x, y) => {
+        const n = nz.n2;
+        return (n(x, y) + 0.5 * n(x * 2.02 + 3.1, y * 2.02 + 1.7) + 0.25 * n(x * 4.04 + 7.9, y * 4.04 + 5.3)) / 1.75;
+      };
+      function render() {
+        const { g, w, h: hh } = fit(cv);
+        const cell = Math.max(3, Math.ceil(Math.sqrt((w * hh) / 40000)));
+        const cols = Math.ceil(w / cell), rows = Math.ceil(hh / cell);
+        const img = buf.size(cols, rows), d = img.data;
+        // About 1.8 noise units across the short side: each warp multiplies the slope, so the base must stay broad.
+        const s = (1.8 / Math.max(1, Math.min(w, hh))) * cell;
+        const t0 = performance.now();
+        for (let j = 0, o = 0; j < rows; j++) for (let i = 0; i < cols; i++, o += 4) {
+          const x = i * s, y = j * s;
+          let qx = 0, qy = 0, rx = 0, ry = 0, f;
+          if (level === 0) f = fbm(x + 0.04 * t, y - 0.03 * t);
+          else {
+            qx = fbm(x + 0.04 * t, y); qy = fbm(x + 5.2, y + 1.3 - 0.03 * t);
+            if (level === 1) f = fbm(x + k * qx, y + k * qy);
+            else {
+              rx = fbm(x + k * qx + 1.7 + 0.15 * t, y + k * qy + 9.2);
+              ry = fbm(x + k * qx + 8.3, y + k * qy + 2.8 + 0.126 * t);
+              f = fbm(x + k * rx, y + k * ry);
+            }
+          }
+          // Colouring idea from Inigo Quilez: f picks the base tone, the intermediate fields tint it.
+          let m = clamp((f * 0.5 + 0.35) / 0.75);
+          m = m * m * (3 - 2 * m);
+          let cr = 7 + 233 * m, cg = 26 + 200 * m, cb = 36 + 156 * m;
+          m = clamp(Math.sqrt(qx * qx + qy * qy) * 1.2) * 0.75;
+          cr += (15 - cr) * m; cg += (76 - cg) * m; cb += (92 - cb) * m;
+          m = clamp(Math.abs(rx) * 1.4) * 0.6;
+          cr += (227 - cr) * m; cg += (100 - cg) * m; cb += (20 - cb) * m;
+          d[o] = cr; d[o + 1] = cg; d[o + 2] = cb; d[o + 3] = 255;
+        }
+        const dt = performance.now() - t0;
+        ms = ms ? ms * 0.85 + dt * 0.15 : dt;
+        calls = cols * rows * PER[level];
+        buf.blit(g, cols * cell, rows * cell);
+      }
+      const label = () => { fnEl.textContent = FORM[level]; subEl.textContent = level ? `強度 k = ${k.toFixed(2)}` : "未扭曲的三層 fBm"; };
+
+      ctx.group(["原始 fBm", "一次扭曲", "兩次扭曲"], level, (i) => { level = i; label(); dirty = true; });
+      ctx.slider("強度", { min: 0, max: 2, step: 0.05, value: k }, (v) => { k = v; label(); dirty = true; });
+      const playBtn = ctx.toggle("播放中", true, (v) => { playing = v; playBtn.textContent = v ? "播放中" : "已暫停"; });
+      ctx.button("換種子", () => { seed += 7; nz = noises(seed); dirty = true; });
+      ctx.onResize(() => (dirty = true));
+      ctx.raf((now, dt) => {
+        if (playing) { t += dt / 1000; dirty = true; }
+        if (dirty && ++frame % 2 === 0) { dirty = false; render(); }
+      });
+      ctx.interval(() => (stat.textContent = `每像素 ${PER[level]} 次 noise2D・每幀 ${fmtCompact(calls)} 次・${ms.toFixed(1)} ms`), 500);
+      label();
+      render();
+    },
+  },
+
+  {
+    id: "smooth", title: "平滑亂數",
+    api: "noise2D(t · 頻率, 種子)・noise3D(cos a, sin a, t)",
+    desc: "同樣的程式碼，只把 Math.random() 換成雜訊：亂數每次呼叫互不相關，曲線劇烈跳動、位置瞬移、輪廓像碎玻璃；雜訊對相近的輸入給出相近的輸出，就成了平滑起伏的數值、自然漫遊的路徑與會呼吸的輪廓。第二個參數當種子，同一個雜訊函式就能給 x、y 兩條互不相關的軌跡；輪廓沿圓周取樣 noise3D(cos a, sin a, t)，頭尾自然接上。",
+    hint: "拖動頻率，看雜訊的平滑程度怎麼變",
+    mount(ctx) {
+      let nz = noises(31), freq = 1, playing = true, t = 0, frame = 0;
+      const b = board(ctx, "smooth");
+      b.append(
+        h("div", { class: "head" }, h("b", { class: "r", text: "Math.random()" }), h("code", { text: "每次呼叫互不相關" })),
+        h("div", { class: "head" }, h("b", { class: "n", text: "simplex noise" }), h("code", { text: "相近輸入，相近輸出" })),
+      );
+      const ROWS = [
+        ["Math.random()", "noise2D(t, 0)"],
+        ["Math.random() × 2", "noise2D(t, 10)・noise2D(t, 20)"],
+        ["每 15 幀重抽 72 個半徑", "noise3D(cos a, sin a, t)"],
+      ];
+      const cells = ROWS.map(([a, n]) => [pane(a, ""), pane(n, "")]);
+      cells.forEach(([a, n]) => b.append(a.el, n.el));
+      const COL = ["#ff5c9a", "#4cc9f0"];
+      const HN = 600, TN = [40, 240], VN = 72; // noise trail is longer: smooth motion needs time to draw a path
+      const hist = [[], []], trail = [[], []];
+      let blobR = Array.from({ length: VN }, () => Math.random());
+
+      function curve(p, data, col) {
+        const { g, w, h: hh } = fit(p.cv);
+        g.clearRect(0, 0, w, hh);
+        const top = 34, bot = hh - 8, mid = (top + bot) / 2, amp = (bot - top) / 2;
+        g.strokeStyle = "rgba(255,255,255,0.15)"; g.lineWidth = 1;
+        g.beginPath(); g.moveTo(0, mid); g.lineTo(w, mid); g.stroke();
+        const n = Math.min(data.length, Math.floor((w - 12) / 2));
+        g.beginPath();
+        for (let q = 0; q < n; q++) {
+          const v = data[data.length - n + q], x = w - 10 - (n - 1 - q) * 2, y = mid - v * amp;
+          if (q) g.lineTo(x, y); else g.moveTo(x, y);
+        }
+        g.strokeStyle = col; g.lineWidth = 1.6; g.stroke();
+        if (n) { g.fillStyle = col; g.beginPath(); g.arc(w - 10, mid - data[data.length - 1] * amp, 4, 0, TAU); g.fill(); }
+      }
+      function walker(p, pts, col) {
+        const { g, w, h: hh } = fit(p.cv);
+        g.clearRect(0, 0, w, hh);
+        const cx = w / 2, cy = (hh + 28) / 2, ax = w * 0.42, ay = (hh - 40) * 0.42;
+        g.lineWidth = 2; g.strokeStyle = col;
+        for (let q = 1; q < pts.length; q++) {
+          g.globalAlpha = q / pts.length;
+          g.beginPath();
+          g.moveTo(cx + pts[q - 1][0] * ax, cy + pts[q - 1][1] * ay);
+          g.lineTo(cx + pts[q][0] * ax, cy + pts[q][1] * ay);
+          g.stroke();
+        }
+        g.globalAlpha = 1;
+        const last = pts[pts.length - 1];
+        if (last) { g.fillStyle = col; g.beginPath(); g.arc(cx + last[0] * ax, cy + last[1] * ay, 5, 0, TAU); g.fill(); }
+      }
+      function blob(p, radius, col) {
+        const { g, w, h: hh } = fit(p.cv);
+        g.clearRect(0, 0, w, hh);
+        const cx = w / 2, cy = (hh + 24) / 2, R = Math.min(w, hh - 30) * 0.33;
+        g.beginPath();
+        for (let q = 0; q < VN; q++) {
+          const a = (q / VN) * TAU, rr = R * radius(q, a);
+          if (q) g.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr); else g.moveTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr);
+        }
+        g.closePath();
+        g.fillStyle = col; g.globalAlpha = 0.22; g.fill();
+        g.globalAlpha = 1; g.strokeStyle = col; g.lineWidth = 2; g.stroke();
+      }
+
+      ctx.slider("頻率", { min: 0.2, max: 4, step: 0.1, value: freq }, (v) => { freq = v; });
+      const playBtn = ctx.toggle("播放中", true, (v) => { playing = v; playBtn.textContent = v ? "播放中" : "已暫停"; });
+      ctx.raf((now, dt) => {
+        if (playing) {
+          t += dt / 1000;
+          hist[0].push(Math.random() * 2 - 1);
+          hist[1].push(nz.n2(t * freq * 1.3, 0.5));
+          trail[0].push([Math.random() * 2 - 1, Math.random() * 2 - 1]);
+          trail[1].push([clamp(nz.n2(t * freq * 0.7, 10.5) * 1.3, -1, 1), clamp(nz.n2(t * freq * 0.7, 20.5) * 1.3, -1, 1)]);
+          for (const a of hist) if (a.length > HN) a.shift();
+          trail.forEach((a, q) => { if (a.length > TN[q]) a.shift(); });
+          if (++frame % 15 === 0) blobR = blobR.map(() => Math.random());
+        }
+        curve(cells[0][0], hist[0], COL[0]);
+        curve(cells[0][1], hist[1], COL[1]);
+        walker(cells[1][0], trail[0], COL[0]);
+        walker(cells[1][1], trail[1], COL[1]);
+        blob(cells[2][0], (q) => 0.7 + 0.6 * blobR[q], COL[0]);
+        blob(cells[2][1], (q, a) => 1 + 0.32 * nz.n3(Math.cos(a) * 1.2, Math.sin(a) * 1.2, t * freq * 0.5), COL[1]);
+      });
+    },
+  },
+
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "ctx.bench・createNoise2D／3D／4D(random)・每格一次取樣",
+    desc: "每格呼叫一次雜訊函式，格數從一萬加到兩千萬，量出每秒能取樣幾次。四種運算共用同一個迴圈與座標，只換函式；Math.random 不做任何雜訊運算，是對照組。右側是最後一輪結果的縮圖（最多 256 × 256），格數少時看得到明顯的方塊。",
+    hint: "選一種維度，按「開始測試」",
+    mount(ctx) {
+      const nz = noises(1);
+      const kernels = [
+        (row, n, s, y) => { const f = nz.n2; for (let i = 0; i < n; i++) row[i] = f(i * s, y); },
+        (row, n, s, y) => { const f = nz.n3; for (let i = 0; i < n; i++) row[i] = f(i * s, y, 0.5); },
+        (row, n, s, y) => { const f = nz.n4; for (let i = 0; i < n; i++) row[i] = f(i * s, y, 0.5, 0.25); },
+        (row, n) => { for (let i = 0; i < n; i++) row[i] = Math.random() * 2 - 1; },
+      ];
+      let op = 1;
+      const cv = h("canvas"), tag = h("div", { class: "tag" });
+      ctx.el.append(h("div", { class: "bv" }, cv, tag));
+      const g = cv.getContext("2d");
+
+      // n samples on a near-square grid that always covers the same 6 x 6 noise units; keeps a <= 256 x 256 preview.
+      function sampleGrid(which, n) {
+        const W = Math.ceil(Math.sqrt(n)), H = Math.ceil(n / W), s = 6 / W;
+        const P = Math.min(256, W), PH = Math.min(256, H);
+        const prev = new Float32Array(P * PH), row = new Float32Array(W);
+        const pick = Int32Array.from({ length: P }, (_, i) => Math.floor((i * W) / P));
+        const kern = kernels[which];
+        let pr = 0;
+        for (let j = 0; j < H; j++) {
+          kern(row, Math.min(W, n - j * W), s, j * s);
+          if (pr < PH && j === Math.floor((pr * H) / PH)) {
+            for (let i = 0; i < P; i++) prev[pr * P + i] = row[pick[i]];
+            pr++;
+          }
+        }
+        return { W, H, P, PH, prev };
+      }
+      function show(res, which) {
+        const { W, H, P, PH, prev } = res;
+        cv.width = P; cv.height = PH;
+        const img = g.createImageData(P, PH);
+        for (let k = 0; k < P * PH; k++) put(img.data, k * 4, VIRIDIS, prev[k] * 0.5 + 0.5);
+        g.putImageData(img, 0, 0);
+        tag.textContent = `${BOPS[which].fn}・${fmt(W)} × ${fmt(H)} 格・預覽 ${P} × ${PH}`;
+      }
+      const preview = () => show(sampleGrid(op, 65536), op);
+
+      ctx.controls.classList.add("bottom");
+      ctx.group(BOPS.map((x) => x.label), op, (i) => { op = i; preview(); });
+      ctx.bench({
+        label: "取樣次數", unit: "次",
+        sizes: [1e4, 1e5, 5e5, 1e6, 2e6, 5e6, 1e7, 2e7],
+        target: 1000, budget: 2000,
+        run(n) {
+          const which = op;
+          const t0 = performance.now();
+          const res = sampleGrid(which, n);
+          const ms = performance.now() - t0;
+          // Draw after the timer stops so canvas upload is not counted.
+          ctx.timeout(() => show(res, which), 0);
+          return `${fmtCompact(n / (ms / 1000))}／秒`;
+        },
+        note: "所有取樣在主執行緒同步執行。fBm 疊 N 層就是 N 次取樣，把每秒取樣數除以 N，再除以 60，就是 60 fps 下每幀能算的像素數。單輪超過 2 秒就停止加碼。",
+      });
+      preview();
+    },
+  },
+] });
 </script>
 </body>
 </html>

@@ -3,398 +3,761 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Magenta.js 示範：AI 接續你彈的旋律</title>
+<title>Magenta.js 示範：8 個場景看懂瀏覽器內的 AI 作曲</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"click","needs":["audio"],"size":"約 17 MB","note":"MusicRNN 模型在瀏覽器內執行，每次接續的旋律都不一樣"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"click","needs":["audio"],"size":"約 41 MB","scenes":["接續旋律","創意度比較","和弦即興","VAE 取樣與變奏","VAE 內插","巴哈和聲","視覺化器","極限測試"],"note":"四個模型（MusicRNN 兩種、MusicVAE、Coconet）都在瀏覽器內用 TensorFlow.js 執行，各場景按下閘門才下載，下載過就共用。只有按下播放或鋼琴鍵才會出聲。"}</script>
 <style>
-  .app {
-    position: fixed; inset: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto;
-    gap: 10px; padding: 12px 14px 46px;
-  }
-  .top { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  .legend { display: flex; gap: 12px; align-items: center; font-size: 12.5px; color: var(--muted); }
-  .legend i { display: inline-block; width: 18px; height: 8px; border-radius: 3px; margin-right: 5px; vertical-align: middle; }
-  .spacer { flex: 1; }
-  .temp { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
-  .temp input { width: 86px; }
-  .temp b { font: 600 12px var(--mono); color: var(--fg); min-width: 24px; }
-  #play { min-width: 82px; }
-  .roll {
-    position: relative; min-height: 0; border-radius: 10px; border: 1px solid var(--line); overflow: hidden;
-    background: linear-gradient(180deg, #151922, #0f1116);
-  }
-  .roll canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-  .msg {
-    position: absolute; right: 10px; bottom: 8px; max-width: calc(100% - 20px);
-    font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    padding: 3px 9px; border-radius: 999px; background: rgba(14, 16, 19, .72); pointer-events: none;
-  }
-  .msg.err { color: var(--c3); }
-  .kbd {
-    position: relative; height: clamp(64px, 17vh, 104px); user-select: none; touch-action: none;
-    border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: #0a0b0d;
-  }
-  .key { position: absolute; top: 0; cursor: pointer; transition: background .08s; }
-  .key.white {
-    height: 100%; background: linear-gradient(180deg, #e9e7df, #f8f7f2 85%, #d9d6cc);
-    border-right: 1px solid #b9b5a8; border-radius: 0 0 5px 5px;
-    display: flex; align-items: flex-end; justify-content: center; padding-bottom: 5px;
-    font: 600 10.5px var(--font); color: #77736a;
-  }
-  .key.black {
-    height: 60%; z-index: 2; border-radius: 0 0 4px 4px;
-    background: linear-gradient(180deg, #2a2d33, #121418); box-shadow: 0 2px 3px rgba(0, 0, 0, .5);
-  }
-  .key.white.on-seed { background: linear-gradient(180deg, #fff3a6, #f7df1e); color: #4a4200; }
-  .key.black.on-seed { background: linear-gradient(180deg, #f7df1e, #b8a400); }
-  .key.white.on-gen { background: linear-gradient(180deg, #c9f1ff, #4cc9f0); color: #08394a; }
-  .key.black.on-gen { background: linear-gradient(180deg, #4cc9f0, #2a8db0); }
+  .mg-board { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 8px) 10px calc(var(--sc-ctl-b, 0px) + 10px); display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  .mg-roll { position: relative; flex: 1 1 0; min-height: 0; border-radius: 10px; border: 1px solid var(--line); overflow: hidden; background: linear-gradient(180deg, #151922, #0f1116); }
+  .mg-roll canvas, .mg-cell canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .mg-chip { position: absolute; right: 8px; bottom: 6px; max-width: calc(100% - 16px); font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    padding: 2px 9px; border-radius: 999px; background: rgba(14, 16, 19, .78); pointer-events: none; }
+  .mg-chip b, .mg-n { font-family: var(--mono); font-weight: 600; font-variant-numeric: tabular-nums; color: #e8e6df; }
+  .mg-chip.err { color: #ff8a8a; }
+  .mg-kbd { position: relative; flex: none; height: clamp(58px, 16vh, 100px); user-select: none; touch-action: none; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: #0a0b0d; }
+  .mg-key { position: absolute; top: 0; cursor: pointer; transition: background .08s; }
+  .mg-key.w { height: 100%; background: linear-gradient(180deg, #e9e7df, #f8f7f2 85%, #d9d6cc); border-right: 1px solid #b9b5a8; border-radius: 0 0 5px 5px;
+    display: flex; align-items: flex-end; justify-content: center; padding-bottom: 4px; font: 600 10.5px var(--font); color: #77736a; }
+  .mg-key.b { height: 60%; z-index: 2; border-radius: 0 0 4px 4px; background: linear-gradient(180deg, #2a2d33, #121418); box-shadow: 0 2px 3px rgba(0, 0, 0, .5); }
+  .mg-key.w.seed { background: linear-gradient(180deg, #fff3a6, #f7df1e); color: #4a4200; }
+  .mg-key.b.seed { background: linear-gradient(180deg, #f7df1e, #b8a400); }
+  .mg-key.w.gen { background: linear-gradient(180deg, #c9f1ff, #4cc9f0); color: #08394a; }
+  .mg-key.b.gen { background: linear-gradient(180deg, #4cc9f0, #2a8db0); }
+  .mg-rows { flex: 1 1 0; min-height: 0; display: grid; grid-template-rows: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .mg-row { display: grid; grid-template-columns: 168px minmax(0, 1fr); gap: 8px; min-height: 0; }
+  .mg-meta { display: flex; flex-direction: column; justify-content: center; gap: 4px; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); font-size: 12px; color: var(--muted); min-width: 0; }
+  .mg-meta h4 { margin: 0; font-size: 13px; color: var(--fg); }
+  .mg-meta .btn { align-self: flex-start; padding: 4px 10px; font-size: 12px; }
+  .mg-row.on .mg-svg { border-color: #fff; }
+  .mg-svg { position: relative; min-width: 0; min-height: 0; overflow: hidden; border-radius: 10px; border: 1px solid var(--line); background: #10131a; }
+  .mg-svg svg { position: absolute; left: 0; top: 0; }
+  .mg-mask { position: absolute; top: 0; bottom: 0; left: 0; background: rgba(247, 223, 30, .09); border-right: 1px dashed rgba(247, 223, 30, .65); pointer-events: none; width: 33.333%; }
+  .mg-mask span { position: absolute; left: 6px; top: 3px; font-size: 11px; color: #f7df1e; }
+  .mg-busy { position: absolute; inset: 0; display: grid; place-items: center; font-size: 13px; color: #cfefff; background: rgba(15, 17, 22, .55); pointer-events: none; }
+  .mg-busy:empty { display: none; }
+  .mg-h { flex: none; font-size: 12.5px; color: var(--muted); }
+  .mg-h code { font-family: var(--mono); font-size: 11.5px; color: var(--fg); }
+  .mg-grid { flex: 1 1 0; min-height: 0; display: grid; gap: 8px; grid-auto-rows: minmax(0, 1fr); }
+  .mg-g4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .mg-g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .mg-cell { position: relative; min-height: 0; overflow: hidden; border-radius: 10px; border: 1px solid var(--line); background: #10131a; cursor: pointer; }
+  .mg-cell.sel { border-color: #f7df1e; }
+  .mg-cell.on { border-color: #fff; box-shadow: 0 0 0 1px #fff; }
+  .mg-cell > span { position: absolute; left: 6px; top: 4px; z-index: 1; font-size: 11px; color: #cfd3da; pointer-events: none; }
+  .mg-legend { position: absolute; left: 8px; top: 6px; display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; color: #cfd3da; pointer-events: none; }
+  .mg-legend i { display: inline-block; width: 14px; height: 7px; border-radius: 3px; margin-right: 4px; vertical-align: middle; }
+  .mg-viz { flex: 1 1 0; min-height: 0; overflow: auto; border-radius: 10px; border: 1px solid var(--line); background: #f6f4ee; }
+  .mg-viz > div { height: 100%; }
+  .mg-stress { position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px); display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  @media (min-width: 761px) { .mg-stress { left: 350px; } }
+  .mg-table { flex: none; border-collapse: collapse; width: 100%; font-size: 12px; background: var(--panel); border-radius: 10px; overflow: hidden; }
+  .mg-table th, .mg-table td { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+  .mg-table th { font-weight: 600; color: var(--muted); }
+  .mg-table td { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .mg-table tr.cur td, .mg-table tr.cur th { background: rgba(76, 201, 240, .12); color: var(--fg); }
+  .mg-foot { flex: none; font-size: 12px; color: var(--muted); }
   @media (max-width: 620px) {
-    .app { padding: 10px 10px 46px; gap: 8px; }
-    .top { gap: 6px; }
-    .legend { flex-basis: 100%; }
-    .temp input { width: 64px; }
-    .btn { padding: 7px 10px; font-size: 12.5px; }
-    .key.white { font-size: 9px; }
+    .mg-row { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 4px; }
+    .mg-meta { flex-direction: row; flex-wrap: wrap; align-items: center; padding: 3px 8px; gap: 2px 8px; }
+    .mg-meta h4 { font-size: 12px; }
+    .mg-meta br { display: none; }
+    .mg-g4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .mg-table { font-size: 11px; }
+    .mg-table th, .mg-table td { padding: 3px 4px; }
   }
 </style>
 </head>
 <body>
-<div class="app">
-  <div class="top">
-    <div class="legend"><span><i style="background:var(--c1)"></i>你的旋律</span><span><i style="background:var(--c2)"></i>AI 接續</span></div>
-    <div class="spacer"></div>
-    <button class="btn" id="sample">範例旋律</button>
-    <button class="btn" id="clear">↺ 清除</button>
-    <label class="temp">創意度 <input type="range" id="temp" min="0.6" max="1.6" step="0.1" value="1.1"><b id="tempVal">1.1</b></label>
-    <button class="btn" id="play">▶ 播放</button>
-    <button class="btn primary" id="gen">✨ 接續旋律</button>
-  </div>
-  <div class="roll" id="roll">
-    <canvas id="cv"></canvas>
-    <div class="msg" id="msg"></div>
-  </div>
-  <div class="kbd" id="kbd" aria-label="螢幕鋼琴"></div>
-</div>
-<div class="hint">點下方鋼琴彈幾個音（按久一點是長音），再按「接續旋律」</div>
-
-<script src="_shared/gate.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
+// Magenta.js showcase: MusicRNN, MusicVAE and Coconet running in the browser with TensorFlow.js, plus players and visualizers.
 const MM_URL = "https://cdn.jsdelivr.net/npm/@magenta/music@1.23.1/dist/magentamusic.js";
-const CKPT = "https://storage.googleapis.com/magentadata/js/checkpoints/music_rnn/basic_rnn";
+const CKPT = "https://storage.googleapis.com/magentadata/js/checkpoints/";
 const SOUNDFONT = "https://storage.googleapis.com/magentadata/js/soundfonts/salamander";
-const QPM = 110, SPQ = 4, STEP_SEC = 60 / QPM / SPQ, VEL = 80;
-const LOW = 60, HIGH = 83;           // on-screen keyboard range (C4 to B5)
-const SEED_MAX = 64, GEN_STEPS = 64; // 4 bars of seed at most, 4 bars of continuation
+const LIB_BYTES = 2494289;
+// Checkpoint sizes: sum of the weight shards listed in each weights_manifest.json (GCS sends no Timing-Allow-Origin, so the browser cannot report them).
+const MODELS = {
+  rnn: { cls: "MusicRNN", path: "music_rnn/basic_rnn", bytes: 12988568, label: "MusicRNN basic_rnn" },
+  improv: { cls: "MusicRNN", path: "music_rnn/chord_pitches_improv", bytes: 5601432, label: "MusicRNN chord_pitches_improv" },
+  vae: { cls: "MusicVAE", path: "music_vae/mel_2bar_small", bytes: 17695080, label: "MusicVAE mel_2bar_small" },
+  coco: { cls: "Coconet", path: "coconet/bach", bytes: 553436, label: "Coconet bach" },
+};
+const QPM = 110, SPQ = 4, VEL = 80;
+const stepSec = (qpm) => 60 / qpm / SPQ;
 const SOLFEGE = { 0: "Do", 2: "Re", 4: "Mi", 5: "Fa", 7: "Sol", 9: "La", 11: "Si" };
-// "Little Bee" (a Taiwanese children's song), steps at 4 per quarter note
-const SAMPLE = [[67,0,4],[64,4,8],[64,8,16],[65,16,20],[62,20,24],[62,24,32],
-  [60,32,36],[62,36,40],[64,40,44],[65,44,48],[67,48,52],[67,52,56],[67,56,64]]
-  .map(([pitch, s, e]) => ({ pitch, s, e }));
-
-const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
-const msgEl = document.getElementById("msg");
-const playBtn = document.getElementById("play"), genBtn = document.getElementById("gen");
-const tempIn = document.getElementById("temp"), tempVal = document.getElementById("tempVal");
-const kbd = document.getElementById("kbd");
-
-let mm = null, rnn = null, player = null;
-let seed = SAMPLE.map((n) => ({ ...n }));
-let gen = [];             // continuation notes in absolute steps
-let fresh = false;        // next key press starts a brand new melody
-let held = null;          // { note, t0 } while a key is pressed
-let generating = false;
-let playing = false, anchor = null; // anchor = { step, at } from the player's note callback
-const lit = new Map();    // pitch -> { until, kind } for keyboard highlights
-
-function setMsg(text, err) { msgEl.textContent = text; msgEl.className = err ? "msg err" : "msg"; }
-const seedEnd = () => seed.reduce((m, n) => Math.max(m, n.e), 0);
+const N = ([pitch, s, e], k = "seed", v = 0) => ({ pitch, s, e, k, v });
+// "Little Bee" (a Taiwanese children's song) and "Two Tigers" (Frere Jacques), 4 steps per quarter note
+const BEE = [[67,0,4],[64,4,8],[64,8,16],[65,16,20],[62,20,24],[62,24,32],[60,32,36],[62,36,40],[64,40,44],[65,44,48],[67,48,52],[67,52,56],[67,56,64]];
+const BEE_BASS = [[48,0,8],[55,8,16],[43,16,24],[50,24,32],[48,32,40],[52,40,48],[43,48,56],[48,56,64]];
+const TIGERS = [[60,0,4],[62,4,8],[64,8,12],[60,12,16],[60,16,20],[62,20,24],[64,24,28],[60,28,32]];
+const { fmt, fmtMs } = Showcase;
+const mb = (b) => `${fmt(b / 1048576, 1)} MB`;
 const isBlack = (p) => [1, 3, 6, 8, 10].includes(p % 12);
-const toQuantized = (notes) => ({
-  notes: notes.map((n) => ({ pitch: n.pitch, velocity: VEL, quantizedStartStep: n.s, quantizedEndStep: n.e })),
-  totalQuantizedSteps: notes.reduce((m, n) => Math.max(m, n.e), 0),
-  quantizationInfo: { stepsPerQuarter: SPQ },
-});
+const end = (notes) => notes.reduce((m, n) => Math.max(m, n.e), 0);
+const cssVar = (k, d) => getComputedStyle(document.documentElement).getPropertyValue(k).trim() || d;
+const FONT = cssVar("--font", "'Noto Sans TC', 'Microsoft JhengHei', sans-serif"), MONO = cssVar("--mono", "ui-monospace, Consolas, monospace");
+let lastGen = null; // most recent generated piece, reused by the visualizer scene
 
-// ---------- on-screen piano ----------
-const whites = [];
-for (let p = LOW; p <= HIGH; p++) if (!isBlack(p)) whites.push(p);
-const keyEls = new Map();
-const ww = 100 / whites.length;
-for (let p = LOW; p <= HIGH; p++) {
-  const k = document.createElement("div");
-  k.dataset.pitch = p;
-  if (isBlack(p)) {
-    const left = whites.indexOf(p + 1) * ww;
-    k.className = "key black";
-    Object.assign(k.style, { left: `${left - ww * 0.31}%`, width: `${ww * 0.62}%` });
-  } else {
-    k.className = "key white";
-    Object.assign(k.style, { left: `${whites.indexOf(p) * ww}%`, width: `${ww}%` });
-    k.textContent = SOLFEGE[p % 12];
+function abortIfGone(ctx) { if (!ctx.active) throw new DOMException("Scene unmounted", "AbortError"); }
+
+// ---------- note sequences ----------
+function Q(notes, total = end(notes)) {
+  return {
+    notes: notes.map((n) => ({ pitch: n.pitch, velocity: n.vel || VEL, instrument: n.v || 0, quantizedStartStep: n.s, quantizedEndStep: n.e })),
+    totalQuantizedSteps: total, quantizationInfo: { stepsPerQuarter: SPQ },
+  };
+}
+function UQ(seq, qpm = QPM) {
+  const u = mm.sequences.unquantizeSequence(seq, qpm);
+  u.tempos = [{ time: 0, qpm }];
+  return u;
+}
+const U = (notes, total, qpm) => UQ(Q(notes, total), qpm);
+const fromSeq = (seq, off = 0, k = "gen") => seq.notes.map((n) => ({ pitch: n.pitch, s: off + (n.quantizedStartStep || 0), e: off + (n.quantizedEndStep || 0), k, v: n.instrument || 0 }));
+function stats(notes) {
+  if (!notes.length) return { n: 0, range: 0, kinds: 0, leap: 0 };
+  const ps = notes.map((n) => n.pitch);
+  let leap = 0;
+  for (let i = 1; i < ps.length; i++) leap += Math.abs(ps[i] - ps[i - 1]);
+  return { n: notes.length, range: Math.max(...ps) - Math.min(...ps), kinds: new Set(ps).size, leap: ps.length > 1 ? leap / (ps.length - 1) : 0 };
+}
+function downloadMidi(seq, name) {
+  const url = URL.createObjectURL(new Blob([mm.sequenceProtoToMidi(seq)], { type: "audio/midi" }));
+  Showcase.h("a", { href: url, download: name }).click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+// ---------- loading: library and models are fetched once and shared by every scene ----------
+async function lib(ctx) {
+  if (!window.mm) {
+    const st = ctx.status(`下載 Magenta.js（約 ${mb(LIB_BYTES)}）…`);
+    try { await Showcase.load(MM_URL); } finally { st.done(); }
   }
-  kbd.append(k);
-  keyEls.set(p, k);
+  abortIfGone(ctx);
+  return window.mm;
 }
-
-kbd.addEventListener("pointerdown", (e) => {
-  const key = e.target.closest(".key");
-  if (!key) return;
-  e.preventDefault();
-  pressKey(Number(key.dataset.pitch));
-});
-window.addEventListener("pointerup", releaseKey);
-window.addEventListener("pointercancel", releaseKey);
-
-function pressKey(pitch) {
-  if (!player) { setMsg("模型還在載入，請稍候", true); return; }
-  if (held) releaseKey();
-  if (fresh) { stopPlayback(); seed = []; gen = []; fresh = false; }
-  const start = seedEnd();
-  if (start >= SEED_MAX) { setMsg("最多 4 小節，按「接續旋律」讓 AI 接著寫", true); return; }
-  const note = { pitch, s: start, e: start + 2 };
-  seed.push(note);
-  held = { note, t0: performance.now() };
-  player.resumeContext();
-  player.playNoteDown({ pitch, velocity: VEL });
-  lit.set(pitch, { until: Infinity, kind: "seed" });
-}
-function releaseKey() {
-  if (!held) return;
-  const { note } = held;
-  held = null;
-  player.playNoteUp({ pitch: note.pitch, velocity: VEL });
-  lit.delete(note.pitch);
-  setMsg(`你的旋律：${seed.length} 個音，按「接續旋律」讓 AI 寫下去`);
-}
-// Hold longer for a longer note: eighth, quarter, dotted quarter or half note
-function growHeldNote(now) {
-  if (!held) return;
-  const steps = Math.min(8, Math.max(2, 2 * Math.round((now - held.t0) / 1000 / STEP_SEC / 2)));
-  held.note.e = Math.min(held.note.s + steps, SEED_MAX);
-}
-
-// ---------- Magenta ----------
-async function generate() {
-  if (!rnn || generating) return;
-  if (held) releaseKey();
-  if (!seed.length) { setMsg("先在下方鋼琴彈幾個音", true); return; }
-  stopPlayback();
-  generating = true; genBtn.disabled = true; gen = [];
-  setMsg("MusicRNN 正在接續旋律…");
-  const temperature = Number(tempIn.value);
-  try {
-    const offset = seedEnd();
-    const out = await rnn.continueSequence(toQuantized(seed), GEN_STEPS, temperature);
-    gen = out.notes.map((n) => ({
-      pitch: n.pitch, s: offset + (n.quantizedStartStep || 0), e: offset + (n.quantizedEndStep || 0),
-    }));
-    fresh = true;
-    setMsg(`AI 接續了 ${gen.length} 個音（創意度 ${temperature.toFixed(1)}），再按一次會寫出不同版本`);
-  } catch (err) {
-    console.error(err);
-    setMsg(`生成失敗：${err.message || err}`, true);
-  } finally {
-    generating = false; genBtn.disabled = false;
+async function needModel(ctx, key, gate) {
+  const m = MODELS[key];
+  if (!m.ready && !m.job) {
+    const tags = [...(gate.tags || []), `模型約 ${mb(m.bytes)}`];
+    if (!window.mm) tags.push(`函式庫約 ${mb(LIB_BYTES)}`);
+    await ctx.gate({ ...gate, tags, button: gate.button || "載入模型" });
   }
-  return gen.length > 0;
-}
-
-function startPlayback() {
-  if (!player || !seed.length) return;
-  stopPlayback();
-  const seq = toQuantized([...seed, ...gen]);
-  playing = true; anchor = null;
-  playBtn.textContent = "■ 停止";
-  player.start(seq, QPM).catch((err) => { console.error(err); stopPlayback(); });
-}
-function stopPlayback() {
-  if (player && player.isPlaying()) player.stop();
-  playing = false; anchor = null;
-  playBtn.textContent = "▶ 播放";
-  for (const [p, v] of lit) if (v.until !== Infinity) lit.delete(p);
-}
-// Called by SoundFontPlayer (via Tone.Draw) when each note actually sounds
-function onPlayerNote(note) {
-  const step = note.startTime / STEP_SEC;
-  anchor = { step, at: performance.now() };
-  const kind = step >= seedEnd() - 1e-6 && gen.length ? "gen" : "seed";
-  lit.set(note.pitch, { until: performance.now() + (note.endTime - note.startTime) * 1000 - 30, kind });
-}
-function onPlayerStop() { stopPlayback(); }
-
-document.getElementById("gen").addEventListener("click", async () => {
-  if (await generate()) startPlayback();
-});
-playBtn.addEventListener("click", () => { if (playing) stopPlayback(); else startPlayback(); });
-document.getElementById("clear").addEventListener("click", () => {
-  stopPlayback(); seed = []; gen = []; fresh = false;
-  setMsg("已清除，點下方鋼琴開始彈");
-});
-document.getElementById("sample").addEventListener("click", () => {
-  stopPlayback(); seed = SAMPLE.map((n) => ({ ...n })); gen = []; fresh = false;
-  setMsg("已載入範例旋律「小蜜蜂」，按「接續旋律」");
-});
-tempIn.addEventListener("input", () => { tempVal.textContent = Number(tempIn.value).toFixed(1); });
-
-// ---------- piano roll ----------
-function resize() {
-  const dpr = Math.min(devicePixelRatio || 1, 2);
-  const w = cv.clientWidth, h = cv.clientHeight;
-  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
-    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  if (!m.job) {
+    m.job = (async () => {
+      await Showcase.load(MM_URL);
+      const t0 = performance.now();
+      const model = new mm[m.cls](CKPT + m.path);
+      await model.initialize();
+      m.ms = performance.now() - t0;
+      m.ready = model;
+      return model;
+    })().catch((e) => { m.job = null; throw e; });
   }
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  return [w, h];
+  if (!m.ready) {
+    const st = ctx.status(`下載 ${m.label}（約 ${mb(m.bytes)}）並初始化…`);
+    st.progress(0.3);
+    try { await m.job; } finally { st.done(); }
+  }
+  abortIfGone(ctx);
+  return m.ready;
 }
-function roundRect(x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h);
+const loadInfo = (key) => `${MODELS[key].label} <b>${mb(MODELS[key].bytes)}</b>・載入 <b>${fmtMs(MODELS[key].ms || 0)}</b>`;
+
+// ---------- playback: one SoundFontPlayer (salamander piano) shared by all scenes ----------
+let PIANO = null, SYNTH = null;
+const piano = () => PIANO || (PIANO = new mm.SoundFontPlayer(SOUNDFONT));
+function transport(ctx, { onState, onNote } = {}) {
+  let token = 0, player = null;
+  const tp = { playing: false, tag: null, anchor: null, qpm: QPM, live: QPM, synth: false };
+  tp.stop = () => {
+    token++;
+    if (player) { player.stop(); player.callbackObject = null; player = null; }
+    if (tp.playing) { tp.playing = false; tp.tag = null; tp.anchor = null; if (onState) onState(false); }
+  };
+  tp.play = async (seq, tag = null) => {
+    tp.stop();
+    const my = token, p = tp.synth ? (SYNTH || (SYNTH = new mm.Player())) : piano();
+    Object.assign(tp, { playing: true, tag, qpm: seq.tempos[0].qpm, anchor: null });
+    if (onState) onState(true);
+    try {
+      p.resumeContext();
+      if (p.loadSamples) await p.loadSamples(seq);
+      if (my !== token || !ctx.active) return;
+      player = p;
+      p.callbackObject = {
+        run: (n) => {
+          if (my !== token) return;
+          tp.anchor = { step: n.startTime / stepSec(tp.qpm), at: performance.now() };
+          if (onNote) onNote(n, tp.anchor.step);
+        },
+        stop: () => { if (my === token) tp.stop(); },
+      };
+      // Samples are loaded above, so start the base player directly; no async gap where a stop could be missed.
+      const done = mm.BasePlayer ? mm.BasePlayer.prototype.start.call(p, seq) : p.start(seq);
+      if (tp.live !== tp.qpm) p.setTempo(tp.live);
+      await done;
+    } catch (e) {
+      if (my === token) { console.error(e); tp.stop(); ctx.hint(`播放失敗：${e.message}`); }
+    }
+  };
+  tp.setTempo = (q) => { tp.live = q; if (player) player.setTempo(q); };
+  tp.step = () => (tp.playing && tp.anchor ? tp.anchor.step + (performance.now() - tp.anchor.at) / 1000 / stepSec(tp.live) : -1);
+  ctx.onCleanup(tp.stop);
+  return tp;
 }
 
-function draw(now) {
-  growHeldNote(now);
-  const [W, H] = resize();
-  ctx.clearRect(0, 0, W, H);
-  const all = [...seed, ...gen];
-  const sEnd = seedEnd();
-  const split = Math.max(sEnd, held || !gen.length ? Math.min(SEED_MAX, Math.max(sEnd, 32)) : sEnd);
-  const view = split + GEN_STEPS;
-  const lo = Math.min(LOW - 1, ...all.map((n) => n.pitch - 1));
-  const hi = Math.max(LOW + 20, ...all.map((n) => n.pitch + 1));
-  const rows = hi - lo + 1;
-  const gx = 34, top = 24, bottom = 32; // bottom strip is reserved for the status pill
-  const sw = (W - gx - 8) / view, rh = (H - top - bottom) / rows;
-  const X = (step) => gx + step * sw;
-  const Y = (pitch) => top + (hi - pitch) * rh;
-
-  // pitch rows
+// ---------- piano roll on canvas ----------
+const COLORS = { seed: "#f7df1e", held: "#fff7b8", gen: "#4cc9f0", out: "#f72585", v0: "#f7df1e", v1: "#f72585", v2: "#4cc9f0", v3: "#9d8cff" };
+function fit(cv) {
+  const dpr = Math.min(devicePixelRatio || 1, 2), w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return [w, h, g];
+}
+// o: { notes, total, lo, hi, split, labels:[a,b], chords:[{s,e,name}], step, busy, empty, axis, color(n), top }
+function drawRoll(cv, o) {
+  const [W, H, g] = fit(cv);
+  g.clearRect(0, 0, W, H);
+  if (W < 4 || H < 4) return;
+  const notes = o.notes || [], total = Math.max(o.total || 0, 16);
+  const ps = notes.filter((n) => n.k !== "chord").map((n) => n.pitch);
+  let lo = o.lo ?? (ps.length ? Math.min(...ps) - 2 : 58), hi = o.hi ?? (ps.length ? Math.max(...ps) + 2 : 80);
+  if (hi - lo < 14) { const c = (hi + lo) / 2; lo = Math.floor(c - 7); hi = Math.ceil(c + 7); }
+  const gx = o.axis === false ? 0 : 30, top = o.top ?? (o.labels || o.chords ? 22 : 4), bottom = o.bottom ?? 4;
+  const sw = (W - gx - 4) / total, rh = (H - top - bottom) / (hi - lo + 1);
+  const X = (s) => gx + s * sw, Y = (p) => top + (hi - p) * rh;
   for (let p = lo; p <= hi; p++) {
-    if (isBlack(p)) { ctx.fillStyle = "rgba(0,0,0,.22)"; ctx.fillRect(gx, Y(p), W - gx, rh); }
+    if (isBlack(p)) { g.fillStyle = "rgba(0,0,0,.22)"; g.fillRect(gx, Y(p), W - gx, rh); }
     if (p % 12 === 0) {
-      ctx.fillStyle = "rgba(255,255,255,.07)"; ctx.fillRect(gx, Y(p) + rh - 1, W - gx, 1);
-      ctx.fillStyle = "#9b998f"; ctx.font = "11px ui-monospace, Consolas, monospace"; ctx.textBaseline = "middle";
-      ctx.fillText(`C${p / 12 - 1}`, 6, Y(p) + rh / 2);
+      g.fillStyle = "rgba(255,255,255,.07)"; g.fillRect(gx, Y(p) + rh - 1, W - gx, 1);
+      if (gx) { g.fillStyle = "#9b998f"; g.font = `10.5px ${MONO}`; g.textBaseline = "middle"; g.fillText(`C${p / 12 - 1}`, 4, Y(p) + rh / 2); }
     }
   }
-  // continuation zone
-  ctx.fillStyle = "rgba(76,201,240,.045)";
-  ctx.fillRect(X(split), top, W - X(split), H - top);
-  // beat and bar lines
-  for (let s = 0; s <= view; s += 4) {
-    ctx.fillStyle = s % 16 === 0 ? "rgba(255,255,255,.14)" : "rgba(255,255,255,.05)";
-    ctx.fillRect(Math.round(X(s)), top, 1, H - top);
+  for (let s = 0; s <= total; s += 4) { g.fillStyle = s % 16 ? "rgba(255,255,255,.05)" : "rgba(255,255,255,.15)"; g.fillRect(Math.round(X(s)), top, 1, H - top); }
+  g.textBaseline = "middle";
+  if (o.chords) o.chords.forEach((c, i) => {
+    g.fillStyle = i % 2 ? "rgba(157,140,255,.16)" : "rgba(157,140,255,.26)"; g.fillRect(X(c.s), 2, X(c.e) - X(c.s) - 1, 18);
+    g.fillStyle = "#e4e0ff"; g.font = `600 11.5px ${MONO}`; g.fillText(c.name, X(c.s) + 5, 11);
+  });
+  if (o.split != null) {
+    g.fillStyle = "rgba(76,201,240,.045)"; g.fillRect(X(o.split), top, W - X(o.split), H - top);
+    g.save(); g.strokeStyle = "rgba(247,223,30,.6)"; g.setLineDash([4, 4]); g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(X(o.split), 2); g.lineTo(X(o.split), H); g.stroke(); g.restore();
+    if (o.labels) {
+      g.font = `600 12px ${FONT}`;
+      g.fillStyle = "#f7df1e"; g.fillText(o.labels[0], gx + 6, 11);
+      g.fillStyle = "#4cc9f0"; g.fillText(o.labels[1], X(o.split) + 8, 11);
+    }
   }
-  // seed / continuation boundary
-  ctx.save();
-  ctx.strokeStyle = "rgba(247,223,30,.55)"; ctx.setLineDash([4, 4]); ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.moveTo(X(split), 4); ctx.lineTo(X(split), H); ctx.stroke();
-  ctx.restore();
-  ctx.font = "600 12px 'Noto Sans TC', 'Microsoft JhengHei', sans-serif"; ctx.textBaseline = "middle";
-  ctx.fillStyle = "#f7df1e"; ctx.fillText("你的旋律", gx + 6, 12);
-  ctx.fillStyle = "#4cc9f0"; ctx.fillText("AI 接續 →", X(split) + 8, 12);
+  const ph = o.step ?? -1;
+  for (const n of notes) {
+    const x = X(n.s) + 1, y = Y(n.pitch) + 1, w = Math.max(2, (n.e - n.s) * sw - 2), h = Math.max(2, rh - 2);
+    if (n.k === "chord") { g.fillStyle = "rgba(157,140,255,.22)"; g.fillRect(x, y, w, h); continue; }
+    const on = ph >= n.s && ph < n.e;
+    g.save();
+    if (on) { g.shadowColor = "rgba(255,255,255,.9)"; g.shadowBlur = 14; }
+    g.fillStyle = on ? "#ffffff" : (o.color ? o.color(n) : COLORS[n.k] || COLORS.gen);
+    g.beginPath();
+    if (g.roundRect) g.roundRect(x, y, w, h, Math.min(3, h / 2)); else g.rect(x, y, w, h);
+    g.fill(); g.restore();
+  }
+  const zx = o.split != null ? X(o.split) : gx, zw = W - zx;
+  if (o.busy) {
+    const t = (performance.now() / 900) % 1, gr = g.createLinearGradient(zx + zw * (t - 0.3), 0, zx + zw * t, 0);
+    gr.addColorStop(0, "rgba(76,201,240,0)"); gr.addColorStop(1, "rgba(76,201,240,.22)");
+    g.fillStyle = gr; g.fillRect(zx, top, zw, H - top);
+  }
+  const msg = o.busy || (!notes.length || (o.split != null && !notes.some((n) => n.k === "gen"))) && o.empty;
+  if (msg) {
+    g.fillStyle = o.busy ? "#cfefff" : "rgba(207,239,255,.6)"; g.textAlign = "center"; g.font = `${o.busy ? "600 14px" : "13px"} ${FONT}`;
+    const lines = g.measureText(msg).width > zw - 16 ? msg.split("|") : [msg.replace("|", "")];
+    lines.forEach((l, i) => g.fillText(l, zx + zw / 2, top + (H - top) / 2 + (i - (lines.length - 1) / 2) * 18));
+    g.textAlign = "start";
+  }
+  if (ph >= 0 && ph <= total) {
+    g.save(); g.shadowColor = "rgba(255,255,255,.8)"; g.shadowBlur = 8; g.fillStyle = "#fff";
+    g.fillRect(X(ph) - 1, top - 2, 2, H - top + 2); g.restore();
+  }
+}
 
-  const ph = playing && anchor ? anchor.step + (now - anchor.at) / 1000 / STEP_SEC : -1;
-  // notes
-  const drawNote = (n, color, glowColor) => {
-    const active = ph >= n.s && ph < n.e;
-    const x = X(n.s) + 1, y = Y(n.pitch) + 1.5, w = Math.max(3, (n.e - n.s) * sw - 2), h = Math.max(3, rh - 3);
-    ctx.save();
-    ctx.shadowColor = glowColor; ctx.shadowBlur = active ? 18 : 6;
-    ctx.fillStyle = active ? "#ffffff" : color;
-    roundRect(x, y, w, h, Math.min(4, h / 2)); ctx.fill();
-    ctx.restore();
+// ---------- shared mini-roll grid (VAE scenes) ----------
+function cellGrid(host, items, { label, color, sel, playing, onClick }) {
+  host.innerHTML = items.map((_, i) => `<div class="mg-cell" data-i="${i}"><span></span><canvas></canvas></div>`).join("");
+  const cells = [...host.children];
+  cells.forEach((c, i) => c.addEventListener("click", () => onClick(i)));
+  return (step) => {
+    const all = items.flatMap((x) => x || []), ps = all.map((n) => n.pitch);
+    const lo = ps.length ? Math.min(...ps) - 2 : 55, hi = ps.length ? Math.max(...ps) + 2 : 79;
+    cells.forEach((c, i) => {
+      c.classList.toggle("sel", sel() === i);
+      c.classList.toggle("on", playing() === i);
+      c.firstChild.textContent = label(i, items[i]);
+      drawRoll(c.lastChild, { notes: items[i] || [], total: 32, lo, hi, axis: false, top: 18, step: playing() === i ? step : -1, color: color && ((n) => color(i, n)), empty: items[i] ? "" : "…" });
+    });
   };
-  for (const n of seed) drawNote(n, n === (held && held.note) ? "#fff7b8" : "#f7df1e", "rgba(247,223,30,.7)");
-  for (const n of gen) {
-    const g = ctx.createLinearGradient(X(n.s), 0, X(n.e), 0);
-    g.addColorStop(0, "#4cc9f0"); g.addColorStop(1, "#9d8cff");
-    drawNote(n, g, "rgba(76,201,240,.7)");
-  }
-  // generating shimmer over the continuation zone
-  if (generating) {
-    const t = (now / 900) % 1;
-    const zx = X(split), zw = W - zx;
-    const g = ctx.createLinearGradient(zx + zw * (t - 0.3), 0, zx + zw * t, 0);
-    g.addColorStop(0, "rgba(76,201,240,0)"); g.addColorStop(1, "rgba(76,201,240,.22)");
-    ctx.fillStyle = g; ctx.fillRect(zx, top, zw, H - top);
-    ctx.fillStyle = "#cfefff"; ctx.textAlign = "center"; ctx.font = "600 14px 'Noto Sans TC', 'Microsoft JhengHei', sans-serif";
-    ctx.fillText("AI 作曲中…", zx + zw / 2, top + (H - top) / 2);
-    ctx.textAlign = "start";
-  } else if (!gen.length) {
-    ctx.fillStyle = "rgba(207,239,255,.55)"; ctx.textAlign = "center"; ctx.font = "13px 'Noto Sans TC', 'Microsoft JhengHei', sans-serif";
-    const cx = X(split) + (W - X(split)) / 2, cy = top + (H - top) / 2;
-    const line = "按「✨ 接續旋律」讓 AI 寫下去";
-    // split into two lines when the continuation zone is too narrow (phone width)
-    if (ctx.measureText(line).width > W - X(split) - 16) {
-      ctx.fillText("按「✨ 接續旋律」", cx, cy - 10); ctx.fillText("讓 AI 寫下去", cx, cy + 10);
-    } else ctx.fillText(line, cx, cy);
-    ctx.textAlign = "start";
-  }
-  // playhead
-  if (ph >= 0) {
-    const x = X(Math.min(ph, view));
-    ctx.save();
-    ctx.shadowColor = "rgba(255,255,255,.8)"; ctx.shadowBlur = 10;
-    ctx.fillStyle = "#ffffff"; ctx.fillRect(x - 1, top - 4, 2, H - top + 4);
-    ctx.restore();
-  }
-  // keyboard highlights
-  for (const [p, el] of keyEls) {
-    const v = lit.get(p);
-    const on = v && v.until > now;
-    el.classList.toggle("on-seed", !!on && v.kind === "seed");
-    el.classList.toggle("on-gen", !!on && v.kind === "gen");
-  }
-  requestAnimationFrame(draw);
-}
-requestAnimationFrame(draw);
-
-// ---------- start ----------
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    const el = document.createElement("script");
-    el.src = src;
-    el.onload = resolve;
-    el.onerror = () => reject(new Error("函式庫下載失敗"));
-    document.head.append(el);
-  });
 }
 
-(async () => {
-  setMsg("等待載入模型");
-  await demoGate({
-    icon: "🎹",
-    title: "AI 接續你的旋律",
-    desc: "在螢幕鋼琴彈一小段旋律，Magenta 的 MusicRNN 模型會在瀏覽器內接著寫下去，並用真實鋼琴取樣播放。",
-    tags: ["會發出聲音", "約 17 MB"],
-    button: "載入模型",
-  });
-  const s = demoStatus("下載 Magenta.js（約 2.5 MB）…");
-  try {
-    s.progress(0.1);
-    await loadScript(MM_URL);
-    mm = window.mm;
-    s.text("下載 MusicRNN 旋律模型（約 13 MB）…"); s.progress(0.35);
-    rnn = new mm.MusicRNN(CKPT);
-    await rnn.initialize();
-    s.text("載入鋼琴音色…"); s.progress(0.8);
-    const sampler = new mm.SoundFontPlayer(SOUNDFONT, undefined, undefined, undefined, { run: onPlayerNote, stop: onPlayerStop });
-    const pitches = [];
-    for (let p = 48; p <= 84; p++) pitches.push({ pitch: p, velocity: VEL });
-    await sampler.loadSamples({ notes: pitches });
-    player = sampler;
-    s.done();
-  } catch (err) {
-    console.error(err);
-    s.error(`載入失敗：${err.message || err}，請確認網路連線後重新整理`);
-    return;
-  }
-  if (await generate()) {
-    setMsg("已接續範例旋律「小蜜蜂」，按 ▶ 播放聆聽，或在鋼琴彈你自己的旋律");
-  }
-})();
+Showcase.run({ scenes: [
+  {
+    id: "continue", title: "接續旋律",
+    api: "new mm.MusicRNN(ckpt).continueSequence(seq, 64, temperature) ・ SoundFontPlayer.playNoteDown() / start()",
+    desc: "原版示範：在螢幕鋼琴彈一小段旋律（按久一點是長音），basic_rnn 會在瀏覽器內往後寫 4 小節，並用 Salamander 鋼琴取樣播放。每按一次「接續旋律」都會寫出不同版本。",
+    hint: "點下方鋼琴彈幾個音，再按「✨ 接續旋律」；▶ 播放才會出聲",
+    async mount(ctx) {
+      ctx.html(`<div class="mg-board"><div class="mg-roll"><canvas></canvas><div class="mg-chip">等待載入模型</div></div><div class="mg-kbd" aria-label="螢幕鋼琴"></div></div>`);
+      const cv = ctx.$("canvas"), chip = ctx.$(".mg-chip"), kbd = ctx.$(".mg-kbd");
+      const LOW = 60, HIGH = 83, SEED_MAX = 64, GEN = 64;
+      let seed = BEE.map((n) => N(n)), gen = [], fresh = false, held = null, busy = false, rnn = null, temp = 1.1, info = "";
+      const lit = new Map();
+      const say = (t, err) => { chip.innerHTML = t; chip.classList.toggle("err", !!err); };
+      const seedEnd = () => end(seed);
+      const tp = transport(ctx, {
+        onState: (on) => { playBtn.textContent = on ? "■ 停止" : "▶ 播放"; if (!on) for (const [p, v] of lit) if (v.until !== Infinity) lit.delete(p); },
+        onNote: (n, step) => lit.set(n.pitch, { until: performance.now() + (n.endTime - n.startTime) * 1000 - 30, kind: step >= seedEnd() - 1e-6 && gen.length ? "gen" : "seed" }),
+      });
+      ctx.button("範例旋律", () => { tp.stop(); seed = BEE.map((n) => N(n)); gen = []; fresh = false; say("已載入範例旋律「小蜜蜂」，按「✨ 接續旋律」"); });
+      ctx.button("↺ 清除", () => { tp.stop(); seed = []; gen = []; fresh = false; say("已清除，點下方鋼琴開始彈"); });
+      ctx.slider("創意度", { min: 0.6, max: 1.6, step: 0.1, value: temp, format: (v) => v.toFixed(1) }, (v) => { temp = v; });
+      const playBtn = ctx.button("▶ 播放", () => (tp.playing ? tp.stop() : seed.length && tp.play(U([...seed, ...gen], end([...seed, ...gen])))));
+      const genBtn = ctx.button("✨ 接續旋律", async () => { if (await generate()) tp.play(U([...seed, ...gen], end([...seed, ...gen]))); }, { primary: true });
+
+      // on-screen keyboard
+      const whites = [];
+      for (let p = LOW; p <= HIGH; p++) if (!isBlack(p)) whites.push(p);
+      const keys = new Map(), ww = 100 / whites.length;
+      for (let p = LOW; p <= HIGH; p++) {
+        const k = document.createElement("div");
+        k.dataset.pitch = p;
+        if (isBlack(p)) { k.className = "mg-key b"; Object.assign(k.style, { left: `${whites.indexOf(p + 1) * ww - ww * 0.31}%`, width: `${ww * 0.62}%` }); }
+        else { k.className = "mg-key w"; Object.assign(k.style, { left: `${whites.indexOf(p) * ww}%`, width: `${ww}%` }); k.textContent = SOLFEGE[p % 12]; }
+        kbd.append(k); keys.set(p, k);
+      }
+      const release = () => {
+        if (!held) return;
+        const { note } = held;
+        held = null;
+        piano().playNoteUp({ pitch: note.pitch, velocity: VEL });
+        lit.delete(note.pitch);
+        say(`你的旋律：<b>${seed.length}</b> 個音，按「✨ 接續旋律」讓 AI 寫下去`);
+      };
+      ctx.on(kbd, "pointerdown", (e) => {
+        const key = e.target.closest(".mg-key");
+        if (!key) return;
+        e.preventDefault();
+        if (!rnn) return say("模型還在載入，請稍候", true);
+        release();
+        if (fresh) { tp.stop(); seed = []; gen = []; fresh = false; }
+        const start = seedEnd();
+        if (start >= SEED_MAX) return say("最多 4 小節，按「✨ 接續旋律」讓 AI 接著寫", true);
+        const pitch = +key.dataset.pitch, note = { pitch, s: start, e: start + 2, k: "held" };
+        seed.push(note);
+        held = { note, t0: performance.now() };
+        piano().resumeContext();
+        piano().playNoteDown({ pitch, velocity: VEL });
+        lit.set(pitch, { until: Infinity, kind: "seed" });
+      });
+      ctx.on(window, "pointerup", release);
+      ctx.on(window, "pointercancel", release);
+      ctx.onCleanup(release);
+
+      async function generate() {
+        if (!rnn || busy) return false;
+        release();
+        if (!seed.length) { say("先在下方鋼琴彈幾個音", true); return false; }
+        tp.stop();
+        busy = true; genBtn.disabled = true; gen = [];
+        seed.forEach((n) => { n.k = "seed"; });
+        say("MusicRNN 正在接續旋律…");
+        try {
+          const off = seedEnd(), t0 = performance.now();
+          const out = await rnn.continueSequence(Q(seed), GEN, temp);
+          const ms = performance.now() - t0;
+          if (!ctx.active) return false;
+          gen = fromSeq(out, off);
+          fresh = true;
+          lastGen = { notes: [...seed, ...gen], total: off + GEN, label: "接續旋律" };
+          say(`AI 接續了 <b>${gen.length}</b> 個音（創意度 <b>${temp.toFixed(1)}</b>，<b>${fmtMs(ms)}</b>）・${info}`);
+        } catch (err) {
+          if (!ctx.active) return false;
+          console.error(err);
+          say(`生成失敗：${err.message || err}`, true);
+        } finally { busy = false; genBtn.disabled = false; }
+        return gen.length > 0;
+      }
+
+      ctx.raf((now) => {
+        if (held) {
+          const steps = Math.min(8, Math.max(2, 2 * Math.round((now - held.t0) / 1000 / stepSec(QPM) / 2)));
+          held.note.e = Math.min(held.note.s + steps, SEED_MAX);
+        }
+        const sEnd = seedEnd();
+        const split = Math.max(sEnd, held || !gen.length ? Math.min(SEED_MAX, Math.max(sEnd, 32)) : sEnd);
+        drawRoll(cv, {
+          notes: [...seed, ...gen], total: split + GEN, lo: Math.min(LOW - 1, ...seed.map((n) => n.pitch - 1), ...gen.map((n) => n.pitch - 1)),
+          hi: Math.max(LOW + 20, ...seed.map((n) => n.pitch + 1), ...gen.map((n) => n.pitch + 1)), split, labels: ["你的旋律", "AI 接續 →"],
+          step: tp.step(), busy: busy && "AI 作曲中…", empty: "按「✨ 接續旋律」|讓 AI 寫下去",
+        });
+        for (const [p, el] of keys) {
+          const v = lit.get(p), on = v && v.until > now;
+          el.classList.toggle("seed", !!on && v.kind === "seed");
+          el.classList.toggle("gen", !!on && v.kind === "gen");
+        }
+      });
+
+      rnn = await needModel(ctx, "rnn", { icon: "🎹", title: "AI 接續你的旋律", desc: "在螢幕鋼琴彈一小段旋律，MusicRNN 會在瀏覽器內接著寫下去，並用真實鋼琴取樣播放。", tags: ["會發出聲音", "鋼琴音色約 1.4 MB"] });
+      info = loadInfo("rnn");
+      const st = ctx.status("載入鋼琴音色（37 個取樣，約 1.4 MB）…");
+      const pitches = [];
+      for (let p = 48; p <= 84; p++) pitches.push({ pitch: p, velocity: VEL });
+      try { await piano().loadSamples({ notes: pitches }); } finally { st.done(); }
+      abortIfGone(ctx);
+      if (await generate()) say(`已接續範例「小蜜蜂」，按 ▶ 播放聆聽・${info}`);
+    },
+  },
+  {
+    id: "temperature", title: "創意度比較",
+    api: "continueSequence(seed, 64, 0.5 / 1.0 / 1.6) ・ new mm.PianoRollSVGVisualizer(seq, svg, cfg).redraw(note)",
+    desc: "同一段 2 小節種子，用三種溫度（temperature）各接續 4 小節。溫度低時模型挑機率最高的音，旋律保守、常重複；溫度高時抽樣更分散，音域與跳進都變大。三列都用 Magenta 內建的 PianoRollSVGVisualizer 繪製，播放時 redraw() 會標出正在響的音。",
+    hint: "按「重新生成」比較三種溫度；每列的 ▶ 可以單獨聆聽",
+    async mount(ctx) {
+      const TEMPS = [0.5, 1.0, 1.6];
+      ctx.html(`<div class="mg-board"><div class="mg-rows">${TEMPS.map((t, i) => `<div class="mg-row"><div class="mg-meta"><h4>溫度 <span class="mg-n">${t.toFixed(1)}</span></h4><div class="mg-kv">等待生成</div><button class="btn" type="button" data-i="${i}">▶ 播放</button></div>
+        <div class="mg-svg"><div class="mg-mask"><span>種子</span></div><svg></svg><div class="mg-busy"></div></div></div>`).join("")}</div></div>`);
+      const seed = BEE.slice(0, 6).map((n) => N(n)), SEED = 32, GEN = 64;
+      const rows = ctx.$$(".mg-row").map((el) => ({ el, kv: el.querySelector(".mg-kv"), box: el.querySelector(".mg-svg"), busy: el.querySelector(".mg-busy"), btn: el.querySelector("button"), seq: null, viz: null }));
+      const tp = transport(ctx, {
+        onState: (on) => rows.forEach((r, i) => { r.btn.textContent = on && tp.tag === i ? "■ 停止" : "▶ 播放"; r.el.classList.toggle("on", on && tp.tag === i); if (!on && r.viz) r.viz.clearActiveNotes(); }),
+        onNote: (n) => { const r = rows[tp.tag]; if (r && r.viz) r.viz.redraw(n); },
+      });
+      rows.forEach((r, i) => ctx.on(r.btn, "click", () => (tp.playing && tp.tag === i ? tp.stop() : r.seq && tp.play(r.seq, i))));
+      function build(r) {
+        if (!r.seq) return;
+        const old = r.box.querySelector("svg"), svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        old.replaceWith(svg);
+        // Shared pitch range across rows so the three temperatures are drawn on the same scale.
+        const ps = rows.filter((x) => x.seq).flatMap((x) => x.seq.notes.map((n) => n.pitch));
+        let lo = Math.min(...ps) - 2, hi = Math.max(...ps) + 2;
+        if (hi - lo < 18) { lo = Math.floor((lo + hi) / 2 - 9); hi = lo + 18; }
+        const W = r.box.clientWidth, H = r.box.clientHeight;
+        r.viz = new mm.PianoRollSVGVisualizer(r.seq, svg, { noteHeight: Math.max(1, H / (hi - lo + 1)), pixelsPerTimeStep: W / r.seq.totalTime, minPitch: lo - 1, maxPitch: hi, noteSpacing: 1, noteRGB: "76, 201, 240", activeNoteRGB: "255, 255, 255" });
+        r.box.querySelector(".mg-mask").style.width = `${(SEED / (SEED + GEN)) * 100}%`;
+      }
+      ctx.onResize(() => rows.forEach(build));
+      let job = 0;
+      async function run() {
+        const my = ++job;
+        tp.stop();
+        rows.forEach((r) => { r.seq = null; r.viz = null; r.box.querySelector("svg").replaceChildren(); r.kv.textContent = "等待生成"; });
+        for (let i = 0; i < TEMPS.length; i++) {
+          const r = rows[i];
+          r.busy.textContent = "MusicRNN 生成中…";
+          const t0 = performance.now();
+          const out = await rnn.continueSequence(Q(seed, SEED), GEN, TEMPS[i]);
+          const ms = performance.now() - t0;
+          if (!ctx.active || my !== job) return;
+          const gen = fromSeq(out, SEED), s = stats(gen);
+          r.seq = U([...seed, ...gen], SEED + GEN);
+          r.busy.textContent = "";
+          r.kv.innerHTML = `音符 <span class="mg-n">${s.n}</span>・音高 <span class="mg-n">${s.kinds}</span> 種<br>音域 <span class="mg-n">${s.range}</span> 半音<br>平均跳進 <span class="mg-n">${s.leap.toFixed(1)}</span>・<span class="mg-n">${fmtMs(ms)}</span>`;
+          rows.forEach(build);
+          if (i === 1) lastGen = { notes: [...seed, ...gen], total: SEED + GEN, label: "溫度 1.0 的接續" };
+        }
+      }
+      ctx.button("🎲 重新生成", () => run(), { primary: true });
+      const rnn = await needModel(ctx, "rnn", { icon: "🌡️", title: "比較三種創意度", desc: "同一段種子用三種溫度各接續一次，並排比較。", tags: ["會發出聲音"] });
+      await run();
+    },
+  },
+  {
+    id: "improv", title: "和弦即興",
+    api: "continueSequence(seed, 64, temp, [\"C\",\"G\",\"Am\",\"F\"]) ・ mm.chords.ChordSymbols.pitches(chord)",
+    desc: "chord_pitches_improv 是帶和弦條件的 MusicRNN：每一步除了前面的旋律，還會輸入當下的和弦，所以寫出的旋律會貼著和弦走。畫面上方是和弦帶，淡紫色是伴奏和弦音，青色是落在和弦內的旋律音，粉紅色是和弦外音。",
+    hint: "換一組和弦進行再按「✨ 即興」；播放時會加上柱式和弦伴奏",
+    async mount(ctx) {
+      const PROGS = [["C", "G", "Am", "F"], ["Am", "F", "C", "G"], ["Dm7", "G7", "Cmaj7", "A7"], ["F", "G", "Em", "Am"]];
+      ctx.html(`<div class="mg-board"><div class="mg-roll"><canvas></canvas><div class="mg-chip">等待載入模型</div></div></div>`);
+      const cv = ctx.$("canvas"), chip = ctx.$(".mg-chip");
+      let prog = PROGS[0], temp = 1.0, seed = [], gen = [], chordNotes = [], bars = [], busy = false;
+      const tp = transport(ctx, { onState: (on) => { playBtn.textContent = on ? "■ 停止" : "▶ 播放"; } });
+      ctx.select("和弦", PROGS.map((p, i) => ({ value: String(i), label: p.join(" ") + (i === 3 ? "（4536）" : "") })), "0", (v) => { prog = PROGS[+v]; run(); });
+      ctx.slider("溫度", { min: 0.5, max: 1.6, step: 0.1, value: temp, format: (v) => v.toFixed(1) }, (v) => { temp = v; });
+      const playBtn = ctx.button("▶ 播放", () => (tp.playing ? tp.stop() : gen.length && tp.play(U([...seed, ...gen, ...chordNotes], 80))));
+      ctx.button("✨ 即興", () => run(), { primary: true });
+      const pcs = (c) => mm.chords.ChordSymbols.pitches(c);
+      const inChord = (n) => n.s >= 0 && pcs(bars[Math.min(bars.length - 1, Math.floor(n.s / 16))]).includes(n.pitch % 12);
+      ctx.raf(() => drawRoll(cv, {
+        notes: [...chordNotes, ...seed, ...gen], total: 80, split: 16, lo: 46, chords: bars.map((name, i) => ({ s: i * 16, e: i * 16 + 16, name })),
+        step: tp.step(), busy: busy && "依和弦即興中…", empty: "按「✨ 即興」", color: (n) => (n.k === "seed" ? COLORS.seed : inChord(n) ? COLORS.gen : COLORS.out),
+      }));
+      let model = null, job = 0;
+      async function run() {
+        if (!model) return;
+        const my = ++job;
+        tp.stop();
+        bars = [prog[0], ...prog];
+        const root = pcs(prog[0]).map((pc) => 60 + pc).sort((a, b) => a - b);
+        seed = [root[0], root[1], root[2], root[0] + 12].map((p, i) => N([p, i * 4, i * 4 + 4]));
+        chordNotes = bars.flatMap((c, b) => pcs(c).map((pc) => ({ pitch: 48 + pc, s: b * 16, e: b * 16 + 16, k: "chord", vel: 50 })));
+        gen = []; busy = true;
+        try {
+          const t0 = performance.now();
+          const out = await model.continueSequence(Q(seed, 16), 64, temp, bars);
+          const ms = performance.now() - t0;
+          if (!ctx.active || my !== job) return;
+          gen = fromSeq(out, 16);
+          const ratio = gen.length ? gen.filter(inChord).length / gen.length : 0;
+          lastGen = { notes: [...seed, ...gen, ...chordNotes.map((n) => ({ ...n, v: 1 }))], total: 80, label: `和弦即興 ${prog.join(" ")}` };
+          chip.innerHTML = `和弦內音 <b>${Math.round(ratio * 100)}%</b>・旋律 <b>${gen.length}</b> 音・生成 <b>${fmtMs(ms)}</b>・${loadInfo("improv")}`;
+        } finally { if (my === job) busy = false; }
+      }
+      model = await needModel(ctx, "improv", { icon: "🎸", title: "依和弦即興", desc: "載入帶和弦條件的 MusicRNN，指定和弦進行後讓它即興一段旋律。", tags: ["會發出聲音"] });
+      await run();
+    },
+  },
+  {
+    id: "vae-sample", title: "VAE 取樣與變奏",
+    api: "new mm.MusicVAE(ckpt).sample(4, temperature) ・ similar(seq, 3, similarity, temperature)",
+    desc: "MusicVAE 把 2 小節旋律壓成一個 256 維的潛在向量。sample() 從潛在空間隨機抽點再解碼成旋律；similar() 先把選取的片段編碼，再在它附近抽點，相似度越高越接近原曲。",
+    hint: "點上排任一格可聆聽並設為變奏來源，再按「產生變奏」",
+    async mount(ctx) {
+      ctx.html(`<div class="mg-board"><div class="mg-h"><code>sample(4)</code> 隨機取樣，點一格聆聽並選為來源</div><div class="mg-grid mg-g4"></div>
+        <div class="mg-h"><code>similar(來源, 3)</code> 相似變奏</div><div class="mg-grid mg-g3"></div><div class="mg-h mg-foot">等待載入模型</div></div>`);
+      const foot = ctx.$(".mg-foot");
+      const samples = [null, null, null, null], sims = [null, null, null];
+      let temp = 0.7, sim = 0.8, sel = 0, vae = null;
+      const tp = transport(ctx, { onState: () => paintAll() });
+      const play = (list, i, tag) => { if (!list[i]) return; if (tp.playing && tp.tag === tag) tp.stop(); else tp.play(U(list[i], 32), tag); };
+      const top = cellGrid(ctx.$(".mg-g4"), samples, {
+        label: (i, x) => `#${i + 1}${x ? `・${x.length} 音` : ""}`, sel: () => sel, playing: () => (tp.playing && tp.tag < 4 ? tp.tag : -1),
+        onClick: (i) => { sel = i; play(samples, i, i); paintAll(); },
+      });
+      const bottom = cellGrid(ctx.$(".mg-g3"), sims, {
+        label: (i, x) => `變奏 ${i + 1}${x ? `・${x.length} 音` : ""}`, sel: () => -1, playing: () => (tp.playing && tp.tag >= 4 ? tp.tag - 4 : -1),
+        color: () => COLORS.out, onClick: (i) => play(sims, i, 4 + i),
+      });
+      function paintAll() { const s = tp.step(); top(s); bottom(s); }
+      ctx.raf(() => { if (tp.playing) paintAll(); });
+      ctx.onResize(paintAll);
+      ctx.slider("溫度", { min: 0.2, max: 1.5, step: 0.1, value: temp, format: (v) => v.toFixed(1) }, (v) => { temp = v; });
+      ctx.button("🎲 取樣", () => doSample(), { primary: true });
+      ctx.slider("相似度", { min: 0.5, max: 0.95, step: 0.05, value: sim, format: (v) => v.toFixed(2) }, (v) => { sim = v; });
+      ctx.button("產生變奏", () => doSimilar());
+      let tS = 0, tV = 0, job = 0;
+      const report = () => { foot.innerHTML = `sample(4) <span class="mg-n">${fmtMs(tS)}</span>・similar(3) <span class="mg-n">${fmtMs(tV)}</span>・${loadInfo("vae").replace(/<b>/g, '<span class="mg-n">').replace(/<\/b>/g, "</span>")}`; };
+      async function doSample() {
+        if (!vae) return;
+        const my = ++job;
+        tp.stop(); samples.fill(null); sims.fill(null); paintAll();
+        const t0 = performance.now(), out = await vae.sample(4, temp);
+        tS = performance.now() - t0;
+        if (!ctx.active || my !== job) return;
+        out.forEach((s, i) => { samples[i] = fromSeq(s, 0, "gen"); });
+        sel = 0; report(); paintAll();
+        await doSimilar();
+      }
+      async function doSimilar() {
+        if (!vae || !samples[sel]) return;
+        const my = ++job;
+        sims.fill(null); paintAll();
+        const t0 = performance.now(), out = await vae.similar(Q(samples[sel], 32), 3, sim, temp);
+        tV = performance.now() - t0;
+        if (!ctx.active || my !== job) return;
+        out.forEach((s, i) => { sims[i] = fromSeq(s, 0, "out"); });
+        report(); paintAll();
+      }
+      paintAll();
+      vae = await needModel(ctx, "vae", { icon: "🎲", title: "MusicVAE 取樣與變奏", desc: "從潛在空間隨機抽出旋律，再針對選取的片段產生相似變奏。", tags: ["會發出聲音"] });
+      await doSample();
+    },
+  },
+  {
+    id: "vae-interp", title: "VAE 內插",
+    api: "MusicVAE.interpolate([A, B], n) ・ mm.sequences.concatenate(seqs)",
+    desc: "把 A、B 兩段旋律各自編碼成潛在向量，在兩點之間等距取 n 個點再解碼，旋律會一步步從 A 變成 B，而不是簡單淡入淡出。第一格與最後一格是模型重建的 A 與 B。",
+    hint: "調整段數或換 B 再按「內插」；「播放全部」會把所有段落串起來",
+    async mount(ctx) {
+      ctx.html(`<div class="mg-board"><div class="mg-h">A＝小蜜蜂 前 2 小節（黃）→ B（青），點任一格可單獨聆聽</div><div class="mg-grid mg-gn"></div><div class="mg-h mg-foot">等待載入模型</div></div>`);
+      const grid = ctx.$(".mg-gn"), foot = ctx.$(".mg-foot");
+      const A = BEE.slice(0, 6).map((n) => N(n)), TIG = TIGERS.map((n) => N(n));
+      let B = TIG, bKind = "tigers", count = 5, items = [], paint = () => {}, vae = null, job = 0;
+      const mix = (t) => `rgb(${Math.round(247 + (76 - 247) * t)},${Math.round(223 + (201 - 223) * t)},${Math.round(30 + (240 - 30) * t)})`;
+      const tp = transport(ctx, { onState: (on) => { allBtn.textContent = on && tp.tag === "all" ? "■ 停止" : "▶ 播放全部"; paint(tp.step()); } });
+      const playing = () => (!tp.playing ? -1 : tp.tag === "all" ? Math.min(items.length - 1, Math.floor(Math.max(0, tp.step()) / 32)) : tp.tag);
+      const regrid = () => {
+        const cols = grid.clientWidth < 560 ? 3 : items.length <= 5 ? items.length : Math.ceil(items.length / 2);
+        grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+        paint = cellGrid(grid, items, {
+          label: (i) => (i === 0 ? "A" : i === items.length - 1 ? "B" : `${i}/${items.length - 1}`), sel: () => -1, playing,
+          color: (i) => mix(i / Math.max(1, items.length - 1)),
+          onClick: (i) => { if (!items[i]) return; if (tp.playing && tp.tag === i) tp.stop(); else tp.play(U(items[i], 32), i); },
+        });
+        paint(-1);
+      };
+      ctx.raf(() => { if (tp.playing) paint(tp.tag === "all" ? tp.step() % 32 : tp.step()); });
+      ctx.onResize(regrid);
+      ctx.select("B", [{ value: "tigers", label: "兩隻老虎" }, { value: "random", label: "隨機取樣" }], bKind, (v) => { bKind = v; run(true); });
+      ctx.slider("段數", { min: 3, max: 9, step: 1, value: count }, (v) => { count = v; });
+      ctx.button("內插", () => run(false), { primary: true });
+      const allBtn = ctx.button("▶ 播放全部", () => {
+        if (tp.playing && tp.tag === "all") return tp.stop();
+        if (!items.length || items.some((x) => !x)) return;
+        tp.play(UQ(mm.sequences.concatenate(items.map((x) => Q(x, 32)))), "all");
+      });
+      async function run(newB) {
+        if (!vae) return;
+        const my = ++job;
+        tp.stop();
+        items = new Array(count).fill(null); regrid();
+        let tB = 0;
+        if (bKind === "random" && (newB || B === TIG)) { const t0 = performance.now(); B = fromSeq((await vae.sample(1, 0.8))[0], 0, "gen"); tB = performance.now() - t0; }
+        if (bKind === "tigers") B = TIG;
+        if (!ctx.active || my !== job) return;
+        const t0 = performance.now(), out = await vae.interpolate([Q(A, 32), Q(B, 32)], count);
+        const ms = performance.now() - t0;
+        if (!ctx.active || my !== job) return;
+        items = out.map((s) => fromSeq(s, 0, "gen"));
+        regrid();
+        foot.innerHTML = `interpolate(${count}) <span class="mg-n">${fmtMs(ms)}</span>${tB ? `・取樣 B <span class="mg-n">${fmtMs(tB)}</span>` : ""}・mel_2bar_small <span class="mg-n">${mb(MODELS.vae.bytes)}</span>`;
+      }
+      regrid();
+      vae = await needModel(ctx, "vae", { icon: "🌈", title: "MusicVAE 內插", desc: "在兩段旋律的潛在向量之間取點，聽旋律怎麼一步步變形。", tags: ["會發出聲音"] });
+      await run(true);
+    },
+  },
+  {
+    id: "coconet", title: "巴哈和聲",
+    api: "new mm.Coconet(ckpt).infill(seq, { numIterations, temperature }) ・ mm.sequences.mergeConsecutiveNotes() ・ mm.sequenceProtoToMidi()",
+    desc: "Coconet 用巴哈 306 首四部合唱訓練，給它女高音旋律，它會反覆擦掉、重填另外三個聲部（Gibbs 取樣），迭代越多次和聲越穩定。輸出每個音只有 1 步長，用 mergeConsecutiveNotes() 合併成長音後才好讀。",
+    hint: "調高迭代次數再按「配和聲」，比較和聲是否更順；可下載 MIDI",
+    async mount(ctx) {
+      ctx.html(`<div class="mg-board"><div class="mg-roll"><canvas></canvas><div class="mg-legend">${["女高音（給定）", "女低音", "男高音", "男低音"].map((l, i) => `<span><i style="background:${COLORS["v" + i]}"></i>${l}</span>`).join("")}</div><div class="mg-chip">等待載入模型</div></div></div>`);
+      const cv = ctx.$("canvas"), chip = ctx.$(".mg-chip");
+      let bars = 2, iters = 16, temp = 0.99, voices = [], busy = false, coco = null, job = 0;
+      const sop = () => BEE.filter((n) => n[1] < bars * 16).map((n) => N(n, "seed", 0));
+      const tp = transport(ctx, { onState: (on) => { playBtn.textContent = on ? "■ 停止" : "▶ 播放"; } });
+      const all = () => [...sop(), ...voices];
+      ctx.select("旋律", [{ value: "2", label: "小蜜蜂 2 小節" }, { value: "4", label: "小蜜蜂 4 小節" }], "2", (v) => { bars = +v; voices = []; run(); });
+      ctx.slider("迭代", { min: 4, max: 96, step: 4, value: iters }, (v) => { iters = v; });
+      ctx.slider("溫度", { min: 0.3, max: 1.5, step: 0.01, value: temp, format: (v) => v.toFixed(2) }, (v) => { temp = v; });
+      ctx.button("🎼 配和聲", () => run(), { primary: true });
+      const playBtn = ctx.button("▶ 播放", () => (tp.playing ? tp.stop() : voices.length && tp.play(U(all(), bars * 16))));
+      ctx.button("⬇ MIDI", () => voices.length && downloadMidi(U(all(), bars * 16), "magenta-coconet-bach.mid"));
+      ctx.raf(() => drawRoll(cv, { notes: all(), total: bars * 16, lo: 34, hi: 72, top: 26, step: tp.step(), busy: busy && `Coconet 迭代 ${iters} 次中…`, color: (n) => COLORS["v" + n.v] }));
+      async function run() {
+        if (!coco) return;
+        const my = ++job;
+        tp.stop(); busy = true;
+        try {
+          const t0 = performance.now();
+          const out = await coco.infill(Q(sop(), bars * 16), { temperature: temp, numIterations: iters });
+          const ms = performance.now() - t0;
+          if (!ctx.active || my !== job) return;
+          const merged = mm.sequences.mergeConsecutiveNotes(out);
+          voices = fromSeq(merged, 0, "gen").filter((n) => n.v > 0);
+          lastGen = { notes: all(), total: bars * 16, label: "Coconet 四部和聲" };
+          chip.innerHTML = `迭代 <b>${iters}</b> 次・<b>${fmtMs(ms)}</b>・原始 <b>${out.notes.length}</b> 個 1 步音，合併後 <b>${merged.notes.length}</b> 音・${loadInfo("coco")}`;
+        } finally { if (my === job) busy = false; }
+      }
+      coco = await needModel(ctx, "coco", { icon: "🎼", title: "Coconet 巴哈四部和聲", desc: "給一條女高音旋律，讓 Coconet 補上女低音、男高音、男低音。", tags: ["會發出聲音"] });
+      await run();
+    },
+  },
+  {
+    id: "visualizers", title: "視覺化器",
+    api: "PianoRollSVGVisualizer ・ PianoRollCanvasVisualizer ・ WaterfallSVGVisualizer ・ StaffSVGVisualizer ・ Player.setTempo()",
+    desc: "Magenta 內建四種 NoteSequence 視覺化器，播放器的回呼把正在響的音交給 redraw(note, true)，畫面就會標亮並自動捲動。播放器可選 SoundFontPlayer（鋼琴取樣）或 Player（Tone.js 合成器），速度可以在播放中即時調整。",
+    hint: "切換視覺化器與音源，播放中拖動速度滑桿",
+    async mount(ctx) {
+      ctx.html(`<div class="mg-board"><div class="mg-viz"></div><div class="mg-h mg-foot"></div></div>`);
+      const host = ctx.$(".mg-viz"), foot = ctx.$(".mg-foot");
+      await lib(ctx);
+      const DUET = { notes: [...BEE.map((n) => N(n, "seed", 0)), ...BEE_BASS.map((n) => N(n, "gen", 1))], total: 64, label: "雙聲部小蜜蜂" };
+      let src = "duet", type = 0, seq = null, viz = null, piece = DUET;
+      const tp = transport(ctx, {
+        onState: (on) => { playBtn.textContent = on ? "■ 停止" : "▶ 播放"; if (!on && viz) viz.clearActiveNotes(); },
+        onNote: (n) => { if (viz) viz.redraw(n, true); },
+      });
+      const TYPES = ["鋼琴卷 SVG", "鋼琴卷 Canvas", "瀑布", "五線譜"];
+      function build() {
+        piece = src === "last" && lastGen ? lastGen : DUET;
+        seq = U(piece.notes, piece.total);
+        host.innerHTML = "";
+        host.scrollTop = 0; host.scrollLeft = 0;
+        const W = host.clientWidth - 4, H = host.clientHeight - 4, ps = piece.notes.map((n) => n.pitch);
+        const lo = Math.min(...ps) - 1, hi = Math.max(...ps) + 1;
+        const roll = { noteHeight: Math.max(3, (H - 4) / (hi - lo + 1)), pixelsPerTimeStep: Math.max(24, W / seq.totalTime), minPitch: lo - 1, maxPitch: hi, noteRGB: "8, 41, 64", activeNoteRGB: "240, 84, 119" };
+        if (type === 0) { const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); host.append(svg); viz = new mm.PianoRollSVGVisualizer(seq, svg, roll); }
+        else if (type === 1) { const c = document.createElement("canvas"); host.append(c); viz = new mm.PianoRollCanvasVisualizer(seq, c, roll); }
+        else {
+          const div = document.createElement("div"); host.append(div);
+          if (type === 2) {
+            const whites = 7 * (Math.floor(hi / 12) - Math.floor(lo / 12) + 1);
+            viz = new mm.WaterfallSVGVisualizer(seq, div, { showOnlyOctavesUsed: true, whiteNoteWidth: Math.max(8, Math.min(24, Math.floor(W / (whites + 1)))), noteHeight: 6, pixelsPerTimeStep: 60, noteRGB: "8, 41, 64", activeNoteRGB: "240, 84, 119" });
+          } else viz = new mm.StaffSVGVisualizer(seq, div, { noteHeight: 10, pixelsPerTimeStep: 0, noteRGB: "8, 41, 64", activeNoteRGB: "240, 84, 119" });
+        }
+        foot.innerHTML = `${piece.label}・<span class="mg-n">${piece.notes.length}</span> 音・<span class="mg-n">${seq.totalTime.toFixed(1)}</span> 秒・${TYPES[type]}`;
+      }
+      ctx.group(TYPES, type, (i) => { type = i; build(); });
+      ctx.select("來源", [{ value: "duet", label: "雙聲部小蜜蜂" }, { value: "last", label: "前面場景最後生成的" }], src, (v) => {
+        src = v; tp.stop();
+        if (v === "last" && !lastGen) ctx.hint("還沒有生成結果：先到前面任一個生成場景跑一次，這裡暫時顯示雙聲部小蜜蜂");
+        build();
+      });
+      ctx.select("音源", [{ value: "piano", label: "SoundFontPlayer 鋼琴" }, { value: "synth", label: "Player 合成器" }], "piano", (v) => { tp.stop(); tp.synth = v === "synth"; });
+      ctx.slider("速度", { min: 60, max: 180, step: 5, value: QPM, format: (v) => `${v} BPM` }, (v) => tp.setTempo(v));
+      const playBtn = ctx.button("▶ 播放", () => (tp.playing ? tp.stop() : tp.play(seq)), { primary: true });
+      ctx.button("⬇ MIDI", () => downloadMidi(seq, "magenta-sequence.mid"));
+      ctx.onResize(() => { if (!tp.playing) build(); });
+      build();
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "await rnn.continueSequence(seed, n, temperature) 計時 ・ mm.tf.memory()",
+    desc: "用同一段 2 小節種子，讓 basic_rnn 逐級生成 16 到 512 步並計時；切換溫度再跑一次，右側表格會把各溫度的耗時並排，驗證溫度對速度有沒有影響。",
+    hint: "按「開始測試」；換溫度後再跑一次比較表格",
+    async mount(ctx) {
+      ctx.html(`<div class="mg-stress"><div class="mg-roll"><canvas></canvas><div class="mg-chip">尚未執行</div></div><table class="mg-table"></table><div class="mg-foot"></div></div>`);
+      const cv = ctx.$("canvas"), chip = ctx.$(".mg-chip"), table = ctx.$(".mg-table"), foot = ctx.$(".mg-foot");
+      const SIZES = [16, 32, 64, 128, 256, 512], TEMPS = [0.5, 1.0, 1.5, 2.0], seed = BEE.slice(0, 6).map((n) => N(n));
+      const res = {};
+      let temp = 1.0, latest = null;
+      ctx.controls.classList.add("bottom");
+      ctx.select("溫度", TEMPS.map((t) => ({ value: String(t), label: t.toFixed(1) })), "1", (v) => { temp = +v; paint(); });
+      function paint() {
+        table.innerHTML = `<tr><th>溫度＼步數</th>${SIZES.map((s) => `<th>${s}</th>`).join("")}</tr>` + TEMPS.map((t) =>
+          `<tr class="${t === temp ? "cur" : ""}"><th>${t.toFixed(1)}</th>${SIZES.map((s) => `<td>${res[t] && res[t][s] ? fmtMs(res[t][s]) : "-"}</td>`).join("")}</tr>`).join("");
+        if (window.mm) {
+          const m = mm.tf.memory();
+          foot.innerHTML = `後端 <span class="mg-n">${mm.tf.getBackend()}</span>・張量 <span class="mg-n">${fmt(m.numTensors)}</span>・tf 記憶體 <span class="mg-n">${mb(m.numBytes)}</span>`;
+        }
+        drawRoll(cv, latest ? { notes: latest.notes, total: latest.total, split: 32, labels: ["種子", `生成 ${latest.n} 步 →`], lo: 46, hi: 86 } : { notes: [], total: 64, empty: "生成結果會畫在這裡" });
+      }
+      ctx.onResize(paint);
+      paint();
+      const rnn = await needModel(ctx, "rnn", { icon: "⏱️", title: "生成速度極限測試", desc: "逐級加長生成步數並計時，比較不同溫度的耗時。", tags: ["不會發出聲音"] });
+      paint();
+      ctx.bench({
+        label: "生成步數", unit: "步", sizes: SIZES, target: 3000, budget: 15000, title: "極限測試：MusicRNN 生成步數",
+        run: async (n) => {
+          const t0 = performance.now(), out = await rnn.continueSequence(Q(seed, 32), n, temp);
+          const ms = performance.now() - t0;
+          abortIfGone(ctx);
+          (res[temp] = res[temp] || {})[n] = ms;
+          latest = { notes: [...seed, ...fromSeq(out, 32)], total: 32 + n, n };
+          chip.innerHTML = `最新：<b>${n}</b> 步・溫度 <b>${temp.toFixed(1)}</b>・<b>${out.notes.length}</b> 音・<b>${fmtMs(ms)}</b>`;
+          paint();
+          return `${out.notes.length} 音`;
+        },
+        note: "MusicRNN 一步一步往後生成：每一步跑一次 LSTM 前向運算，再從機率分布抽樣，所以耗時大致隨步數線性增加，而且無法平行。溫度只是在抽樣前縮放 logits，理論上不改變計算量，換溫度重跑即可在右側表格對照。第一次呼叫含 WebGL 著色器編譯；無頭或沒有 GPU 的環境會退回軟體繪圖，整體會慢很多。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

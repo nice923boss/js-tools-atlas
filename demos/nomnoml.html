@@ -3,65 +3,196 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>nomnoml 示範：手繪風 UML</title>
+<title>nomnoml 示範：八個場景看懂文字畫 UML 的能力與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["點餐系統","關係箭頭","分類器圖鑑","巢狀與套件","版面指令","自訂樣式","互動與匯出","極限測試"]}</script>
 <style>
-  #app { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(250px, 36%) 1fr; }
-  #pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #fbfaf7; border-right: 1px solid var(--line); }
-  #pane .head { display: flex; justify-content: space-between; gap: 8px; padding: 10px 14px 4px; font-size: 12px; color: var(--muted); }
-  #pane .head b { color: var(--fg); }
-  #src { flex: 1; min-height: 0; resize: none; border: 0; outline: 0; background: transparent; color: #2b2a26;
-    padding: 6px 14px 48px; font: 12.5px/1.65 var(--mono); white-space: pre; overflow: auto; font-variant-ligatures: none; }
-  #view { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #fdf6e3; }
-  #out { position: absolute; inset: 60px 16px 48px; display: grid; place-items: center; }
-  #out svg { display: block; }
-  #err { position: absolute; left: 16px; right: 16px; bottom: 46px; display: none; z-index: 5;
-    color: #b3261e; background: #fdecea; border: 1px solid #f3b8b3; border-radius: 8px; padding: 8px 12px; font: 12px/1.5 var(--mono); white-space: pre-wrap; }
-  .hint { left: auto; right: 12px; }
-  @media (max-width: 640px) {
-    #app { grid-template-columns: 1fr; grid-template-rows: 36% 1fr; }
-    #pane { border-right: 0; border-bottom: 1px solid var(--line); }
-    #src { padding-bottom: 10px; font-size: 12px; }
-    .controls { top: calc(36% + 8px); }
-    #out { inset: 52px 10px 40px; }
+  /* show arrow syntax such as -> and <:- literally, not as font ligatures */
+  *, *::before, *::after { font-variant-ligatures: none !important; font-feature-settings: "liga" 0, "calt" 0 !important; }
+  .nn-wrap {
+    position: absolute; inset: 0; display: flex; gap: 10px; min-height: 0;
+    padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px);
+  }
+  /* diagram viewport: svg (or canvas) centered and scaled to fit */
+  .nn-view {
+    position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden;
+    background: #fdf6e3; border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: 0 6px 22px rgba(40, 30, 10, .08);
+  }
+  .nn-svg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+  .nn-svg > svg, .nn-svg > canvas { display: block; flex: none; }
+  .nn-svg.nn-stale > * { opacity: .3; filter: grayscale(1); }
+  .nn-meta {
+    position: absolute; right: 8px; bottom: 6px; font: 11px/1.4 var(--mono); color: var(--muted);
+    background: rgba(253, 246, 227, .85); padding: 1px 6px; border-radius: 6px; pointer-events: none;
+  }
+  .nn-meta:empty { display: none; }
+  .nn-click g[data-name] { cursor: pointer; }
+  .nn-on { filter: drop-shadow(0 0 4px rgba(214, 31, 105, .75)); }
+  .nn-on > g:first-child { stroke: #d61f69; stroke-width: 3; }
+  .nn-near > g:first-child { stroke: #e06a1b; stroke-width: 2.4; }
+
+  /* side panel next to the diagram */
+  .nn-side {
+    flex: 0 0 260px; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+    font: 13px/1.6 var(--font);
+  }
+  .nn-side h3 { margin: 0; font-size: 15px; }
+  .nn-side p { margin: 0; color: var(--muted); }
+  .nn-side code, .nn-code-line { font-family: var(--mono); font-size: 12px; }
+  .nn-pre {
+    margin: 0; padding: 8px 10px; border-radius: 8px; background: rgba(0, 0, 0, .04);
+    font: 12px/1.55 var(--mono); white-space: pre-wrap; word-break: break-all;
+  }
+  .nn-pre b { color: #d61f69; font-weight: 700; }
+  .nn-tag { display: inline-block; padding: 0 7px; border-radius: 999px; background: rgba(31, 143, 184, .12); color: #1f8fb8; font-size: 12px; }
+
+  /* 1. editor */
+  .nn-ed { flex: 0 0 min(400px, 36%); display: flex; flex-direction: column; min-height: 0; min-width: 0;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .nn-ed-head { display: flex; justify-content: space-between; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+  .nn-ed-head .mono { font-size: 11px; }
+  .nn-code {
+    flex: 1; min-height: 0; resize: none; border: 0; outline: 0; padding: 10px 12px; background: transparent;
+    font: 12.5px/1.6 var(--mono); tab-size: 2; white-space: pre; overflow: auto;
+  }
+  .nn-err { padding: 8px 12px; border-top: 1px solid #e5484d; background: rgba(229, 72, 77, .08); color: #c22f35; font-size: 12.5px; cursor: pointer; }
+  .nn-err[hidden] { display: none; }
+  .nn-err u { text-underline-offset: 3px; }
+
+  /* 2. arrow gallery */
+  .nn-grid { flex: 1; min-height: 0; overflow: auto; display: grid; gap: 8px;
+    grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); grid-auto-rows: minmax(92px, 1fr); }
+  .nn-cell { position: relative; display: flex; flex-direction: column; min-height: 0;
+    background: #fdf6e3; border: 1px solid var(--line); border-radius: 10px; padding: 4px 8px 6px; }
+  .nn-cell .nn-mini { position: relative; flex: 1; min-height: 40px; }
+  .nn-cap { display: flex; gap: 8px; align-items: baseline; font-size: 12px; white-space: nowrap; overflow: hidden; }
+  .nn-cap code { font: 700 13px var(--mono); color: #d61f69; }
+  .nn-cap span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+
+  /* 8. stress */
+  .nn-stress { position: absolute; inset: 8px 8px 8px 350px; display: flex; }
+
+  @media (max-width: 760px) {
+    .nn-wrap { flex-direction: column; padding-left: 6px; padding-right: 6px; gap: 6px; }
+    .nn-ed { flex: 0 0 40%; }
+    .nn-side { flex: 0 0 auto; max-height: 34%; padding: 8px 10px; gap: 4px; font-size: 12px; }
+    .nn-side.nn-opt, .nn-side .nn-more { display: none; }
+    .nn-stress { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 8px; }
+  }
+  @media (max-height: 480px) {
+    .nn-side.nn-opt, .nn-side .nn-more { display: none; }
+    .nn-side { padding: 8px 10px; gap: 4px; }
   }
 </style>
 </head>
 <body class="paper">
-<div id="app">
-  <section id="pane">
-    <div class="head"><b>nomnoml 原始碼</b><span id="stat">可直接修改</span></div>
-    <textarea id="src" spellcheck="false" wrap="off" aria-label="nomnoml 原始碼"></textarea>
-  </section>
-  <section id="view">
-    <div id="out"></div>
-    <div id="err"></div>
-  </section>
-</div>
-<div class="controls">
-  <button class="btn" data-k="cls" aria-pressed="true">類別圖</button>
-  <button class="btn" data-k="state" aria-pressed="false">狀態圖</button>
-</div>
-<div class="hint">方括號是方塊，箭頭是關係・改字即重畫</div>
-
 <script src="https://cdn.jsdelivr.net/npm/graphre@0.1.3/dist/graphre.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/nomnoml@1.7.0/dist/nomnoml.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Shared style block (kept at the end of the source so the diagram text reads first).
-// The CJK font list keeps SVG text from falling back to tofu boxes.
+// nomnoml showcase: eight scenes from a live UML editor to a class-count stress benchmark.
+const { h, fmt, fmtMs } = Showcase;
+const FONT = "Noto Sans TC, Microsoft JhengHei, PingFang TC, sans-serif";
 const STYLE = `
 // 以下是樣式設定
-#font: Noto Sans TC, Microsoft JhengHei, PingFang TC, sans-serif
+#font: ${FONT}
 #fontSize: 11
 #lineWidth: 1.6
 #stroke: #3b3a35
 #spacing: 44
 #padding: 9
 #edges: rounded`;
-const SAMPLES = {
-  cls: `[<actor>顧客] 點餐 -> [訂單|編號: string;下單時間: Date;總額: number|+加入品項();+結帳()]
+const BASE = `\n#font: ${FONT}\n#fontSize: 12\n#lineWidth: 1.6\n#stroke: #3b3a35\n#padding: 8\n#edges: rounded`;
+
+// ---------- helpers ----------
+function fit(box, max = 1.6) {
+  const el = box.firstElementChild;
+  if (!el || !box.clientWidth) return;
+  const w = +el.getAttribute("width") || el.width, ht = +el.getAttribute("height") || el.height;
+  const nw = +el.dataset.w || w, nh = +el.dataset.h || ht;
+  const s = Math.min((box.clientWidth - 16) / nw, (box.clientHeight - 16) / nh, max);
+  el.style.width = `${Math.max(1, nw * s)}px`;
+  el.style.height = `${Math.max(1, nh * s)}px`;
+}
+
+// Diagram viewport inside host: set(svg) swaps content and refits whenever the box resizes
+// (controls can wrap after mount, so stage resize events alone are not enough).
+function viewer(ctx, host, max = 1.6) {
+  const box = h("div", { class: "nn-svg" });
+  const meta = h("div", { class: "nn-meta" });
+  host.append(box, meta);
+  const ro = new ResizeObserver(() => { api.fit(); api.onSize?.(); });
+  ro.observe(box);
+  ctx.onCleanup(() => ro.disconnect());
+  const api = {
+    box, onSize: null,
+    set(content) {
+      if (typeof content === "string") box.innerHTML = content;
+      else box.replaceChildren(content);
+      box.classList.remove("nn-stale");
+      api.fit();
+      return box.firstElementChild;
+    },
+    fit: () => fit(box, max),
+    stale: (on) => box.classList.toggle("nn-stale", on),
+    info: (t) => { meta.textContent = t; },
+  };
+  return api;
+}
+
+function timed(fn) {
+  const t0 = performance.now();
+  const out = fn();
+  return [out, performance.now() - t0];
+}
+
+function countAst(part) {
+  let nodes = 0, assocs = part.assocs.length;
+  for (const n of part.nodes) {
+    nodes += 1;
+    for (const p of n.parts) {
+      if (!p.nodes) continue;
+      const c = countAst(p);
+      nodes += c.nodes; assocs += c.assocs;
+    }
+  }
+  return { nodes, assocs };
+}
+
+function errText(e) {
+  if (e instanceof nomnoml.ParseError) {
+    const got = e.actual === "end of file" ? "檔案結尾" : e.actual;
+    return `第 ${e.line} 行第 ${e.column} 欄：預期 ${e.expected}，實際是 ${got}`;
+  }
+  return `無法繪製：${e.message}`;
+}
+
+function download(name, blob) {
+  const a = h("a", { href: URL.createObjectURL(blob), download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+// association syntax -> meaning
+const ASSOCS = [
+  ["-", "關聯"], ["->", "單向關聯"], ["<->", "雙向關聯"],
+  ["-->", "依賴"], ["<-->", "雙向依賴"], ["-:>", "一般化（繼承）"],
+  ["<:-", "一般化，反向寫"], ["--:>", "實作介面"], ["<:--", "實作，反向寫"],
+  ["+-", "組合"], ["+->", "有方向的組合"], ["o-", "聚合"],
+  ["o->", "有方向的聚合"], ["-o)", "球與插座"], ["o<-)", "球與插座，反向"],
+  ["->o", "指向提供的介面"], ["--", "註解連線"], ["-/-", "隱形連線（只排版）"],
+];
+const ASSOC_NAME = Object.fromEntries(ASSOCS);
+
+// ---------- 1. order system (ported from the original demo) ----------
+const SAMPLES = [
+  `[<actor>顧客] 點餐 -> [訂單|編號: string;下單時間: Date;總額: number|+加入品項();+結帳()]
 [訂單] +-> 1..* [品項|甜度: 甜度;冰塊: 冰量;加料: 配料*]
 [品項] -> [飲品|名稱;中杯價;大杯價]
 [飲品] <:- [季節限定|上架期間]
@@ -70,12 +201,12 @@ const SAMPLES = {
 [付款服務] -> [<db>訂單資料庫]
 [<note>示意：一張訂單
 可以有很多杯飲料] -- [訂單]
-` + STYLE + `
+${STYLE}
 #direction: right
 #fill: #fff3b0;#e6f6fc;#f1ecff
 #.service: fill=#dff3e4 bold
 #.db: visual=database fill=#ffe1cc bold`,
-  state: `[<start>開始] -> [<state>待付款]
+  `[<start>開始] -> [<state>待付款]
 [待付款] 付款成功 -> [<state>製作中]
 [待付款] 逾時 15 分 -> [<bad>已取消]
 [製作中] -> [<choice>取餐方式]
@@ -85,54 +216,485 @@ const SAMPLES = {
 [配送中] -> [<ok>已完成]
 [已完成] -> [<end>結束]
 [已取消] -> [<end>結束]
-` + STYLE + `
+${STYLE}
 #direction: down
 #fill: #fff3b0;#fdf6e3
 #.ok: fill=#cfe9d6
 #.bad: fill=#ffd0e1`,
-};
+];
 
-const src = document.getElementById("src");
-const out = document.getElementById("out");
-const err = document.getElementById("err");
-const stat = document.getElementById("stat");
+// ---------- 3. classifier catalogue ----------
+const KINDS = [
+  ["class", "類別", "|名稱: 字串|下單()", "預設型別。用 | 切成名稱、屬性、方法三格，; 換行。"],
+  ["abstract", "抽象類別", "", "名稱變斜體，表示不能直接建立。"],
+  ["instance", "實例", "", "名稱加底線，代表某個物件。"],
+  ["reference", "參照", "", "虛線外框，指向別處定義的東西。"],
+  ["note", "註解", "", "折角便條紙，常用 -- 接到說明對象。"],
+  ["package", "套件", "", "左上角有頁籤，裡面可以再放一張圖。"],
+  ["frame", "外框", "", "名稱放在左上角的標籤裡，可包住整段圖。"],
+  ["database", "資料庫", "", "圓柱體。"],
+  ["pipe", "管線", "", "橫躺的圓柱，適合佇列或串流。"],
+  ["start", "開始", "", "狀態圖起點，只畫實心圓，不顯示文字。"],
+  ["end", "結束", "", "狀態圖終點，同心圓，不顯示文字。"],
+  ["state", "狀態", "", "圓角矩形。"],
+  ["choice", "判斷", "", "菱形分支點。"],
+  ["sync", "同步棒", "", "分岔與匯合用的粗線，不顯示文字。"],
+  ["input", "輸入", "", "平行四邊形。"],
+  ["lollipop", "提供介面", "", "棒棒糖符號：小圓圈加名稱。"],
+  ["sender", "送出訊號", "", "右側尖角的五邊形。"],
+  ["socket", "需要介面", "", "半圓插座加名稱。"],
+  ["receiver", "接收訊號", "", "左側凹口的箭頭形。"],
+  ["transceiver", "收發訊號", "", "兩端都是箭頭。"],
+  ["actor", "角色", "", "火柴人，用例圖的參與者。"],
+  ["usecase", "使用案例", "", "橢圓。"],
+  ["label", "純文字", "", "沒有外框的文字。"],
+  ["table", "表格", "|欄位|值||甲|1||乙|2", "| 分欄、|| 換列。"],
+];
 
-// Scale the SVG into the preview box, never enlarging beyond 1.6x.
-function fit() {
-  const svg = out.querySelector("svg");
-  if (!svg) return;
-  const vb = svg.viewBox.baseVal;
-  const box = out.getBoundingClientRect();
-  const s = Math.min(box.width / vb.width, box.height / vb.height, 1.6);
-  svg.setAttribute("width", Math.floor(vb.width * s));
-  svg.setAttribute("height", Math.floor(vb.height * s));
-}
+// ---------- 4. nested packages ----------
+const PKGS = [
+  ["前台網站", "[<actor>學員] -> [課程目錄]\n[課程目錄] -> [課程頁|標題;講師;價格]\n[課程頁] -> [購物車]"],
+  ["學習服務", "[影音播放器] -> [進度紀錄]\n[測驗引擎] -> [進度紀錄]\n[進度紀錄] -> [<state>結業證書]"],
+  ["金流服務", "[結帳] -> [<choice>付款方式]\n[付款方式] -> [信用卡]\n[付款方式] -> [超商代碼]"],
+  ["資料層", "[<database>課程資料庫]\n[<table>方案|方案|月費||基本|299||進階|599]"],
+];
 
-function draw() {
-  const t0 = performance.now();
-  try {
-    out.innerHTML = nomnoml.renderSvg(src.value, document);
-    fit();
-    err.style.display = "none";
-    stat.textContent = `已重畫，${Math.round(performance.now() - t0)} 毫秒`;
-  } catch (e) {
-    // Keep the previous drawing; show where the parser stopped.
-    err.textContent = `語法錯誤：${e.message}`;
-    err.style.display = "block";
-    stat.textContent = "等待修正語法";
+// ---------- 5. layout directives ----------
+const FLOW = `[報名] -> [繳費]
+[繳費] -> [開課通知]
+[開課通知] -> [上課]
+[報名] -> [課前問卷]
+[課前問卷] -> [上課]
+[上課] -> [作業]
+[作業] -> [批改]
+[批改] 未通過 -> [作業]
+[批改] -> [結業測驗]
+[結業測驗] 不及格 -> [補考]
+[補考] -> [結業測驗]
+[結業測驗] -> [<state>證書]
+[上課] -> [問答區]
+[問答區] -> [助教回覆]
+[助教回覆] -> [上課]`;
+
+// ---------- 6. custom styles ----------
+const REFUND = `[<term>收到退款申請] -> [<io>輸入訂單編號]
+[輸入訂單編號] -> [<ask>七天內？]
+[七天內？] 是 -> [<act>核對商品|拍照存證;確認配件完整]
+[七天內？] 否 -> [<doc>寄送婉拒說明]
+[核對商品] -> [<queue>退款排程]
+[退款排程] -> [<ext>金流平台退款]
+[金流平台退款] --> [<store>退款紀錄]
+[寄送婉拒說明] --> [退款紀錄]
+[退款紀錄] -> [<term>結案]`;
+const CUSTOM = [
+  ["term", "visual=roundrect title=bold", "#cfe9d6"],
+  ["io", "visual=input", "#e6f6fc"],
+  ["ask", "visual=rhomb title=bold", "#fff3b0"],
+  ["act", "visual=class title=bold body=left", "#fdf6e3"],
+  ["doc", "visual=note title=italic", "#f1ecff"],
+  ["queue", "visual=pipe", "#ffe1cc"],
+  ["ext", "visual=class dashed title=italic", "#ffffff"],
+  ["store", "visual=database title=bold", "#ffd0e1"],
+];
+const THEMES = [
+  { name: "米黃手繪", bg: "#fdf6e3", stroke: "#3b3a35", fill: "#eee8d5", font: FONT, lw: 1.6, colored: true },
+  { name: "藍圖", bg: "#1d4e89", stroke: "#eaf3ff", fill: "#24609f", font: `Consolas, ${FONT}`, lw: 1.2, colored: false },
+  { name: "夜間", bg: "#1f2127", stroke: "#d8dee9", fill: "#2b2f38", font: FONT, lw: 1.6, colored: false },
+  { name: "黑白列印", bg: "#ffffff", stroke: "#000000", fill: "#ffffff", font: `Georgia, PMingLiU, serif`, lw: 1, colored: false },
+];
+
+// ---------- 7. interaction and export ----------
+const LIBRARY = `[<abstract>館藏|編號;書名|借出();歸還()]
+[館藏] <:- [圖書]
+[館藏] <:- [電子書]
+[館藏] <:- [影音光碟]
+[讀者|讀者證號;姓名|借閱()] 1 - 0..5 [借閱紀錄|借出日;到期日]
+[借閱紀錄] -> [館藏]
+[讀者] <:- [學生讀者]
+[讀者] <:- [教職員]
+[館員] -> [借閱紀錄]
+[館員] --> [<database>館藏資料庫]
+[館藏] --> [館藏資料庫]
+[<actor>訪客] -> [線上目錄]
+[線上目錄] --> [館藏資料庫]
+${BASE}
+#fontSize: 11
+#spacing: 36
+#background: #fdf6e3
+#fill: #fff3b0;#fdf6e3`;
+
+// ---------- 8. generated class diagram ----------
+function bigDiagram(n, ranker, cross) {
+  let seed = 11;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const types = ["->", "-->", "<:-", "+-", "o-"];
+  const lines = [];
+  let edges = 0;
+  for (let i = 0; i < n; i++) {
+    lines.push(`[類別${i}|名稱: 字串;數量: 整數|執行()]`);
+    if (i > 0) { lines.push(`[類別${Math.floor(rnd() * i)}] ${types[i % 5]} [類別${i}]`); edges++; }
+    if (cross && i > 3 && rnd() < 0.25) { lines.push(`[類別${i}] -> [類別${Math.floor(rnd() * i)}]`); edges++; }
   }
+  lines.push(`#font: ${FONT}`, "#fontSize: 11", "#spacing: 30", "#lineWidth: 1.2", "#stroke: #3b3a35", "#fill: #fff3b0", `#ranker: ${ranker}`);
+  return { src: lines.join("\n"), edges };
 }
 
-let timer;
-src.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(draw, 200); });
-function load(k) {
-  document.querySelectorAll("[data-k]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.k === k)));
-  src.value = SAMPLES[k];
-  draw();
-}
-document.querySelectorAll("[data-k]").forEach((b) => b.addEventListener("click", () => load(b.dataset.k)));
-addEventListener("resize", fit);
-load("cls");
+Showcase.run({ scenes: [
+  {
+    id: "editor", title: "點餐系統", paper: true,
+    api: "nomnoml.renderSvg(source, document)・nomnoml.parse()・nomnoml.ParseError",
+    desc: "原本的手搖飲點餐範例：左邊改文字，右邊即時重畫。類別圖示範屬性與方法分格、組合、繼承、依賴、註解與自訂樣式；狀態圖示範開始、狀態、判斷與結束節點。打錯字時保留上一張圖並標出第幾行第幾欄出錯，點錯誤訊息會跳到該位置。",
+    hint: "方括號是方塊，箭頭是關係・改字即重畫",
+    mount(ctx) {
+      ctx.html(`<div class="nn-wrap">
+        <div class="nn-ed"><div class="nn-ed-head"><span>原始碼</span><span class="mono nn-stat"></span></div>
+          <textarea class="nn-code" spellcheck="false" aria-label="nomnoml 原始碼"></textarea>
+          <div class="nn-err" hidden></div></div>
+        <div class="nn-view"></div></div>`);
+      const code = ctx.$(".nn-code"), errBox = ctx.$(".nn-err"), stat = ctx.$(".nn-stat");
+      const view = viewer(ctx, ctx.$(".nn-view"));
+      let lastErr = null, timer = 0;
+      const draw = () => {
+        try {
+          const [svg, ms] = timed(() => nomnoml.renderSvg(code.value, document));
+          view.set(svg);
+          const c = countAst(nomnoml.parse(code.value).root);
+          stat.textContent = `${c.nodes} 節點・${c.assocs} 關係・${fmtMs(ms)}`;
+          errBox.hidden = true; lastErr = null;
+        } catch (e) {
+          lastErr = e;
+          view.stale(true);
+          errBox.hidden = false;
+          errBox.innerHTML = "";
+          errBox.append(errText(e), " ", h("u", { text: "跳到該處" }));
+        }
+      };
+      errBox.addEventListener("click", () => {
+        if (!(lastErr instanceof nomnoml.ParseError)) return;
+        const rows = code.value.split("\n");
+        let i = 0;
+        for (let r = 0; r < lastErr.line - 1 && r < rows.length; r++) i += rows[r].length + 1;
+        i = Math.min(code.value.length, i + Math.max(0, lastErr.column - 1));
+        code.focus();
+        code.setSelectionRange(Math.max(0, i - 1), i);
+      });
+      code.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(draw, 200); });
+      ctx.onCleanup(() => clearTimeout(timer));
+      const load = (i) => { code.value = SAMPLES[i]; draw(); };
+      ctx.group(["類別圖", "狀態圖"], 0, (i) => load(i));
+      ctx.button("製造語法錯誤", () => {
+        const rows = code.value.split("\n");
+        rows[1] = rows[1].replace(/\]\s*$/, "");
+        code.value = rows.join("\n");
+        draw();
+      });
+      load(0);
+    },
+  },
+  {
+    id: "arrows", title: "關係箭頭", paper: true,
+    api: "[甲] 1 -> 0..* [乙]・#fillArrows・#arrowSize・#lineWidth",
+    desc: "nomnoml 的 18 種關係寫法一次排開，每格都是 renderSvg 即時畫出的小圖：關聯、依賴、繼承、實作、組合、聚合、球與插座、註解線與只影響排版的隱形線。箭頭兩側的文字會變成端點標籤（例如多重性 1 與 0..*）。",
+    hint: "切換端點標籤、實心箭頭，拖曳箭頭大小與線寬",
+    mount(ctx) {
+      ctx.html(`<div class="nn-wrap"><div class="nn-grid"></div></div>`);
+      const grid = ctx.$(".nn-grid");
+      const cells = ASSOCS.map(([code, name]) => {
+        const mini = h("div", { class: "nn-mini" });
+        grid.append(h("div", { class: "nn-cell" }, mini, h("div", { class: "nn-cap" }, h("code", { text: code }), h("span", { text: name }))));
+        return { code, view: viewer(ctx, mini, 1.5) };
+      });
+      const opt = { labels: true, fill: false, size: 1, lw: 1.6 };
+      const draw = () => {
+        for (const c of cells) {
+          const left = c.code === "--" ? "[<note>註解]" : "[甲]";
+          const rel = opt.labels ? `1 ${c.code} 0..*` : c.code;
+          const src = `${left} ${rel} [乙]${BASE}\n#direction: right\n#spacing: 56\n#fillArrows: ${opt.fill}\n#arrowSize: ${opt.size}\n#lineWidth: ${opt.lw}`;
+          c.view.set(nomnoml.renderSvg(src, document));
+        }
+      };
+      ctx.toggle("端點標籤", true, (v) => { opt.labels = v; draw(); });
+      ctx.toggle("實心箭頭", false, (v) => { opt.fill = v; draw(); });
+      ctx.slider("箭頭大小", { min: 0.5, max: 2.5, step: 0.1, value: 1, format: (v) => `${v.toFixed(1)}×` }, (v) => { opt.size = v; draw(); });
+      ctx.slider("線寬", { min: 0.5, max: 4, step: 0.5, value: 1.6, format: (v) => `${v}` }, (v) => { opt.lw = v; draw(); });
+      draw();
+    },
+  },
+  {
+    id: "kinds", title: "分類器圖鑑", paper: true,
+    api: "[<database> 名稱]・[<table> 名稱|a|1||b|2]・g[data-name]",
+    desc: "24 種分類器（方塊外形）排成一張圖。排列靠的是 -/- 隱形連線：每一欄用隱形線串起來，nomnoml 就會照欄排好。renderSvg 會在每個節點的 g 元素加上 data-name，點任一方塊即可讀回名稱，顯示它的寫法與用途。另有 <hidden> 型別完全不畫，只佔位置。",
+    hint: "點任一方塊看語法與用途",
+    mount(ctx) {
+      ctx.html(`<div class="nn-wrap"><div class="nn-view nn-click"></div>
+        <div class="nn-side"><h3 class="nn-k-title"></h3><div class="nn-pre nn-k-code"></div><p class="nn-k-desc"></p>
+        <p class="nn-more">同一個名稱只會畫一次；要畫兩個同名節點，用 id 屬性區分，例如 [&lt;actor id=a&gt;使用者]。</p></div></div>`);
+      const view = viewer(ctx, ctx.$(".nn-view"), 1.8);
+      let cols = 0, picked = "k0";
+      const pick = (id) => {
+        picked = id;
+        view.box.querySelectorAll(".nn-on").forEach((g) => g.classList.remove("nn-on"));
+        view.box.querySelector(`g[data-name="${id}"]`)?.classList.add("nn-on");
+        const [type, name, body, desc] = KINDS[+id.slice(1)];
+        ctx.$(".nn-k-title").replaceChildren(`${name} `, h("span", { class: "nn-tag", text: type }));
+        ctx.$(".nn-k-code").textContent = `[<${type}> ${name}${body}]`;
+        ctx.$(".nn-k-desc").textContent = desc;
+      };
+      const draw = () => {
+        const w = view.box.clientWidth, ht = view.box.clientHeight;
+        const want = Math.max(3, Math.min(8, Math.round(Math.sqrt(KINDS.length * (w / Math.max(ht, 1)) * 0.75))));
+        if (want === cols) return view.fit();
+        cols = want;
+        const lines = [];
+        KINDS.forEach(([type, name, body], i) => {
+          lines.push(`[<${type} id=k${i}>${name}${body}]`);
+          if (i >= cols) lines.push(`[k${i - cols}] -/- [k${i}]`);
+        });
+        const [svg, ms] = timed(() => nomnoml.renderSvg(lines.join("\n") + BASE + "\n#spacing: 40\n#fill: #fff3b0", document));
+        view.set(svg);
+        view.info(`${cols} 欄・${fmtMs(ms)}`);
+        pick(picked);
+      };
+      view.box.addEventListener("click", (e) => {
+        const g = e.target.closest("g[data-name]");
+        if (g) pick(g.getAttribute("data-name"));
+      });
+      view.onSize = draw;
+      draw();
+    },
+  },
+  {
+    id: "nested", title: "巢狀與套件", paper: true,
+    api: "[<frame> 名稱|子圖]・[<package> 名稱|子圖]・#fill: 第一層;第二層;第三層・#.pkg: visual=package direction=down",
+    desc: "方塊的內容格可以再放一整張圖，形成外框包套件、套件包類別的架構圖。#fill 依巢狀層級輪流上色；自訂樣式加 direction 可讓某類方塊內部的排列方向跟外層不同。關係只能連同一層的節點，所以跨套件的依賴畫在套件之間。點任一套件可收合或展開，收合就是把子圖從原始碼拿掉再重畫。",
+    hint: "點套件收合或展開・分別切換外層與套件內的方向",
+    mount(ctx) {
+      ctx.html(`<div class="nn-wrap"><div class="nn-view nn-click"></div></div>`);
+      const view = viewer(ctx, ctx.$(".nn-view"), 1.5);
+      const open = new Set(PKGS.map((p) => p[0]));
+      const opt = { outer: "right", inner: "down" };
+      const source = () => {
+        const body = PKGS.map(([name, sub]) => open.has(name)
+          ? `[<pkg>${name}|\n${sub.replace(/^/gm, "    ")}\n  ]`
+          : `[<pkg>${name}|（已收合）]`).map((s) => `  ${s}`).join("\n");
+        return `[<frame>線上課程平台|
+${body}
+  [前台網站] -> [學習服務]
+  [前台網站] -> [金流服務]
+  [學習服務] --> [資料層]
+  [金流服務] --> [資料層]
+]${BASE}
+#fontSize: 11
+#spacing: 30
+#direction: ${opt.outer}
+#fill: #fdf6e3; #fff3b0; #e6f6fc; #f1ecff
+#.pkg: visual=package direction=${opt.inner}`;
+      };
+      const draw = () => {
+        const src = source();
+        const [svg, ms] = timed(() => nomnoml.renderSvg(src, document));
+        view.set(svg);
+        view.info(`展開 ${open.size}/${PKGS.length} 個套件・${fmtMs(ms)}`);
+      };
+      view.box.addEventListener("click", (e) => {
+        let g = e.target.closest("g[data-name]");
+        while (g && !PKGS.some((p) => p[0] === g.getAttribute("data-name"))) g = g.parentElement.closest("g[data-name]");
+        if (!g) return;
+        const name = g.getAttribute("data-name");
+        if (open.has(name)) open.delete(name); else open.add(name);
+        draw();
+      });
+      ctx.group(["外層橫排", "外層直排"], 0, (i) => { opt.outer = i ? "down" : "right"; draw(); });
+      ctx.group(["套件內直排", "套件內橫排"], 0, (i) => { opt.inner = i ? "right" : "down"; draw(); });
+      ctx.button("全部收合", () => { open.clear(); draw(); });
+      ctx.button("全部展開", () => { PKGS.forEach((p) => open.add(p[0])); draw(); });
+      draw();
+    },
+  },
+  {
+    id: "layout", title: "版面指令", paper: true,
+    api: "#direction・#ranker・#acyclicer・#spacing・#edges・#bendSize",
+    desc: "同一張有迴圈的課程流程圖，只改開頭的指令就換一種排版。#ranker 決定節點分層的演算法（network-simplex、tight-tree、longest-path），#acyclicer: greedy 改用貪婪法決定迴圈中哪條邊反轉，#spacing 調整層距，#edges 與 #bendSize 控制轉角。右側即時列出套用中的指令。",
+    hint: "換方向、分層演算法，拖曳間距看排版變化",
+    mount(ctx) {
+      ctx.html(`<div class="nn-wrap"><div class="nn-view"></div>
+        <div class="nn-side nn-opt"><h3>套用中的指令</h3><div class="nn-pre nn-dirs"></div>
+        <p>指令寫在原始碼任何一行，以 # 開頭；同一個指令寫兩次時以後面的為準。</p></div></div>`);
+      const view = viewer(ctx, ctx.$(".nn-view"), 1.6);
+      const opt = { direction: "down", ranker: "network-simplex", greedy: false, spacing: 40, rounded: true, bend: 0.3 };
+      let prev = {};
+      const draw = () => {
+        const dirs = [
+          ["direction", opt.direction], ["ranker", opt.ranker], ["spacing", opt.spacing],
+          ["edges", opt.rounded ? "rounded" : "hard"], ["bendSize", opt.bend],
+          ...(opt.greedy ? [["acyclicer", "greedy"]] : []),
+        ];
+        const src = `${FLOW}${BASE}\n#fontSize: 11\n#fill: #fff3b0;#fdf6e3\n${dirs.map(([k, v]) => `#${k}: ${v}`).join("\n")}`;
+        const [svg, ms] = timed(() => nomnoml.renderSvg(src, document));
+        const el = view.set(svg);
+        view.info(`${el.getAttribute("width")}×${el.getAttribute("height")}・${fmtMs(ms)}`);
+        const box = ctx.$(".nn-dirs");
+        box.replaceChildren(...dirs.flatMap(([k, v], i) => {
+          const line = `#${k}: ${v}`;
+          return [i ? "\n" : "", prev[k] !== undefined && prev[k] !== v ? h("b", { text: line }) : line];
+        }));
+        prev = Object.fromEntries(dirs);
+      };
+      ctx.group(["由上而下", "由左而右"], 0, (i) => { opt.direction = i ? "right" : "down"; draw(); });
+      ctx.select("分層", ["network-simplex", "tight-tree", "longest-path"], opt.ranker, (v) => { opt.ranker = v; draw(); });
+      ctx.slider("間距", { min: 12, max: 90, step: 2, value: 40, format: (v) => `${v}` }, (v) => { opt.spacing = v; draw(); });
+      ctx.slider("轉角", { min: 0, max: 1, step: 0.05, value: 0.3, format: (v) => v.toFixed(2) }, (v) => { opt.bend = v; draw(); });
+      ctx.toggle("圓角連線", true, (v) => { opt.rounded = v; draw(); });
+      ctx.toggle("貪婪去環", false, (v) => { opt.greedy = v; draw(); });
+      draw();
+    },
+  },
+  {
+    id: "styles", title: "自訂樣式", paper: true,
+    api: "#.名稱: visual=rhomb fill=… dashed title=bold・#background・#stroke・#fill・#font",
+    desc: "以 # 加點開頭的指令定義自己的分類器：visual 指定外形（圓角框、菱形、平行四邊形、管線、資料庫、便條紙），再加 fill、stroke、dashed，以及 title、body 的粗體、斜體、置中。下方切換四套主題，只改 #background、#stroke、#fill、#font、#lineWidth；關掉自訂樣式時，未定義的型別會退回一般類別方塊。",
+    hint: "切換主題，或關掉自訂樣式比較差異",
+    mount(ctx) {
+      ctx.html(`<div class="nn-wrap"><div class="nn-view"></div>
+        <div class="nn-side nn-opt"><h3>樣式指令</h3><div class="nn-pre nn-st"></div></div></div>`);
+      const host = ctx.$(".nn-view");
+      const view = viewer(ctx, host, 1.5);
+      const opt = { theme: 0, custom: true };
+      // wide stage: left to right; portrait stage: top to bottom
+      const orient = () => (view.box.clientWidth >= view.box.clientHeight * 1.1 ? "right" : "down");
+      let dir = orient();
+      view.onSize = () => { if (orient() !== dir) draw(); };
+      const draw = () => {
+        dir = orient();
+        const t = THEMES[opt.theme];
+        const styles = opt.custom ? CUSTOM.map(([name, rule, fill]) => `#.${name}: ${rule}${t.colored ? ` fill=${fill}` : ""}`) : [];
+        const globals = [`#background: ${t.bg}`, `#stroke: ${t.stroke}`, `#fill: ${t.fill}`, `#font: ${t.font}`, `#lineWidth: ${t.lw}`];
+        const src = `${REFUND}\n#fontSize: 12\n#padding: 8\n#spacing: 34\n#direction: ${dir}\n#edges: rounded\n${globals.join("\n")}\n${styles.join("\n")}`;
+        const [svg, ms] = timed(() => nomnoml.renderSvg(src, document));
+        host.style.background = t.bg;
+        view.set(svg);
+        view.info(`${t.name}・${fmtMs(ms)}`);
+        ctx.$(".nn-st").textContent = [...globals, ...styles].join("\n");
+      };
+      ctx.group(THEMES.map((t) => t.name), 0, (i) => { opt.theme = i; draw(); });
+      ctx.toggle("自訂樣式", true, (v) => { opt.custom = v; draw(); });
+      draw();
+    },
+  },
+  {
+    id: "interact", title: "互動與匯出", paper: true,
+    api: "nomnoml.draw(canvas, source, scale) → { config, layout }・renderSvg・canvas.toBlob",
+    desc: "同一張圖書館類別圖可用 SVG 或 Canvas 輸出。SVG 版靠 data-name 判斷點到哪個節點；Canvas 版用 draw() 回傳的 layout 座標自己做點擊判定，再疊畫外框。被點的節點與相連節點會標色，右側列出它的每一條關係。可下載 SVG 或 2 倍解析度 PNG。",
+    hint: "點任一類別看關係・切換 SVG／Canvas・下載圖檔",
+    mount(ctx) {
+      ctx.html(`<div class="nn-wrap"><div class="nn-view nn-click"></div>
+        <div class="nn-side"><h3 class="nn-r-title"></h3><div class="nn-pre nn-r-list"></div>
+        <p class="nn-more nn-r-note"></p></div></div>`);
+      const view = viewer(ctx, ctx.$(".nn-view"), 1.6);
+      const assocs = nomnoml.parse(LIBRARY).root.assocs;
+      const opt = { canvas: false, scale: 2 };
+      let picked = "館藏", lay = null, canvas = null;
+      const near = (id) => new Set(assocs.flatMap((a) => (a.start === id ? [a.end] : a.end === id ? [a.start] : [])));
+      const mark = () => {
+        const nb = near(picked);
+        if (!opt.canvas) {
+          view.box.querySelectorAll(".nn-on, .nn-near").forEach((g) => g.classList.remove("nn-on", "nn-near"));
+          view.box.querySelector(`g[data-name="${picked}"]`)?.classList.add("nn-on");
+          nb.forEach((id) => view.box.querySelector(`g[data-name="${id}"]`)?.classList.add("nn-near"));
+        } else {
+          const r = nomnoml.draw(canvas, LIBRARY, opt.scale);
+          lay = r;
+          const g = canvas.getContext("2d"), z = r.config.zoom, gut = r.config.gutter;
+          g.save();
+          g.scale(z, z);
+          g.translate(r.layout.offset.x + gut, r.layout.offset.y + gut);
+          for (const n of r.layout.nodes) {
+            if (n.id !== picked && !nb.has(n.id)) continue;
+            g.strokeStyle = n.id === picked ? "#d61f69" : "#e06a1b";
+            g.lineWidth = n.id === picked ? 3 : 2;
+            g.strokeRect(n.x - n.width / 2 - 4, n.y - n.height / 2 - 4, n.width + 8, n.height + 8);
+          }
+          g.restore();
+        }
+        ctx.$(".nn-r-title").textContent = `${picked} 的關係`;
+        ctx.$(".nn-r-list").textContent = assocs.filter((a) => a.start === picked || a.end === picked)
+          .map((a) => `[${a.start}] ${a.type} [${a.end}]  ${ASSOC_NAME[a.type] || ""}`).join("\n");
+      };
+      const draw = () => {
+        if (opt.canvas) {
+          canvas = h("canvas");
+          const [r, ms] = timed(() => nomnoml.draw(canvas, LIBRARY, opt.scale));
+          canvas.dataset.w = r.layout.width; canvas.dataset.h = r.layout.height;
+          view.set(canvas);
+          view.info(`Canvas ${canvas.width}×${canvas.height} px・${fmtMs(ms)}`);
+          ctx.$(".nn-r-note").textContent = `Canvas 依倍率 ${opt.scale} 產生實際像素，再縮放到畫面大小；倍率越高越清晰，也越耗記憶體。`;
+        } else {
+          const [svg, ms] = timed(() => nomnoml.renderSvg(LIBRARY, document));
+          view.set(svg);
+          view.info(`SVG ${(svg.length / 1024).toFixed(1)} KB・${fmtMs(ms)}`);
+          ctx.$(".nn-r-note").textContent = "SVG 每個節點的 g 元素都有 data-name，可直接用 CSS 標色或掛事件。";
+        }
+        mark();
+      };
+      view.box.addEventListener("click", (e) => {
+        let id = null;
+        if (!opt.canvas) {
+          id = e.target.closest("g[data-name]")?.getAttribute("data-name");
+        } else if (lay && e.target === canvas) {
+          const rect = canvas.getBoundingClientRect(), z = lay.config.zoom, gut = lay.config.gutter;
+          const x = ((e.clientX - rect.left) * canvas.width / rect.width) / z - lay.layout.offset.x - gut;
+          const y = ((e.clientY - rect.top) * canvas.height / rect.height) / z - lay.layout.offset.y - gut;
+          id = lay.layout.nodes.find((n) => Math.abs(x - n.x) <= n.width / 2 && Math.abs(y - n.y) <= n.height / 2)?.id;
+        }
+        if (id) { picked = id; mark(); }
+      });
+      ctx.group(["SVG", "Canvas"], 0, (i) => { opt.canvas = i === 1; draw(); });
+      ctx.slider("Canvas 倍率", { min: 1, max: 3, step: 0.5, value: 2, format: (v) => `${v}×` }, (v) => { opt.scale = v; if (opt.canvas) draw(); });
+      ctx.button("下載 SVG", () => download("圖書館類別圖.svg", new Blob([nomnoml.renderSvg(LIBRARY, document)], { type: "image/svg+xml" })));
+      ctx.button("下載 PNG", () => {
+        const c = h("canvas");
+        nomnoml.draw(c, LIBRARY, 2);
+        c.toBlob((b) => download("圖書館類別圖.png", b), "image/png");
+      });
+      draw();
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress", paper: true,
+    api: "nomnoml.renderSvg(source, document)・#ranker・graphre 分層排版",
+    desc: "每一級產生 N 個類別（各有兩個屬性與一個方法）和約 N 條關係，計時從解析文字、graphre 分層排版、產生 SVG 字串，到放進頁面並完成版面計算為止。可切換分層演算法，以及是否加入反向的交叉關係（會形成迴圈，排版更費工）。",
+    hint: "選分層演算法，按「開始測試」",
+    mount(ctx) {
+      ctx.html(`<div class="nn-stress"><div class="nn-view"></div></div>`);
+      const view = viewer(ctx, ctx.$(".nn-view"), 1.4);
+      const opt = { ranker: "network-simplex", cross: true };
+      const preview = () => {
+        const { src } = bigDiagram(30, opt.ranker, opt.cross);
+        view.set(nomnoml.renderSvg(src, document));
+        view.info("30 個類別預覽");
+      };
+      ctx.controls.classList.add("bottom");
+      ctx.group(["network-simplex", "tight-tree", "longest-path"], 0, (i, label) => { opt.ranker = label; preview(); });
+      ctx.toggle("交叉關係", true, (v) => { opt.cross = v; preview(); });
+      preview();
+      ctx.bench({
+        label: "類別數", unit: "個",
+        sizes: [30, 100, 300, 600, 1000, 2000],
+        budget: 2000, target: 1000,
+        prepare: (n) => bigDiagram(n, opt.ranker, opt.cross),
+        async run(n, data) {
+          const svg = nomnoml.renderSvg(data.src, document);
+          view.set(svg);
+          view.box.getBoundingClientRect();
+          await ctx.frame(1);
+          view.info(`${fmt(n)} 個類別`);
+          return `${fmt(data.edges)} 條關係・SVG ${fmt(Math.round(svg.length / 1024))} KB`;
+        },
+        note: "計時包含解析、排版、產生 SVG 字串、插入 DOM 與下一個畫格。大部分時間花在 graphre 的分層與交叉最小化；network-simplex 品質最好但最慢，longest-path 只做最簡單的分層。SVG 字串大小包含 nomnoml 預設寫進 <desc> 的原始碼。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

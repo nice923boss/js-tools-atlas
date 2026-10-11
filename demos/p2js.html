@@ -3,398 +3,1434 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>p2.js 示範：吊橋上的避震小車</title>
+<title>p2.js 示範：8 個場景看懂 2D 物理引擎與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["吊橋與避震小車","形狀與地形","接觸材質","約束大全","彈簧與軟體","俯視載具","射線與碰撞事件","極限測試"]}</script>
 <style>
-  body { background: #0e1013; }
-  #stage { position: fixed; inset: 0; touch-action: none; cursor: crosshair; }
-  #stage canvas { display: block; width: 100%; height: 100%; }
-  .heading { position: fixed; left: 16px; top: 14px; z-index: 40; pointer-events: none; text-shadow: 0 1px 3px rgba(0, 0, 0, .5); }
-  .heading h1 { margin: 0; font-size: clamp(18px, 4vw, 26px); letter-spacing: .06em; }
-  .heading p { margin: 4px 0 0; font-size: 12px; color: rgba(255, 255, 255, .8); }
-  .legend { position: fixed; right: 12px; bottom: 12px; z-index: 40; display: grid; gap: 3px; padding: 7px 11px; font-size: 12px; pointer-events: none; }
-  .legend i { display: inline-block; width: 18px; height: 3px; margin-right: 6px; vertical-align: middle; border-radius: 2px; }
-  @media (max-width: 600px) { .heading { top: 60px; } .legend { bottom: 46px; } }
+  .sc-scene canvas.p2-cv { position: absolute; left: 0; top: 0; touch-action: none; cursor: grab; }
+  .sc-scene canvas.p2-cv.aim { cursor: crosshair; }
 </style>
 </head>
 <body>
-<div id="stage"><canvas id="cv"></canvas></div>
-<div class="heading"><h1>吊橋與避震小車</h1><p>繩索是距離約束，避震是滑軌約束加彈簧</p></div>
-<div class="controls">
-  <button class="btn primary" id="crate">丟箱子</button>
-  <button class="btn" id="cut">剪斷繩索</button>
-  <button class="btn" id="reset">重建吊橋</button>
-</div>
-<div class="panel legend mono" id="legend">
-  <span><i style="background:#e9c46a"></i>距離約束 <b id="nRope">0</b></span>
-  <span><i style="background:#4cc9f0"></i>滑軌約束 2</span>
-  <span><i style="background:#f72585"></i>線性彈簧 2</span>
-</div>
-<div class="hint">拖曳任何物體・點一下繩子就剪斷</div>
-
 <script src="https://cdn.jsdelivr.net/npm/p2@0.7.1/build/p2.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// World units are meters with y pointing up; the canvas transform flips y when drawing.
-const GAP = 13;          // canyon width the bridge spans
-const PLANK = 0.8;       // plank length
-const LINK = 0.2;        // rope length between planks (chain longer than gap, so it sags)
-const N_PLANK = 13;
-const FLOOR_Y = -6.5;
-const G_CAR = 2, G_WORLD = 1;
+// p2.js showcase: eight scenes from the original suspension bridge to a body-count stress ramp.
+// World units are meters with y pointing up; lab() maps them to canvas pixels.
+const { vec2 } = p2;
+const SH = p2.Shape;
+const TAU = Math.PI * 2;
+const COLORS = ["#f72585", "#ffb703", "#4cc9f0", "#7bd389", "#9d8cff", "#ff7b54"];
+const MUTED = "#9b998f", STEEL = "#4a5262", INK = "#e8e6df", AMBER = "#ffb703";
+const rootCss = getComputedStyle(document.documentElement);
+const FONT = rootCss.getPropertyValue("--font").trim() || "system-ui, sans-serif";
+const MONO = rootCss.getPropertyValue("--mono").trim() || "ui-monospace, monospace";
+const font = (weight, px, mono) => `${weight} ${px}px ${mono ? MONO : FONT}`;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const rnd = (lo, hi) => lo + Math.random() * (hi - lo);
+const pick = (a) => a[Math.floor(Math.random() * a.length)];
+const below = (ctx) => ctx.controls.offsetHeight + 20;
 
-const canvas = document.getElementById("cv");
-const ctx = canvas.getContext("2d");
-let W = 0, H = 0, S = 1;
-let world, car, ropes, mouseBody, grab = null, carDir = 1, fallenAt = 0;
-
-function box(w, h, opts, group) {
-  const b = new p2.Body(opts);
-  const s = new p2.Box({ width: w, height: h });
-  if (group) { s.collisionGroup = group; s.collisionMask = group === G_CAR ? G_WORLD : G_WORLD | G_CAR; }
-  b.addShape(s);
-  b.size = [w, h];
-  settle(b);
-  world.addBody(b);
-  return b;
+// Rounded caption on the canvas (CSS pixels). Returns its width so callers can lay chips out in a row.
+function chip(g, text, x, y, { color = INK, size = 11, align = "center", mono = false, fit = 0, bg = "rgba(14,16,19,.8)" } = {}) {
+  g.font = font(600, size, mono);
+  const w = g.measureText(text).width + 10, hh = size + 8;
+  let left = align === "center" ? x - w / 2 : align === "right" ? x - w : x;
+  if (fit) left = clamp(left, 4, fit - w - 4);
+  g.fillStyle = bg;
+  g.beginPath();
+  g.roundRect(left, y - hh / 2, w, hh, 5);
+  g.fill();
+  g.fillStyle = color;
+  g.textAlign = "left";
+  g.textBaseline = "middle";
+  g.fillText(text, left + 5, y + 0.5);
+  return w;
 }
-
-// p2 interpolates from previousPosition, which is only written when a body integrates; seed it.
-function settle(b) {
-  p2.vec2.copy(b.previousPosition, b.position);
-  b.previousAngle = b.angle;
+function dashLine(g, x1, y1, x2, y2, color = "rgba(255,255,255,.25)", w = 1) {
+  g.save();
+  g.setLineDash([5, 5]);
+  g.strokeStyle = color;
+  g.lineWidth = w;
+  g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+  g.restore();
 }
-
-function build() {
-  world = new p2.World({ gravity: [0, -10] });
-  world.solver.iterations = 30;
-  world.defaultContactMaterial.friction = 0.9;
-  ropes = [];
-  // Two cliffs and the canyon floor are static boxes.
-  const half = GAP / 2;
-  const cliffL = box(14, 12, { position: [-half - 7, -6] }, G_WORLD);
-  const cliffR = box(14, 12, { position: [half + 7, -6] }, G_WORLD);
-  cliffL.kind = cliffR.kind = "cliff";
-  box(40, 1, { position: [0, FLOOR_Y - 0.5] }, G_WORLD).kind = "floor";
-
-  // Planks laid flat with small gaps; the rope constraints are shorter than their rest distance
-  // would allow straight, so the solver lets the deck sag into a natural curve.
-  let prev = cliffL, prevAnchor = [7, 6 - 0.09];
-  for (let i = 0; i < N_PLANK; i++) {
-    const x = -half + ((i + 0.5) * GAP) / N_PLANK;
-    const p = box(PLANK, 0.16, { mass: 0.55, position: [x, -0.08] }, G_WORLD);
-    p.kind = "plank";
-    addRope(prev, prevAnchor, p, [-PLANK / 2, 0]);
-    prev = p;
-    prevAnchor = [PLANK / 2, 0];
+function dot(g, x, y, r, color) {
+  g.fillStyle = color;
+  g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill();
+}
+function zigzag(g, x1, y1, x2, y2, n, amp, color, w = 1.5) {
+  const dx = x2 - x1, dy = y2 - y1, L = Math.hypot(dx, dy) || 1, nx = -dy / L, ny = dx / L;
+  g.beginPath(); g.moveTo(x1, y1);
+  for (let i = 1; i < n; i++) {
+    const t = i / n, s = i % 2 ? amp : -amp;
+    g.lineTo(x1 + dx * t + nx * s, y1 + dy * t + ny * s);
   }
-  addRope(prev, prevAnchor, cliffR, [-7, 6 - 0.09]);
-
-  buildCar(-half - 2.2);
-  mouseBody = new p2.Body();
-  world.addBody(mouseBody);
-  grab = null;
-  fallenAt = 0;
-  carDir = 1;
+  g.lineTo(x2, y2);
+  g.strokeStyle = color; g.lineWidth = w; g.stroke();
 }
-
-function addRope(a, la, b, lb) {
-  const c = new p2.DistanceConstraint(a, b, { localAnchorA: la, localAnchorB: lb, distance: LINK });
-  c.kind = "rope";
-  world.addConstraint(c);
-  ropes.push(c);
+// Chips stacked upward from the bottom edge. lines: text or [text, chipOptions].
+function stack(g, p, lines, { x = 10, bottom = 14, align = "left" } = {}) {
+  const n = lines.length;
+  lines.forEach((ln, i) => {
+    const [text, o] = Array.isArray(ln) ? ln : [ln, {}];
+    chip(g, text, x, p.H - bottom - (n - 1 - i) * 22, { align, fit: p.W, ...o });
+  });
 }
-
-function buildCar(x) {
-  const chassis = box(2.0, 0.42, { mass: 3, position: [x, 1.2] }, G_CAR);
-  chassis.kind = "chassis";
-  const wheels = [], sliders = [], springs = [];
-  for (const dx of [-0.68, 0.68]) {
-    const w = new p2.Body({ mass: 0.5, position: [x + dx, 0.42] });
-    const s = new p2.Circle({ radius: 0.36 });
-    s.collisionGroup = G_CAR;
-    s.collisionMask = G_WORLD;
-    w.addShape(s);
-    w.kind = "wheel";
-    settle(w);
-    world.addBody(w);
-    // Slider: wheel center may only move along the chassis' local y axis, and is free to spin.
-    const pc = new p2.PrismaticConstraint(chassis, w, {
-      localAnchorA: [dx, -0.5], localAnchorB: [0, 0], localAxisA: [0, 1],
-      disableRotationalLock: true, lowerLimit: -0.32, upperLimit: 0.1,
-    });
-    world.addConstraint(pc);
-    const sp = new p2.LinearSpring(chassis, w, { localAnchorA: [dx, -0.21], localAnchorB: [0, 0], restLength: 0.66, stiffness: 160, damping: 7 });
-    world.addSpring(sp);
-    wheels.push(w);
-    sliders.push(pc);
-    springs.push(sp);
-  }
-  car = { chassis, wheels, sliders, springs };
-}
-
-function cutRope(c) {
-  world.removeConstraint(c);
-  ropes = ropes.filter((r) => r !== c);
-}
-
-function dropCrate(x) {
-  const s = 0.42 + Math.random() * 0.25;
-  const b = box(s, s, { mass: 0.35, position: [x, 5 + Math.random() * 2], angle: Math.random() * 2 }, G_WORLD);
-  b.kind = "crate";
-  b.hue = Math.floor(Math.random() * 360);
-}
-
-// --- input -------------------------------------------------------------------------------
-const toWorld = (e) => [(e.clientX - W / 2) / S, -(e.clientY - H * 0.42) / S];
-const stage = document.getElementById("stage");
-stage.addEventListener("pointerdown", (e) => {
-  const pt = toWorld(e);
-  const hit = world.hitTest(pt, world.bodies.filter((b) => b.mass > 0), 0.1)[0];
-  if (hit) {
-    const local = [0, 0];
-    hit.toLocalFrame(local, pt);
-    p2.vec2.copy(mouseBody.position, pt);
-    grab = new p2.RevoluteConstraint(mouseBody, hit, { localPivotA: [0, 0], localPivotB: local, maxForce: 400 * hit.mass });
-    world.addConstraint(grab);
-    stage.setPointerCapture(e.pointerId);
-    return;
-  }
-  // No body under the pointer: cut the closest rope if it is near enough.
-  let best = null, bestD = 0.35;
-  for (const c of ropes) {
-    const [a, b] = ropeEnds(c);
-    const d = segDist(pt, a, b);
-    if (d < bestD) { bestD = d; best = c; }
-  }
-  if (best) cutRope(best);
-});
-stage.addEventListener("pointermove", (e) => { if (grab) p2.vec2.copy(mouseBody.position, toWorld(e)); });
-const release = () => { if (grab) { world.removeConstraint(grab); grab = null; } };
-stage.addEventListener("pointerup", release);
-stage.addEventListener("pointercancel", release);
-
-document.getElementById("crate").addEventListener("click", () => { for (let i = 0; i < 3; i++) dropCrate(-4 + i * 4 + Math.random()); });
-document.getElementById("cut").addEventListener("click", () => {
-  const mid = ropes.filter((c) => c.bodyA.kind === "plank" && c.bodyB.kind === "plank");
-  if (mid.length) cutRope(mid[Math.floor(mid.length / 2)]);
-});
-document.getElementById("reset").addEventListener("click", build);
-
-function ropeEnds(c) {
-  const a = [0, 0], b = [0, 0];
-  c.bodyA.toWorldFrame(a, c.localAnchorA);
-  c.bodyB.toWorldFrame(b, c.localAnchorB);
-  return [a, b];
-}
-function segDist(p, a, b) {
+function segDist(q, a, b) {
   const dx = b[0] - a[0], dy = b[1] - a[1];
-  const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy || 1)));
-  return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
+  const t = clamp(((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / (dx * dx + dy * dy || 1), 0, 1);
+  return Math.hypot(q[0] - a[0] - t * dx, q[1] - a[1] - t * dy);
 }
 
-// --- simulation --------------------------------------------------------------------------
-function drive(now) {
-  const x = car.chassis.position[0];
-  const turn = GAP / 2 + 1.6;
-  if (x > turn) carDir = -1;
-  if (x < -turn) carDir = 1;
-  for (const w of car.wheels) {
-    // Spinning clockwise (negative) moves the car right; cap the spin so it crawls over the deck.
-    if (-carDir * w.angularVelocity < 7) w.angularForce += -carDir * 9;
-  }
-  if (car.chassis.position[1] < -3.5) {
-    if (!fallenAt) fallenAt = now;
-    else if (now - fallenAt > 2500) build();
-  }
-  for (const b of world.bodies.slice()) if (b.kind === "crate" && b.position[1] < FLOOR_Y + 0.6) world.removeBody(b);
-}
-
-// --- drawing -----------------------------------------------------------------------------
-function resize() {
-  W = innerWidth;
-  H = innerHeight;
-  S = Math.min(W / 19, H / 11);
-  const dpr = Math.min(devicePixelRatio || 1, 2);
-  canvas.width = W * dpr;
-  canvas.height = H * dpr;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-}
-
-function backdrop() {
-  const sky = ctx.createLinearGradient(0, 0, 0, H);
-  sky.addColorStop(0, "#26315f");
-  sky.addColorStop(0.55, "#f28f6b");
-  sky.addColorStop(1, "#f6c28b");
-  ctx.fillStyle = sky;
-  ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = "rgba(60, 40, 80, .45)";
-  ctx.beginPath();
-  ctx.moveTo(0, H * 0.5);
-  for (let i = 0; i <= 12; i++) ctx.lineTo((W * i) / 12, H * (0.3 + 0.12 * Math.abs(Math.sin(i * 1.7))));
-  ctx.lineTo(W, H);
-  ctx.lineTo(0, H);
-  ctx.fill();
-}
-
-function shapePath(b) {
-  const [w, h] = b.size;
-  ctx.beginPath();
-  ctx.rect(-w / 2, -h / 2, w, h);
-}
-
-function draw() {
-  backdrop();
-  ctx.save();
-  ctx.translate(W / 2, H * 0.42);
-  ctx.scale(S, -S);
-  ctx.lineJoin = "round";
-
-  for (const b of world.bodies) {
-    if (!b.kind) continue;
-    ctx.save();
-    const pos = b.mass ? b.interpolatedPosition : b.position;
-    ctx.translate(pos[0], pos[1]);
-    ctx.rotate(b.mass ? b.interpolatedAngle : b.angle);
-    if (b.kind === "cliff") {
-      shapePath(b);
-      const g = ctx.createLinearGradient(0, 6, 0, -6);
-      g.addColorStop(0, "#6b4a3a");
-      g.addColorStop(1, "#2b1d1a");
-      ctx.fillStyle = g;
-      ctx.fill();
-      ctx.fillStyle = "#5c8a3c";
-      ctx.fillRect(-7, 5.82, 14, 0.18);
-    } else if (b.kind === "floor") {
-      ctx.fillStyle = "#2d6a8a";
-      ctx.fillRect(-GAP / 2, 0.1, GAP, 0.4);
-    } else if (b.kind === "plank") {
-      shapePath(b);
-      ctx.fillStyle = "#b07a45";
-      ctx.fill();
-      ctx.lineWidth = 0.03;
-      ctx.strokeStyle = "#5a3a1e";
-      ctx.stroke();
-    } else if (b.kind === "crate") {
-      shapePath(b);
-      ctx.fillStyle = "hsl(" + b.hue + " 70% 58%)";
-      ctx.fill();
-      ctx.lineWidth = 0.05;
-      ctx.strokeStyle = "rgba(0,0,0,.35)";
-      ctx.stroke();
-      const [w] = b.size;
-      ctx.beginPath();
-      ctx.moveTo(-w / 2, -w / 2);
-      ctx.lineTo(w / 2, w / 2);
-      ctx.stroke();
-    } else if (b.kind === "chassis") {
-      ctx.fillStyle = "#e63946";
-      ctx.beginPath();
-      ctx.roundRect(-1, -0.21, 2, 0.42, 0.12);
-      ctx.fill();
-      ctx.fillStyle = "#1d3557";
-      ctx.beginPath();
-      ctx.roundRect(-0.55, 0.18, 0.95, 0.36, [0.16, 0.16, 0, 0]);
-      ctx.fill();
-      ctx.fillStyle = "#a8dadc";
-      ctx.fillRect(-0.45, 0.24, 0.75, 0.22);
-    } else if (b.kind === "wheel") {
-      const r = b.shapes[0].radius;
-      ctx.fillStyle = "#1b1b1f";
-      ctx.beginPath();
-      ctx.arc(0, 0, r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = "#cfd3da";
-      ctx.lineWidth = 0.05;
-      for (let k = 0; k < 3; k++) {
-        const a = (k * Math.PI) / 3;
-        ctx.beginPath();
-        ctx.moveTo(Math.cos(a) * r * 0.75, Math.sin(a) * r * 0.75);
-        ctx.lineTo(-Math.cos(a) * r * 0.75, -Math.sin(a) * r * 0.75);
-        ctx.stroke();
+// One p2.World bound to a scene canvas: fixed-step loop, camera (meters to pixels), debug drawing
+// and mouse dragging through a RevoluteConstraint to a shapeless static body that follows the pointer.
+function lab(ctx, { gravity = -10, hz = 60, drag = true, perFrame = false, cls = "" } = {}) {
+  const cv = document.createElement("canvas");
+  cv.className = "p2-cv" + (cls ? " " + cls : "");
+  ctx.el.appendChild(cv);
+  ctx.onCleanup(() => cv.remove());
+  const g = cv.getContext("2d");
+  const p = { cv, g, W: 0, H: 0, s: 30, ox: 0, oy: 0, dt: 1 / hz, speed: 1, time: 0, phys: 0, paint: 0, world: null, mouse: null, grab: null };
+  p.reset = (opts = {}) => {
+    p.world = new p2.World({ gravity: [0, gravity], ...opts });
+    p.mouse = new p2.Body();
+    p.world.addBody(p.mouse);
+    p.grab = null;
+    return p.world;
+  };
+  p.reset();
+  // Body plus shapes in one call. shapes: a Shape, or a list of Shape / [shape, offset, angle].
+  p.add = (opts, shapes, color) => {
+    const b = new p2.Body(opts);
+    for (const it of shapes instanceof p2.Shape ? [shapes] : shapes) {
+      if (it instanceof p2.Shape) b.addShape(it);
+      else b.addShape(it[0], it[1], it[2]);
+    }
+    if (color) b.color = color;
+    p.world.addBody(b);
+    return b;
+  };
+  p.X = (x) => p.ox + x * p.s;
+  p.Y = (y) => p.oy - y * p.s;
+  p.toWorld = (px, py) => [(px - p.ox) / p.s, (p.oy - py) / p.s];
+  p.wp = (b, local, out = [0, 0]) => { b.toWorldFrame(out, local); return out; };
+  // Fit the world rect into the canvas. t: "auto" keeps the top margin small unless the rect would
+  // slide under the top-right control cluster, in which case it starts below the controls.
+  p.fit = (x0, y0, x1, y1, m = {}) => {
+    const r = m.r ?? 12, b = m.b ?? 12, l = m.l ?? 12;
+    const place = (t) => {
+      const aw = Math.max(40, p.W - l - r), ah = Math.max(40, p.H - t - b);
+      p.s = Math.min(aw / (x1 - x0), ah / (y1 - y0));
+      p.ox = l + (aw - (x1 - x0) * p.s) / 2 - x0 * p.s;
+      p.oy = t + (ah - (y1 - y0) * p.s) / 2 + y1 * p.s;
+    };
+    if (m.t === "auto") {
+      place(12);
+      const c = ctx.controls;
+      if (c.offsetHeight && p.X(x1) > p.W - 10 - c.offsetWidth && p.Y(y1) < 10 + c.offsetHeight) place(below(ctx));
+    } else place(m.t ?? 12);
+  };
+  // removeBody leaves constraints and springs behind in p2, so drop them first.
+  p.kill = (b) => {
+    const w = p.world;
+    for (const c of w.constraints.slice()) {
+      if (c.bodyA !== b && c.bodyB !== b) continue;
+      if (c === p.grab) p.grab = null;
+      w.removeConstraint(c);
+    }
+    for (const sp of w.springs.slice()) if (sp.bodyA === b || sp.bodyB === b) w.removeSpring(sp);
+    w.removeBody(b);
+  };
+  // Adds one shape outline (screen pixels) to a canvas path or Path2D. Circles return their center.
+  p.path = (b, sh, t = g) => {
+    const co = Math.cos(b.angle), si = Math.sin(b.angle), a = b.angle + sh.angle, ca = Math.cos(a), sa = Math.sin(a);
+    const cx = p.X(b.position[0] + co * sh.position[0] - si * sh.position[1]);
+    const cy = p.Y(b.position[1] + si * sh.position[0] + co * sh.position[1]);
+    const P = (x, y) => [cx + (ca * x - sa * y) * p.s, cy - (sa * x + ca * y) * p.s];
+    if (sh.type === SH.CIRCLE) {
+      const r = sh.radius * p.s;
+      t.moveTo(cx + r, cy); t.arc(cx, cy, r, 0, TAU);
+      return [cx, cy];
+    }
+    if (sh.type === SH.CAPSULE) {
+      const r = sh.radius * p.s, q = -a, [x1, y1] = P(sh.length / 2, 0), [x2, y2] = P(-sh.length / 2, 0);
+      t.moveTo(x1 + r * Math.cos(q - Math.PI / 2), y1 + r * Math.sin(q - Math.PI / 2));
+      t.arc(x1, y1, r, q - Math.PI / 2, q + Math.PI / 2);
+      t.arc(x2, y2, r, q + Math.PI / 2, q + Math.PI * 1.5);
+      t.closePath();
+      return null;
+    }
+    if (!sh.vertices) return null;
+    sh.vertices.forEach((v, i) => { const [x, y] = P(v[0], v[1]); if (i) t.lineTo(x, y); else t.moveTo(x, y); });
+    t.closePath();
+    return null;
+  };
+  p.drawBody = (b, col) => {
+    if (b.hidden) return;
+    const color = col || b.color || (b.type === p2.Body.STATIC ? STEEL : b.type === p2.Body.KINEMATIC ? COLORS[4] : COLORS[2]);
+    g.globalAlpha = b.sleepState === p2.Body.SLEEPING ? 0.45 : 1;
+    for (const sh of b.shapes) {
+      if (sh.hidden || sh.type === SH.HEIGHTFIELD || sh.type === SH.PLANE) continue;
+      g.beginPath();
+      const c = p.path(b, sh);
+      if (sh.sensor) {
+        g.save(); g.setLineDash([5, 4]); g.strokeStyle = color; g.lineWidth = 1.5; g.stroke(); g.restore();
+        continue;
+      }
+      g.fillStyle = color; g.fill();
+      g.strokeStyle = "rgba(0,0,0,.35)"; g.lineWidth = 1; g.stroke();
+      if (c) {
+        const a = b.angle + sh.angle, r = sh.radius * p.s;
+        g.beginPath(); g.moveTo(c[0], c[1]); g.lineTo(c[0] + Math.cos(a) * r, c[1] - Math.sin(a) * r);
+        g.strokeStyle = "rgba(0,0,0,.45)"; g.lineWidth = 1.5; g.stroke();
       }
     }
-    ctx.restore();
-  }
+    g.globalAlpha = 1;
+  };
+  const A = [0, 0], B = [0, 0];
+  p.drawGrab = () => {
+    if (!p.grab) return;
+    p.wp(p.grab.bodyB, p.grab.pivotB, B);
+    const mx = p.X(p.mouse.position[0]), my = p.Y(p.mouse.position[1]);
+    dashLine(g, mx, my, p.X(B[0]), p.Y(B[1]), AMBER, 1.5);
+    dot(g, mx, my, 4, AMBER);
+  };
+  p.drawLinks = () => {
+    for (const c of p.world.constraints) {
+      if (c === p.grab || c.style === "none") continue;
+      if (c instanceof p2.DistanceConstraint) {
+        p.wp(c.bodyA, c.localAnchorA, A); p.wp(c.bodyB, c.localAnchorB, B);
+        g.beginPath(); g.moveTo(p.X(A[0]), p.Y(A[1])); g.lineTo(p.X(B[0]), p.Y(B[1]));
+        g.strokeStyle = "rgba(232,230,223,.6)"; g.lineWidth = 2; g.stroke();
+        dot(g, p.X(A[0]), p.Y(A[1]), 3, INK);
+      } else if (c instanceof p2.RevoluteConstraint) {
+        p.wp(c.bodyB, c.pivotB, B);
+        dot(g, p.X(B[0]), p.Y(B[1]), 2.5, "rgba(232,230,223,.8)");
+      }
+    }
+    for (const sp of p.world.springs) {
+      if (sp.style === "none") continue;
+      sp.getWorldAnchorA(A); sp.getWorldAnchorB(B);
+      zigzag(g, p.X(A[0]), p.Y(A[1]), p.X(B[0]), p.Y(B[1]), 12, 5, sp.color || "rgba(232,230,223,.8)");
+    }
+    p.drawGrab();
+  };
+  p.drawWorld = () => {
+    for (const b of p.world.bodies) p.drawBody(b);
+    p.drawLinks();
+  };
+  // Draw in body-local meters: origin at the body, y up, rotated with it.
+  p.local = (b, fn) => {
+    g.save();
+    g.translate(p.X(b.position[0]), p.Y(b.position[1]));
+    g.scale(p.s, -p.s);
+    g.rotate(b.angle);
+    fn(g);
+    g.restore();
+  };
+  // Topmost dynamic body under a world point. Scenes may replace p.pick.
+  p.pick = (w) => p.world.hitTest(w, p.world.bodies.filter((b) => b.type === p2.Body.DYNAMIC), 0.05)[0] || null;
+  let ptr = null;
+  p.ptr = () => ptr;
+  const evPt = (e) => { const r = cv.getBoundingClientRect(); return p.toWorld(e.clientX - r.left, e.clientY - r.top); };
+  ctx.on(cv, "pointerdown", (e) => {
+    const w = (ptr = evPt(e));
+    cv.setPointerCapture(e.pointerId);
+    vec2.copy(p.mouse.position, w);
+    if (p.onDown && p.onDown(w, e)) return;
+    const b = drag ? p.pick(w) : null;
+    if (!b) { if (p.onEmpty) p.onEmpty(w, e); return; }
+    const local = [0, 0];
+    b.toLocalFrame(local, w);
+    p.grab = new p2.RevoluteConstraint(p.mouse, b, { localPivotA: [0, 0], localPivotB: local, maxForce: 400 * b.mass });
+    p.world.addConstraint(p.grab);
+    b.wakeUp();
+  });
+  ctx.on(cv, "pointermove", (e) => {
+    const w = (ptr = evPt(e));
+    vec2.copy(p.mouse.position, w);
+    if (p.grab) p.grab.bodyB.wakeUp();
+    if (p.onMove) p.onMove(w, e);
+  });
+  const up = (e) => {
+    if (p.grab) { p.world.removeConstraint(p.grab); p.grab = null; }
+    if (p.onUp) p.onUp(e);
+  };
+  ctx.on(cv, "pointerup", up);
+  ctx.on(cv, "pointercancel", up);
+  ctx.on(cv, "pointerleave", (e) => { if (!e.buttons) ptr = null; });
 
-  // Constraints drawn on top so the mechanism is readable.
-  ctx.lineCap = "round";
-  ctx.strokeStyle = "#e9c46a";
-  ctx.lineWidth = 0.07;
-  for (const c of ropes) {
-    const [a, b] = ropeEnds(c);
-    ctx.beginPath();
-    ctx.moveTo(a[0], a[1]);
-    ctx.lineTo(b[0], b[1]);
-    ctx.stroke();
-  }
-  for (const pc of car.sliders) {
-    const a = [0, 0], b = [0, 0];
-    // Slider rail drawn beside the spring, from the chassis down to the lower travel limit.
-    pc.bodyA.toWorldFrame(a, [pc.localAnchorA[0] + 0.16, -0.21]);
-    pc.bodyA.toWorldFrame(b, [pc.localAnchorA[0] + 0.16, pc.localAnchorA[1] + pc.lowerLimit]);
-    ctx.strokeStyle = "#4cc9f0";
-    ctx.lineWidth = 0.07;
-    ctx.beginPath();
-    ctx.moveTo(a[0], a[1]);
-    ctx.lineTo(b[0], b[1]);
-    ctx.stroke();
-  }
-  for (const sp of car.springs) zigzag(sp);
-  if (grab) {
-    const b = [0, 0];
-    grab.bodyB.toWorldFrame(b, grab.pivotB);
-    ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 0.04;
-    ctx.beginPath();
-    ctx.moveTo(mouseBody.position[0], mouseBody.position[1]);
-    ctx.lineTo(b[0], b[1]);
-    ctx.stroke();
-  }
-  ctx.restore();
-  document.getElementById("nRope").textContent = ropes.length;
+  const stepOnce = () => {
+    if (p.before) p.before(p.dt);
+    p.world.step(p.dt);
+    p.time += p.dt;
+    if (p.after) p.after(p.dt);
+  };
+  p.go = () => {
+    const size = ({ width, height }) => {
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      p.W = width; p.H = height;
+      cv.width = Math.round(width * dpr); cv.height = Math.round(height * dpr);
+      cv.style.width = width + "px"; cv.style.height = height + "px";
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      if (p.layout) p.layout(width, height);
+    };
+    size(ctx.size());
+    ctx.onResize(size);
+    let acc = 0;
+    ctx.raf((t, ms) => {
+      const t0 = performance.now();
+      if (perFrame) stepOnce();
+      else {
+        acc = Math.min(acc + (ms / 1000) * p.speed, p.dt * 4);
+        while (acc >= p.dt) { acc -= p.dt; stepOnce(); }
+      }
+      const t1 = performance.now();
+      g.clearRect(0, 0, p.W, p.H);
+      if (p.draw) p.draw(g); else p.drawWorld();
+      const t2 = performance.now();
+      p.phys += (t1 - t0 - p.phys) * 0.1;
+      p.paint += (t2 - t1 - p.paint) * 0.1;
+    });
+  };
+  return p;
 }
 
-function zigzag(sp) {
-  const a = [0, 0], b = [0, 0];
-  sp.getWorldAnchorA(a);
-  sp.getWorldAnchorB(b);
-  const dx = b[0] - a[0], dy = b[1] - a[1];
-  const len = Math.hypot(dx, dy) || 1;
-  const nx = -dy / len, ny = dx / len;
-  ctx.strokeStyle = "#f72585";
-  ctx.lineWidth = 0.045;
-  ctx.beginPath();
-  ctx.moveTo(a[0], a[1]);
-  const turns = 7;
-  for (let i = 1; i < turns * 2; i++) {
-    const t = i / (turns * 2);
-    const side = i % 2 ? 0.1 : -0.1;
-    ctx.lineTo(a[0] + dx * t + nx * side, a[1] + dy * t + ny * side);
-  }
-  ctx.lineTo(b[0], b[1]);
-  ctx.stroke();
-}
+Showcase.run({ scenes: [
+  {
+    id: "bridge", title: "吊橋與避震小車",
+    api: "DistanceConstraint + PrismaticConstraint + LinearSpring + collisionGroup / collisionMask",
+    desc: "原本的招牌示範升級：13 片木板用 DistanceConstraint 串成吊橋，繩索顏色與左下長條圖是求解器算出的張力（equation.multiplier）；小車避震是「垂直滑軌 PrismaticConstraint＋LinearSpring」，勁度可即時調整。車輪與車身用 collisionGroup／collisionMask 分組，彼此不互撞。",
+    hint: "拖曳任何物體・點兩片木板間的繩索剪斷・調避震勁度看車身起伏",
+    mount(ctx) {
+      const GAP = 13, HALF = GAP / 2, N = 13, LINK = 0.2, FLOOR_Y = -6.5, G_CAR = 2, G_WORLD = 1;
+      let car = null, ropes = [], crates = [], fallAt = 0, stiff = 160;
+      ctx.button("丟箱子", () => { for (let i = 0; i < 3; i++) crate(-4 + i * 4 + Math.random()); }, { primary: true });
+      ctx.button("剪斷繩索", () => {
+        const r = ropes.filter((c) => !c.cut).sort((a, b) => Math.abs(a.idx - N / 2) - Math.abs(b.idx - N / 2))[0];
+        if (r) cut(r);
+      });
+      ctx.button("重建吊橋", () => build());
+      ctx.slider("避震勁度", { min: 40, max: 400, step: 10, value: 160, format: (v) => `${v} N/m` }, (v) => {
+        stiff = v;
+        if (car) for (const sp of car.springs) sp.stiffness = v;
+      });
+      const p = lab(ctx, { hz: 120 });
+      const box = (w, h, opts, group, color) => p.add(opts, new p2.Box({
+        width: w, height: h, collisionGroup: group, collisionMask: group === G_CAR ? G_WORLD : G_WORLD | G_CAR,
+      }), color);
+      const cut = (r) => { r.cut = true; p.world.removeConstraint(r); };
+      function makeCar(x) {
+        const chassis = box(2, 0.42, { mass: 3, position: [x, 1.2] }, G_CAR);
+        chassis.hidden = true;
+        const wheels = [], rails = [], springs = [];
+        for (const dx of [-0.68, 0.68]) {
+          const w = p.add({ mass: 0.5, position: [x + dx, 0.42] }, new p2.Circle({ radius: 0.36, collisionGroup: G_CAR, collisionMask: G_WORLD }));
+          w.hidden = true;
+          const rail = new p2.PrismaticConstraint(chassis, w, {
+            localAnchorA: [dx, -0.5], localAnchorB: [0, 0], localAxisA: [0, 1], disableRotationalLock: true, lowerLimit: -0.32, upperLimit: 0.1,
+          });
+          rail.style = "none";
+          p.world.addConstraint(rail);
+          const sp = new p2.LinearSpring(chassis, w, { localAnchorA: [dx, -0.21], localAnchorB: [0, 0], restLength: 0.66, stiffness: stiff, damping: 7 });
+          sp.style = "none";
+          p.world.addSpring(sp);
+          wheels.push(w); rails.push(rail); springs.push(sp);
+        }
+        return { chassis, wheels, rails, springs, dir: 1 };
+      }
+      function crate(x) {
+        if (crates.length >= 12) p.kill(crates.shift());
+        const s = 0.42 + Math.random() * 0.25;
+        const b = box(s, s, { mass: 0.35, position: [x, rnd(5, 7)], angle: Math.random() * 2 }, G_WORLD, `hsl(${Math.floor(Math.random() * 360)} 70% 58%)`);
+        b.kind = "crate"; b.size = s;
+        crates.push(b);
+      }
+      function build() {
+        p.reset();
+        p.world.solver.iterations = 30;
+        p.world.defaultContactMaterial.friction = 0.9;
+        ropes = []; crates = [];
+        const cl = box(14, 12, { mass: 0, position: [-(HALF + 7), -6] }, G_WORLD);
+        const cr = box(14, 12, { mass: 0, position: [HALF + 7, -6] }, G_WORLD);
+        const floor = box(40, 1, { mass: 0, position: [0, FLOOR_Y - 0.5] }, G_WORLD);
+        cl.hidden = cr.hidden = floor.hidden = true;
+        const planks = [];
+        for (let i = 0; i < N; i++) {
+          const b = box(0.8, 0.16, { mass: 0.55, position: [-HALF + (i + 0.5) * GAP / N, -0.08] }, G_WORLD);
+          b.kind = "plank";
+          planks.push(b);
+        }
+        const link = (a, b, la, lb) => {
+          const c = new p2.DistanceConstraint(a, b, { localAnchorA: la, localAnchorB: lb, distance: LINK });
+          c.style = "none"; c.idx = ropes.length;
+          p.world.addConstraint(c);
+          ropes.push(c);
+        };
+        link(cl, planks[0], [7, 5.91], [-0.4, 0]);
+        for (let i = 0; i < N - 1; i++) link(planks[i], planks[i + 1], [0.4, 0], [-0.4, 0]);
+        link(planks[N - 1], cr, [0.4, 0], [-7, 5.91]);
+        car = makeCar(-HALF - 2.2);
+        fallAt = 0;
+        crate(rnd(-3, 3));
+      }
+      build();
+      ctx.interval(() => { if (crates.length < 5) crate(-4 + Math.random() * 8); }, 3500);
 
-let last = performance.now();
-function frame(now) {
-  const dt = Math.min(0.05, (now - last) / 1000);
-  last = now;
-  drive(now);
-  world.step(1 / 120, dt, 8);
-  draw();
-  requestAnimationFrame(frame);
-}
+      p.before = () => {
+        const c = car.chassis, x = c.position[0];
+        if (x > HALF + 1.6) car.dir = -1;
+        else if (x < -HALF - 1.6) car.dir = 1;
+        for (const w of car.wheels) if (-car.dir * w.angularVelocity < 7) w.angularForce += -car.dir * 9;
+        if (c.position[1] < -3.5) {
+          if (!fallAt) fallAt = p.time;
+          else if (p.time - fallAt > 2.5) build();
+        }
+      };
+      p.after = () => {
+        for (const b of crates.slice()) {
+          if (b.position[1] > FLOOR_Y + 0.6) continue;
+          p.kill(b);
+          crates.splice(crates.indexOf(b), 1);
+        }
+      };
+      p.onEmpty = (w) => {
+        let best = null, bd = Math.max(0.35, 14 / p.s);
+        for (const r of ropes) {
+          if (r.cut) continue;
+          const d = segDist(w, p.wp(r.bodyA, r.localAnchorA), p.wp(r.bodyB, r.localAnchorB));
+          if (d < bd) { bd = d; best = r; }
+        }
+        if (best) cut(best);
+      };
+      p.layout = (W) => { const xr = W < 500 ? 9.3 : 10; p.fit(-xr, -6.8, xr, 4.4, { t: "auto" }); };
 
-addEventListener("resize", resize);
-resize();
-build();
-requestAnimationFrame(frame);
-// Idle preview: a crate drops onto the bridge every few seconds while there are only a few.
-setInterval(() => {
-  if (world.bodies.filter((b) => b.kind === "crate").length < 5) dropCrate(-4 + Math.random() * 8);
-}, 3500);
+      const tension = (r) => Math.max(0, -r.equations[0].multiplier);
+      const tColor = (T) => `hsl(${(48 - 58 * clamp((T - 60) / 220, 0, 1) + 360) % 360} 85% 60%)`;
+      const A = [0, 0], B = [0, 0];
+      p.draw = (g) => {
+        const { W, H } = p;
+        const sky = g.createLinearGradient(0, 0, 0, H);
+        sky.addColorStop(0, "#26315f"); sky.addColorStop(0.55, "#f28f6b"); sky.addColorStop(1, "#f6c28b");
+        g.fillStyle = sky; g.fillRect(0, 0, W, H);
+        const y0 = p.Y(0);
+        g.fillStyle = "rgba(60,40,80,.45)";
+        g.beginPath(); g.moveTo(0, y0);
+        for (let i = 0; i <= 16; i++) g.lineTo((i / 16) * W, y0 - p.s * (2.4 + 1.3 * Math.sin(i * 1.7) + 0.7 * Math.sin(i * 0.6 + 1)));
+        g.lineTo(W, y0); g.closePath(); g.fill();
+        const wy = p.Y(FLOOR_Y);
+        g.fillStyle = "#2d6a8a"; g.fillRect(0, wy, W, H - wy);
+        g.beginPath();
+        for (let x = 0; x <= W; x += 8) g.lineTo(x, wy + Math.sin(x * 0.05 + p.time * 2) * 2);
+        g.strokeStyle = "rgba(255,255,255,.3)"; g.lineWidth = 1.5; g.stroke();
+        for (const [x0, x1] of [[-40, -HALF], [HALF, 40]]) {
+          const L = p.X(x0), R = p.X(x1), T = p.Y(0), Bt = p.Y(-12);
+          const rock = g.createLinearGradient(0, T, 0, Bt);
+          rock.addColorStop(0, "#6b4a3a"); rock.addColorStop(1, "#2b1d1a");
+          g.fillStyle = rock; g.fillRect(L, T, R - L, Bt - T);
+          g.fillStyle = "#5c8a3c"; g.fillRect(L, T, R - L, 0.18 * p.s);
+        }
+        let Tmax = 0;
+        g.lineCap = "round";
+        for (const r of ropes) {
+          if (r.cut) continue;
+          const T = tension(r);
+          Tmax = Math.max(Tmax, T);
+          p.wp(r.bodyA, r.localAnchorA, A); p.wp(r.bodyB, r.localAnchorB, B);
+          g.beginPath(); g.moveTo(p.X(A[0]), p.Y(A[1])); g.lineTo(p.X(B[0]), p.Y(B[1]));
+          g.strokeStyle = tColor(T); g.lineWidth = Math.max(2.5, 0.09 * p.s); g.stroke();
+        }
+        g.lineCap = "butt";
+        for (const b of p.world.bodies) {
+          if (b.kind === "plank") p.local(b, (c) => {
+            c.fillStyle = "#b07a45"; c.fillRect(-0.4, -0.08, 0.8, 0.16);
+            c.strokeStyle = "#5a3a1e"; c.lineWidth = 0.03; c.strokeRect(-0.4, -0.08, 0.8, 0.16);
+          });
+          else if (b.kind === "crate") p.local(b, (c) => {
+            const h = b.size / 2;
+            c.fillStyle = b.color; c.fillRect(-h, -h, 2 * h, 2 * h);
+            c.strokeStyle = "rgba(0,0,0,.35)"; c.lineWidth = 0.05; c.strokeRect(-h, -h, 2 * h, 2 * h);
+            c.beginPath(); c.moveTo(-h, -h); c.lineTo(h, h); c.stroke();
+          });
+        }
+        const ch = car.chassis, comp = [];
+        car.wheels.forEach((w, i) => {
+          const rail = car.rails[i], sp = car.springs[i];
+          const ax = rail.localAnchorA[0] + 0.16;
+          const ra = p.wp(ch, [ax, -0.21]), rb = p.wp(ch, [ax, -0.5 + rail.lowerLimit]);
+          g.beginPath(); g.moveTo(p.X(ra[0]), p.Y(ra[1])); g.lineTo(p.X(rb[0]), p.Y(rb[1]));
+          g.strokeStyle = "#4cc9f0"; g.lineWidth = Math.max(1.5, 0.07 * p.s); g.stroke();
+          sp.getWorldAnchorA(A); sp.getWorldAnchorB(B);
+          zigzag(g, p.X(A[0]), p.Y(A[1]), p.X(B[0]), p.Y(B[1]), 14, 0.1 * p.s, "#f72585", Math.max(1.2, 0.045 * p.s));
+          comp.push(Math.round((sp.restLength - vec2.distance(A, B)) * 100));
+          p.local(w, (c) => {
+            c.fillStyle = "#1b1b1f"; c.beginPath(); c.arc(0, 0, 0.36, 0, TAU); c.fill();
+            c.strokeStyle = "#cfd3da"; c.lineWidth = 0.05;
+            for (let k = 0; k < 3; k++) { const a = (k / 3) * TAU; c.beginPath(); c.moveTo(0, 0); c.lineTo(Math.cos(a) * 0.27, Math.sin(a) * 0.27); c.stroke(); }
+          });
+        });
+        p.local(ch, (c) => {
+          c.fillStyle = "#e63946"; c.beginPath(); c.roundRect(-1, -0.21, 2, 0.42, 0.12); c.fill();
+          c.fillStyle = "#1d3557"; c.beginPath(); c.roundRect(-0.55, 0.18, 0.95, 0.36, [0.16, 0.16, 0, 0]); c.fill();
+          c.fillStyle = "#a8dadc"; c.fillRect(-0.45, 0.24, 0.75, 0.22);
+        });
+        p.drawGrab();
+        // Per-rope tension bars (solver multipliers), left to right along the bridge.
+        const bw = 6, bh = 34, bx = 10, by = H - 14 - 22 - 16;
+        g.fillStyle = "rgba(14,16,19,.7)";
+        g.beginPath(); g.roundRect(bx - 4, by - bh - 4, ropes.length * (bw + 2) + 6, bh + 8, 5); g.fill();
+        ropes.forEach((r, i) => {
+          const T = r.cut ? 0 : tension(r), h = Math.max(1, clamp(T / 400, 0, 1) * bh);
+          g.fillStyle = r.cut ? "#555" : tColor(T);
+          g.fillRect(bx + i * (bw + 2), by - h, bw, h);
+        });
+        stack(g, p, [`繩索張力 最大 ${Math.round(Tmax)} N`, `彈簧壓縮 左 ${comp[0]} cm・右 ${comp[1]} cm`]);
+        if (W >= 560) {
+          const alive = ropes.filter((r) => !r.cut).length;
+          stack(g, p, [[`距離約束 ${alive}`, { color: "#e9c46a" }], ["滑軌約束 2", { color: "#4cc9f0" }], ["線性彈簧 2", { color: "#f72585" }]], { x: W - 10, align: "right" });
+        }
+      };
+      p.go();
+    },
+  },
+  {
+    id: "shapes", title: "形狀與地形",
+    api: "new p2.Heightfield({ heights, elementWidth }) + body.fromPolygon(path) + World.BODY_SLEEPING",
+    desc: "地面是一整條 Heightfield（高度陣列），圓、方塊、凸多邊形與凹多邊形持續落下。p2 只能直接碰撞凸形，凹多邊形交給 body.fromPolygon() 自動切成數個凸塊（開「凸分解」看白線）。靜止的物體進入休眠（變淡）不再計算，按「新地形」換一組高度後會被喚醒。",
+    hint: "點空白處放物體・拖曳物體・切換掉落形狀",
+    mount(ctx) {
+      const KINDS = ["混合", "圓", "方塊", "凸多邊形", "凹多邊形"], EW = 0.5;
+      const PATHS = [
+        Array.from({ length: 10 }, (_, i) => { const a = (i / 10) * TAU + Math.PI / 2, r = i % 2 ? 0.32 : 0.78; return [Math.cos(a) * r, Math.sin(a) * r]; }),
+        [[-0.6, -0.6], [0.6, -0.6], [0.6, -0.2], [-0.2, -0.2], [-0.2, 0.6], [-0.6, 0.6]],
+        [[-0.7, 0.2], [-0.2, 0.2], [-0.2, -0.6], [0.2, -0.6], [0.2, 0.2], [0.7, 0.2], [0.7, 0.6], [-0.7, 0.6]],
+        [[-0.7, -0.5], [0.7, -0.5], [0.7, 0.5], [0.35, 0.5], [0.35, -0.15], [-0.35, -0.15], [-0.35, 0.5], [-0.7, 0.5]],
+        [[-0.8, -0.2], [0.1, -0.2], [0.1, -0.55], [0.8, 0], [0.1, 0.55], [0.1, 0.2], [-0.8, 0.2]],
+      ];
+      let kind = "混合", showParts = false, L = 0, MAX = 60, ph = rnd(0, 100), field = null, bodies = [];
+      ctx.select("掉落", KINDS, "混合", (v) => { kind = v; });
+      ctx.button("新地形", () => newTerrain());
+      ctx.toggle("凸分解", false, (v) => { showParts = v; });
+      const p = lab(ctx);
+      const hAt = (x, q = ph) => 2.1 + 1.2 * Math.sin(x * 0.5 + q) + 0.6 * Math.sin(x * 1.25 + q * 1.7) + 0.25 * Math.sin(x * 2.9 + q * 0.3);
+      function newTerrain() {
+        const old = ph;
+        if (field) { ph = rnd(0, 100); p.world.removeBody(field); }
+        const heights = [];
+        for (let i = 0; i <= Math.round(L / EW); i++) heights.push(hAt(i * EW));
+        field = p.add({ mass: 0 }, new p2.Heightfield({ heights, elementWidth: EW }));
+        field.hidden = true;
+        if (old === ph) return;
+        // Lift every body by how much the ground rose under it so nothing ends up buried, then wake it.
+        for (const b of bodies) {
+          const dh = hAt(b.position[0]) - hAt(b.position[0], old);
+          if (dh > 0) b.position[1] += dh + 0.1;
+          b.aabbNeedsUpdate = true;
+          b.wakeUp();
+        }
+      }
+      function spawn(x, y) {
+        if (bodies.length >= MAX) p.kill(bodies.shift());
+        const k = kind === "混合" ? pick(KINDS.slice(1)) : kind, color = pick(COLORS), angle = rnd(0, TAU);
+        let b;
+        if (k === "圓") b = p.add({ mass: 1, position: [x, y], angle }, new p2.Circle({ radius: rnd(0.3, 0.55) }), color);
+        else if (k === "方塊") b = p.add({ mass: 1, position: [x, y], angle }, new p2.Box({ width: rnd(0.5, 1.1), height: rnd(0.4, 0.9) }), color);
+        else if (k === "凸多邊形") {
+          const n = 3 + Math.floor(Math.random() * 4), r = rnd(0.4, 0.6);
+          const vertices = Array.from({ length: n }, (_, i) => [Math.cos((i / n) * TAU) * r, Math.sin((i / n) * TAU) * r]);
+          b = p.add({ mass: 1, position: [x, y], angle }, new p2.Convex({ vertices }), color);
+        } else {
+          b = new p2.Body({ mass: 1, position: [x, y] });
+          if (!b.fromPolygon(pick(PATHS).map((v) => v.slice()))) return null;
+          vec2.set(b.position, x, y);
+          b.angle = angle; b.color = color; b.concave = true; b.aabbNeedsUpdate = true;
+          p.world.addBody(b);
+        }
+        bodies.push(b);
+        return b;
+      }
+      function build() {
+        p.reset({ sleepMode: p2.World.BODY_SLEEPING });
+        field = null; bodies = [];
+        p.add({ mass: 0 }, [[new p2.Box({ width: 0.5, height: 24 }), [-0.25, 10]], [new p2.Box({ width: 0.5, height: 24 }), [L + 0.25, 10]]]);
+        newTerrain();
+        for (let i = 0; i < 12; i++) spawn(1.5 + (i % 6) * (L - 3) / 5, 7.5 + Math.floor(i / 6) * 2.2);
+      }
+      ctx.interval(() => spawn(rnd(1, L - 1), 12.4), 450);
+      p.onEmpty = (w) => { if (w[0] > 0.6 && w[0] < L - 0.6) spawn(w[0], Math.max(w[1], hAt(w[0]) + 0.8)); };
+      p.layout = (W, H) => {
+        const nl = W / H > 1.1 ? 24 : 12;
+        if (nl !== L) { L = nl; MAX = nl === 24 ? 60 : 30; build(); }
+        p.fit(-0.5, 0, L + 0.5, 13, { t: "auto" });
+      };
+      const drawConcave = (g, b) => {
+        g.globalAlpha = b.sleepState === p2.Body.SLEEPING ? 0.45 : 1;
+        g.beginPath();
+        b.concavePath.forEach((v, i) => { const w = p.wp(b, v); if (i) g.lineTo(p.X(w[0]), p.Y(w[1])); else g.moveTo(p.X(w[0]), p.Y(w[1])); });
+        g.closePath();
+        g.fillStyle = b.color; g.fill();
+        g.strokeStyle = "rgba(0,0,0,.35)"; g.lineWidth = 1; g.stroke();
+        if (showParts) {
+          g.beginPath();
+          for (const sh of b.shapes) p.path(b, sh);
+          g.strokeStyle = "rgba(255,255,255,.9)"; g.lineWidth = 1.2; g.stroke();
+        }
+        g.globalAlpha = 1;
+      };
+      p.draw = (g) => {
+        const hs = field.shapes[0].heights;
+        g.beginPath(); g.moveTo(p.X(0), p.Y(-1));
+        hs.forEach((h, i) => g.lineTo(p.X(i * EW), p.Y(h)));
+        g.lineTo(p.X(L), p.Y(-1)); g.closePath();
+        const soil = g.createLinearGradient(0, p.Y(4.5), 0, p.Y(0));
+        soil.addColorStop(0, "#2f4a3a"); soil.addColorStop(1, "#141a1f");
+        g.fillStyle = soil; g.fill();
+        g.beginPath();
+        hs.forEach((h, i) => { if (i) g.lineTo(p.X(i * EW), p.Y(h)); else g.moveTo(p.X(0), p.Y(h)); });
+        g.strokeStyle = "#7bd389"; g.lineWidth = 2; g.stroke();
+        hs.forEach((h, i) => { if (showParts) dot(g, p.X(i * EW), p.Y(h), 2, "#7bd389"); });
+        let awake = 0, nc = 0, np = 0;
+        for (const b of p.world.bodies) {
+          if (b.concave) { drawConcave(g, b); nc++; np += b.shapes.length; } else p.drawBody(b);
+          if (b.type === p2.Body.DYNAMIC && b.sleepState !== p2.Body.SLEEPING) awake++;
+        }
+        p.drawLinks();
+        stack(g, p, [`物體 ${bodies.length}/${MAX}・醒著 ${awake}・休眠 ${bodies.length - awake}`, `凹形 ${nc} 個 → 凸塊 ${np} 塊`]);
+      };
+      p.go();
+    },
+  },
+  {
+    id: "material", title: "接觸材質",
+    api: "new p2.ContactMaterial(matA, matB, { friction, restitution, stiffness, relaxation, surfaceVelocity })",
+    desc: "p2 的摩擦、彈性都定義在「兩種材質相遇」的 ContactMaterial 上，不在剛體本身。摩擦：25° 斜坡上四種 μ 比滑行距離；彈性：五種恢復係數比回彈高度（理論約 e²）；軟接觸：stiffness 與 relaxation 讓接觸變成彈簧，可陷入或彈回；輸送帶：surfaceVelocity 讓表面自己帶動物體。",
+    hint: "切換上方模式・輸送帶模式可調帶速・可拖曳物體",
+    mount(ctx) {
+      const MODES = ["摩擦", "彈性", "軟接觸", "輸送帶"];
+      let mode = 0, cur = null, clock = 0, speed = 3;
+      ctx.group(MODES, 0, (i) => { mode = i; spd.parentElement.style.display = i === 3 ? "" : "none"; start(); });
+      ctx.button("重來", () => start());
+      const spd = ctx.slider("帶速", { min: 0, max: 6, step: 0.5, value: 3, format: (v) => `${v} m/s` }, (v) => { speed = v; if (cur.setSpeed) cur.setSpeed(v); });
+      spd.parentElement.style.display = "none";
+      const p = lab(ctx, { hz: 120 });
+      const fixed = (x, y, w, h, angle, material) => p.add({ mass: 0, position: [x, y], angle }, new p2.Box({ width: w, height: h, material }));
+      const pair = (a, b, o) => p.world.addContactMaterial(new p2.ContactMaterial(a, b, o));
+
+      function friction() {
+        const MU = [0, 0.15, 0.3, 0.5], A = (-25 * Math.PI) / 180;
+        const dir = [Math.cos(A), Math.sin(A)], n = [-Math.sin(A), Math.cos(A)], ground = new p2.Material();
+        const items = MU.map((mu, i) => {
+          const ox = (i % 2) * 10.6, oy = i < 2 ? 7 : 0, c = [ox + 4.4, oy + 2.25];
+          fixed(c[0], c[1], 8, 0.2, A, ground);
+          fixed(ox + 9.2, oy + 0.45, 2.6, 0.2, 0, ground);
+          fixed(ox + 10.4, oy + 0.95, 0.2, 1.2, 0, ground);
+          const mat = new p2.Material();
+          pair(ground, mat, { friction: mu, restitution: 0 });
+          const b = p.add({ mass: 1, angle: A, position: [c[0] - 3 * dir[0] + n[0] * 0.41, c[1] - 3 * dir[1] + n[1] * 0.41] }, new p2.Box({ width: 0.6, height: 0.6, material: mat }), COLORS[i]);
+          return { b, mu, ox, oy, start: vec2.clone(b.position) };
+        });
+        return {
+          rect: [0, -1.4, 21.2, 12.6], period: 4.5,
+          draw(g) {
+            for (const it of items) {
+              chip(g, `μ = ${it.mu}`, p.X(it.ox + 0.3), p.Y(it.oy + 5), { align: "left", mono: true, color: it.b.color });
+              const v = vec2.length(it.b.velocity), d = vec2.distance(it.b.position, it.start);
+              chip(g, `${v > 0.05 ? "滑動中" : "停住"}・${d.toFixed(1)} m`, p.X(it.ox + 8.4), p.Y(it.oy) + 14, { fit: p.W });
+            }
+            stack(g, p, ["臨界 μ ≈ sin25° ≈ 0.42（p2 摩擦力取 μmg）"]);
+          },
+        };
+      }
+      function bounce() {
+        const E = [0, 0.3, 0.6, 0.8, 0.95], H0 = 8, R = 0.5, floorMat = new p2.Material();
+        fixed(10, -0.5, 20, 1, 0, floorMat);
+        const items = E.map((e, i) => {
+          const mat = new p2.Material();
+          pair(floorMat, mat, { restitution: e, friction: 0 });
+          const b = p.add({ mass: 1, position: [2 + i * 4, H0], damping: 0, angularDamping: 0 }, new p2.Circle({ radius: R, material: mat }), COLORS[i]);
+          return { b, e, bounced: false, done: false, peak: 0 };
+        });
+        return {
+          rect: [0, -2, 20, 10], period: 6,
+          after() {
+            for (const it of items) {
+              const vy = it.b.velocity[1];
+              if (!it.bounced && vy > 0.3) it.bounced = true;
+              if (it.bounced && !it.done) { it.peak = Math.max(it.peak, it.b.position[1]); if (vy < 0) it.done = true; }
+            }
+          },
+          draw(g) {
+            for (const it of items) {
+              const x = p.X(it.b.position[0]);
+              chip(g, `e = ${it.e}`, x, p.Y(H0 + R) - 14, { mono: true, color: it.b.color });
+              if (it.bounced) dashLine(g, x - 0.9 * p.s, p.Y(it.peak), x + 0.9 * p.s, p.Y(it.peak), it.b.color);
+              const ratio = Math.round(((it.peak - R) / (H0 - R)) * 100);
+              const txt = it.done ? `實測 ${ratio}%` : it.bounced ? "回彈中" : clock > 1.8 ? "實測 0%" : "下落中";
+              chip(g, txt, x, p.Y(0) + 14);
+              chip(g, `理論 ${Math.round(it.e * it.e * 100)}%`, x, p.Y(0) + 37, { color: MUTED });
+            }
+          },
+        };
+      }
+      function soft() {
+        const CFG = [[1e6, 4, "1e6"], [150, 4, "150"], [150, 1, "150"]], HB = 1.2, floorMat = new p2.Material();
+        fixed(9, -0.5, 18, 1, 0, floorMat);
+        const items = CFG.map(([k, r, ks], i) => {
+          const mat = new p2.Material();
+          pair(floorMat, mat, { stiffness: k, relaxation: r, friction: 0.5, restitution: 0 });
+          const b = p.add({ mass: 1, position: [3 + i * 6, 3.4] }, new p2.Box({ width: HB, height: HB, material: mat }), COLORS[i + 2]);
+          return { b, ks, r, max: 0, now: 0 };
+        });
+        return {
+          rect: [0, -1.6, 18, 5.6], period: 5,
+          after() { for (const it of items) { it.now = Math.max(0, HB / 2 - it.b.position[1]); it.max = Math.max(it.max, it.now); } },
+          draw(g) {
+            for (const it of items) {
+              const x = p.X(it.b.position[0]);
+              chip(g, `k=${it.ks} r=${it.r}`, x, p.Y(4.6), { mono: true, color: it.b.color });
+              chip(g, `最深 ${Math.round(it.max * 100)} cm`, x, p.Y(0) + 14);
+              chip(g, `現在 ${Math.round(it.now * 100)} cm`, x, p.Y(0) + 37, { color: MUTED });
+            }
+          },
+        };
+      }
+      function belt() {
+        const boxMat = new p2.Material(), boxes = [];
+        const belts = [[1, 15, 9, 1], [5, 19, 6.5, -1], [1, 15, 4, 1], [5, 19, 1.5, -1]].map(([x0, x1, y, dir]) => {
+          const mat = new p2.Material(), cm = new p2.ContactMaterial(mat, boxMat, { friction: 0.8, surfaceVelocity: -dir * speed });
+          p.world.addContactMaterial(cm);
+          fixed((x0 + x1) / 2, y, x1 - x0, 0.3, 0, mat);
+          return { x0, x1, y, dir, cm };
+        });
+        let next = 0;
+        return {
+          rect: [0, -0.5, 20, 12],
+          setSpeed(v) { for (const b of belts) b.cm.surfaceVelocity = -b.dir * v; },
+          after() {
+            if (clock > next && boxes.length < 10) {
+              next = clock + 1.2;
+              boxes.push(p.add({ mass: 1, position: [2, 11], angle: rnd(-0.3, 0.3) }, new p2.Box({ width: 0.7, height: 0.7, material: boxMat }), pick(COLORS)));
+            }
+            for (const b of boxes.slice()) if (b.position[1] < 0) { p.kill(b); boxes.splice(boxes.indexOf(b), 1); }
+          },
+          draw(g) {
+            g.strokeStyle = "rgba(255,183,3,.75)"; g.lineWidth = 1.5;
+            for (const b of belts) {
+              const off = (((p.time * speed * b.dir) % 1) + 1) % 1, y = p.Y(b.y), hw = 0.09 * p.s;
+              g.beginPath();
+              for (let x = b.x0 + off; x < b.x1 - 0.1; x += 1) {
+                const sx = p.X(x);
+                g.moveTo(sx - hw * b.dir, y - hw); g.lineTo(sx + hw * b.dir, y); g.lineTo(sx - hw * b.dir, y + hw);
+              }
+              g.stroke();
+            }
+            const riding = boxes.filter((b) => Math.abs(b.velocity[1]) < 0.05);
+            const avg = riding.length ? riding.reduce((s, b) => s + Math.abs(b.velocity[0]), 0) / riding.length : 0;
+            stack(g, p, [`帶速設定 ${speed} m/s・箱子 ${boxes.length}`, `皮帶上的箱子實測 ${avg.toFixed(2)} m/s`]);
+          },
+        };
+      }
+      function start() {
+        p.reset();
+        cur = [friction, bounce, soft, belt][mode]();
+        clock = 0;
+        if (p.W) p.layout(p.W, p.H);
+      }
+      p.layout = () => p.fit(...cur.rect, { t: "auto" });
+      p.after = () => {
+        clock += p.dt;
+        if (cur.after) cur.after();
+        if (cur.period && clock > cur.period) start();
+      };
+      p.draw = (g) => { p.drawWorld(); cur.draw(g); };
+      start();
+      p.go();
+    },
+  },
+  {
+    id: "constraints", title: "約束大全",
+    api: "RevoluteConstraint / PrismaticConstraint / GearConstraint / DistanceConstraint / LockConstraint",
+    desc: "p2 的五種約束各放一格：旋轉馬達加扭矩上限（卡住就停）、關節角度限制、滑軌馬達（上下限自動折返）、齒輪比（不靠碰撞，用 GearConstraint 綁轉速）、剛桿對繩（DistanceConstraint 只開上限就是繩）、LockConstraint 焊成的懸臂樑（定時解鎖散落；梢端下垂量反映迭代求解器沒有完全收斂，本場景用 30 次迭代）。",
+    hint: "拖曳任何零件・調馬達速度・按「解除鎖定」",
+    mount(ctx) {
+      const CW = 8, CH = 7, GAP = 0.4;
+      let wide = null, cells = [], tasks = [], speed = 2, frame = null;
+      ctx.slider("馬達速度", { min: 0.5, max: 6, step: 0.5, value: 2, format: (v) => `${v} rad/s` }, (v) => {
+        speed = v;
+        for (const o of cells) if (o.speed) o.speed(v);
+      });
+      ctx.button("解除鎖定", () => { for (const o of cells) if (o.unlock) o.unlock(); });
+      ctx.button("重設", () => build());
+      const p = lab(ctx);
+      const every = (period, fn) => tasks.push({ period, fn, t: period });
+      const joint = (a, b, x, y, o = {}) => { const j = new p2.RevoluteConstraint(a, b, { worldPivot: [x, y], ...o }); p.world.addConstraint(j); return j; };
+      const capMotor = (eq, f) => { eq.maxForce = f; eq.minForce = -f; };
+
+      function rotorCell(ox, oy) {
+        const cx = ox + 4, cy = oy + 2.6;
+        const rotor = p.add({ mass: 2, position: [cx, cy], angle: Math.PI / 4 }, [new p2.Box({ width: 4.2, height: 0.25 }), new p2.Box({ width: 0.25, height: 4.2 })], COLORS[4]);
+        const j = joint(frame, rotor, cx, cy);
+        j.enableMotor(); j.setMotorSpeed(-speed); capMotor(j.motorEquation, 60);
+        for (let k = 0; k < 6; k++) p.add({ mass: 0.4, position: [ox + 0.6 + k * 0.75, oy + 0.55] }, new p2.Circle({ radius: 0.35 }), COLORS[k]);
+        // When the balls jam the rotor the capped motor cannot push through; after 0.8 s of stall, reverse.
+        let dir = 1, stall = 0, flips = 0;
+        return {
+          name: "馬達＋扭矩上限 60",
+          info: () => `ω ${Math.abs(rotor.angularVelocity) < 0.05 ? "0.0" : rotor.angularVelocity.toFixed(1)} rad/s・卡住反轉 ${flips} 次`,
+          speed: (v) => j.setMotorSpeed(-v * dir),
+          tick() {
+            stall = Math.abs(rotor.angularVelocity) < 0.2 ? stall + p.dt : 0;
+            if (stall > 0.8) { dir = -dir; j.setMotorSpeed(-speed * dir); stall = 0; flips++; }
+          },
+        };
+      }
+      function chainCell(ox, oy) {
+        const L = 1.1, x0 = ox + 1.6, y0 = oy + 4.6, links = [], joints = [];
+        for (let i = 0; i < 4; i++) links.push(p.add({ mass: 0.5, position: [x0 + L / 2 + i * L, y0] }, new p2.Box({ width: L, height: 0.22 }), COLORS[(i + 1) % 6]));
+        links.forEach((b, i) => {
+          const j = joint(i ? links[i - 1] : frame, b, x0 + i * L, y0, { collideConnected: false });
+          j.setLimits(i ? -0.5 : -0.6, i ? 0.5 : 0.6);
+          joints.push(j);
+        });
+        const root = joints[0];
+        let dir = 1;
+        root.enableMotor(); root.setMotorSpeed(-1.5); capMotor(root.motorEquation, 80);
+        every(1.5, () => { dir = -dir; root.setMotorSpeed(-1.5 * dir); });
+        return {
+          name: "角度限制",
+          info: () => `根關節 ${Math.round((root.angle * 180) / Math.PI)}°（±34°）`,
+          draw(g) {
+            for (const j of joints) {
+              const q = p.wp(j.bodyB, j.pivotB), cx = p.X(q[0]), cy = p.Y(q[1]), a = j.bodyA.angle;
+              g.beginPath(); g.moveTo(cx, cy); g.arc(cx, cy, 0.45 * p.s, -(a + j.upperLimit), -(a + j.lowerLimit)); g.closePath();
+              g.fillStyle = "rgba(255,183,3,.18)"; g.fill();
+              g.strokeStyle = "rgba(255,183,3,.6)"; g.lineWidth = 1; g.stroke();
+            }
+          },
+        };
+      }
+      function liftCell(ox, oy) {
+        const plat = p.add({ mass: 2, position: [ox + 4, oy + 0.6] }, new p2.Box({ width: 2.6, height: 0.25 }), COLORS[2]);
+        const pc = new p2.PrismaticConstraint(frame, plat, { localAnchorA: [ox + 4, oy + 0.6], localAnchorB: [0, 0], localAxisA: [0, 1], lowerLimit: 0, upperLimit: 3.4 });
+        pc.enableMotor(); pc.motorSpeed = 1.5;
+        p.world.addConstraint(pc);
+        p.add({ mass: 0.5, position: [ox + 4.2, oy + 1.2] }, new p2.Box({ width: 0.8, height: 0.8 }), COLORS[1]);
+        return {
+          name: "滑軌馬達",
+          info: () => `位置 ${pc.position.toFixed(2)} m（0 到 3.4）`,
+          tick() { if (pc.position > 3.35) pc.motorSpeed = -1.5; else if (pc.position < 0.05) pc.motorSpeed = 1.5; },
+          draw(g) {
+            for (const dx of [-1.45, 1.45]) dashLine(g, p.X(ox + 4 + dx), p.Y(oy + 0.45), p.X(ox + 4 + dx), p.Y(oy + 4.15), "rgba(76,201,240,.6)", 1.5);
+          },
+        };
+      }
+      function gearCell(ox, oy) {
+        const gears = [[2.2, 1.0, 16, 0], [3.7, 0.5, 8, Math.PI / 8], [5.2, 1.0, 16, 0]].map(([x, r, n, a0]) => {
+          const b = p.add({ mass: 1, position: [ox + x, oy + 3.4], angle: a0 }, new p2.Circle({ radius: r + 0.1, collisionMask: 0 }));
+          b.hidden = true; b.gearR = r; b.gearN = n;
+          b.pin = joint(frame, b, ox + x, oy + 3.4);
+          return b;
+        });
+        const drive = gears[0].pin;
+        drive.enableMotor(); drive.setMotorSpeed(-speed / 2); capMotor(drive.motorEquation, 30);
+        p.world.addConstraint(new p2.GearConstraint(gears[0], gears[1], { ratio: -2 }));
+        p.world.addConstraint(new p2.GearConstraint(gears[1], gears[2], { ratio: -0.5 }));
+        const w = (i) => gears[i].angularVelocity;
+        return {
+          name: "齒輪比",
+          info: () => (Math.abs(w(0)) > 0.01 ? `轉速比 1 : ${(w(1) / w(0)).toFixed(1)} : ${(w(2) / w(0)).toFixed(1)}` : "轉速比 -"),
+          speed: (v) => drive.setMotorSpeed(-v / 2),
+          draw(g) {
+            gears.forEach((b, i) => {
+              const cx = p.X(b.position[0]), cy = p.Y(b.position[1]), r = b.gearR, pa = TAU / b.gearN;
+              g.beginPath();
+              for (let k = 0; k < b.gearN; k++) {
+                const m = b.angle + k * pa;
+                [[m - 0.3 * pa, r - 0.1], [m - 0.18 * pa, r + 0.1], [m + 0.18 * pa, r + 0.1], [m + 0.3 * pa, r - 0.1]].forEach(([a, rr], q) => {
+                  const x = cx + Math.cos(a) * rr * p.s, y = cy - Math.sin(a) * rr * p.s;
+                  if (k === 0 && q === 0) g.moveTo(x, y); else g.lineTo(x, y);
+                });
+              }
+              g.closePath();
+              g.fillStyle = COLORS[i + 1]; g.fill();
+              g.strokeStyle = "rgba(0,0,0,.4)"; g.lineWidth = 1; g.stroke();
+              g.beginPath(); g.moveTo(cx, cy); g.lineTo(cx + Math.cos(b.angle) * r * 0.7 * p.s, cy - Math.sin(b.angle) * r * 0.7 * p.s);
+              g.strokeStyle = "rgba(0,0,0,.55)"; g.lineWidth = 2; g.stroke();
+              dot(g, cx, cy, 3, "#0e1013");
+            });
+          },
+        };
+      }
+      function ropeCell(ox, oy) {
+        const L = 2.3, A1 = [ox + 2.5, oy + 5.4], A2 = [ox + 5.5, oy + 5.4];
+        const rodBall = p.add({ mass: 1, position: [A1[0], A1[1] - L] }, new p2.Circle({ radius: 0.35 }), COLORS[0]);
+        const ropeBall = p.add({ mass: 1, position: [A2[0], A2[1] - L] }, new p2.Circle({ radius: 0.35 }), COLORS[3]);
+        const rod = new p2.DistanceConstraint(frame, rodBall, { localAnchorA: A1, localAnchorB: [0, 0], distance: L });
+        const rope = new p2.DistanceConstraint(frame, ropeBall, { localAnchorA: A2, localAnchorB: [0, 0], distance: L });
+        rope.lowerLimitEnabled = false; rope.upperLimitEnabled = true; rope.upperLimit = L;
+        rod.style = rope.style = "none";
+        p.world.addConstraint(rod); p.world.addConstraint(rope);
+        let taut = true;
+        every(3, () => { vec2.set(rodBall.velocity, -4, 0); vec2.set(ropeBall.velocity, 3, 3); });
+        return {
+          name: "剛桿與繩",
+          info: () => (taut ? "繩：拉緊" : "繩：鬆弛"),
+          tick() { taut = vec2.distance(ropeBall.position, A2) > 0.99 * L; },
+          draw(g) {
+            g.lineCap = "round";
+            g.beginPath(); g.moveTo(p.X(A1[0]), p.Y(A1[1])); g.lineTo(p.X(rodBall.position[0]), p.Y(rodBall.position[1]));
+            g.strokeStyle = INK; g.lineWidth = Math.max(3, 0.1 * p.s); g.stroke();
+            const bx = ropeBall.position[0], by = ropeBall.position[1], sag = taut ? 0 : L - vec2.distance(ropeBall.position, A2);
+            g.beginPath(); g.moveTo(p.X(A2[0]), p.Y(A2[1]));
+            g.quadraticCurveTo(p.X((A2[0] + bx) / 2), p.Y((A2[1] + by) / 2 - sag * 1.2), p.X(bx), p.Y(by));
+            g.strokeStyle = taut ? AMBER : "rgba(255,183,3,.55)"; g.lineWidth = 2; g.stroke();
+            g.lineCap = "butt";
+            dot(g, p.X(A1[0]), p.Y(A1[1]), 3.5, INK); dot(g, p.X(A2[0]), p.Y(A2[1]), 3.5, INK);
+          },
+        };
+      }
+      function lockCell(ox, oy) {
+        let segs = [], locks = [], load = null, freeAt = -1;
+        const make = () => {
+          for (const b of segs) p.kill(b);
+          if (load) p.kill(load);
+          segs = []; locks = [];
+          for (let i = 0; i < 4; i++) segs.push(p.add({ mass: 0.6, position: [ox + 0.86 + i * 1.4, oy + 4.2] }, new p2.Box({ width: 1.4, height: 0.3 }), i % 2 ? COLORS[4] : COLORS[2]));
+          segs.forEach((b, i) => {
+            const c = new p2.LockConstraint(i ? segs[i - 1] : frame, b, { collideConnected: false });
+            p.world.addConstraint(c);
+            locks.push(c);
+          });
+          load = p.add({ mass: 1, position: [ox + 3.6, oy + 4.75] }, new p2.Box({ width: 0.8, height: 0.8 }), COLORS[1]);
+          freeAt = -1;
+        };
+        make();
+        const unlock = () => {
+          if (freeAt >= 0) return;
+          for (const c of locks.slice(1)) p.world.removeConstraint(c);
+          freeAt = p.time;
+        };
+        every(8, unlock);
+        return {
+          name: "鎖定約束",
+          unlock,
+          info: () => (freeAt < 0 ? `鎖定中・梢端下垂 ${Math.max(0, (oy + 4.2 - segs[3].position[1]) * 100).toFixed(1)} cm` : "已解鎖，稍後重建"),
+          tick() { if (freeAt >= 0 && p.time - freeAt > 2.5) make(); },
+        };
+      }
+      const MAKERS = [rotorCell, chainCell, liftCell, gearCell, ropeCell, lockCell];
+      function build() {
+        p.reset();
+        p.world.solver.iterations = 30;
+        tasks = []; cells = [];
+        frame = new p2.Body({ mass: 0 });
+        p.world.addBody(frame);
+        const cols = wide ? 3 : 2, rows = 6 / cols;
+        MAKERS.forEach((make, i) => {
+          const ox = (i % cols) * (CW + GAP), oy = (rows - 1 - Math.floor(i / cols)) * (CH + GAP), T = 0.16;
+          frame.addShape(new p2.Box({ width: CW, height: T }), [ox + CW / 2, oy + T / 2]);
+          frame.addShape(new p2.Box({ width: CW, height: T }), [ox + CW / 2, oy + CH - T / 2]);
+          frame.addShape(new p2.Box({ width: T, height: CH }), [ox + T / 2, oy + CH / 2]);
+          frame.addShape(new p2.Box({ width: T, height: CH }), [ox + CW - T / 2, oy + CH / 2]);
+          cells.push({ x: ox, y: oy, ...make(ox, oy) });
+        });
+      }
+      p.layout = (W, H) => {
+        const top = below(ctx);
+        const sw = Math.min((W - 24) / 24.8, (H - top - 12) / 14.4), sn = Math.min((W - 24) / 16.4, (H - top - 12) / 21.8);
+        if ((sw >= sn) !== wide) { wide = sw >= sn; build(); }
+        const cols = wide ? 3 : 2, rows = 6 / cols;
+        p.fit(0, 0, cols * CW + (cols - 1) * GAP, rows * CH + (rows - 1) * GAP, { t: top });
+      };
+      p.after = (dt) => {
+        for (const t of tasks) { t.t -= dt; if (t.t <= 0) { t.t += t.period; t.fn(); } }
+        for (const o of cells) if (o.tick) o.tick();
+      };
+      p.draw = (g) => {
+        for (const o of cells) { g.fillStyle = "rgba(255,255,255,.025)"; g.fillRect(p.X(o.x), p.Y(o.y + CH), CW * p.s, CH * p.s); }
+        p.drawWorld();
+        const size = p.s < 30 ? 10 : 11;
+        for (const o of cells) {
+          if (o.draw) o.draw(g);
+          const x = p.X(o.x) + 4, y = p.Y(o.y + CH) + size / 2 + 8;
+          chip(g, o.name, x, y, { align: "left", size });
+          chip(g, o.info(), x, y + size + 10, { align: "left", size, color: AMBER });
+        }
+        p.drawGrab();
+      };
+      p.go();
+    },
+  },
+  {
+    id: "springs", title: "彈簧與軟體",
+    api: "new p2.LinearSpring(bodyA, bodyB, { stiffness, damping, restLength })",
+    desc: "果凍：每團是 15 個小圓剛體用 42 條 LinearSpring 連成網（外圈相鄰、隔一個、中心放射），外框是依節點位置畫的平滑曲線，勁度與阻尼可即時改。阻尼比較：四個同質量方塊掛在同勁度彈簧上，阻尼 c 由 0 到臨界值 2√(km)，右側示波器畫出位移隨時間衰減。",
+    hint: "拖曳果凍・切換「阻尼比較」看示波器・調勁度 k",
+    mount(ctx) {
+      let mode = 0, k = 80, c = 0.6, land = null, blobs = [], boxes = [], hist = [], clock = 0, rect = null, scope = null, yEq = 0, kicks = 0;
+      ctx.group(["果凍", "阻尼比較"], 0, (i) => { mode = i; cs.parentElement.style.display = i ? "none" : ""; build(); });
+      ctx.slider("勁度 k", { min: 20, max: 300, step: 10, value: 80, format: (v) => `${v} N/m` }, (v) => {
+        k = v;
+        if (mode) build(); else for (const sp of p.world.springs) sp.stiffness = v;
+      });
+      const cs = ctx.slider("阻尼 c", { min: 0, max: 2, step: 0.1, value: 0.6, format: (v) => v.toFixed(1) }, (v) => {
+        c = v;
+        if (!mode) for (const sp of p.world.springs) sp.damping = v;
+      });
+      const p = lab(ctx, { hz: 120 });
+      p.pick = (w) => {
+        let best = null, bd = 0.9;
+        for (const b of p.world.bodies) {
+          if (b.type !== p2.Body.DYNAMIC) continue;
+          const d = vec2.distance(b.position, w);
+          if (d < bd) { bd = d; best = b; }
+        }
+        return best;
+      };
+      function jelly() {
+        const [AW, AH] = land ? [20, 12.5] : [12, 18];
+        p.add({ mass: 0 }, [
+          [new p2.Box({ width: AW + 2, height: 1 }), [AW / 2, -0.5]], [new p2.Box({ width: AW + 2, height: 1 }), [AW / 2, AH + 0.5]],
+          [new p2.Box({ width: 1, height: AH }), [-0.5, AH / 2]], [new p2.Box({ width: 1, height: AH }), [AW + 0.5, AH / 2]],
+        ]);
+        for (const q of land ? [[7, 3.5], [13, 3.5], [10, 6.5]] : [[3.5, 4.5], [8.5, 4.5], [6, 8.5]]) p.add({ mass: 0, position: q }, new p2.Circle({ radius: 0.4 }));
+        blobs = (land ? [4, 10, 16] : [2.5, 6, 9.5]).map((bx, j) => {
+          const by = land ? 8 : 13.5, N = 14, R = 1.1, nodes = [];
+          const center = p.add({ mass: 0.3, position: [bx, by] }, new p2.Circle({ radius: 0.25 }));
+          for (let i = 0; i < N; i++) {
+            const a = (i / N) * TAU;
+            nodes.push(p.add({ mass: 0.08, position: [bx + Math.cos(a) * R, by + Math.sin(a) * R] }, new p2.Circle({ radius: 0.18 })));
+          }
+          const springs = [];
+          const sp = (a, b) => { const s = new p2.LinearSpring(a, b, { stiffness: k, damping: c }); s.style = "none"; p.world.addSpring(s); springs.push(s); };
+          for (let i = 0; i < N; i++) { sp(nodes[i], nodes[(i + 1) % N]); sp(nodes[i], nodes[(i + 2) % N]); sp(center, nodes[i]); }
+          center.hidden = true;
+          for (const n of nodes) n.hidden = true;
+          return { center, nodes, springs, color: COLORS[[0, 2, 3][j]] };
+        });
+        return [-0.4, -0.4, AW + 0.4, AH + 0.4];
+      }
+      function compare() {
+        const bx = land ? 4.5 : 4.75, by = land ? 10 : 17, crit = 2 * Math.sqrt(k);
+        yEq = by - 3 - 10 / k - 0.4;
+        const bar = p.add({ mass: 0, position: [bx, by] }, new p2.Box({ width: 9, height: 0.2 }));
+        boxes = [0, 0.4, 1.5, crit].map((cc, i) => {
+          const x = bx - 3 + 2 * i;
+          const b = p.add({ mass: 1, position: [x, yEq - 2], fixedX: true, fixedRotation: true, damping: 0 }, new p2.Box({ width: 1, height: 0.8 }), COLORS[i]);
+          const s = new p2.LinearSpring(bar, b, { localAnchorA: [x - bx, 0], localAnchorB: [0, 0.4], restLength: 3, stiffness: k, damping: cc });
+          s.color = COLORS[i];
+          p.world.addSpring(s);
+          return { b, cc, crit: i === 3 };
+        });
+        scope = land ? [10, 2, 19.5, 9] : [0.4, 1, 9.1, 8.6];
+        return land ? [0, 1, 20, 10.9] : [0, 0.4, 9.5, 17.9];
+      }
+      function build() {
+        p.reset();
+        blobs = []; boxes = []; hist = []; clock = 0;
+        rect = mode ? compare() : jelly();
+        if (p.W) p.layout(p.W, p.H);
+      }
+      ctx.interval(() => {
+        if (mode || !blobs.length) return;
+        const bl = blobs[kicks++ % blobs.length], vx = rnd(-3, 3);
+        for (const n of [bl.center, ...bl.nodes]) { n.velocity[0] += vx; n.velocity[1] += 8; }
+      }, 4000);
+      p.layout = (W, H) => {
+        const l = W / H > 1.1;
+        if (l !== land) { land = l; build(); return; }
+        p.fit(...rect, { t: "auto" });
+      };
+      p.after = () => {
+        if (!mode) return;
+        clock += p.dt;
+        hist.push(boxes.map((o) => o.b.position[1] - yEq));
+        if (clock > 5) build();
+      };
+      const drawBlob = (g, bl) => {
+        const cx = bl.center.position[0], cy = bl.center.position[1];
+        const pts = bl.nodes.map((n) => {
+          const dx = n.position[0] - cx, dy = n.position[1] - cy, d = Math.hypot(dx, dy) || 1, e = (d + 0.18) / d;
+          return [p.X(cx + dx * e), p.Y(cy + dy * e)];
+        });
+        g.strokeStyle = "rgba(255,255,255,.12)"; g.lineWidth = 1;
+        g.beginPath();
+        for (const q of pts) { g.moveTo(p.X(cx), p.Y(cy)); g.lineTo(q[0], q[1]); }
+        g.stroke();
+        const N = pts.length, mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+        g.beginPath();
+        const m0 = mid(pts[N - 1], pts[0]);
+        g.moveTo(m0[0], m0[1]);
+        for (let i = 0; i < N; i++) { const q = pts[i], m = mid(q, pts[(i + 1) % N]); g.quadraticCurveTo(q[0], q[1], m[0], m[1]); }
+        g.closePath();
+        g.fillStyle = bl.color + "b0"; g.fill();
+        g.strokeStyle = bl.color; g.lineWidth = 2; g.stroke();
+        const v = bl.center.velocity, sp = Math.hypot(v[0], v[1]) || 1, lx = (v[0] / sp) * 0.07 * p.s, ly = (-v[1] / sp) * 0.07 * p.s;
+        for (const ex of [-0.32, 0.32]) {
+          const x = p.X(cx + ex), y = p.Y(cy + 0.25);
+          dot(g, x, y, 0.2 * p.s, "#fff");
+          dot(g, x + lx, y + ly, 0.09 * p.s, "#0e1013");
+        }
+      };
+      p.draw = (g) => {
+        for (const b of p.world.bodies) p.drawBody(b);
+        if (!mode) {
+          for (const bl of blobs) drawBlob(g, bl);
+          p.drawLinks();
+          stack(g, p, [`3 團 × 15 剛體・每團 42 條彈簧`, `k = ${k} N/m・c = ${c.toFixed(1)}`]);
+          return;
+        }
+        p.drawLinks();
+        for (const o of boxes) {
+          const t = o.crit ? `c=${o.cc.toFixed(1)} 臨界` : `c=${o.cc}`;
+          chip(g, t, p.X(o.b.position[0]), p.Y(o.b.position[1]) + 0.4 * p.s + 14, { color: o.b.color, size: p.s < 30 ? 10 : 11 });
+        }
+        const [x0, y0, x1, y1] = scope, L = p.X(x0), R = p.X(x1), T = p.Y(y1), Bt = p.Y(y0), mid = (T + Bt) / 2;
+        g.fillStyle = "rgba(255,255,255,.035)"; g.fillRect(L, T, R - L, Bt - T);
+        dashLine(g, L, mid, R, mid);
+        boxes.forEach((o, i) => {
+          g.beginPath();
+          hist.forEach((row, j) => { const x = L + (j / 600) * (R - L), y = mid - (row[i] / 2.3) * ((Bt - T) / 2); if (j) g.lineTo(x, y); else g.moveTo(x, y); });
+          g.strokeStyle = o.b.color; g.lineWidth = 1.6; g.stroke();
+        });
+        chip(g, "位移對時間（5 秒）", L + 4, T + 14, { align: "left", size: 10 });
+        stack(g, p, [`k = ${k} N/m・m = 1 kg`, `臨界阻尼 2√(km) = ${(2 * Math.sqrt(k)).toFixed(1)}`]);
+      };
+      p.go();
+    },
+  },
+  {
+    id: "vehicle", title: "俯視載具",
+    api: "new p2.TopDownVehicle(chassis) + addWheel({ localPosition }) + wheel.setSideFriction()",
+    desc: "零重力的俯視世界：TopDownVehicle 給每個輪子一條側向摩擦約束與引擎推力，前輪轉向。自動駕駛沿 8 字路線繞圈；調低後輪抓地力，過彎時後輪側滑（甩尾）會留下胎痕。三角錐是一般動態剛體，靠線性阻尼模擬地面摩擦，可被撞飛。",
+    hint: "方向鍵或 WASD 接手駕駛（放開 2 秒回到自動）・調後輪抓地",
+    mount(ctx) {
+      let grip = 4, land = null, AW = 32, AH = 20, car = null, fw = null, bw = null, pts = [], tgt = 0, cones = [], skids = [], last = null, slip = 0, lastKey = -9, manual = false;
+      const keys = new Set();
+      ctx.slider("後輪抓地", { min: 1, max: 8, step: 0.5, value: 4, format: (v) => `${v}` }, (v) => { grip = v; if (bw) bw.setSideFriction(v); });
+      ctx.button("重擺錐桶", () => placeCones());
+      const p = lab(ctx, { gravity: 0 });
+      const KEYMAP = { ArrowUp: "u", KeyW: "u", ArrowDown: "d", KeyS: "d", ArrowLeft: "l", KeyA: "l", ArrowRight: "r", KeyD: "r" };
+      const ignore = (e) => e.target instanceof Element && e.target.closest("[role=tab], input, select, textarea");
+      ctx.on(window, "keydown", (e) => {
+        const k = KEYMAP[e.code];
+        if (!k || ignore(e)) return;
+        e.preventDefault();
+        keys.add(k); lastKey = p.time;
+      });
+      ctx.on(window, "keyup", (e) => { const k = KEYMAP[e.code]; if (k) { keys.delete(k); lastKey = p.time; } });
+      const route = (t) => { const a = 11 * Math.sin(t), b = 6 * Math.sin(2 * t); return land ? [16 + a, 10 + b] : [10 + b, 16 + a]; };
+      function placeCones() {
+        for (const c of cones) p.kill(c);
+        cones = [];
+        const mk = (x, y) => cones.push(p.add({ mass: 0.15, position: [x, y], damping: 0.9, angularDamping: 0.9 }, new p2.Circle({ radius: 0.24 }), COLORS[5]));
+        const c0 = route(0), h = route(1.5 * Math.PI);
+        for (let r = 0; r < 4; r++) for (let i = 0; i <= r; i++) mk(c0[0] + (i - r / 2) * 0.6, c0[1] + (1.5 - r) * 0.55);
+        for (let i = 0; i < 6; i++) mk(h[0] + Math.cos((i / 6) * TAU) * 1.1, h[1] + Math.sin((i / 6) * TAU) * 1.1);
+      }
+      function build() {
+        p.reset();
+        skids = []; last = null; cones = [];
+        [AW, AH] = land ? [32, 20] : [20, 32];
+        const T = 0.6;
+        p.add({ mass: 0 }, [
+          [new p2.Box({ width: AW + 2 * T, height: T }), [AW / 2, -T / 2]], [new p2.Box({ width: AW + 2 * T, height: T }), [AW / 2, AH + T / 2]],
+          [new p2.Box({ width: T, height: AH }), [-T / 2, AH / 2]], [new p2.Box({ width: T, height: AH }), [AW + T / 2, AH / 2]],
+        ]);
+        pts = Array.from({ length: 12 }, (_, k) => route((k / 12) * TAU));
+        const s = pts[2], n = pts[3];
+        car = p.add({ mass: 1, position: s.slice(), angle: Math.atan2(n[1] - s[1], n[0] - s[0]) - Math.PI / 2, damping: 0.5 }, new p2.Box({ width: 1.1, height: 2.2 }));
+        car.hidden = true;
+        const v = new p2.TopDownVehicle(car);
+        fw = v.addWheel({ localPosition: [0, 0.8] }); fw.setSideFriction(6);
+        bw = v.addWheel({ localPosition: [0, -0.8] }); bw.setSideFriction(grip);
+        v.addToWorld(p.world);
+        tgt = 3;
+        placeCones();
+      }
+      const loc = [0, 0], lv = [0, 0];
+      p.before = () => {
+        manual = keys.size > 0 || p.time - lastKey < 2;
+        if (manual) {
+          fw.steerValue = (keys.has("l") ? 0.6 : 0) - (keys.has("r") ? 0.6 : 0);
+          bw.engineForce = keys.has("u") ? 7 : keys.has("d") ? -4 : 0;
+          return;
+        }
+        car.toLocalFrame(loc, pts[tgt]);
+        if (Math.hypot(loc[0], loc[1]) < 2.5) tgt = (tgt + 1) % pts.length;
+        fw.steerValue = clamp(Math.atan2(-loc[0], loc[1]) * 1.5, -0.6, 0.6);
+        bw.engineForce = 5;
+      };
+      p.after = () => {
+        car.vectorToLocalFrame(lv, car.velocity);
+        slip = Math.abs(lv[0] + 0.8 * car.angularVelocity);
+        if (slip > 1.5) {
+          const L = p.wp(car, [-0.45, -0.8]), R = p.wp(car, [0.45, -0.8]);
+          if (last) skids.push({ a: last[0], b: L, t: p.time }, { a: last[1], b: R, t: p.time });
+          if (skids.length > 600) skids.splice(0, skids.length - 600);
+          last = [L, R];
+        } else last = null;
+        while (skids.length && p.time - skids[0].t > 8) skids.shift();
+      };
+      p.layout = (W, H) => {
+        const l = W / H > 1.1;
+        if (l !== land) { land = l; build(); }
+        p.fit(-0.6, -0.6, AW + 0.6, AH + 0.6, { t: "auto" });
+      };
+      p.draw = (g) => {
+        g.fillStyle = "#2b313b"; g.fillRect(p.X(0), p.Y(AH), AW * p.s, AH * p.s);
+        g.save(); g.setLineDash([6, 8]); g.strokeStyle = "rgba(255,255,255,.14)"; g.lineWidth = 2;
+        g.beginPath();
+        for (let i = 0; i <= 96; i++) { const q = route((i / 96) * TAU); if (i) g.lineTo(p.X(q[0]), p.Y(q[1])); else g.moveTo(p.X(q[0]), p.Y(q[1])); }
+        g.stroke(); g.restore();
+        if (!manual) dot(g, p.X(pts[tgt][0]), p.Y(pts[tgt][1]), 4, "rgba(255,183,3,.7)");
+        g.lineCap = "round"; g.lineWidth = Math.max(1.5, 0.18 * p.s);
+        for (const s of skids) {
+          g.strokeStyle = `rgba(8,8,10,${(0.6 * (1 - (p.time - s.t) / 8)).toFixed(3)})`;
+          g.beginPath(); g.moveTo(p.X(s.a[0]), p.Y(s.a[1])); g.lineTo(p.X(s.b[0]), p.Y(s.b[1])); g.stroke();
+        }
+        g.lineCap = "butt";
+        for (const b of p.world.bodies) p.drawBody(b);
+        for (const c of cones) dot(g, p.X(c.position[0]), p.Y(c.position[1]), 0.1 * p.s, "#fff");
+        p.local(car, (c) => {
+          c.fillStyle = "#1b1b1f";
+          for (const [x, y, st] of [[-0.55, 0.8, fw.steerValue], [0.55, 0.8, fw.steerValue], [-0.55, -0.8, 0], [0.55, -0.8, 0]]) {
+            c.save(); c.translate(x, y); c.rotate(st); c.fillRect(-0.1, -0.24, 0.2, 0.48); c.restore();
+          }
+          c.fillStyle = COLORS[0]; c.beginPath(); c.roundRect(-0.5, -1.1, 1, 2.2, 0.25); c.fill();
+          c.fillStyle = "#a8dadc"; c.beginPath(); c.roundRect(-0.38, 0.25, 0.76, 0.42, 0.08); c.fill();
+          c.fillStyle = "rgba(0,0,0,.35)"; c.fillRect(-0.36, -0.75, 0.72, 0.5);
+          c.fillStyle = AMBER; c.fillRect(-0.4, 1.0, 0.22, 0.08); c.fillRect(0.18, 1.0, 0.22, 0.08);
+        });
+        p.drawGrab();
+        stack(g, p, [
+          `速度 ${vec2.length(car.velocity).toFixed(1)} m/s`,
+          [`後輪側滑 ${slip.toFixed(1)} m/s${slip > 1.5 ? "（甩尾）" : ""}`, { color: slip > 1.5 ? COLORS[5] : INK }],
+          `${manual ? "手動" : "自動"}駕駛・抓地 ${grip}`,
+        ]);
+      };
+      p.go();
+    },
+  },
+  {
+    id: "raycast", title: "射線與碰撞事件",
+    api: "world.raycast(result, new p2.Ray({ mode, from, to, callback })) + world.on(\"beginContact\" / \"impact\")",
+    desc: "零重力房間裡的物體以完全彈性四處碰撞。最近命中：每格射出 240 條 CLOSEST 射線，連起來就是光照多邊形。全部命中：ALL 模式在回呼裡收到每個交點，實心點是射入、空心點是射出。中央圓是 sensor 感應區：beginContact／endContact 追蹤誰在裡面，impact 事件讓撞擊的物體閃白。",
+    hint: "移動滑鼠移動光源・切換射線模式",
+    mount(ctx) {
+      let mode = 0, land = null, RW = 24, RH = 14, sensor = null, inside = new Set(), impacts = 0, rayMs = 0, nRays = 0, movers = [];
+      ctx.group(["最近命中", "全部命中"], 0, (i) => { mode = i; });
+      ctx.button("重新開始", () => build());
+      const p = lab(ctx, { gravity: 0, drag: false, cls: "aim" });
+      const rayC = new p2.Ray({ mode: p2.Ray.CLOSEST, skipBackfaces: true }), rayA = new p2.Ray({ mode: p2.Ray.ALL }), res = new p2.RaycastResult(), hit = [0, 0];
+      function build() {
+        p.reset();
+        [RW, RH] = land ? [24, 14] : [14, 24];
+        const cm = p.world.defaultContactMaterial;
+        cm.restitution = 1; cm.friction = 0;
+        inside = new Set(); impacts = 0; movers = [];
+        p.add({ mass: 0 }, [
+          [new p2.Box({ width: RW + 2, height: 1 }), [RW / 2, -0.5]], [new p2.Box({ width: RW + 2, height: 1 }), [RW / 2, RH + 0.5]],
+          [new p2.Box({ width: 1, height: RH }), [-0.5, RH / 2]], [new p2.Box({ width: 1, height: RH }), [RW + 0.5, RH / 2]],
+        ]);
+        sensor = p.add({ mass: 0, position: [RW / 2, RH / 2] }, new p2.Circle({ radius: 2.2, sensor: true, collisionResponse: false }), COLORS[3]);
+        sensor.hidden = true;
+        for (let i = 0; i < 14; i++) {
+          const a = (i / 14) * TAU, k = i % 3, color = COLORS[i % 6];
+          const pos = [RW / 2 + Math.cos(a) * RW * 0.36, RH / 2 + Math.sin(a) * RH * 0.33];
+          let sh;
+          if (k === 0) sh = new p2.Circle({ radius: rnd(0.45, 0.7) });
+          else if (k === 1) sh = new p2.Box({ width: rnd(0.8, 1.4), height: rnd(0.6, 1.0) });
+          else { const n = pick([3, 5]); sh = new p2.Convex({ vertices: Array.from({ length: n }, (_, j) => [Math.cos((j / n) * TAU) * 0.7, Math.sin((j / n) * TAU) * 0.7]) }); }
+          const d = rnd(0, TAU), b = p.add({ mass: 1, position: pos, angle: rnd(0, TAU), damping: 0, angularDamping: 0, angularVelocity: rnd(-1, 1) }, sh, color);
+          vec2.set(b.velocity, Math.cos(d) * 3, Math.sin(d) * 3);
+          b.flash = 0;
+          movers.push(b);
+        }
+        const other = (e) => (e.bodyA === sensor ? e.bodyB : e.bodyB === sensor ? e.bodyA : null);
+        p.world.on("beginContact", (e) => { const o = other(e); if (o) inside.add(o); });
+        p.world.on("endContact", (e) => { const o = other(e); if (o) inside.delete(o); });
+        p.world.on("impact", (e) => { impacts++; e.bodyA.flash = 1; e.bodyB.flash = 1; });
+      }
+      p.after = () => {
+        for (const b of movers) {
+          const v = vec2.length(b.velocity);
+          if (v < 1.5 || v > 5) vec2.scale(b.velocity, b.velocity, clamp(v, 1.5, 5) / (v || 1));
+          b.flash = Math.max(0, b.flash - 0.04);
+        }
+      };
+      const emitter = () => {
+        const q = p.ptr();
+        if (q && q[0] > 0.1 && q[0] < RW - 0.1 && q[1] > 0.1 && q[1] < RH - 0.1) return q.slice();
+        const t = p.time * 0.35;
+        return [RW / 2 + Math.sin(t * 1.3) * RW * 0.38, RH / 2 + Math.sin(t * 2.1 + 1) * RH * 0.36];
+      };
+      const aim = (ray, e, a, R) => { vec2.copy(ray.from, e); vec2.set(ray.to, e[0] + Math.cos(a) * R, e[1] + Math.sin(a) * R); ray.update(); };
+      p.layout = (W, H) => {
+        const l = W / H > 1.1;
+        if (l !== land) { land = l; build(); }
+        p.fit(-0.3, -0.3, RW + 0.3, RH + 0.3, { t: "auto" });
+      };
+      p.draw = (g) => {
+        g.fillStyle = "rgba(255,255,255,.025)"; g.fillRect(p.X(0), p.Y(RH), RW * p.s, RH * p.s);
+        const e = emitter(), R = Math.hypot(RW, RH), ex = p.X(e[0]), ey = p.Y(e[1]);
+        const t0 = performance.now();
+        let poly = null, segs = null, marks = null;
+        if (mode === 0) {
+          nRays = 240; poly = [];
+          for (let i = 0; i < nRays; i++) {
+            aim(rayC, e, (i / nRays) * TAU, R);
+            res.reset();
+            p.world.raycast(res, rayC);
+            if (res.hasHit()) res.getHitPoint(hit, rayC); else vec2.copy(hit, rayC.to);
+            poly.push(p.X(hit[0]), p.Y(hit[1]));
+          }
+        } else {
+          nRays = 72; segs = []; marks = [];
+          const hits = [];
+          rayA.callback = (r) => {
+            r.getHitPoint(hit, rayA);
+            hits.push({ x: hit[0], y: hit[1], f: r.fraction, exit: vec2.dot(r.normal, rayA.direction) > 0, wall: r.body.type === p2.Body.STATIC });
+          };
+          for (let i = 0; i < nRays; i++) {
+            aim(rayA, e, (i / nRays) * TAU, R);
+            hits.length = 0;
+            res.reset();
+            p.world.raycast(res, rayA);
+            const wallF = Math.min(1, ...hits.filter((h) => h.wall).map((h) => h.f));
+            segs.push(e[0] + (rayA.to[0] - e[0]) * wallF, e[1] + (rayA.to[1] - e[1]) * wallF);
+            for (const h of hits) if (!h.wall && h.f < wallF) marks.push(h);
+          }
+        }
+        rayMs += (performance.now() - t0 - rayMs) * 0.1;
+        if (poly) {
+          const light = g.createRadialGradient(ex, ey, 0, ex, ey, Math.max(p.W, p.H) * 0.6);
+          light.addColorStop(0, "rgba(255,183,3,.42)"); light.addColorStop(1, "rgba(255,183,3,.02)");
+          g.beginPath(); g.moveTo(poly[0], poly[1]);
+          for (let i = 2; i < poly.length; i += 2) g.lineTo(poly[i], poly[i + 1]);
+          g.closePath(); g.fillStyle = light; g.fill();
+          g.strokeStyle = "rgba(255,183,3,.12)"; g.lineWidth = 1;
+          g.beginPath();
+          for (let i = 0; i < poly.length; i += 12) { g.moveTo(ex, ey); g.lineTo(poly[i], poly[i + 1]); }
+          g.stroke();
+        }
+        const sc = p.X(sensor.position[0]), sy = p.Y(sensor.position[1]), sr = 2.2 * p.s;
+        g.beginPath(); g.arc(sc, sy, sr, 0, TAU);
+        g.fillStyle = inside.size ? "rgba(123,211,137,.16)" : "rgba(123,211,137,.05)"; g.fill();
+        g.save(); g.setLineDash([6, 5]); g.strokeStyle = "rgba(123,211,137,.8)"; g.lineWidth = 1.5; g.stroke(); g.restore();
+        for (const b of p.world.bodies) p.drawBody(b);
+        for (const b of movers) {
+          if (!b.flash && !inside.has(b)) continue;
+          g.beginPath();
+          for (const sh of b.shapes) p.path(b, sh);
+          g.strokeStyle = b.flash ? `rgba(255,255,255,${b.flash.toFixed(2)})` : "rgba(123,211,137,.95)";
+          g.lineWidth = b.flash ? 3 : 2; g.stroke();
+        }
+        if (segs) {
+          g.strokeStyle = "rgba(255,183,3,.35)"; g.lineWidth = 1;
+          g.beginPath();
+          for (let i = 0; i < segs.length; i += 2) { g.moveTo(ex, ey); g.lineTo(p.X(segs[i]), p.Y(segs[i + 1])); }
+          g.stroke();
+          for (const m of marks) {
+            const x = p.X(m.x), y = p.Y(m.y);
+            g.beginPath(); g.arc(x, y, 3, 0, TAU);
+            if (m.exit) { g.strokeStyle = COLORS[0]; g.lineWidth = 1.5; g.stroke(); } else { g.fillStyle = AMBER; g.fill(); }
+          }
+        }
+        dot(g, ex, ey, 5, "#fff");
+        stack(g, p, [
+          `${nRays} 條射線・${mode ? "ALL（實心射入、空心射出）" : "CLOSEST"}`,
+          `raycast ${rayMs.toFixed(2)} ms／格`,
+          `impact 事件 ${impacts}・感應區內 ${inside.size}`,
+        ]);
+      };
+      p.go();
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "world.step(1 / 60) + SAPBroadphase / NaiveBroadphase + solver.iterations",
+    desc: "不靠內建迴圈，每格手動呼叫一次 world.step 再用 Canvas 批次繪圖，兩段分開計時；逐級增加剛體數量直到掉到 30 FPS 以下。中間的 kinematic 槳持續攪動，可切換形狀、寬相位演算法（SAP 排序掃描或 Naive 全配對）、求解迭代次數與休眠比較成本。",
+    hint: "按「自動加壓」開始・改設定後再測一次",
+    mount(ctx) {
+      ctx.controls.classList.add("bottom");
+      const SHAPES = ["混合", "圓", "方塊", "膠囊"], BP = ["SAP", "Naive"];
+      let shape = 0, bp = 0, iters = 10, sleep = false, box = null, count = 100, paddle = null;
+      ctx.group(SHAPES, 0, (i) => { shape = i; if (count) spawn(count); });
+      ctx.group(BP, 0, (i) => { bp = i; if (count) spawn(count); });
+      ctx.slider("求解迭代", { min: 1, max: 30, step: 1, value: 10 }, (v) => { iters = v; p.world.solver.iterations = v; });
+      ctx.toggle("休眠", false, (v) => {
+        sleep = v;
+        p.world.sleepMode = v ? p2.World.BODY_SLEEPING : p2.World.NO_SLEEPING;
+        if (!v) for (const b of p.world.bodies) b.wakeUp();
+      });
+      const p = lab(ctx, { perFrame: true, drag: false });
+      // Fill the container with n bodies on a grid sized so they always fit.
+      function spawn(n) {
+        count = n;
+        p.reset({ broadphase: bp ? new p2.NaiveBroadphase() : new p2.SAPBroadphase(), sleepMode: sleep ? p2.World.BODY_SLEEPING : p2.World.NO_SLEEPING });
+        p.world.solver.iterations = iters;
+        const { cwm, chm } = box;
+        p.add({ mass: 0 }, [
+          [new p2.Box({ width: cwm + 1, height: 0.5 }), [cwm / 2, -0.25]],
+          [new p2.Box({ width: 0.5, height: 60 }), [-0.25, 30]],
+          [new p2.Box({ width: 0.5, height: 60 }), [cwm + 0.25, 30]],
+        ]);
+        paddle = p.add({ type: p2.Body.KINEMATIC, position: [cwm / 2, chm * 0.3], angularVelocity: 1.8 }, new p2.Box({ width: cwm * 0.36, height: 0.24 }));
+        const spx = clamp(Math.sqrt((box.cw * box.ch * 0.55) / n) * 0.8, 3, 26), gap = (spx * 1.3) / p.s, sz = spx / p.s;
+        const cols = Math.max(1, Math.floor((cwm - 0.3) / gap));
+        for (let i = 0; i < n; i++) {
+          const x = 0.15 + gap / 2 + (i % cols) * gap, y = chm - gap / 2 - Math.floor(i / cols) * gap;
+          const k = shape ? shape - 1 : i % 3;
+          const sh = k === 0 ? new p2.Circle({ radius: sz / 2 }) : k === 1 ? new p2.Box({ width: sz * 0.9, height: sz * 0.9 }) : new p2.Capsule({ length: sz * 0.7, radius: sz * 0.3 });
+          const b = p.add({ mass: 1, position: [x, y], angle: k === 2 ? rnd(0, TAU) : 0 }, sh);
+          b.ci = i % 6;
+        }
+      }
+      p.layout = (W, H) => {
+        const x0 = W >= 760 ? 350 : 10, x1 = W - 10, y0 = 10, y1 = H - ctx.controls.offsetHeight - 20;
+        box = { x0, x1, y0, y1, cw: x1 - x0, ch: y1 - y0 };
+        p.s = box.ch / 16; p.ox = x0; p.oy = y1;
+        box.cwm = box.cw / p.s; box.chm = 16;
+        if (count) spawn(count);
+      };
+      // Batched drawing: one Path2D per color, sleeping bodies in a single muted batch, no strokes.
+      p.draw = (g) => {
+        if (!box) return;
+        g.fillStyle = "#151922";
+        g.fillRect(box.x0, box.y0, box.cw, box.ch);
+        if (!paddle) return;
+        const paths = COLORS.map(() => new Path2D()), sleepy = new Path2D();
+        for (const b of p.world.bodies) {
+          if (b.type !== p2.Body.DYNAMIC) continue;
+          p.path(b, b.shapes[0], b.sleepState === p2.Body.SLEEPING ? sleepy : paths[b.ci]);
+        }
+        COLORS.forEach((col, i) => { g.fillStyle = col; g.fill(paths[i]); });
+        g.fillStyle = MUTED; g.fill(sleepy);
+        g.fillStyle = INK;
+        g.beginPath(); p.path(paddle, paddle.shapes[0]); g.fill();
+        g.strokeStyle = "#2a2f3a"; g.lineWidth = 3;
+        g.strokeRect(box.x0, box.y0, box.cw, box.ch);
+      };
+      p.go();
+      ctx.ramp({
+        label: "剛體", unit: "個", steps: [100, 250, 500, 1000, 1500, 2000, 3000, 4000], minFps: 30,
+        apply(n) { spawn(n); },
+        metrics: () => ({
+          接觸: p.world.narrowphase.contactEquations.length,
+          候選配對: Math.round(p.world.broadphase.result.length / 2),
+          物理: `${p.phys.toFixed(1)} ms`,
+          繪圖: `${p.paint.toFixed(1)} ms`,
+          寬相位: BP[bp],
+        }),
+        note: "每格先跑一次 world.step 再畫 Canvas，兩段分開計時。物理段含寬相位（SAP 排序掃描或 Naive 兩兩比對）、窄相位算接觸、GS 求解器迭代；開「休眠」後靜止剛體停算。手機與內顯的上限通常明顯較低。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

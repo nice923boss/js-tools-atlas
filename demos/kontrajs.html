@@ -3,345 +3,1354 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kontra 示範：霓虹貪食蛇</title>
+<title>Kontra 示範：七個場景看懂迷你遊戲引擎與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["霓虹貪食蛇","精靈表動畫","TileEngine 地圖","Scene 攝影機","介面元件","四叉樹碰撞","極限測試"]}</script>
 <style>
-  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
-  .overlay { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; pointer-events: none; transition: opacity .3s; }
-  .overlay.hide { opacity: 0; }
-  .overlay .card { text-align: center; padding: 16px 26px; margin: 0 16px; border-radius: 16px; background: rgba(14, 16, 19, .72); backdrop-filter: blur(3px); border: 1px solid var(--line); }
-  .overlay h1 { margin: 0; font-size: clamp(28px, 7vw, 46px); letter-spacing: 3px;
-    background: linear-gradient(90deg, var(--c4), var(--c2), var(--c6)); -webkit-background-clip: text; background-clip: text; color: transparent; }
-  .overlay p { margin: 6px 0 0; }
-  .overlay .blink { color: var(--c1); animation: blink 1.2s steps(2) infinite; }
-  @keyframes blink { 50% { opacity: .25; } }
+  .kt-wrap { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); }
+  .kt-wrap iframe, .kt-stress iframe { display: block; width: 100%; height: 100%; border: 1px solid var(--line); border-radius: 10px; background: #0e1013; }
+  .kt-stress { position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 350px; }
+  @media (max-width: 760px) { .kt-stress { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px); } }
 </style>
 </head>
 <body>
-<canvas id="game"></canvas>
-<div class="overlay" id="overlay">
-  <div class="card">
-    <h1 id="ov-title">霓虹貪食蛇</h1>
-    <p id="ov-sub">吃果實變長，金色星星限時出現，撞牆或咬到自己就結束</p>
-    <p class="blink" id="ov-go">按任意鍵或點擊開始</p>
-  </div>
-</div>
-<div class="hint">方向鍵／WASD 轉向，手指滑動或點擊蛇頭的上下左右也可以</div>
+<!-- Kontra keeps module-level state (default canvas, pointer, keys, seeded rand), so each scene loads it inside its own iframe (see kontraFrame). -->
+<script src="_shared/showcase.js"></script>
+<script>
+// Kontra showcase: seven scenes from the neon snake to a 32k-sprite stress ramp.
+const KONTRA = "https://cdn.jsdelivr.net/npm/kontra@10.0.2/kontra.min.mjs";
+const FONT = getComputedStyle(document.documentElement).getPropertyValue("--font").trim();
+const MONO = getComputedStyle(document.documentElement).getPropertyValue("--mono").trim();
+const TAU = Math.PI * 2;
+const DPR = () => Math.min(2, window.devicePixelRatio || 1);
+const setPressed = (b, v) => b.setAttribute("aria-pressed", String(v));
 
-<script type="module">
-// Kontra snake: GameLoop fixed step, onKey bindings, pointer down/up swipes, Pool particles, Text popups.
-import { init, GameLoop, Sprite, Text, Pool, initKeys, onKey, initPointer, onPointer, getPointer, randInt, lerp, clamp }
-  from "https://cdn.jsdelivr.net/npm/kontra@10.0.2/kontra.min.mjs";
-
-const FONT = "Noto Sans TC, Microsoft JhengHei, PingFang TC, sans-serif";
-const $ = (id) => document.getElementById(id);
-const { canvas, context: ctx } = init("game");
-initKeys();
-initPointer();
-
-const DIRS = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
-let W = 0, H = 0, dpr = 1, cell = 24, cols = 20, rows = 14, ox = 0, oy = 0;
-let mode = "title"; // title | play | dying | over
-let snake = [], prev = [], dir = "right", queue = [], grow = 0;
-let food = null, star = null, score = 0, best = 0, stepMs = 130, acc = 0, shake = 0, overAt = 0, dieTimer = 0;
-const particles = Pool({ create: Sprite, maxSize: 600 });
-const popups = [];
-
-function layout(resetGrid) {
-  dpr = Math.min(2, devicePixelRatio || 1);
-  W = innerWidth; H = innerHeight;
-  canvas.width = W * dpr; canvas.height = H * dpr;
-  const top = 48, bottom = 46;
-  if (resetGrid) {
-    cell = clamp(18, 34, Math.floor(Math.min(W, H) / 14));
-    cols = Math.max(10, Math.floor((W - 16) / cell));
-    rows = Math.max(8, Math.floor((H - top - bottom) / cell));
-  }
-  cell = Math.min((W - 16) / cols, (H - top - bottom) / rows);
-  ox = (W - cols * cell) / 2; oy = top + (H - top - bottom - rows * cell) / 2;
-}
-
-const key = (x, y) => y * cols + x;
-const occupied = (x, y, ignoreTail) => snake.some((s, i) => s.x === x && s.y === y && !(ignoreTail && i === snake.length - 1));
-const inside = (x, y) => x >= 0 && y >= 0 && x < cols && y < rows;
-
-function freeCell() {
-  for (let n = 0; n < 500; n++) {
-    const x = randInt(0, cols - 1), y = randInt(0, rows - 1);
-    if (!occupied(x, y) && !(food && food.gx === x && food.gy === y) && !(star && star.gx === x && star.gy === y)) return [x, y];
-  }
-  return [0, 0];
-}
-
-// food and bonus star are Kontra Sprites with custom render functions
-function makeFood(bonus) {
-  const [gx, gy] = freeCell();
-  return Sprite({
-    gx, gy, bonus, life: bonus ? 6 : Infinity, born: performance.now(),
-    render() {
-      const t = (performance.now() - this.born) / 1000, r = cell * (.32 + Math.sin(t * 6) * .04);
-      const c = ctx;
-      c.shadowColor = bonus ? "#f7df1e" : "#f72585"; c.shadowBlur = cell * .6;
-      c.fillStyle = bonus ? "#f7df1e" : "#f72585";
-      c.beginPath();
-      if (bonus) {
-        for (let i = 0; i < 10; i++) {
-          const a = -Math.PI / 2 + i * Math.PI / 5 + t, rr = i % 2 ? r * .5 : r * 1.15;
-          c.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
-        }
-        c.closePath();
-      } else c.arc(0, 0, r, 0, Math.PI * 2);
-      c.fill();
-      c.shadowBlur = 0;
-      if (bonus) {
-        c.strokeStyle = "rgba(247,223,30,.6)"; c.lineWidth = 2;
-        c.beginPath(); c.arc(0, 0, cell * .62, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (this.life / 6)); c.stroke();
-      } else {
-        c.fillStyle = "#7bd389";
-        c.beginPath(); c.ellipse(r * .35, -r * 1.05, r * .38, r * .18, -.5, 0, Math.PI * 2); c.fill();
-      }
-    },
+// Loads Kontra as an ES module inside a srcdoc iframe. Removing the iframe on cleanup also stops its GameLoop.
+function kontraFrame(ctx, host, { pixelated = false, css = "" } = {}) {
+  const f = document.createElement("iframe");
+  f.title = "Kontra 畫布";
+  f.srcdoc = `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#0e1013;color:#ecebe6;font:13px/1.5 ${FONT}}
+canvas{display:block;width:100%;height:100%;touch-action:none;outline:none${pixelated ? ";image-rendering:pixelated" : ""}}${css}</style></head>
+<body><canvas></canvas><script type="module">import * as K from "${KONTRA}"; window.K = K;<\/script></body></html>`;
+  host.append(f);
+  ctx.onCleanup(() => f.remove());
+  return new Promise((resolve, reject) => {
+    f.addEventListener("load", () => {
+      const win = f.contentWindow;
+      if (!win || !win.K) return reject(new Error("Kontra 無法從 CDN 載入"));
+      resolve({ win, doc: win.document, K: win.K, canvas: win.document.querySelector("canvas") });
+    }, { once: true });
   });
 }
 
-function burst(px, py, color, n, speed = 4) {
-  for (let i = 0; i < n; i++) {
-    const a = Math.random() * Math.PI * 2, v = Math.random() * speed + 1;
-    particles.get({
-      x: px, y: py, dx: Math.cos(a) * v, dy: Math.sin(a) * v, ttl: randInt(20, 45), color, size: Math.random() * 3 + 2,
-      render() {
-        ctx.globalAlpha = Math.min(1, this.ttl / 25);
-        ctx.fillStyle = this.color;
-        ctx.beginPath(); ctx.arc(0, 0, this.size, 0, Math.PI * 2); ctx.fill();
-        ctx.globalAlpha = 1;
-      },
-    });
-  }
+// Keys pressed while focus is on the outer page are re-dispatched inside the iframe so Kontra's initKeys sees them.
+function forwardKeys(ctx, win) {
+  const fwd = (e) => {
+    const t = e.target;
+    if (t.closest && t.closest("input,select,textarea,[role=tab]")) return;
+    if (t.closest && t.closest("button") && (e.code === "Space" || e.code === "Enter")) return;
+    if (/^Arrow|^Space$/.test(e.code)) e.preventDefault();
+    win.dispatchEvent(new win.KeyboardEvent(e.type, { code: e.code, key: e.key }));
+  };
+  ctx.on(document, "keydown", fwd);
+  ctx.on(document, "keyup", fwd);
 }
 
-function popup(px, py, text, color) {
-  popups.push(Text({ text, x: px, y: py, anchor: { x: .5, y: .5 }, font: `bold ${Math.round(cell * .8)}px ${FONT}`, color, ttl: 50 }));
+async function boot(ctx, opts) {
+  ctx.html(`<div class="kt-wrap"></div>`);
+  const fr = await kontraFrame(ctx, ctx.$(".kt-wrap"), opts);
+  const { context: g } = fr.K.init(fr.canvas);
+  forwardKeys(ctx, fr.win);
+  return { ...fr, g };
 }
 
-const center = (gx, gy) => [ox + (gx + .5) * cell, oy + (gy + .5) * cell];
-
-function reset() {
-  // start along the longer side of the board so portrait screens get room too
-  const tall = rows > cols;
-  const sx = tall ? Math.floor(cols / 2) : Math.floor(cols / 3), sy = tall ? Math.floor(rows * 2 / 3) : Math.floor(rows / 2);
-  snake = [0, 1, 2, 3].map((i) => (tall ? { x: sx, y: sy + i } : { x: sx - i, y: sy }));
-  prev = snake.map((s) => ({ ...s }));
-  dir = tall ? "up" : "right"; queue = []; grow = 0; score = 0; stepMs = 130; acc = -500;
-  food = makeFood(false); star = null;
+// Matches the canvas backing store to its CSS size times ratio; returns true when it changed.
+function fitCanvas(canvas, ratio) {
+  const w = Math.max(1, Math.round(canvas.clientWidth * ratio)), h = Math.max(1, Math.round(canvas.clientHeight * ratio));
+  if (canvas.width === w && canvas.height === h) return false;
+  canvas.width = w; canvas.height = h;
+  return true;
 }
 
-function overlay(title, sub, go) {
-  $("ov-title").textContent = title; $("ov-sub").textContent = sub; $("ov-go").textContent = go;
-  $("overlay").classList.remove("hide");
-}
+Showcase.run({ scenes: [
+  {
+    id: "snake", title: "霓虹貪食蛇",
+    api: "GameLoop・Sprite・Pool・Text・onKey・onPointer",
+    desc: "原本的招牌示範移植過來：GameLoop 以固定 1/60 秒步進更新，蛇身在格子之間補間；果實與金色星星是自訂 render 的 Sprite，爆開的粒子來自 Pool 物件池，得分飄字是 Text。預設由自動駕駛展示，按方向鍵、WASD 或滑動就換你玩。",
+    hint: "方向鍵／WASD 或滑動轉向；點畫面接手遊戲，撞牆後按任意鍵重來",
+    async mount(ctx) {
+      const { K, win, canvas, g } = await boot(ctx);
+      K.initKeys(); K.initPointer();
+      const DIRS = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+      let W = 0, H = 0, dpr = 1, cell = 24, cols = 20, rows = 14, ox = 0, oy = 0;
+      let mode = "auto", snake = [], prev = [], dir = "right", queue = [], grow = 0, food = null, star = null;
+      let score = 0, best = 0, stepMs = 130, acc = 0, shake = 0, overAt = 0, dieTimer = 0, popups = [];
+      const particles = K.Pool({ create: K.Sprite, maxSize: 600 });
 
-function start() {
-  layout(true);
-  reset();
-  mode = "play";
-  $("overlay").classList.add("hide");
-}
-
-function turn(d) {
-  if (mode !== "play") return;
-  const last = queue.length ? queue[queue.length - 1] : dir;
-  const [lx, ly] = DIRS[last], [nx, ny] = DIRS[d];
-  if (lx + nx === 0 && ly + ny === 0) return; // no reversing
-  if (d !== last && queue.length < 2) queue.push(d);
-}
-
-// flood fill size from a cell, used by the attract mode autopilot to avoid trapping itself
-function reachable(x0, y0) {
-  const seen = new Set(snake.slice(0, -1).map((s) => key(s.x, s.y)));
-  const stack = [[x0, y0]];
-  let n = 0;
-  while (stack.length && n < snake.length * 3) {
-    const [x, y] = stack.pop();
-    if (!inside(x, y) || seen.has(key(x, y))) continue;
-    seen.add(key(x, y)); n++;
-    for (const [dx, dy] of Object.values(DIRS)) stack.push([x + dx, y + dy]);
-  }
-  return n;
-}
-
-function autopilot() {
-  const h = snake[0], target = star || food;
-  let bestD = dir, bestScore = Infinity;
-  for (const [d, [dx, dy]] of Object.entries(DIRS)) {
-    const [cx, cy] = DIRS[dir];
-    if (dx + cx === 0 && dy + cy === 0) continue;
-    const x = h.x + dx, y = h.y + dy;
-    if (!inside(x, y) || occupied(x, y, true)) continue;
-    const room = reachable(x, y);
-    const s = Math.abs(target.gx - x) + Math.abs(target.gy - y) + (room < snake.length ? 1000 - room : 0);
-    if (s < bestScore) { bestScore = s; bestD = d; }
-  }
-  dir = bestD;
-}
-
-function step() {
-  // prev[i] is where segment i was before this step, used to tween the body between grid cells
-  prev = snake.map((s) => ({ ...s }));
-  if (mode === "title") autopilot();
-  else if (queue.length) dir = queue.shift();
-  const [dx, dy] = DIRS[dir], h = snake[0], nx = h.x + dx, ny = h.y + dy;
-  if (!inside(nx, ny) || occupied(nx, ny, grow === 0)) return die();
-  snake.unshift({ x: nx, y: ny });
-  if (grow > 0) { grow--; prev.push({ ...prev[prev.length - 1] }); } else snake.pop();
-
-  for (const f of [food, star]) {
-    if (!f || f.gx !== nx || f.gy !== ny) continue;
-    const [px, py] = center(nx, ny);
-    if (f.bonus) {
-      grow += 3; star = null;
-      if (mode === "play") { score += 50; popup(px, py - cell * .6, "+50", "#f7df1e"); }
-      burst(px, py, "#f7df1e", 40, 6); shake = 6;
-    } else {
-      grow += 1; food = makeFood(false);
-      if (mode === "play") { score += 10; popup(px, py - cell * .6, "+10", "#ecebe6"); }
-      burst(px, py, "#f72585", 18);
-      if (!star && Math.random() < .3) star = makeFood(true);
-    }
-    stepMs = Math.max(65, 130 - snake.length * 1.6);
-  }
-}
-
-function die() {
-  if (mode === "title") { burst(...center(snake[0].x, snake[0].y), "#4cc9f0", 30); reset(); return; }
-  mode = "dying"; dieTimer = 0; shake = 14;
-  best = Math.max(best, score);
-}
-
-function action() {
-  if (mode === "title" || (mode === "over" && performance.now() - overAt > 500)) start();
-}
-
-// input: Kontra key bindings plus a raw listener so any key can start the game
-onKey(["arrowup", "w"], () => turn("up"));
-onKey(["arrowdown", "s"], () => turn("down"));
-onKey(["arrowleft", "a"], () => turn("left"));
-onKey(["arrowright", "d"], () => turn("right"));
-addEventListener("keydown", () => action());
-
-let downAt = null;
-const pointerXY = () => { const p = getPointer(); return [p.x / dpr, p.y / dpr]; };
-onPointer("down", () => { downAt = pointerXY(); });
-onPointer("up", () => {
-  if (mode !== "play") { action(); return; }
-  if (!downAt) return;
-  const [ux, uy] = pointerXY();
-  let dx = ux - downAt[0], dy = uy - downAt[1];
-  if (Math.hypot(dx, dy) < 24) {
-    // a tap steers toward the tapped side of the head
-    const [hx, hy] = center(snake[0].x, snake[0].y);
-    dx = ux - hx; dy = uy - hy;
-  }
-  turn(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up"));
-  downAt = null;
-});
-document.addEventListener("pointerdown", (e) => { if (e.target !== canvas) action(); });
-
-addEventListener("resize", () => {
-  layout(mode === "title");
-  if (mode === "title") reset();
-});
-
-function drawBoard() {
-  ctx.fillStyle = "rgba(255,255,255,.025)";
-  ctx.strokeStyle = "rgba(76,201,240,.35)"; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.roundRect(ox - 4, oy - 4, cols * cell + 8, rows * cell + 8, 10); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = "rgba(255,255,255,.07)";
-  for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
-    ctx.fillRect(ox + (x + .5) * cell - 1, oy + (y + .5) * cell - 1, 2, 2);
-  }
-}
-
-function drawSnake(t) {
-  const n = snake.length;
-  for (let i = n - 1; i >= 0; i--) {
-    const a = snake[i], b = prev[i] || a;
-    const x = ox + (lerp(b.x, a.x, t) + .5) * cell, y = oy + (lerp(b.y, a.y, t) + .5) * cell;
-    const hue = 190 + (i / Math.max(1, n - 1)) * 80, sz = cell * (i === 0 ? .9 : .8 - (i / n) * .2);
-    ctx.fillStyle = `hsl(${hue} 85% 62%)`;
-    ctx.shadowColor = `hsl(${hue} 90% 60%)`; ctx.shadowBlur = i === 0 ? cell * .7 : cell * .3;
-    ctx.beginPath(); ctx.roundRect(x - sz / 2, y - sz / 2, sz, sz, sz * .35); ctx.fill();
-    if (i === 0) {
-      ctx.shadowBlur = 0;
-      const [dx, dy] = DIRS[dir];
-      for (const s of [-1, 1]) {
-        const ex = x + dx * cell * .18 + dy * s * cell * .2, ey = y + dy * cell * .18 - dx * s * cell * .2;
-        ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(ex, ey, cell * .13, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = "#0e1013"; ctx.beginPath(); ctx.arc(ex + dx * cell * .05, ey + dy * cell * .05, cell * .065, 0, Math.PI * 2); ctx.fill();
+      function layout(resetGrid) {
+        W = canvas.clientWidth; H = canvas.clientHeight; dpr = DPR();
+        canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+        const top = 44, bottom = 10, side = 20;
+        if (resetGrid) {
+          cell = K.clamp(16, 32, Math.floor(Math.min(W, H) / 13));
+          cols = Math.max(10, Math.floor((W - side) / cell));
+          rows = Math.max(8, Math.floor((H - top - bottom) / cell));
+        }
+        cell = Math.min((W - side) / cols, (H - top - bottom) / rows);
+        ox = (W - cols * cell) / 2; oy = top + (H - top - bottom - rows * cell) / 2;
       }
-    }
-  }
-  ctx.shadowBlur = 0;
-}
+      const key = (x, y) => y * cols + x;
+      const inside = (x, y) => x >= 0 && y >= 0 && x < cols && y < rows;
+      const center = (gx, gy) => [ox + (gx + 0.5) * cell, oy + (gy + 0.5) * cell];
+      function occupied(x, y, ignoreTail) {
+        const n = snake.length - (ignoreTail ? 1 : 0);
+        for (let i = 0; i < n; i++) if (snake[i].x === x && snake[i].y === y) return true;
+        return false;
+      }
+      function freeCell() {
+        for (let i = 0; i < 500; i++) {
+          const x = K.randInt(0, cols - 1), y = K.randInt(0, rows - 1);
+          if (occupied(x, y) || (food && food.gx === x && food.gy === y) || (star && star.gx === x && star.gy === y)) continue;
+          return { x, y };
+        }
+        return { x: 0, y: 0 };
+      }
+      function makeFood(bonus) {
+        const c = freeCell();
+        return K.Sprite({
+          gx: c.x, gy: c.y, life: bonus ? 6 : Infinity,
+          render() {
+            const t = performance.now() / 1000, r = cell * (0.32 + Math.sin(t * 6) * 0.04), x = this.context, col = bonus ? "#f7df1e" : "#f72585";
+            x.shadowColor = col; x.shadowBlur = cell * 0.6; x.fillStyle = col;
+            if (bonus) {
+              x.beginPath();
+              for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + i * Math.PI / 5 + t, rr = i % 2 ? r * 0.5 : r * 1.15; x.lineTo(Math.cos(a) * rr, Math.sin(a) * rr); }
+              x.closePath(); x.fill();
+              x.shadowBlur = 0; x.strokeStyle = "rgba(247,223,30,.6)"; x.lineWidth = 2;
+              x.beginPath(); x.arc(0, 0, cell * 0.62, -Math.PI / 2, -Math.PI / 2 + TAU * (this.life / 6)); x.stroke();
+            } else {
+              x.beginPath(); x.arc(0, 0, r, 0, TAU); x.fill();
+              x.shadowBlur = 0; x.fillStyle = "#7bd389";
+              x.beginPath(); x.ellipse(r * 0.35, -r * 1.05, r * 0.38, r * 0.18, -0.5, 0, TAU); x.fill();
+            }
+          },
+        });
+      }
+      function dot() {
+        const x = this.context;
+        x.globalAlpha = Math.min(1, this.ttl / 25); x.fillStyle = this.color;
+        x.beginPath(); x.arc(0, 0, this.size, 0, TAU); x.fill();
+      }
+      function burst(px, py, color, n, speed = 4) {
+        for (let i = 0; i < n; i++) {
+          const a = Math.random() * TAU, v = Math.random() * speed + 1;
+          particles.get({ x: px, y: py, dx: Math.cos(a) * v, dy: Math.sin(a) * v, ttl: K.randInt(20, 45), color, size: Math.random() * 3 + 2, render: dot });
+        }
+      }
+      function popup(text, px, py, color) {
+        popups.push(K.Text({ text, x: px, y: py, anchor: { x: 0.5, y: 0.5 }, font: `bold ${Math.round(cell * 0.8)}px ${FONT}`, color, ttl: 50 }));
+      }
+      function reset() {
+        const tall = rows > cols;
+        const sx = tall ? Math.floor(cols / 2) : Math.floor(cols / 3), sy = tall ? Math.floor(rows * 2 / 3) : Math.floor(rows / 2);
+        snake = [];
+        for (let i = 0; i < 4; i++) snake.push(tall ? { x: sx, y: sy + i } : { x: sx - i, y: sy });
+        prev = snake.map((s) => ({ ...s }));
+        dir = tall ? "up" : "right"; queue = []; grow = 0; score = 0; stepMs = 130; acc = -500;
+        star = null; food = null; food = makeFood(false);
+      }
+      function turn(d) {
+        if (mode !== "play") return;
+        const last = queue.length ? queue[queue.length - 1] : dir;
+        const [lx, ly] = DIRS[last], [nx, ny] = DIRS[d];
+        if (d === last || (lx + nx === 0 && ly + ny === 0)) return;
+        if (queue.length < 2) queue.push(d);
+      }
+      // Flood fill from a cell, bounded by 3x the body length: tells the autopilot whether a move leaves enough room.
+      function reachable(x0, y0) {
+        const seen = new Set(), stack = [[x0, y0]], limit = snake.length * 3;
+        for (let i = 0; i < snake.length - 1; i++) seen.add(key(snake[i].x, snake[i].y));
+        let n = 0;
+        while (stack.length && n < limit) {
+          const [x, y] = stack.pop(), k = key(x, y);
+          if (!inside(x, y) || seen.has(k)) continue;
+          seen.add(k); n++;
+          stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
+        }
+        return n;
+      }
+      function autopilot() {
+        const h = snake[0], target = star || food, len = snake.length, [cx, cy] = DIRS[dir];
+        let pick = dir, bestScore = Infinity;
+        for (const d in DIRS) {
+          const [dx, dy] = DIRS[d];
+          if (dx + cx === 0 && dy + cy === 0) continue;
+          const nx = h.x + dx, ny = h.y + dy;
+          if (!inside(nx, ny) || occupied(nx, ny, true)) continue;
+          const room = reachable(nx, ny);
+          const s = Math.abs(target.gx - nx) + Math.abs(target.gy - ny) + (room < len ? 1000 - room : 0);
+          if (s < bestScore) { bestScore = s; pick = d; }
+        }
+        dir = pick;
+      }
+      function step() {
+        prev = snake.map((s) => ({ ...s }));
+        if (mode === "auto") autopilot(); else if (queue.length) dir = queue.shift();
+        const [dx, dy] = DIRS[dir], h = snake[0], nx = h.x + dx, ny = h.y + dy;
+        if (!inside(nx, ny) || occupied(nx, ny, grow === 0)) return die();
+        snake.unshift({ x: nx, y: ny });
+        if (grow > 0) { grow--; prev.push({ ...prev[prev.length - 1] }); } else snake.pop();
+        const [px, py] = center(nx, ny);
+        if (star && star.gx === nx && star.gy === ny) {
+          grow += 3; star = null;
+          if (mode === "play") { score += 50; popup("+50", px, py - cell * 0.6, "#f7df1e"); }
+          burst(px, py, "#f7df1e", 40, 6); shake = 6;
+        } else if (food.gx === nx && food.gy === ny) {
+          grow += 1; food = makeFood(false);
+          if (mode === "play") { score += 10; popup("+10", px, py - cell * 0.6, "#ecebe6"); }
+          burst(px, py, "#f72585", 18);
+          if (!star && Math.random() < 0.3) star = makeFood(true);
+        }
+        stepMs = Math.max(65, 130 - snake.length * 1.6);
+      }
+      function die() {
+        if (mode === "auto") { const [px, py] = center(snake[0].x, snake[0].y); burst(px, py, "#4cc9f0", 30); reset(); return; }
+        mode = "dying"; dieTimer = 0; shake = 14; best = Math.max(best, score);
+      }
+      function start() { mode = "play"; layout(true); reset(); }
+      function goAuto() { mode = "auto"; setPressed(autoBtn, true); layout(true); reset(); }
 
-const loop = GameLoop({
-  blur: true,
-  update(dt) {
-    if (mode === "play" || mode === "title") {
-      acc += dt * 1000;
-      const ms = mode === "title" ? 95 : stepMs;
-      while (acc >= ms) { acc -= ms; step(); if (mode !== "play" && mode !== "title") break; }
-      if (star && (star.life -= dt) <= 0) star = null;
-    } else if (mode === "dying") {
-      // the body bursts apart segment by segment
-      dieTimer += dt;
-      while (snake.length && dieTimer > .04) {
-        dieTimer -= .04;
-        const s = snake.shift(); prev.shift();
-        burst(...center(s.x, s.y), `hsl(${190 + Math.random() * 80} 85% 62%)`, 10, 5);
+      function update(dt) {
+        if (mode === "play" || mode === "auto") {
+          acc += dt * 1000;
+          while ((mode === "play" || mode === "auto") && acc >= (mode === "auto" ? 95 : stepMs)) { acc -= mode === "auto" ? 95 : stepMs; step(); }
+          if (star) { star.life -= dt; if (star.life <= 0) star = null; }
+        } else if (mode === "dying") {
+          dieTimer += dt;
+          while (dieTimer > 0.04 && snake.length) {
+            dieTimer -= 0.04;
+            const s = snake.shift(); prev.shift();
+            const [px, py] = center(s.x, s.y);
+            burst(px, py, `hsl(${190 + Math.random() * 80} 85% 62%)`, 10, 5);
+          }
+          if (!snake.length) { mode = "over"; overAt = performance.now(); }
+        } else if (mode === "over" && performance.now() - overAt > 8000) goAuto();
+        particles.update();
+        popups = popups.filter((p) => { p.y -= 1; p.ttl--; p.opacity = Math.min(1, p.ttl / 25); return p.ttl > 0; });
+        shake *= 0.86;
       }
-      if (!snake.length) {
-        mode = "over"; overAt = performance.now();
-        overlay("撞到了！", `分數 ${score}　最高 ${best}`, "按任意鍵或點擊再玩一次");
+      function drawBoard() {
+        g.fillStyle = "rgba(255,255,255,.025)"; g.strokeStyle = "rgba(76,201,240,.35)"; g.lineWidth = 2;
+        g.beginPath(); g.roundRect(ox - 4, oy - 4, cols * cell + 8, rows * cell + 8, 10); g.fill(); g.stroke();
+        g.fillStyle = "rgba(255,255,255,.07)";
+        for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) g.fillRect(ox + (x + 0.5) * cell - 1, oy + (y + 0.5) * cell - 1, 2, 2);
       }
-    }
-    particles.update();
-    for (let i = popups.length - 1; i >= 0; i--) {
-      const p = popups[i];
-      p.y -= 1; p.ttl--; p.opacity = Math.min(1, p.ttl / 25);
-      if (p.ttl <= 0) popups.splice(i, 1);
-    }
-    shake *= .86;
+      function drawSnake(t) {
+        const n = snake.length;
+        for (let i = n - 1; i >= 0; i--) {
+          const a = prev[i] || snake[i], b = snake[i];
+          const [x, y] = center(K.lerp(a.x, b.x, t), K.lerp(a.y, b.y, t));
+          const hue = 190 + (i / Math.max(1, n - 1)) * 80, sz = cell * (i === 0 ? 0.9 : 0.8 - (i / n) * 0.2);
+          g.fillStyle = `hsl(${hue} 85% 62%)`; g.shadowColor = `hsl(${hue} 90% 60%)`; g.shadowBlur = cell * (i === 0 ? 0.7 : 0.3);
+          g.beginPath(); g.roundRect(x - sz / 2, y - sz / 2, sz, sz, sz * 0.35); g.fill();
+        }
+        g.shadowBlur = 0;
+        if (!n) return;
+        const [dx, dy] = DIRS[dir], h = snake[0], p = prev[0] || h;
+        const [x, y] = center(K.lerp(p.x, h.x, t), K.lerp(p.y, h.y, t));
+        for (const s of [-1, 1]) {
+          const ex = x + dx * cell * 0.18 + dy * s * cell * 0.2, ey = y + dy * cell * 0.18 - dx * s * cell * 0.2;
+          g.fillStyle = "#fff"; g.beginPath(); g.arc(ex, ey, cell * 0.13, 0, TAU); g.fill();
+          g.fillStyle = "#0e1013"; g.beginPath(); g.arc(ex + dx * cell * 0.05, ey + dy * cell * 0.05, cell * 0.065, 0, TAU); g.fill();
+        }
+      }
+      function hud() {
+        g.font = `bold ${W > 520 ? 18 : 15}px ${FONT}`; g.textBaseline = "middle";
+        g.textAlign = "left"; g.fillStyle = mode === "auto" ? "#9d8cff" : "#f7df1e";
+        g.fillText(mode === "auto" ? "展示模式（自動駕駛）" : `分數 ${score}`, 14, 22);
+        g.textAlign = "right"; g.fillStyle = "#9b998f";
+        g.fillText(`長度 ${snake.length}　最高 ${best}`, W - 14, 22);
+      }
+      function overCard() {
+        const w = Math.min(W - 40, 360), h = 150, x = (W - w) / 2, y = (H - h) / 2;
+        g.fillStyle = "rgba(14,16,19,.78)"; g.strokeStyle = "rgba(255,255,255,.12)"; g.lineWidth = 1;
+        g.beginPath(); g.roundRect(x, y, w, h, 14); g.fill(); g.stroke();
+        const grad = g.createLinearGradient(x, 0, x + w, 0);
+        grad.addColorStop(0, "#7bd389"); grad.addColorStop(0.5, "#4cc9f0"); grad.addColorStop(1, "#9d8cff");
+        g.textAlign = "center"; g.textBaseline = "middle";
+        g.font = `bold 30px ${FONT}`; g.fillStyle = grad; g.fillText("撞到了！", W / 2, y + 40);
+        g.font = `bold 16px ${FONT}`; g.fillStyle = "#ecebe6"; g.fillText(`分數 ${score}　最高 ${best}`, W / 2, y + 82);
+        g.globalAlpha = Math.floor(performance.now() / 600) % 2 ? 0.25 : 1;
+        g.font = `14px ${FONT}`; g.fillStyle = "#f7df1e"; g.fillText("按任意鍵或點擊再玩一次", W / 2, y + 118);
+        g.globalAlpha = 1;
+      }
+      function render() {
+        if (!canvas.clientWidth || !canvas.clientHeight) return;
+        if (canvas.clientWidth !== W || canvas.clientHeight !== H || DPR() !== dpr) { layout(mode === "auto"); if (mode === "auto") reset(); }
+        g.setTransform(dpr, 0, 0, dpr, 0, 0);
+        g.fillStyle = "#0e1013"; g.fillRect(0, 0, W, H);
+        g.save();
+        if (shake > 0.3) g.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+        drawBoard();
+        for (const f of [food, star]) if (f) { [f.x, f.y] = center(f.gx, f.gy); f.render(); }
+        drawSnake(K.clamp(0, 1, acc / (mode === "auto" ? 95 : stepMs)));
+        particles.render();
+        for (const p of popups) p.render();
+        g.restore();
+        hud();
+        if (mode === "over") overCard();
+      }
+
+      const autoBtn = ctx.toggle("自動展示", true, (v) => (v ? goAuto() : start()));
+      ctx.button("重新開始", () => { setPressed(autoBtn, false); start(); });
+      const takeOver = () => { setPressed(autoBtn, false); start(); };
+      const steer = (d) => { if (mode === "auto") takeOver(); turn(d); };
+      K.onKey(["arrowup", "w"], () => steer("up"));
+      K.onKey(["arrowdown", "s"], () => steer("down"));
+      K.onKey(["arrowleft", "a"], () => steer("left"));
+      K.onKey(["arrowright", "d"], () => steer("right"));
+      win.addEventListener("keydown", () => { if (mode === "over" && performance.now() - overAt > 500) start(); });
+      let down = null;
+      K.onPointer("down", () => { const p = K.getPointer(); down = { x: p.x / dpr, y: p.y / dpr }; });
+      K.onPointer("up", () => {
+        if (!down) return;
+        const p = K.getPointer(), px = p.x / dpr, py = p.y / dpr, dx = px - down.x, dy = py - down.y;
+        down = null;
+        if (mode === "over") { if (performance.now() - overAt > 500) start(); return; }
+        if (mode === "auto") { takeOver(); if (Math.hypot(dx, dy) <= 24) return; }
+        if (mode !== "play") return;
+        if (Math.hypot(dx, dy) > 24) return turn(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? "right" : "left") : (dy > 0 ? "down" : "up"));
+        const [hx, hy] = center(snake[0].x, snake[0].y), rx = px - hx, ry = py - hy;
+        turn(Math.abs(rx) > Math.abs(ry) ? (rx > 0 ? "right" : "left") : (ry > 0 ? "down" : "up"));
+      });
+      layout(true); reset();
+      K.GameLoop({ blur: true, clearCanvas: false, update, render }).start();
+    },
   },
-  render() {
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = "#0e1013"; ctx.fillRect(0, 0, W, H);
-    if (shake > .3) ctx.translate((Math.random() - .5) * shake, (Math.random() - .5) * shake);
-    drawBoard();
-    for (const f of [food, star]) {
-      if (!f) continue;
-      [f.x, f.y] = center(f.gx, f.gy);
-      f.render();
-    }
-    const t = mode === "play" || mode === "title" ? clamp(0, 1, acc / (mode === "title" ? 95 : stepMs)) : 1;
-    drawSnake(t);
-    particles.render();
-    for (const p of popups) p.render();
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.font = `bold ${W < 500 ? 16 : 20}px ${FONT}`; ctx.textBaseline = "middle";
-    ctx.textAlign = "left"; ctx.fillStyle = mode === "title" ? "#9d8cff" : "#f7df1e";
-    ctx.fillText(mode === "title" ? "展示模式" : `分數 ${score}`, 16, 26);
-    if (mode !== "title") {
-      ctx.textAlign = "right"; ctx.fillStyle = "#9b998f";
-      ctx.fillText(`長度 ${snake.length}　最高 ${best}`, W - 16, 26);
-    }
+  {
+    id: "sheet", title: "精靈表動畫",
+    api: "SpriteSheet・Animation・playAnimation・keyPressed",
+    desc: "用程式在畫布上畫出 8×3 格、每格 32px 的像素精靈表，交給 SpriteSheet 切成 idle、walk、run、jump 等八段動畫。角色依速度與是否著地切換 playAnimation，上方即時標出目前動畫用到的格子與正在播的那一格。",
+    hint: "←→ 或 A/D 走路（按住加速成跑步），↑／W／空白鍵跳；手機點左右兩側移動、點中間跳",
+    async mount(ctx) {
+      const { K, win, doc, canvas, g } = await boot(ctx);
+      K.initKeys(); K.initPointer();
+      // 32x32 pixel hero drawn with rectangles; every pose is a set of small offsets.
+      function drawHero(c, x0, y0, { hop = 0, sq = 0, ll = 0, rl = 0, la = 0, ra = 0, lx = 0, rx = 0, eye = 0, mouth = 0 } = {}) {
+        const px = (x, y, w, h, col) => { c.fillStyle = col; c.fillRect(x0 + x, y0 + y, w, h); };
+        const ol = (x, y, w, h, col) => { px(x - 1, y - 1, w + 2, h + 2, "#15171c"); px(x, y, w, h, col); };
+        const feet = 31 - hop, bh = 15 - sq, bw = 14 + Math.max(0, sq), bx = 16 - (bw >> 1), by = feet - 3 - bh, sy = by + 7;
+        const arm = (m, x, out) => {
+          if (m === 0) ol(x, sy, 2, 5, "#e8c30f");
+          else if (m === 1) ol(out < 0 ? x - 3 : x, sy, 5, 2, "#e8c30f");
+          else ol(x, sy - 7, 2, 7, "#e8c30f");
+        };
+        arm(la, bx - 2 + lx, -1);
+        px(bx - 1, by, bw + 2, bh, "#15171c"); px(bx, by - 1, bw, bh + 2, "#15171c");
+        px(bx, by, bw, bh, "#f7df1e");
+        px(bx, by + bh - 3, bw, 3, "#d4a20a");
+        px(bx + bw - 2, by + 1, 2, bh - 4, "#e8c30f");
+        px(bx + 2, by + 2, 3, 2, "#fff6b0");
+        for (const x of [12 + ll, 17 + rl]) { px(x, feet - 3, 3, 2, "#5a5f6b"); px(x, feet - 1, 4, 2, "#4cc9f0"); }
+        arm(ra, bx + bw + rx, 1);
+        const ey = by + 4;
+        for (const ex of [bx + bw - 8, bx + bw - 4]) {
+          if (eye === 1) px(ex, ey + 1, 2, 1, "#15171c");
+          else if (eye === 2) { px(ex - 1, ey + 1, 1, 1, "#15171c"); px(ex, ey, 2, 1, "#15171c"); px(ex + 2, ey + 1, 1, 1, "#15171c"); }
+          else { px(ex, ey, 2, 3, "#15171c"); px(ex, ey, 1, 1, "#fff"); }
+        }
+        px(bx + bw - 10, ey + 4, 2, 1, "#f72585"); px(bx + bw - 2, ey + 4, 2, 1, "#f72585");
+        const mx = bx + bw - 6, my = ey + 5;
+        if (mouth) { px(mx, my, 2, 2, "#15171c"); px(mx, my + 1, 2, 1, "#f72585"); } else px(mx, my, 2, 1, "#15171c");
+      }
+      const POSES = [
+        {}, { sq: 1 }, { sq: 1 }, { eye: 1 },
+        ...[0, 1, 2, 3].map((i) => ({ ra: 2, rx: i % 2 ? 2 : 0, mouth: 1 })),
+        ...[-3, -2, 0, 2, 3, 2, 0, -2].map((l) => ({ ll: l, rl: -l, hop: l === 0 ? 1 : 0, lx: -Math.sign(l), rx: Math.sign(l) })),
+        { sq: 4 }, { sq: -2, la: 2, ra: 2, hop: 2 }, { la: 1, ra: 1, ll: -2, rl: 2, mouth: 1 }, { sq: 4 },
+        ...[3, 1, 0, 2].map((h) => ({ la: 2, ra: 2, hop: h, eye: 2, mouth: 1 })),
+      ];
+      const sheetCv = doc.createElement("canvas");
+      sheetCv.width = 256; sheetCv.height = 96;
+      const sc = sheetCv.getContext("2d");
+      POSES.forEach((p, i) => drawHero(sc, (i % 8) * 32, Math.floor(i / 8) * 32, p));
+      const BASE = { idle: 5, wave: 8, walk: 12, run: 22, jump: 10, fall: 1, land: 1, cheer: 10 };
+      const sheet = K.SpriteSheet({
+        image: sheetCv, frameWidth: 32, frameHeight: 32,
+        animations: {
+          idle: { frames: "0..3", frameRate: 5 }, wave: { frames: "4..7", frameRate: 8 },
+          walk: { frames: "8..15", frameRate: 12 }, run: { frames: "8..15", frameRate: 22 },
+          jump: { frames: [16, 17], frameRate: 10, loop: false }, fall: { frames: [18], frameRate: 1 },
+          land: { frames: [19], frameRate: 1, loop: false }, cheer: { frames: "20..23", frameRate: 10 },
+        },
+      });
+      const GRAV = 1800;
+      const hero = K.Sprite({ x: 120, y: 0, anchor: { x: 0.5, y: 1 }, animations: sheet.animations, ddy: GRAV });
+      let W = 0, H = 0, dpr = 1, k = 1, groundY = 0, S = 3, jumpH = 80, jumpV = 500, minX = 0, maxX = 0;
+      const sy0 = 10;
+      function layout() {
+        W = canvas.clientWidth; H = canvas.clientHeight; dpr = DPR();
+        canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+        k = Math.min(2, (W - 20) / 256, (H * 0.34 - 34) / 96);
+        if (k >= 1) k = Math.floor(k * 2) / 2;
+        groundY = H - Math.max(24, H * 0.12);
+        const room = groundY - (sy0 + 96 * k + 48);
+        S = K.clamp(2, 5, Math.floor(room / 55));
+        jumpH = K.clamp(24, 140, room - 32 * S - 10); jumpV = Math.sqrt(2 * GRAV * jumpH);
+        minX = 16 * S + 8; maxX = W - (16 * S + 8);
+        hero.x = K.clamp(minX, maxX, hero.x);
+        if (onGround || hero.y > groundY) hero.y = groundY;
+      }
+      let onGround = true, landT = 0, act = null, facing = 1, targetV = 0, curName = "idle";
+      let auto = true, planI = 0, planT = 0, heading = 1, manualT = 0, holdT = 0, padDir = 0, dust = [];
+      const PLAN = [
+        { t: 1.8 }, { t: 1.5, act: "wave" }, { t: 2, v: 120 }, { t: 1.6, v: 280 }, { t: 1, v: 280, jump: true },
+        { t: 1.4, v: 120 }, { t: 0.9, jump: true }, { t: 1.6, act: "cheer" },
+      ];
+      const ACT_LABEL = { idle: "待機", wave: "揮手", walk: "走路", run: "跑步", jump: "起跳", fall: "下落", land: "落地", cheer: "歡呼" };
+      function jump() { if (onGround) { hero.dy = -jumpV; onGround = false; } }
+      function puff(x, y, n, dir = 0) {
+        for (let i = 0; i < n; i++) dust.push({ x, y, vx: (Math.random() - 0.5) * 120 + dir * 60, vy: -Math.random() * 60, life: 0.5 });
+      }
+      function update(dt) {
+        const left = K.keyPressed(["arrowleft", "a"]) || padDir < 0, right = K.keyPressed(["arrowright", "d"]) || padDir > 0;
+        if (left || right) { manualT = 3; act = null; }
+        if (manualT > 0) {
+          manualT -= dt;
+          const d = (right ? 1 : 0) - (left ? 1 : 0);
+          holdT = d ? holdT + dt : 0;
+          targetV = d * (holdT > 0.6 ? 300 : 120);
+          if (d) heading = d;
+        } else if (auto) {
+          let p = PLAN[planI];
+          if (planT >= p.t) { planI = (planI + 1) % PLAN.length; planT = 0; p = PLAN[planI]; act = p.act || null; if (p.jump) jump(); }
+          planT += dt;
+          if ((hero.x <= minX + 4 && heading < 0) || (hero.x >= maxX - 4 && heading > 0)) heading = -heading;
+          targetV = (p.v || 0) * heading;
+        } else { targetV = 0; act = null; }
+        hero.dx += (targetV - hero.dx) * Math.min(1, dt * 10);
+        if (Math.abs(targetV) > 1) facing = Math.sign(targetV);
+        hero.update(dt);
+        hero.x = K.clamp(minX, maxX, hero.x);
+        if (hero.y >= groundY) {
+          hero.y = groundY; hero.dy = 0;
+          if (!onGround) { onGround = true; landT = 0.12; puff(hero.x, groundY, 10); }
+        }
+        if (onGround && Math.abs(hero.dx) > 200 && Math.random() < 0.3) puff(hero.x - facing * 6 * S, groundY, 1, -facing);
+        let name;
+        if (!onGround) name = hero.dy < 0 ? "jump" : "fall";
+        else if (landT > 0) { landT -= dt; name = "land"; }
+        else if (act && Math.abs(hero.dx) < 25) name = act;
+        else name = Math.abs(hero.dx) > 200 ? "run" : Math.abs(hero.dx) > 25 ? "walk" : "idle";
+        if (name !== curName) { hero.playAnimation(name); curName = name; }
+        dust = dust.filter((d) => { d.life -= dt; d.x += d.vx * dt; d.y += d.vy * dt; d.vy += 200 * dt; return d.life > 0; });
+      }
+      function render() {
+        if (!canvas.clientWidth || !canvas.clientHeight) return;
+        if (canvas.clientWidth !== W || canvas.clientHeight !== H || DPR() !== dpr) layout();
+        g.setTransform(dpr, 0, 0, dpr, 0, 0); g.imageSmoothingEnabled = false;
+        const sky = g.createLinearGradient(0, 0, 0, groundY);
+        sky.addColorStop(0, "#0e1013"); sky.addColorStop(1, "#18202b");
+        g.fillStyle = sky; g.fillRect(0, 0, W, groundY);
+        g.fillStyle = "#141a22";
+        g.beginPath(); g.moveTo(0, groundY);
+        for (let x = 0; x <= W; x += 16) g.lineTo(x, groundY - 40 - Math.sin(x / 90) * 18 - Math.sin(x / 37) * 8);
+        g.lineTo(W, groundY); g.fill();
+        // Sprite sheet strip with the frames of the playing animation outlined.
+        const sw = 256 * k, sh = 96 * k, sx0 = Math.round((W - sw) / 2);
+        g.fillStyle = "#15181d"; g.fillRect(sx0 - 4, sy0 - 4, sw + 8, sh + 8);
+        g.drawImage(sheetCv, sx0, sy0, sw, sh);
+        g.strokeStyle = "rgba(255,255,255,.08)"; g.lineWidth = 1;
+        g.beginPath();
+        for (let i = 1; i < 8; i++) { g.moveTo(sx0 + i * 32 * k + 0.5, sy0); g.lineTo(sx0 + i * 32 * k + 0.5, sy0 + sh); }
+        for (let i = 1; i < 3; i++) { g.moveTo(sx0, sy0 + i * 32 * k + 0.5); g.lineTo(sx0 + sw, sy0 + i * 32 * k + 0.5); }
+        g.stroke();
+        const anim = hero.currentAnimation, fr = anim.frames, cur = fr[anim._f] ?? fr[0], cw = 32 * k;
+        g.strokeStyle = "rgba(76,201,240,.85)"; g.lineWidth = 1;
+        for (const f of fr) g.strokeRect(sx0 + (f % 8) * cw + 1.5, sy0 + Math.floor(f / 8) * cw + 1.5, cw - 3, cw - 3);
+        g.strokeStyle = "#f7df1e"; g.lineWidth = 2;
+        g.strokeRect(sx0 + (cur % 8) * cw + 1, sy0 + Math.floor(cur / 8) * cw + 1, cw - 2, cw - 2);
+        g.font = `12px ${MONO}`; g.fillStyle = "#9b998f"; g.textAlign = "center"; g.textBaseline = "top";
+        g.fillText(`${curName}  frames ${fr[0]}..${fr[fr.length - 1]}  ${+anim.frameRate.toFixed(2)}fps  #${cur}`, W / 2, sy0 + sh + 8);
+        g.fillStyle = "#15181d"; g.fillRect(0, groundY, W, H - groundY);
+        g.fillStyle = "#7bd389"; g.fillRect(0, groundY, W, 2);
+        g.fillStyle = "rgba(123,211,137,.18)";
+        for (let x = 6; x < W; x += 22) g.fillRect(x, groundY + 6, 8, 2);
+        const air = K.clamp(0, 1, (groundY - hero.y) / 160);
+        g.fillStyle = `rgba(0,0,0,${0.45 - air * 0.3})`;
+        g.beginPath(); g.ellipse(hero.x, groundY + 2, 9 * S * (1 - air * 0.5), 2 * S * (1 - air * 0.5), 0, 0, TAU); g.fill();
+        for (const d of dust) { g.fillStyle = `rgba(200,200,190,${d.life})`; g.fillRect(d.x - 2, d.y - 2, 4, 4); }
+        hero.setScale(S * facing, S);
+        hero.render();
+        // Status sits under the sheet caption; the bottom strip is covered by the hint bar.
+        g.textAlign = "center"; g.textBaseline = "top"; g.font = `13px ${FONT}`; g.fillStyle = "#ecebe6";
+        g.fillText(`${manualT > 0 ? "手動" : auto ? "自動示範" : "待命"}・${ACT_LABEL[curName]}・${Math.round(Math.abs(hero.dx))} px/s`, W / 2, sy0 + sh + 28);
+      }
+      ctx.toggle("自動示範", true, (v) => { auto = v; manualT = 0; planI = 0; planT = 0; act = null; });
+      ctx.slider("播放速度", { min: 0.25, max: 2, step: 0.25, value: 1, format: (v) => `${v}×` }, (v) => {
+        for (const n in BASE) hero.animations[n].frameRate = BASE[n] * Number(v);
+      });
+      K.onKey(["arrowup", "w", "space"], () => { manualT = 3; act = null; jump(); });
+      K.onPointer("down", () => {
+        const x = K.getPointer().x / dpr;
+        manualT = 3; act = null;
+        if (x < W / 3) padDir = -1; else if (x > W * 2 / 3) padDir = 1; else jump();
+      });
+      K.onPointer("up", () => { padDir = 0; });
+      win.addEventListener("pointerup", () => { padDir = 0; });
+      win.addEventListener("blur", () => { padDir = 0; });
+      layout(); hero.y = groundY;
+      K.GameLoop({ blur: true, clearCanvas: false, update, render }).start();
+    },
   },
-});
+  {
+    id: "tiles", title: "TileEngine 地圖",
+    api: "TileEngine・setTileAtLayer・layerCollidesWith・renderLayer",
+    desc: "60×40 格、三個圖層的地圖全由程式產生（地面、障礙、裝飾），圖塊集也是程式畫的。角色用 layerCollidesWith 對障礙層做逐軸碰撞，自動模式以 BFS 找最近的金幣；點地圖可用 setTileAtLayer 即時放牆、種樹或清除，路線會跟著重算。",
+    hint: "方向鍵／WASD 手動走；點地圖放置下拉選單選的圖塊，擋住路線看它繞路",
+    async mount(ctx) {
+      const css = `.hud{position:absolute;left:8px;top:8px;padding:5px 10px;border-radius:8px;background:rgba(14,16,19,.8);border:1px solid rgba(255,255,255,.12);font-size:12px;line-height:1.6;pointer-events:none}.hud b{font-family:${MONO};font-weight:600;color:#f7df1e}`;
+      const { K, doc, canvas, g } = await boot(ctx, { pixelated: true, css });
+      doc.body.insertAdjacentHTML("beforeend", `<div class="hud"></div>`);
+      const hudEl = doc.querySelector(".hud");
+      K.initKeys(); K.initPointer();
+      K.seedRand("kontra-tiles");
+      const R = K.rand, T = 16, MW = 60, MH = 40, idx = (c, r) => r * MW + c;
+      // Procedural tileset, gid 1..8: grass, grass tufts, sand, water, stone, tree, flowers, bush.
+      const ts = doc.createElement("canvas");
+      ts.width = 128; ts.height = 16;
+      const tc = ts.getContext("2d");
+      const px = (i, x, y, w, h, col) => { tc.fillStyle = col; tc.fillRect(i * 16 + x, y, w, h); };
+      const noise = (i, cols, n) => { for (let j = 0; j < n; j++) px(i, Math.floor(R() * 16), Math.floor(R() * 16), 1, 1, cols[j % cols.length]); };
+      const disc = (i, cx, cy, r, col) => { for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) if ((x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2 <= r * r) px(i, x, y, 1, 1, col); };
+      px(0, 0, 0, 16, 16, "#2f6b3a"); noise(0, ["#357a42", "#2a6034"], 28);
+      px(1, 0, 0, 16, 16, "#2f6b3a"); noise(1, ["#357a42", "#2a6034"], 18);
+      for (const [x, y] of [[2, 10], [8, 5], [11, 12]]) { px(1, x, y, 1, 3, "#58a860"); px(1, x + 2, y, 1, 3, "#58a860"); px(1, x + 1, y - 1, 1, 4, "#6fc077"); }
+      px(2, 0, 0, 16, 16, "#c9a66b"); noise(2, ["#d6b57c", "#b8955c"], 34);
+      px(3, 0, 0, 16, 16, "#1f5f8b");
+      for (const [x, y] of [[2, 4], [9, 9], [4, 13], [11, 2]]) { px(3, x, y, 4, 1, "#3a86b8"); px(3, x + 1, y - 1, 2, 1, "#3a86b8"); }
+      px(4, 0, 0, 16, 16, "#5d6470");
+      for (const y of [0, 5, 10, 15]) px(4, 0, y, 16, 1, "#444a54");
+      for (const [x, y] of [[7, 0], [3, 5], [11, 5], [7, 10]]) px(4, x, y, 1, 5, "#444a54");
+      noise(4, ["#6f7784"], 14);
+      px(5, 7, 10, 2, 6, "#6b4a2b"); disc(5, 8, 7, 6.5, "#1f6b40"); disc(5, 7.5, 6.5, 4.8, "#2e8b57"); disc(5, 6.5, 5, 2.4, "#45a56c");
+      for (const [x, y, c] of [[3, 4, "#f72585"], [11, 3, "#f7df1e"], [6, 11, "#9d8cff"], [12, 11, "#f72585"]]) {
+        px(6, x, y + 2, 1, 3, "#3f8f4a"); px(6, x - 1, y, 3, 1, c); px(6, x, y - 1, 1, 3, c); px(6, x, y, 1, 1, "#fff6b0");
+      }
+      disc(7, 8, 9, 6.5, "#2f7d3c"); disc(7, 7.5, 8.5, 4.8, "#3f8f4a"); disc(7, 6, 6.5, 2.2, "#5fb36a");
+      px(7, 4, 10, 2, 2, "#f72585"); px(7, 10, 7, 2, 2, "#f72585"); px(7, 8, 12, 2, 2, "#f72585");
 
-layout(true);
-reset();
-loop.start();
+      // Map: two sandy trails, a lake with a beach, three ruins, scattered trees, bushes and flowers.
+      const ground = new Array(MW * MH).fill(1), walls = new Array(MW * MH).fill(0), decor = new Array(MW * MH).fill(0);
+      for (let i = 0; i < ground.length; i++) if (R() < 0.15) ground[i] = 2;
+      const trailRow = [];
+      let tr = 18 + K.randInt(-3, 3), tcol = 36 + K.randInt(-3, 3);
+      for (let c = 0; c < MW; c++) {
+        if (c > 6 && R() < 0.3) tr = K.clamp(5, MH - 9, tr + (R() < 0.5 ? -1 : 1));
+        trailRow[c] = tr; ground[idx(c, tr)] = ground[idx(c, tr + 1)] = 3;
+      }
+      for (let r = 0; r < MH; r++) {
+        if (R() < 0.3) tcol = K.clamp(30, MW - 8, tcol + (R() < 0.5 ? -1 : 1));
+        ground[idx(tcol, r)] = ground[idx(tcol + 1, r)] = 3;
+      }
+      const sand = (i) => ground[i] === 3;
+      for (let r = 0; r < MH; r++) for (let c = 0; c < MW; c++) {
+        const i = idx(c, r), d = Math.hypot((c - 15) / 9, (r - 31) / 5);
+        if (sand(i)) continue;
+        if (d < 1) walls[i] = 4; else if (d < 1.3) ground[i] = 3;
+      }
+      for (const [x0, y0, w, h] of [[42, 4, 9, 6], [47, 27, 8, 7], [8, 3, 8, 6]]) {
+        for (let c = x0; c < x0 + w; c++) for (const r of [y0, y0 + h - 1]) if (R() > 0.15) walls[idx(c, r)] = 5;
+        for (let r = y0; r < y0 + h; r++) for (const c of [x0, x0 + w - 1]) if (R() > 0.15) walls[idx(c, r)] = 5;
+        const door = x0 + (w >> 1);
+        walls[idx(door, y0 + h - 1)] = walls[idx(door - 1, y0 + h - 1)] = 0;
+      }
+      for (let i = 0; i < walls.length; i++) {
+        if (sand(i) && walls[i] === 5) walls[i] = 0;
+        if (walls[i] || sand(i)) continue;
+        const v = R();
+        if (v < 0.06) walls[i] = 6; else if (v < 0.085) walls[i] = 8; else if (v < 0.135) decor[i] = 7;
+      }
+      for (let c = 0; c < MW; c++) for (const r of [0, MH - 1]) { walls[idx(c, r)] = 5; decor[idx(c, r)] = 0; }
+      for (let r = 0; r < MH; r++) for (const c of [0, MW - 1]) { walls[idx(c, r)] = 5; decor[idx(c, r)] = 0; }
+      const sc = 4, sr = trailRow[4];
+      for (let r = sr - 2; r <= sr + 2; r++) for (let c = sc - 2; c <= sc + 2; c++) if (c > 0 && r > 0 && c < MW - 1 && r < MH - 1) walls[idx(c, r)] = 0;
+
+      const te = K.TileEngine({
+        width: MW, height: MH, tilewidth: T, tileheight: T,
+        tilesets: [{ firstgid: 1, image: ts }],
+        layers: [{ name: "ground", data: ground }, { name: "walls", data: walls }, { name: "decor", data: decor }],
+      });
+      const open = (c, r) => c >= 0 && r >= 0 && c < MW && r < MH && !walls[idx(c, r)];
+      const N4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+      // Breadth-first search over the walls layer: with a goal it returns the tile path, without one the reachable tiles.
+      function bfs(c0, r0, goal) {
+        const from = new Int32Array(MW * MH).fill(-1), s = idx(c0, r0), q = [s];
+        from[s] = s;
+        for (let h = 0; h < q.length; h++) {
+          const i = q[h];
+          if (goal && i !== s && goal(i)) { const path = []; for (let j = i; j !== s; j = from[j]) path.push(j); return path.reverse(); }
+          const c = i % MW, r = (i / MW) | 0;
+          for (const [dc, dr] of N4) {
+            const nc = c + dc, nr = r + dr;
+            if (open(nc, nr) && from[idx(nc, nr)] < 0) { from[idx(nc, nr)] = i; q.push(idx(nc, nr)); }
+          }
+        }
+        return goal ? null : q;
+      }
+      const reach = bfs(sc, sr);
+
+      function playerRender() {
+        const c = this.context, [fx, fy] = this.face;
+        c.fillStyle = "#0b2f3d"; c.fillRect(0, 1, 10, 8); c.fillRect(1, 0, 8, 10);
+        c.fillStyle = "#4cc9f0"; c.fillRect(1, 1, 8, 8);
+        c.fillStyle = "#9be3f7"; c.fillRect(2, 2, 3, 1);
+        const eyes = fx > 0 ? [[6, 3], [6, 6]] : fx < 0 ? [[2, 3], [2, 6]] : fy < 0 ? [[3, 2], [6, 2]] : [[3, 6], [6, 6]];
+        for (const [ex, ey] of eyes) {
+          c.fillStyle = "#fff"; c.fillRect(ex, ey, 2, 2);
+          c.fillStyle = "#0e1013"; c.fillRect(ex + (fx > 0 ? 1 : 0), ey + (fy > 0 ? 1 : 0), 1, 1);
+        }
+      }
+      function coinRender() {
+        const c = this.context, w = Math.max(1, Math.round(8 * Math.abs(Math.cos(performance.now() / 260 + this.tile)))), x = Math.round(4 - w / 2);
+        c.fillStyle = "#a8780b"; c.fillRect(x, 0, w, 8);
+        c.fillStyle = "#f7df1e"; c.fillRect(x + (w > 2 ? 1 : 0), 1, Math.max(1, w - 2), 6);
+        if (w > 4) { c.fillStyle = "#fff6b0"; c.fillRect(x + 1, 1, 1, 3); }
+      }
+      const player = K.Sprite({ x: (sc + 0.5) * T, y: (sr + 0.5) * T, width: 10, height: 10, anchor: { x: 0.5, y: 0.5 }, face: [1, 0], render: playerRender });
+      const coins = [], coinAt = new Set(), sparks = [], flashes = [], temps = [];
+      let route = [], auto = true, manualT = 0, score = 0, brush = 5, demoT = 4, userEditT = 0, hover = null, hudT = 0;
+      function spawnCoin() {
+        const pc = Math.floor(player.x / T), pr = Math.floor(player.y / T);
+        for (let n = 0; n < 200; n++) {
+          const i = reach[Math.floor(Math.random() * reach.length)], c = i % MW, r = (i / MW) | 0;
+          if (walls[i] || coinAt.has(i) || Math.abs(c - pc) + Math.abs(r - pr) <= 5) continue;
+          coinAt.add(i);
+          coins.push(K.Sprite({ x: (c + 0.5) * T, y: (r + 0.5) * T, width: 8, height: 8, anchor: { x: 0.5, y: 0.5 }, tile: i, render: coinRender }));
+          return;
+        }
+      }
+      for (let n = 0; n < 12; n++) spawnCoin();
+
+      const SPEED = 70;
+      const blocked = (x, y) => te.layerCollidesWith("walls", { x: x - 5, y: y - 5, width: 9.99, height: 9.99 });
+      function move(vx, vy, dt) {
+        const nx = player.x + vx * dt;
+        if (!blocked(nx, player.y)) player.x = nx;
+        const ny = player.y + vy * dt;
+        if (!blocked(player.x, ny)) player.y = ny;
+        if (Math.abs(vx) > Math.abs(vy)) player.face = [Math.sign(vx), 0]; else if (vy) player.face = [0, Math.sign(vy)];
+      }
+      // setTileAtLayer marks the engine dirty; renderLayer right away refreshes that layer's cached canvas
+      // before the next engine pass clears every layer's dirty flag.
+      function editTile(c, r, v) {
+        if (c <= 0 || r <= 0 || c >= MW - 1 || r >= MH - 1) return false;
+        const i = idx(c, r), solid = v === 5 || v === 6;
+        if (solid && coinAt.has(i)) return false;
+        if (solid) {
+          const x0 = c * T, y0 = r * T;
+          if (player.x + 5 > x0 && player.x - 5 < x0 + T && player.y + 5 > y0 && player.y - 5 < y0 + T) return false;
+        }
+        if (v === 7) {
+          if (walls[i]) return false;
+          te.setTileAtLayer("decor", { row: r, col: c }, 7); te.renderLayer("decor");
+        } else {
+          te.setTileAtLayer("walls", { row: r, col: c }, v); te.renderLayer("walls");
+          if (decor[i]) { te.setTileAtLayer("decor", { row: r, col: c }, 0); te.renderLayer("decor"); }
+        }
+        flashes.push({ c, r, t: 0.5 });
+        route = [];
+        return true;
+      }
+      function update(dt) {
+        const kx = (K.keyPressed(["arrowright", "d"]) ? 1 : 0) - (K.keyPressed(["arrowleft", "a"]) ? 1 : 0);
+        const ky = (K.keyPressed(["arrowdown", "s"]) ? 1 : 0) - (K.keyPressed(["arrowup", "w"]) ? 1 : 0);
+        if (kx || ky) { manualT = 5; route = []; const l = Math.hypot(kx, ky); move((kx / l) * SPEED, (ky / l) * SPEED, dt); }
+        else if (manualT > 0) manualT -= dt;
+        else if (auto) {
+          const pc = Math.floor(player.x / T), pr = Math.floor(player.y / T);
+          if (!route.length) { const p = bfs(pc, pr, (i) => coinAt.has(i)); route = p ? [idx(pc, pr), ...p] : []; }
+          if (route.length) {
+            const ti = route[0], tx = ((ti % MW) + 0.5) * T, ty = (((ti / MW) | 0) + 0.5) * T, dx = tx - player.x, dy = ty - player.y, d = Math.hypot(dx, dy);
+            if (d < 0.5) route.shift();
+            else {
+              const ox = player.x, oy = player.y;
+              move((dx / d) * SPEED, (dy / d) * SPEED, Math.min(dt, d / SPEED));
+              if (ox === player.x && oy === player.y) route = [];
+            }
+          }
+          userEditT -= dt; demoT -= dt;
+          if (demoT <= 0 && userEditT <= 0 && route.length > 7) {
+            demoT = 6;
+            const ti = route[5];
+            if (editTile(ti % MW, (ti / MW) | 0, 5)) temps.push({ i: ti, t: 3.5 });
+          }
+        }
+        for (let j = temps.length - 1; j >= 0; j--) {
+          const t = temps[j];
+          if ((t.t -= dt) > 0) continue;
+          temps.splice(j, 1);
+          if (walls[t.i] === 5) editTile(t.i % MW, (t.i / MW) | 0, 0);
+        }
+        for (let j = coins.length - 1; j >= 0; j--) {
+          const cn = coins[j];
+          if (!K.collides(player, cn)) continue;
+          coins.splice(j, 1); coinAt.delete(cn.tile); score++; route = [];
+          for (let s = 0; s < 12; s++) { const a = Math.random() * TAU, v = 20 + Math.random() * 40; sparks.push({ x: cn.x, y: cn.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0.5 }); }
+          ctx.timeout(spawnCoin, 4000);
+        }
+        for (let j = sparks.length - 1; j >= 0; j--) { const s = sparks[j]; s.x += s.vx * dt; s.y += s.vy * dt; if ((s.life -= dt) <= 0) sparks.splice(j, 1); }
+        for (let j = flashes.length - 1; j >= 0; j--) if ((flashes[j].t -= dt) <= 0) flashes.splice(j, 1);
+        te.sx = Math.round(K.lerp(te.sx, player.x - canvas.width / 2, 0.12));
+        te.sy = Math.round(K.lerp(te.sy, player.y - canvas.height / 2, 0.12));
+        if ((hudT -= dt) <= 0) {
+          hudT = 0.2;
+          hudEl.innerHTML = `金幣 <b>${score}</b>・地圖 <b>60×40</b>・<b>3</b> 圖層<br>鏡頭 <b>${te.sx},${te.sy}</b>・${manualT > 0 ? "手動操作" : auto ? "自動尋路" : "待命"}`;
+        }
+      }
+      function render() {
+        if (!canvas.clientWidth || !canvas.clientHeight) return;
+        const Z = K.clamp(2, 4, Math.round(Math.min(canvas.clientWidth, canvas.clientHeight) / 160));
+        if (fitCanvas(canvas, 1 / Z)) { te.sx = Math.round(player.x - canvas.width / 2); te.sy = Math.round(player.y - canvas.height / 2); }
+        g.setTransform(1, 0, 0, 1, 0, 0); g.imageSmoothingEnabled = false;
+        te.renderLayer("ground"); te.renderLayer("walls"); te.renderLayer("decor");
+        g.save(); g.translate(-te.sx, -te.sy);
+        g.fillStyle = "rgba(247,223,30,.6)";
+        for (const i of route) g.fillRect((i % MW) * T + 7, ((i / MW) | 0) * T + 7, 2, 2);
+        for (const cn of coins) cn.render();
+        const ppx = player.x, ppy = player.y;
+        player.x = Math.round(ppx); player.y = Math.round(ppy); player.render(); player.x = ppx; player.y = ppy;
+        for (const s of sparks) { g.fillStyle = `rgba(255,246,176,${s.life * 2})`; g.fillRect(Math.round(s.x), Math.round(s.y), 1, 1); }
+        g.lineWidth = 1;
+        for (const f of flashes) { g.strokeStyle = `rgba(247,223,30,${Math.min(1, f.t * 2)})`; g.strokeRect(f.c * T + 0.5, f.r * T + 0.5, T - 1, T - 1); }
+        if (hover) { g.strokeStyle = "rgba(255,255,255,.75)"; g.strokeRect(hover.c * T + 0.5, hover.r * T + 0.5, T - 1, T - 1); }
+        g.restore();
+      }
+      ctx.toggle("自動尋路", true, (v) => { auto = v; route = []; });
+      ctx.select("點擊放置", [{ value: "5", label: "石牆" }, { value: "6", label: "樹" }, { value: "7", label: "花" }, { value: "0", label: "清除" }], "5", (v) => { brush = Number(v); });
+      canvas.addEventListener("pointermove", (e) => {
+        const r = canvas.getBoundingClientRect();
+        hover = { c: Math.floor(((e.clientX - r.left) * canvas.width / r.width + te.sx) / T), r: Math.floor(((e.clientY - r.top) * canvas.height / r.height + te.sy) / T) };
+      });
+      canvas.addEventListener("pointerleave", () => { hover = null; });
+      K.onPointer("down", () => {
+        const p = K.getPointer();
+        userEditT = 10;
+        editTile(Math.floor((p.x + te.sx) / T), Math.floor((p.y + te.sy) / T), brush);
+      });
+      fitCanvas(canvas, 1 / 3);
+      te.sx = Math.round(player.x - canvas.width / 2); te.sy = Math.round(player.y - canvas.height / 2);
+      K.GameLoop({ blur: true, clearCanvas: false, update, render }).start();
+    },
+  },
+  {
+    id: "camera", title: "Scene 攝影機",
+    api: "Scene・camera・lookAt・cullFunction・Vector",
+    desc: "4000×2600 的太空世界放進 Scene：40 顆行星（含 Text 子物件）、700 顆旋轉小行星與一艘用 Vector 做轉向行為的太空船。camera 縮放加 lookAt 跟拍，自訂 cullFunction 只畫畫面內的物件，左上角顯示實際繪製數量。",
+    hint: "點畫面指定航點；用縮放滑桿看剔除數量變化，關掉視野剔除比較繪製數",
+    async mount(ctx) {
+      const { K, canvas, g } = await boot(ctx);
+      K.initPointer();
+      K.seedRand("kontra-space");
+      const R = K.rand, WW = 4000, WH = 2600, objects = [], planets = [], beacons = [], trail = [];
+      let auto = true, bi = 0, manual = null, dpr = 1, zoom = 1, zoomCur = 1, drawn = 0, tick = 0;
+      const NAMES = ["織女", "天狼", "北落", "參宿", "心宿", "角宿", "軒轅", "大角", "河鼓", "南門", "天津", "老人", "畢宿", "昴宿", "天樞", "開陽", "搖光", "貫索", "天市", "紫微"];
+      function planetRender() {
+        const c = this.context, r = this.pr, ringPath = (a0, a1) => {
+          c.save(); c.rotate(this.tilt); c.strokeStyle = `hsla(${this.hue}, 60%, 78%, .55)`; c.lineWidth = r * 0.12;
+          c.beginPath(); c.ellipse(0, 0, r * 1.7, r * 0.42, 0, a0, a1); c.stroke(); c.restore();
+        };
+        if (this.ring) ringPath(Math.PI, TAU);
+        const gr = c.createRadialGradient(-r * 0.35, -r * 0.35, r * 0.1, 0, 0, r);
+        gr.addColorStop(0, `hsl(${this.hue}, 70%, 70%)`); gr.addColorStop(0.7, `hsl(${this.hue}, 55%, 42%)`); gr.addColorStop(1, `hsl(${this.hue}, 60%, 20%)`);
+        c.fillStyle = gr; c.beginPath(); c.arc(0, 0, r, 0, TAU); c.fill();
+        if (this.ring) ringPath(0, Math.PI);
+      }
+      for (let i = 0; i < 40; i++) {
+        let r = 60, x = 0, y = 0, ok = false;
+        for (let t = 0; t < 300 && !ok; t++) {
+          r = 40 + R() * 70; x = r + 80 + R() * (WW - 2 * r - 160); y = r + 80 + R() * (WH - 2 * r - 160);
+          ok = planets.every((p) => Math.hypot(p.x - x, p.y - y) > p.pr + r + 120);
+        }
+        const label = K.Text({ text: NAMES[i % 20] + (i >= 20 ? "二" : ""), font: `bold 22px ${FONT}`, color: "#ecebe6", anchor: { x: 0.5, y: 0 }, y: r + 16, opacity: 0.8 });
+        const p = K.GameObject({ x, y, pr: r, z: 0, cullR: r * 1.9 + 40, hue: Math.floor(R() * 360), ring: R() < 0.35, tilt: (R() - 0.5) * 0.7, children: [label], render: planetRender });
+        planets.push(p); objects.push(p);
+      }
+      function rockRender() {
+        const c = this.context;
+        c.beginPath(); for (const [x, y] of this.pts) c.lineTo(x, y); c.closePath();
+        c.fillStyle = "#3a3f4a"; c.fill(); c.strokeStyle = "#5d6470"; c.lineWidth = 1.5; c.stroke();
+      }
+      function rockUpdate(dt) {
+        this.advance(dt);
+        if (this.x < -30) this.x += WW + 60; else if (this.x > WW + 30) this.x -= WW + 60;
+        if (this.y < -30) this.y += WH + 60; else if (this.y > WH + 30) this.y -= WH + 60;
+      }
+      for (let i = 0; i < 700; i++) {
+        const s = 6 + R() * 16, pts = [];
+        for (let j = 0; j < 8; j++) { const a = (j / 8) * TAU, rr = s * (0.7 + R() * 0.5); pts.push([Math.cos(a) * rr, Math.sin(a) * rr]); }
+        objects.push(K.GameObject({ x: R() * WW, y: R() * WH, z: 1, cullR: s * 1.3, pts, rotation: R() * TAU, drotation: (R() - 0.5) * 0.03, dx: (R() - 0.5) * 16, dy: (R() - 0.5) * 16, render: rockRender, update: rockUpdate }));
+      }
+      function beaconRender() {
+        const c = this.context, t = performance.now() / 1000, col = !manual && beacons[bi] === this ? "#f7df1e" : "#4cc9f0";
+        c.strokeStyle = col; c.lineWidth = 3;
+        for (let k = 0; k < 2; k++) { const ph = (t * 0.8 + k * 0.5) % 1; c.globalAlpha = 1 - ph; c.beginPath(); c.arc(0, 0, 20 + ph * 40, 0, TAU); c.stroke(); }
+        c.globalAlpha = 1; c.fillStyle = col; c.beginPath(); c.arc(0, 0, 13, 0, TAU); c.fill();
+        c.fillStyle = "#0e1013"; c.font = `bold 15px ${MONO}`; c.textAlign = "center"; c.textBaseline = "middle"; c.fillText(String(this.n), 0, 1);
+      }
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * TAU + 0.3;
+        const b = K.GameObject({ x: WW / 2 + Math.cos(a) * WW * 0.36, y: WH / 2 + Math.sin(a) * WH * 0.34, z: 2, cullR: 70, n: i + 1, render: beaconRender });
+        beacons.push(b); objects.push(b);
+      }
+      objects.push(K.GameObject({
+        z: 3, alwaysDraw: true,
+        render() {
+          const c = this.context; c.lineCap = "round";
+          for (let i = 1; i < trail.length; i++) {
+            const f = i / trail.length;
+            c.strokeStyle = `rgba(247,37,133,${f * 0.6})`; c.lineWidth = 2 + f * 5;
+            c.beginPath(); c.moveTo(trail[i - 1][0], trail[i - 1][1]); c.lineTo(trail[i][0], trail[i][1]); c.stroke();
+          }
+        },
+      }));
+      const MAX = 420;
+      const ship = K.Sprite({
+        x: WW / 2, y: WH / 2, width: 36, height: 22, anchor: { x: 0.5, y: 0.5 }, z: 4, cullR: 40,
+        render() {
+          const c = this.context, f = 6 + Math.random() * 8 * Math.min(1, this.velocity.length() / 200);
+          c.fillStyle = "#ff8c42"; c.beginPath(); c.moveTo(8, 7); c.lineTo(8 - f, 11); c.lineTo(8, 15); c.fill();
+          c.fillStyle = "#ecebe6"; c.beginPath(); c.moveTo(36, 11); c.lineTo(4, 0); c.lineTo(10, 11); c.lineTo(4, 22); c.closePath(); c.fill();
+          c.fillStyle = "#4cc9f0"; c.beginPath(); c.moveTo(27, 11); c.lineTo(16, 7); c.lineTo(16, 15); c.fill();
+        },
+        // Seek steering: desired velocity toward the target minus current velocity becomes the acceleration.
+        update(dt) {
+          const t = manual || beacons[bi], dx = t.x - this.x, dy = t.y - this.y, dist = Math.hypot(dx, dy);
+          const desired = K.Vector(dx, dy).normalize().scale(Math.min(MAX, dist * 1.2));
+          this.acceleration = desired.subtract(this.velocity).scale(2.5);
+          this.advance(dt);
+          if (this.velocity.length() > 8) this.rotation = this.velocity.direction();
+          this.x = K.clamp(20, WW - 20, this.x); this.y = K.clamp(20, WH - 20, this.y);
+          if (dist < 50) { if (manual) manual = null; else if (auto) bi = (bi + 1) % beacons.length; }
+        },
+      });
+      objects.push(ship);
+      const scene = K.Scene({
+        id: "space", name: "太空場景", objects, cullObjects: true,
+        sortFunction: (a, b) => a.z - b.z,
+        // The default cull uses collides(camera, obj), which ignores camera zoom; this one divides the view by the scale.
+        cullFunction(cam, o) {
+          const ok = o.alwaysDraw || (Math.abs(o.x - cam.x) < cam.width / cam.scaleX / 2 + o.cullR && Math.abs(o.y - cam.y) < cam.height / cam.scaleY / 2 + o.cullR);
+          if (ok) drawn++;
+          return ok;
+        },
+      });
+      const focus = { x: ship.x, y: ship.y };
+      const STARS = Array.from({ length: 160 }, () => [Math.random(), Math.random(), 0.15 + Math.random() * 0.45, Math.random()]);
+      function update(dt) {
+        zoomCur += (zoom - zoomCur) * Math.min(1, dt * 6);
+        scene.update(dt);
+        focus.x += (ship.x + ship.dx * 0.45 - focus.x) * Math.min(1, dt * 3);
+        focus.y += (ship.y + ship.dy * 0.45 - focus.y) * Math.min(1, dt * 3);
+        if (tick++ % 2 === 0) { trail.push([ship.x, ship.y]); if (trail.length > 70) trail.shift(); }
+      }
+      function render() {
+        if (!canvas.clientWidth || !canvas.clientHeight) return;
+        dpr = DPR();
+        if (fitCanvas(canvas, dpr)) Object.assign(scene.camera, { centerX: canvas.width / 2, centerY: canvas.height / 2, width: canvas.width, height: canvas.height });
+        const s = dpr * zoomCur, W = canvas.width, H = canvas.height, hw = W / s / 2, hh = H / s / 2;
+        const fx = hw * 2 >= WW ? WW / 2 : K.clamp(hw, WW - hw, focus.x), fy = hh * 2 >= WH ? WH / 2 : K.clamp(hh, WH - hh, focus.y);
+        scene.camera.setScale(s, s);
+        scene.lookAt({ x: fx, y: fy });
+        g.setTransform(1, 0, 0, 1, 0, 0);
+        g.fillStyle = "#07080b"; g.fillRect(0, 0, W, H);
+        for (const [u, v, f, b] of STARS) {
+          const x = (((u * W - fx * f * s * 0.3) % W) + W) % W, y = (((v * H - fy * f * s * 0.3) % H) + H) % H, z = dpr * (f > 0.42 ? 2 : 1);
+          g.fillStyle = `rgba(236,235,230,${0.25 + b * 0.5})`; g.fillRect(x, y, z, z);
+        }
+        drawn = 0;
+        scene.render();
+        if (!scene.cullObjects) drawn = objects.length;
+        const toScreen = (p) => ({ x: W / 2 + (p.x - fx) * s, y: H / 2 + (p.y - fy) * s });
+        const tgt = manual || beacons[bi], ts = toScreen(tgt), m = 26 * dpr;
+        if (manual) {
+          g.strokeStyle = "#f72585"; g.lineWidth = 2 * dpr; g.setLineDash([6 * dpr, 5 * dpr]);
+          g.beginPath(); g.arc(ts.x, ts.y, 22 * dpr, 0, TAU); g.stroke(); g.setLineDash([]);
+        }
+        if (ts.x < 0 || ts.y < 0 || ts.x > W || ts.y > H) {
+          const ctr = { x: W / 2, y: H / 2 }, a = K.angleToTarget(ctr, ts);
+          const edge = K.movePoint(ctr, a, Math.min(Math.abs((W / 2 - m) / Math.cos(a) || 1e9), Math.abs((H / 2 - m) / Math.sin(a) || 1e9)));
+          g.save(); g.translate(edge.x, edge.y); g.rotate(a);
+          g.fillStyle = manual ? "#f72585" : "#f7df1e";
+          g.beginPath(); g.moveTo(14 * dpr, 0); g.lineTo(-8 * dpr, -9 * dpr); g.lineTo(-4 * dpr, 0); g.lineTo(-8 * dpr, 9 * dpr); g.fill();
+          g.restore();
+        }
+        const mw = Math.min(160, W / dpr * 0.32) * dpr, mh = mw * WH / WW, mx = W - mw - 10 * dpr, my = H - mh - 10 * dpr, k = mw / WW;
+        g.fillStyle = "rgba(14,16,19,.82)"; g.fillRect(mx, my, mw, mh);
+        g.strokeStyle = "rgba(255,255,255,.18)"; g.lineWidth = dpr; g.strokeRect(mx, my, mw, mh);
+        g.fillStyle = "rgba(157,140,255,.7)";
+        for (const p of planets) { g.beginPath(); g.arc(mx + p.x * k, my + p.y * k, Math.max(1.5 * dpr, p.pr * k), 0, TAU); g.fill(); }
+        for (const b of beacons) { g.fillStyle = b === beacons[bi] && !manual ? "#f7df1e" : "#4cc9f0"; g.fillRect(mx + b.x * k - dpr, my + b.y * k - dpr, 2 * dpr, 2 * dpr); }
+        g.strokeStyle = "#ecebe6"; g.strokeRect(mx + (fx - hw) * k, my + (fy - hh) * k, hw * 2 * k, hh * 2 * k);
+        g.fillStyle = "#f72585"; g.beginPath(); g.arc(mx + ship.x * k, my + ship.y * k, 2.5 * dpr, 0, TAU); g.fill();
+        const fs = 13 * dpr, line1 = `繪製 ${drawn} / ${objects.length} 個物件`, line2 = `縮放 ${zoomCur.toFixed(1)}×・剔除${scene.cullObjects ? "開" : "關"}`;
+        g.font = `${fs}px ${FONT}`; g.textAlign = "left"; g.textBaseline = "top";
+        const bw = Math.max(g.measureText(line1).width, g.measureText(line2).width) + 20 * dpr;
+        g.fillStyle = "rgba(14,16,19,.82)"; g.fillRect(8 * dpr, 8 * dpr, bw, fs * 2 + 18 * dpr);
+        g.fillStyle = "#ecebe6"; g.fillText(line1, 18 * dpr, 14 * dpr);
+        g.fillStyle = "#9b998f"; g.fillText(line2, 18 * dpr, 14 * dpr + fs * 1.35);
+      }
+      ctx.slider("縮放", { min: 0.3, max: 2.5, step: 0.1, value: 1, format: (v) => `${Number(v).toFixed(1)}×` }, (v) => { zoom = Number(v); });
+      ctx.toggle("視野剔除", true, (v) => { scene.cullObjects = v; });
+      ctx.toggle("自動巡航", true, (v) => { auto = v; });
+      K.onPointer("down", () => {
+        const p = K.getPointer(), cam = scene.camera;
+        manual = { x: K.clamp(30, WW - 30, cam.x + (p.x - cam.centerX) / cam.scaleX), y: K.clamp(30, WH - 30, cam.y + (p.y - cam.centerY) / cam.scaleY) };
+      });
+      K.GameLoop({ blur: true, clearCanvas: false, update, render }).start();
+    },
+  },
+  {
+    id: "ui", title: "介面元件",
+    api: "Button・Grid・track・pointerOver・onPointer",
+    desc: "Kontra 的 Button 會在畫布外放一顆隱藏的 DOM 按鈕，所以有 hover、pressed、focused、disabled 四種狀態，也能用鍵盤操作；Grid 依寬度切換直排側欄或四欄排列。卡片是 track 過的 Sprite，可以拖曳，丟進回收桶就刪除；pointerOver 回報游標正指著哪個物件。",
+    hint: "點按鈕新增或排列卡片，拖曳卡片到回收桶；點一下畫布後按 Tab 可聚焦畫布按鈕，Enter 觸發",
+    async mount(ctx) {
+      const { K, canvas, g } = await boot(ctx);
+      const u = DPR();
+      K.initPointer();
+      const MAXC = 12;
+      const LIB = [["Sprite", "精靈"], ["Text", "文字"], ["Button", "按鈕"], ["Grid", "格線排版"], ["Pool", "物件池"], ["Quadtree", "四叉樹"],
+        ["Scene", "場景"], ["TileEngine", "圖塊地圖"], ["GameLoop", "遊戲迴圈"], ["Vector", "向量"], ["Animation", "影格動畫"], ["track", "指標追蹤"]];
+      const TONES = [["#f7df1e", "rgba(247,223,30,.2)"], ["#4cc9f0", "rgba(76,201,240,.2)"], ["#f72585", "rgba(247,37,133,.2)"], ["#7bd389", "rgba(123,211,137,.2)"]];
+      const cards = [];
+      let wide = true, area = { x: 0, y: 0, w: 1, h: 1 }, cw = 128 * u, chh = 58 * u, libI = 0;
+      let userOff = false, auto = true, drag = null, ghostDrag = null, ghostOver = null, ghostPause = 0, inside = false, binHot = false;
+      const rr = (c, x, y, w, h, r) => { c.beginPath(); c.roundRect(x, y, w, h, r); };
+
+      // Button keeps hovered / pressed / focused / disabled flags; this render just paints them.
+      function btnRender() {
+        const c = this.context, w = this.width, h = this.height, off = this.disabled, a = off ? 0.35 : 1;
+        const press = this.pressed && !off, hov = !off && (this.hovered || ghostOver === this);
+        c.globalAlpha = a;
+        if (this.textNode.opacity !== a) this.textNode.opacity = a;
+        rr(c, 0, 0, w, h, 8 * u);
+        c.fillStyle = press ? this.tone : hov ? this.soft : "#1b1f26"; c.fill();
+        c.lineWidth = u; c.strokeStyle = this.tone; c.stroke();
+        this.textNode.color = press ? "#0e1013" : this.tone;
+        if (this.focused) { c.setLineDash([4 * u, 3 * u]); c.strokeStyle = "#ecebe6"; rr(c, -4 * u, -4 * u, w + 8 * u, h + 8 * u, 11 * u); c.stroke(); c.setLineDash([]); }
+      }
+      const makeBtn = (text, tone, onUp) => K.Button({
+        text: { text, font: `bold ${Math.round(13 * u)}px ${FONT}`, color: tone[0], anchor: { x: 0.5, y: 0.5 } },
+        anchor: { x: 0.5, y: 0.5 }, padX: 6 * u, padY: 9 * u, tone: tone[0], soft: tone[1], render: btnRender, onUp,
+      });
+      const addBtn = makeBtn("新增卡片", TONES[0], () => addCard());
+      const arrBtn = makeBtn("整齊排列", TONES[1], () => arrange());
+      const offBtn = makeBtn("停用新增", TONES[2], () => { userOff = !userOff; offBtn.text = userOff ? "啟用新增" : "停用新增"; });
+      const clrBtn = makeBtn("清空卡片", TONES[3], () => { for (const cd of cards) cd.dying = true; });
+      const btns = [addBtn, arrBtn, offBtn, clrBtn];
+      const title = K.Text({ text: "卡片工作台", font: `bold ${Math.round(15 * u)}px ${FONT}`, color: "#ecebe6" });
+      const info = K.Text({ text: " ", font: `${Math.round(12 * u)}px ${FONT}`, color: "#9b998f" });
+      const over = K.Text({ text: "指向：無", font: `${Math.round(12 * u)}px ${FONT}`, color: "#9b998f" });
+      const grid = K.Grid({ flow: "column", rowGap: 10 * u, colGap: 8 * u, children: [title, ...btns, info, over] });
+      const bin = K.Sprite({
+        anchor: { x: 0.5, y: 0.5 }, width: 64 * u, height: 64 * u,
+        render() {
+          const c = this.context, w = this.width, h = this.height, col = binHot ? "#f72585" : "#6f6d66";
+          rr(c, 0, 0, w, h, 12 * u); c.fillStyle = binHot ? "rgba(247,37,133,.18)" : "#15181d"; c.fill();
+          c.lineWidth = 1.5 * u; c.strokeStyle = col; c.stroke();
+          const cx = w / 2, top = h * 0.2, bw = w * 0.34, bh = h * 0.36;
+          c.strokeStyle = col; c.lineWidth = 2 * u; c.lineJoin = "round";
+          c.beginPath(); c.moveTo(cx - bw * 0.62, top + 3 * u); c.lineTo(cx + bw * 0.62, top + 3 * u); c.stroke();
+          c.strokeRect(cx - 4 * u, top - 1 * u, 8 * u, 4 * u);
+          c.beginPath(); c.moveTo(cx - bw / 2, top + 7 * u); c.lineTo(cx - bw * 0.4, top + 7 * u + bh); c.lineTo(cx + bw * 0.4, top + 7 * u + bh); c.lineTo(cx + bw / 2, top + 7 * u); c.stroke();
+          c.fillStyle = col; c.font = `${Math.round(11 * u)}px ${FONT}`; c.textAlign = "center"; c.textBaseline = "alphabetic";
+          c.fillText("回收桶", cx, h - 8 * u);
+        },
+      });
+
+      function cardRender() {
+        const c = this.context, w = this.width, h = this.height, lift = (drag && drag.card === this) || ghostDrag === this, hi = lift || this.hovered;
+        rr(c, 3 * u, (lift ? 8 : 3) * u, w, h, 9 * u); c.fillStyle = "rgba(0,0,0,.45)"; c.fill();
+        rr(c, 0, 0, w, h, 9 * u); c.fillStyle = lift ? "#262b36" : "#1b1f26"; c.fill();
+        c.lineWidth = (hi ? 2 : 1) * u; c.strokeStyle = hi ? this.tone : "rgba(255,255,255,.14)"; c.stroke();
+        c.fillStyle = this.tone; c.fillRect(0, 10 * u, 4 * u, h - 20 * u);
+      }
+      function sizeCard(cd) {
+        cd.width = cw; cd.height = chh;
+        const [t1, t2] = cd.children, x = -cw / 2 + (wide ? 14 : 10) * u;
+        t1.font = `bold ${Math.round((wide ? 14 : 12) * u)}px ${MONO}`; t2.font = `${Math.round((wide ? 12 : 11) * u)}px ${FONT}`;
+        t1.x = t2.x = x; t1.y = -chh * 0.17; t2.y = chh * 0.21;
+      }
+      function slots() {
+        const gap = 8 * u, pad = 10 * u, top = area.y + pad + 18 * u, out = [];
+        const cols = Math.max(1, Math.floor((area.w - 2 * pad + gap) / (cw + gap))), rows = Math.max(1, Math.floor((area.y + area.h - pad - top + gap) / (chh + gap)));
+        const bx = bin.x - bin.width / 2 - gap, by = bin.y - bin.height / 2 - gap, bw = bin.width + 2 * gap, bh = bin.height + 2 * gap;
+        for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+          const x = area.x + pad + c * (cw + gap), y = top + r * (chh + gap);
+          if (x < bx + bw && x + cw > bx && y < by + bh && y + chh > by) continue;
+          out.push({ x: x + cw / 2, y: y + chh / 2 });
+        }
+        if (!out.length) out.push({ x: area.x + area.w / 2, y: area.y + area.h / 2 });
+        return out;
+      }
+      function arrange() {
+        const s = slots();
+        cards.filter((cd) => !cd.dying).forEach((cd, i) => {
+          const p = s[i % s.length], k = Math.floor(i / s.length) * 6 * u;
+          cd.tx = p.x + k; cd.ty = p.y + k; cd.tr = 0;
+        });
+      }
+      function randomSpot() {
+        const x0 = area.x + cw / 2 + 8 * u, x1 = area.x + area.w - cw / 2 - 8 * u, y0 = area.y + chh / 2 + 26 * u, y1 = area.y + area.h - chh / 2 - 8 * u;
+        let p = { x: (x0 + x1) / 2, y: (y0 + y1) / 2 };
+        for (let n = 0; n < 30; n++) {
+          p = { x: x0 + Math.random() * Math.max(0, x1 - x0), y: y0 + Math.random() * Math.max(0, y1 - y0) };
+          if (Math.abs(p.x - bin.x) > (cw + bin.width) / 2 + 6 * u || Math.abs(p.y - bin.y) > (chh + bin.height) / 2 + 6 * u) break;
+        }
+        return p;
+      }
+      function addCard() {
+        if (addBtn.disabled || cards.length >= MAXC) return;
+        const [name, zh] = LIB[libI % LIB.length], tone = TONES[libI % 4][0];
+        libI++;
+        // First free slot keeps new cards from landing on top of others; random spot only when the area is full.
+        const p = slots().find((q) => cards.every((cd) => cd.dying || Math.abs(cd.tx - q.x) > cw / 2 || Math.abs(cd.ty - q.y) > chh / 2)) || randomSpot();
+        const card = K.Sprite({
+          x: grid.x + addBtn.x, y: grid.y + addBtn.y, anchor: { x: 0.5, y: 0.5 }, tone, render: cardRender, s: 0.3,
+          tx: p.x, ty: p.y, tr: (Math.random() - 0.5) * 0.16, dying: false,
+          children: [K.Text({ text: name, color: tone, anchor: { x: 0, y: 0.5 } }), K.Text({ text: zh, color: "#9b998f", anchor: { x: 0, y: 0.5 } })],
+          onOver() { this.hovered = true; }, onOut() { this.hovered = false; },
+          onDown() { startDrag(this); },
+        });
+        sizeCard(card);
+        K.track(card);
+        cards.push(card);
+      }
+      const toFront = (cd) => { cards.splice(cards.indexOf(cd), 1); cards.push(cd); };
+      function startDrag(cd) {
+        if (cd.dying) return;
+        const p = K.getPointer();
+        if (ghostDrag === cd) ghostDrag = null;
+        drag = { card: cd, ox: p.x - cd.x, oy: p.y - cd.y };
+        toFront(cd);
+      }
+      function drop(cd) {
+        if (K.collides(cd, bin)) { cd.dying = true; return; }
+        cd.tx = K.clamp(area.x + cw / 2, area.x + area.w - cw / 2, cd.x);
+        cd.ty = K.clamp(area.y + chh / 2, area.y + area.h - chh / 2, cd.y);
+      }
+
+      // Ghost cursor: a scripted visitor that presses the same Button objects (onDown / onUp) and drags cards.
+      const ghost = { x: 0, y: 0, vis: false, down: false };
+      const TASKS = ["add", "add", "add", "arrange", "trash", "toggle", "add", "toggle", "add", "add", "trash", "clear", "add", "add", "add", "add", "arrange"];
+      let gq = [], gStep = null, gWait = -1, gi = 0;
+      const btnPt = (b) => ({ x: grid.x + b.x, y: grid.y + b.y });
+      const press = (b) => [
+        { to: () => btnPt(b), over: b, act() { b.onDown(); ghost.down = true; }, wait: 0.18 },
+        { to: () => btnPt(b), over: b, act() { b.onUp(); ghost.down = false; }, wait: 0.5 },
+      ];
+      function plan(name) {
+        if (name === "add") return press(addBtn);
+        if (name === "arrange") return press(arrBtn);
+        if (name === "toggle") return press(offBtn);
+        if (name === "clear") return cards.length ? press(clrBtn) : [];
+        const live = cards.filter((cd) => !cd.dying), cd = live[Math.floor(Math.random() * live.length)];
+        if (!cd) return [];
+        return [
+          { to: () => (cards.includes(cd) && !cd.dying && (!drag || drag.card !== cd) ? cd : null), act() { ghostDrag = cd; ghost.down = true; toFront(cd); }, wait: 0.2 },
+          { to: () => bin, act() { if (ghostDrag) drop(ghostDrag); ghostDrag = null; ghost.down = false; }, wait: 0.6 },
+        ];
+      }
+      function ghostTick(dt) {
+        if (ghostPause > 0 || !auto) {
+          ghostPause -= dt;
+          if (ghostDrag) drop(ghostDrag);
+          ghost.vis = ghost.down = false; ghostDrag = ghostOver = gStep = null; gq = [];
+          return;
+        }
+        if (!ghost.vis) { ghost.vis = true; ghost.x = area.x + area.w * 0.5; ghost.y = area.y + area.h * 0.6; }
+        if (!gStep) {
+          if (!gq.length) gq = plan(TASKS[gi++ % TASKS.length]);
+          gStep = gq.shift() || null; gWait = -1;
+          if (!gStep) return;
+        }
+        const t = gStep.to();
+        if (!t) { gStep = ghostDrag = null; gq = []; ghost.down = false; return; }
+        if (gWait < 0) {
+          const dx = t.x - ghost.x, dy = t.y - ghost.y, d = Math.hypot(dx, dy), sp = Math.max(260 * u, d * 6) * dt;
+          ghostOver = d < 30 * u ? gStep.over || null : null;
+          if (d <= sp) { ghost.x = t.x; ghost.y = t.y; gStep.act(); gWait = gStep.wait; }
+          else { ghost.x += (dx / d) * sp; ghost.y += (dy / d) * sp; }
+        } else if ((gWait -= dt) <= 0) gStep = null;
+      }
+
+      function layout() {
+        const W = canvas.width, H = canvas.height, cssW = canvas.clientWidth;
+        wide = cssW >= 640;
+        for (const t of [title, info, over]) t.colSpan = 1;
+        grid.flow = wide ? "column" : "grid";
+        grid.numCols = wide ? 1 : 4;
+        grid.rowGap = (wide ? 10 : 8) * u;
+        const bw = wide ? 156 * u : Math.floor((cssW - 48) / 4) * u;
+        for (const b of btns) { b.width = bw; b.height = (wide ? 36 : 34) * u; }
+        // colSpan above 1 only once the grid really has four columns.
+        if (!wide) for (const t of [title, info, over]) t.colSpan = 4;
+        grid.x = 14 * u; grid.y = 14 * u;
+        grid._p();
+        cw = (wide ? 128 : 88) * u; chh = (wide ? 58 : 42) * u;
+        area = wide ? { x: grid.x + grid.width + 28 * u, y: 12 * u } : { x: 12 * u, y: grid.y + grid.height + 18 * u };
+        area.w = W - area.x - 12 * u; area.h = H - area.y - 12 * u;
+        const bs = (wide ? 70 : 58) * u;
+        bin.width = bin.height = bs;
+        bin.x = area.x + area.w - bs / 2 - 10 * u; bin.y = area.y + area.h - bs / 2 - 10 * u;
+        for (const cd of cards) sizeCard(cd);
+        arrange();
+      }
+      let lastInfo = "", lastOver = "";
+      function update(dt) {
+        const want = userOff || cards.length >= MAXC;
+        if (want !== !!addBtn.disabled) { if (want) addBtn.disable(); else addBtn.enable(); }
+        ghostTick(dt);
+        if (drag && drag.card.dying) drag = null;
+        if (drag) { const p = K.getPointer(); drag.card.x = p.x - drag.ox; drag.card.y = p.y - drag.oy; }
+        if (ghostDrag) { ghostDrag.x = ghost.x; ghostDrag.y = ghost.y; }
+        const k = Math.min(1, dt * 10);
+        for (let i = cards.length - 1; i >= 0; i--) {
+          const cd = cards[i];
+          if (cd.dying) {
+            cd.x += (bin.x - cd.x) * k; cd.y += (bin.y - cd.y) * k; cd.s -= dt * 3.5;
+            if (cd.s <= 0.05) { K.untrack(cd); cards.splice(i, 1); continue; }
+          } else {
+            if ((!drag || drag.card !== cd) && ghostDrag !== cd) { cd.x += (cd.tx - cd.x) * k; cd.y += (cd.ty - cd.y) * k; cd.rotation += (cd.tr - cd.rotation) * k; }
+            cd.s += (1 - cd.s) * Math.min(1, dt * 12);
+          }
+          cd.setScale(cd.s);
+        }
+        const held = (drag && drag.card) || ghostDrag;
+        binHot = !!(held && K.collides(held, bin));
+        const inf = `卡片 ${cards.length}／${MAXC}・${addBtn.disabled ? (userOff ? "新增已停用" : "已滿") : "可新增"}`;
+        if (inf !== lastInfo) info.text = lastInfo = inf;
+        let ov = "無";
+        if (inside) {
+          for (const b of btns) if (K.pointerOver(b)) ov = b.text;
+          for (const cd of cards) if (K.pointerOver(cd)) ov = cd.children[0].text;
+        }
+        const ovs = `指向：${ov}`;
+        if (ovs !== lastOver) over.text = lastOver = ovs;
+      }
+      function render() {
+        if (!canvas.clientWidth || !canvas.clientHeight) return;
+        if (fitCanvas(canvas, u)) layout();
+        const W = canvas.width, H = canvas.height;
+        g.setTransform(1, 0, 0, 1, 0, 0);
+        g.fillStyle = "#0e1013"; g.fillRect(0, 0, W, H);
+        rr(g, grid.x - 8 * u, grid.y - 8 * u, grid.width + 16 * u, grid.height + 16 * u, 12 * u); g.fillStyle = "#15181d"; g.fill();
+        g.setLineDash([6 * u, 5 * u]); g.strokeStyle = "rgba(255,255,255,.14)"; g.lineWidth = u;
+        rr(g, area.x, area.y, area.w, area.h, 12 * u); g.stroke(); g.setLineDash([]);
+        g.fillStyle = "#6f6d66"; g.font = `${Math.round(12 * u)}px ${FONT}`; g.textAlign = "left"; g.textBaseline = "top";
+        g.fillText("卡片區：拖曳卡片，丟進回收桶就刪除", area.x + 10 * u, area.y + 8 * u);
+        bin.render();
+        for (const cd of cards) cd.render();
+        grid.render();
+        if (ghost.vis) {
+          g.save(); g.translate(ghost.x, ghost.y); g.scale(u, u);
+          if (ghost.down) { g.strokeStyle = "rgba(247,223,30,.8)"; g.lineWidth = 2; g.beginPath(); g.arc(0, 0, 13, 0, TAU); g.stroke(); }
+          g.beginPath(); g.moveTo(0, 0); g.lineTo(0, 17); g.lineTo(4.5, 13); g.lineTo(8, 20); g.lineTo(10.5, 19); g.lineTo(7, 12); g.lineTo(13, 12); g.closePath();
+          g.fillStyle = "#ecebe6"; g.fill(); g.strokeStyle = "#0e1013"; g.lineWidth = 1.2; g.stroke();
+          g.restore();
+        }
+      }
+      ctx.toggle("自動示範", true, (v) => { auto = v; });
+      K.onPointer("down", () => { ghostPause = 8; });
+      K.onPointer("up", () => {
+        for (const b of btns) b.pressed = false;
+        if (drag) { drop(drag.card); drag = null; }
+      });
+      canvas.addEventListener("mouseenter", () => { inside = true; });
+      canvas.addEventListener("mouseleave", () => {
+        inside = false;
+        if (drag) { drop(drag.card); drag = null; }
+      });
+      fitCanvas(canvas, u); layout();
+      for (let n = 0; n < 4; n++) addCard();
+      K.GameLoop({ blur: true, clearCanvas: false, update, render }).start();
+    },
+  },
+  {
+    id: "quadtree", title: "四叉樹碰撞",
+    api: "Quadtree・collides・getPointer",
+    desc: "每格把所有方塊重新放進 Quadtree，查詢框和每個方塊都只向樹要附近的候選，再用 collides 精確檢查。畫面標出被切分的節點、查詢框的候選（青）與命中（粉紅），方塊彼此重疊時亮黃框；左上角比較逐一檢查與四叉樹各要做幾次。",
+    hint: "移動滑鼠或手指拖曳查詢框；調整 maxObjects、maxDepth 看節點怎麼切分",
+    async mount(ctx) {
+      const { K, canvas, g } = await boot(ctx);
+      K.initPointer();
+      let dpr = 1, W = 0, H = 0, N = 400, maxObjects = 8, maxDepth = 4, qt = null, manualT = 0, lastP = null, t = 0;
+      let blocks = [], stats = { cand: 0, hits: 0, checks: 0, pairs: 0, nodes: 0 };
+      const probe = { x: 0, y: 0, width: 120, height: 84 };
+      // Plain {x, y, width, height} objects are enough for Quadtree and collides (anchor 0).
+      function makeBlocks() {
+        blocks = Array.from({ length: N }, (_, n) => {
+          const f = K.clamp(0.6, 1, Math.sqrt((W * H) / 400000)), s = (6 + Math.random() * 8) * f, a = Math.random() * TAU, v = 15 + Math.random() * 40;
+          return { n, x: Math.random() * (W - s), y: Math.random() * (H - s), width: s, height: s, dx: Math.cos(a) * v, dy: Math.sin(a) * v, cand: false, hit: false, ov: false };
+        });
+      }
+      const rebuild = () => { qt = K.Quadtree({ maxObjects, maxDepth, bounds: { x: 0, y: 0, width: W, height: H } }); };
+      function update(dt) {
+        if (!qt) return;
+        t += dt;
+        for (const b of blocks) {
+          b.x += b.dx * dt; b.y += b.dy * dt;
+          if (b.x < 0) { b.x = 0; b.dx = Math.abs(b.dx); } else if (b.x > W - b.width) { b.x = W - b.width; b.dx = -Math.abs(b.dx); }
+          if (b.y < 0) { b.y = 0; b.dy = Math.abs(b.dy); } else if (b.y > H - b.height) { b.y = H - b.height; b.dy = -Math.abs(b.dy); }
+          b.cand = b.hit = b.ov = false;
+        }
+        const p = K.getPointer();
+        if (!lastP || lastP.x !== p.x || lastP.y !== p.y) { if (lastP) manualT = 3; lastP = { x: p.x, y: p.y }; }
+        manualT -= dt;
+        probe.width = Math.round(Math.min(120, W * 0.34)); probe.height = Math.round(Math.min(84, H * 0.3));
+        const cx = manualT > 0 ? p.x / dpr : W / 2 + Math.sin(t * 0.47) * (W / 2 - probe.width / 2 - 8);
+        const cy = manualT > 0 ? p.y / dpr : H / 2 + Math.sin(t * 0.79 + 1) * (H / 2 - probe.height / 2 - 8);
+        probe.x = K.clamp(0, W - probe.width, cx - probe.width / 2); probe.y = K.clamp(0, H - probe.height, cy - probe.height / 2);
+        qt.clear(); qt.add(blocks);
+        const cand = qt.get(probe);
+        let hits = 0, checks = 0, pairs = 0;
+        for (const b of cand) { b.cand = true; if (K.collides(b, probe)) { b.hit = true; hits++; } }
+        for (const b of blocks) for (const o of qt.get(b)) {
+          if (o.n <= b.n) continue;
+          checks++;
+          if (K.collides(b, o)) { b.ov = o.ov = true; pairs++; }
+        }
+        stats = { ...stats, cand: cand.length, hits, checks, pairs };
+      }
+      function render() {
+        if (!canvas.clientWidth || !canvas.clientHeight) return;
+        dpr = DPR();
+        if (fitCanvas(canvas, dpr)) {
+          const oW = W, oH = H;
+          W = canvas.clientWidth; H = canvas.clientHeight;
+          // Rescale positions on resize so blocks stay spread out instead of piling on an edge.
+          if (!blocks.length) makeBlocks();
+          else for (const b of blocks) { b.x = Math.min((b.x * W) / oW, W - b.width); b.y = Math.min((b.y * H) / oH, H - b.height); }
+          rebuild(); qt.add(blocks);
+        }
+        g.setTransform(dpr, 0, 0, dpr, 0, 0);
+        g.fillStyle = "#0e1013"; g.fillRect(0, 0, W, H);
+        let nodes = 0;
+        g.lineWidth = 1; g.strokeStyle = "rgba(157,140,255,.35)";
+        (function walk(nd) {
+          nodes++;
+          if (nd._b) { for (const s of nd._s) walk(s); return; }
+          const r = nd.bounds;
+          if (r.x < probe.x + probe.width && r.x + r.width > probe.x && r.y < probe.y + probe.height && r.y + r.height > probe.y) { g.fillStyle = "rgba(76,201,240,.08)"; g.fillRect(r.x, r.y, r.width, r.height); }
+          g.strokeRect(r.x + 0.5, r.y + 0.5, r.width - 1, r.height - 1);
+        })(qt);
+        stats.nodes = nodes;
+        for (const b of blocks) {
+          g.fillStyle = b.hit ? "#f72585" : b.cand ? "#4cc9f0" : "#5d6470";
+          g.fillRect(b.x, b.y, b.width, b.height);
+          if (b.ov) { g.strokeStyle = "#f7df1e"; g.lineWidth = 1.5; g.strokeRect(b.x - 1, b.y - 1, b.width + 2, b.height + 2); }
+        }
+        g.fillStyle = "rgba(76,201,240,.1)"; g.fillRect(probe.x, probe.y, probe.width, probe.height);
+        g.strokeStyle = "#4cc9f0"; g.lineWidth = 2; g.setLineDash([6, 4]); g.strokeRect(probe.x, probe.y, probe.width, probe.height); g.setLineDash([]);
+        const brute = (N * (N - 1)) / 2, fmt = (v) => v.toLocaleString("en-US");
+        const lines = [
+          [`查詢框：候選 ${fmt(stats.cand)}／${fmt(N)}，命中 ${fmt(stats.hits)}`, "#ecebe6"],
+          [`方塊互撞：檢查 ${fmt(stats.checks)} 次，逐一要 ${fmt(brute)} 次`, "#ecebe6"],
+          [`省下 ${(100 - (stats.checks / brute) * 100).toFixed(1)}%・節點 ${stats.nodes} 個・重疊 ${stats.pairs} 對`, "#9b998f"],
+        ];
+        g.font = `12px ${FONT}`; g.textAlign = "left"; g.textBaseline = "top";
+        const bw = Math.max(...lines.map(([s]) => g.measureText(s).width)) + 20;
+        g.fillStyle = "rgba(14,16,19,.85)"; g.fillRect(8, 8, bw, lines.length * 18 + 12);
+        lines.forEach(([s, c], i) => { g.fillStyle = c; g.fillText(s, 18, 14 + i * 18); });
+      }
+      ctx.group(["200 個", "400 個", "800 個"], 1, (i) => { N = [200, 400, 800][i]; if (W) makeBlocks(); });
+      ctx.slider("maxObjects", { min: 1, max: 50, step: 1, value: 8 }, (v) => { maxObjects = Number(v); if (W) rebuild(); });
+      ctx.slider("maxDepth", { min: 1, max: 7, step: 1, value: 4 }, (v) => { maxDepth = Number(v); if (W) rebuild(); });
+      K.GameLoop({ blur: true, clearCanvas: false, update, render }).start();
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "Pool・Sprite.render・Quadtree・collides",
+    desc: "Pool 逐級產生 4×4 的 Sprite，每個都走 Kontra 的 advance 與 render（各自 save、translate、restore）。碰撞偵測開啟時，每格重建 Quadtree，再替每個方塊查詢候選並做 collides，撞到的變粉紅。",
+    hint: "按「自動加壓」逐級加量；切換碰撞偵測比較兩種負載",
+    async mount(ctx) {
+      ctx.html(`<div class="kt-stress"></div>`);
+      const { K, canvas } = await kontraFrame(ctx, ctx.$(".kt-stress"));
+      const { context: g } = K.init(canvas);
+      const COLORS = ["#4cc9f0", "#7bd389", "#f7df1e", "#9d8cff"];
+      let W = 1, H = 1, collide = true, checks = 0, hits = 0, updMs = 0, drawMs = 0, last = 0, qt = null;
+      const fit = () => {
+        if (!fitCanvas(canvas, 1)) return;
+        W = canvas.width; H = canvas.height;
+        qt = K.Quadtree({ maxDepth: 6, maxObjects: 16, bounds: { x: 0, y: 0, width: W, height: H } });
+      };
+      fit();
+      function sprUpdate(dt) {
+        this.advance(dt);
+        if (this.x < 0) { this.x = 0; this.dx = Math.abs(this.dx); } else if (this.x > W - 4) { this.x = W - 4; this.dx = -Math.abs(this.dx); }
+        if (this.y < 0) { this.y = 0; this.dy = Math.abs(this.dy); } else if (this.y > H - 4) { this.y = H - 4; this.dy = -Math.abs(this.dy); }
+        if (this.hitT > 0 && --this.hitT === 0) this.color = this.base;
+      }
+      const pool = K.Pool({ create: K.Sprite, maxSize: 32000 });
+      function spawn() {
+        const a = Math.random() * TAU, v = 30 + Math.random() * 60, base = COLORS[pool.size % 4];
+        pool.get({ x: Math.random() * (W - 4), y: Math.random() * (H - 4), width: 4, height: 4, dx: Math.cos(a) * v, dy: Math.sin(a) * v, color: base, base, hitT: 0, update: sprUpdate });
+      }
+      // Updates run here with the real frame time, once per drawn frame, so a slow frame never queues extra updates.
+      function frame() {
+        const now = performance.now(), dt = last ? Math.min(0.05, (now - last) / 1000) : 1 / 60;
+        last = now;
+        fit();
+        const t0 = performance.now();
+        pool.update(dt);
+        checks = hits = 0;
+        if (collide) {
+          const alive = pool.getAliveObjects();
+          qt.clear(); qt.add(alive);
+          for (const o of alive) {
+            for (const c of qt.get(o)) {
+              checks++;
+              if (K.collides(o, c)) { o.hitT = 8; o.color = "#f72585"; hits++; break; }
+            }
+          }
+        }
+        const t1 = performance.now();
+        g.setTransform(1, 0, 0, 1, 0, 0);
+        g.fillStyle = "#0e1013"; g.fillRect(0, 0, W, H);
+        pool.render();
+        const t2 = performance.now();
+        updMs = updMs ? updMs * 0.9 + (t1 - t0) * 0.1 : t1 - t0;
+        drawMs = drawMs ? drawMs * 0.9 + (t2 - t1) * 0.1 : t2 - t1;
+      }
+      ctx.controls.classList.add("bottom");
+      ctx.toggle("碰撞偵測", true, (v) => { collide = v; });
+      ctx.ramp({
+        label: "精靈", steps: [250, 500, 1000, 2000, 4000, 8000, 16000, 32000],
+        minFps: 30,
+        apply(n) {
+          while (pool.size < n) spawn();
+          // Alive objects sit at the front of pool.objects, so shrinking size retires the tail; get() re-inits them later.
+          if (pool.size > n) pool.size = n;
+        },
+        metrics: () => ({
+          "存活": pool.size,
+          "碰撞檢查": collide ? checks : "關閉",
+          "命中": collide ? hits : "關閉",
+          "更新": Showcase.fmtMs(updMs),
+          "繪製": Showcase.fmtMs(drawMs),
+        }),
+        note: "瓶頸：每個 Sprite 的 render 都要 save、translate、restore；advance 每次產生新 Vector；碰撞開啟時每個方塊查一次 Quadtree，get 會建立 Set 與陣列。關掉碰撞可看出繪製上限。",
+      });
+      K.GameLoop({ blur: true, clearCanvas: false, update() {}, render: frame }).start();
+    },
+  },
+] });
 </script>
 </body>
 </html>

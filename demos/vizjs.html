@@ -3,66 +3,236 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Viz.js 示範：瀏覽器裡的 Graphviz</title>
+<title>Viz.js 示範：八個場景看懂瀏覽器裡的 Graphviz</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","size":"約 1.3 MB"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","size":"約 1.3 MB","scenes":["即時編輯","排版引擎","叢集子圖","形狀與標籤","方向與連線","輸出格式","點選追蹤","極限測試"]}</script>
 <style>
-  #app { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(250px, 36%) 1fr; }
-  #pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #fbfaf7; border-right: 1px solid var(--line); }
-  #pane .head { display: flex; justify-content: space-between; gap: 8px; padding: 10px 14px 4px; font-size: 12px; color: var(--muted); }
-  #pane .head b { color: var(--fg); }
-  #src { flex: 1; min-height: 0; resize: none; border: 0; outline: 0; background: transparent; color: #2b2a26;
-    padding: 6px 14px 48px; font: 12px/1.6 var(--mono); white-space: pre; overflow: auto; font-variant-ligatures: none; }
-  #view { position: relative; min-width: 0; min-height: 0; overflow: hidden;
-    background: linear-gradient(rgba(0,0,0,.04) 1px, transparent 1px) 0 0 / 22px 22px, linear-gradient(90deg, rgba(0,0,0,.04) 1px, transparent 1px) 0 0 / 22px 22px; }
-  #out { position: absolute; inset: 60px 16px 48px; display: grid; place-items: center; }
-  #out svg { display: block; }
-  #out svg text { font-family: "Noto Sans TC", "Microsoft JhengHei", "PingFang TC", sans-serif; }
-  #err { position: absolute; left: 16px; right: 16px; bottom: 46px; display: none; z-index: 5;
-    color: #b3261e; background: #fdecea; border: 1px solid #f3b8b3; border-radius: 8px; padding: 8px 12px; font: 12px/1.5 var(--mono); white-space: pre-wrap; }
-  .hint { left: auto; right: 12px; }
-  @media (max-width: 640px) {
-    #app { grid-template-columns: 1fr; grid-template-rows: 36% 1fr; }
-    #pane { border-right: 0; border-bottom: 1px solid var(--line); }
-    #src { padding-bottom: 10px; font-size: 11.5px; }
-    .controls { top: calc(36% + 8px); }
-    #out { inset: 52px 10px 40px; }
-    .controls .eng { display: none; }
+  /* show DOT syntax such as -> and -- literally, not as font ligatures */
+  *, *::before, *::after { font-variant-ligatures: none !important; font-feature-settings: "liga" 0, "calt" 0 !important; }
+  .vz-wrap {
+    position: absolute; inset: 0; display: flex; gap: 10px; min-height: 0;
+    padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px);
+  }
+  /* diagram viewport: svg centered and scaled to fit */
+  .vz-view {
+    position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden;
+    border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 6px 22px rgba(40, 30, 10, .07);
+    background: #fbfaf7 linear-gradient(rgba(0,0,0,.035) 1px, transparent 1px) 0 0 / 22px 22px;
+  }
+  .vz-svg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+  .vz-svg > svg { display: block; flex: none; }
+  .vz-svg svg text { font-family: var(--font); }
+  .vz-svg.vz-stale > * { opacity: .3; filter: grayscale(1); }
+  .vz-meta, .vz-tag {
+    position: absolute; font: 11.5px/1.4 var(--font); font-variant-numeric: tabular-nums; color: var(--muted);
+    background: rgba(251, 250, 247, .88); padding: 1px 7px; border-radius: 6px; pointer-events: none;
+  }
+  .vz-meta { right: 8px; bottom: 6px; }
+  .vz-tag { left: 8px; top: 6px; color: #3b3a35; }
+  .vz-meta:empty, .vz-tag:empty { display: none; }
+
+  /* side panel */
+  .vz-side {
+    flex: 0 0 250px; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+    font: 13px/1.6 var(--font);
+  }
+  .vz-side h3 { margin: 0; font-size: 15px; }
+  .vz-side p { margin: 0; color: var(--muted); }
+  .vz-side code { font-family: var(--mono); font-size: 12px; }
+  .vz-pill { display: inline-block; margin-left: 6px; padding: 0 8px; border-radius: 999px; background: rgba(31, 143, 184, .12); color: #1f8fb8; font-size: 12px; font-weight: 400; }
+  .vz-pre {
+    margin: 0; padding: 8px 10px; border-radius: 8px; background: rgba(0, 0, 0, .04);
+    font: 11.5px/1.5 var(--mono); white-space: pre; overflow: auto; tab-size: 2;
+  }
+
+  /* 1. editor */
+  .vz-ed { flex: 0 0 min(400px, 36%); display: flex; flex-direction: column; min-height: 0; min-width: 0;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .vz-ed-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding: 6px 12px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+  .vz-stat { font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .vz-code {
+    flex: 1; min-height: 0; resize: none; border: 0; outline: 0; padding: 10px 12px; background: transparent; color: #2b2a26;
+    font: 12.5px/1.6 var(--mono); tab-size: 2; white-space: pre; overflow: auto;
+  }
+  .vz-msg { padding: 8px 12px; font-size: 12.5px; line-height: 1.5; cursor: pointer; white-space: pre-wrap; max-height: 40%; overflow: auto; }
+  .vz-msg[hidden] { display: none; }
+  .vz-msg.vz-err { border-top: 1px solid #e5484d; background: rgba(229, 72, 77, .08); color: #c22f35; }
+  .vz-msg.vz-warn { border-top: 1px solid #d9a300; background: rgba(255, 196, 0, .12); color: #7a5b00; }
+  .vz-msg u { text-underline-offset: 3px; }
+
+  /* 2. engine grid */
+  .vz-grid { flex: 1; min-height: 0; display: grid; gap: 8px; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: minmax(0, 1fr); }
+  .vz-card { position: relative; display: flex; flex-direction: column; min-height: 0; cursor: zoom-in;
+    background: #fbfaf7; border: 1px solid var(--line); border-radius: 10px; padding: 4px 8px 6px; }
+  .vz-card:hover { border-color: #b89500; }
+  .vz-mini { position: relative; flex: 1; min-height: 0; }
+  .vz-cap { display: flex; gap: 8px; align-items: baseline; font-size: 12px; white-space: nowrap; overflow: hidden; }
+  .vz-cap code { font: 700 13px var(--mono); color: #d61f69; }
+  .vz-cap span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+  .vz-cap .vz-ms { margin-left: auto; flex: none; font-variant-numeric: tabular-nums; }
+  .vz-grid.vz-focus { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+  .vz-grid.vz-focus > .vz-card:not(.vz-sel) { display: none; }
+  .vz-grid.vz-focus > .vz-card { cursor: zoom-out; }
+
+  /* 6. output text */
+  .vz-out { flex: 0 0 min(420px, 42%); padding: 10px 12px; gap: 6px; }
+  .vz-out .vz-pre { flex: 1; min-height: 0; }
+  .vz-out-foot { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* 7. click to trace */
+  .vz-trace g.node[id^="vzc-"] { cursor: pointer; }
+  .vz-trace g.node, .vz-trace g.edge { transition: opacity .2s; }
+  .vz-trace svg.vz-has g.node[id^="vzc-"]:not(.vz-hi), .vz-trace svg.vz-has g.edge:not(.vz-hi) { opacity: .16; }
+  .vz-trace g.edge.vz-hi path { stroke: #d61f69; stroke-width: 2.4; }
+  .vz-trace g.edge.vz-hi polygon { fill: #d61f69; stroke: #d61f69; }
+  .vz-trace g.node.vz-sel path, .vz-trace g.node.vz-sel polygon { stroke: #d61f69; stroke-width: 3; }
+  .vz-list { display: flex; flex-wrap: wrap; gap: 4px; }
+  .vz-list span { padding: 0 7px; border-radius: 6px; background: rgba(0, 0, 0, .05); font-size: 12.5px; }
+
+  /* 8. stress */
+  .vz-stress { position: absolute; inset: 8px 8px 8px 350px; display: flex; }
+  .vz-board { position: absolute; right: 10px; top: 10px; z-index: 2; min-width: 200px; max-width: 300px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px;
+    font: 12px/1.6 var(--font); font-variant-numeric: tabular-nums; box-shadow: 0 6px 18px rgba(40, 30, 10, .08); }
+  .vz-board b { display: block; font-size: 12.5px; margin-bottom: 2px; }
+  .vz-board table { border-collapse: collapse; width: 100%; }
+  .vz-board td { padding: 1px 6px 1px 0; white-space: nowrap; }
+  .vz-board td:first-child { font-family: var(--mono); color: #d61f69; }
+  .vz-board td:last-child { color: var(--muted); text-align: right; }
+  .vz-board p { margin: 0; color: var(--muted); }
+
+  @media (max-width: 760px) {
+    .vz-wrap { flex-direction: column; padding-left: 6px; padding-right: 6px; gap: 6px; }
+    .vz-ed { flex: 0 0 40%; }
+    .vz-side { flex: 0 0 auto; max-height: 34%; padding: 8px 10px; gap: 4px; font-size: 12px; }
+    .vz-side.vz-opt { display: none; }
+    .vz-out { flex: 1 1 0; max-height: none; }
+    .vz-out + .vz-view, .vz-view.vz-top { flex: 0 0 44%; }
+    .vz-grid { gap: 6px; }
+    .vz-cap span:not(.vz-ms) { display: none; }
+    .vz-stress { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 8px; }
+    .vz-board { display: none; }
+  }
+  @media (max-width: 760px) and (orientation: portrait) {
+    .vz-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-height: 480px) {
+    .vz-side.vz-opt { display: none; }
   }
 </style>
 </head>
 <body class="paper">
-<div id="app">
-  <section id="pane">
-    <div class="head"><b>DOT 原始碼</b><span id="stat">載入 Graphviz 中</span></div>
-    <textarea id="src" spellcheck="false" wrap="off" aria-label="DOT 原始碼"></textarea>
-  </section>
-  <section id="view">
-    <div id="out"></div>
-    <div id="err"></div>
-  </section>
-</div>
-<div class="controls">
-  <button class="btn" data-k="build" aria-pressed="true">建置流程<span class="eng">・dot</span></button>
-  <button class="btn" data-k="map" aria-pressed="false">縣市相鄰<span class="eng">・neato</span></button>
-  <button class="btn" data-k="loop" aria-pressed="false">衝刺循環<span class="eng">・circo</span></button>
-</div>
-<div class="hint">改 DOT 文字即重畫・三種排版引擎</div>
-
 <script src="https://cdn.jsdelivr.net/npm/@viz-js/viz@3.31.0/dist/viz-global.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Every sample sets a CJK fontname on graph, node and edge so SVG text never shows tofu boxes.
-// Graphviz underestimates CJK glyph widths, so boxes get a wider margin to compensate.
+// Viz.js showcase: eight scenes from a live DOT editor to a per-engine layout benchmark.
+const { h, fmt, fmtMs } = Showcase;
+
+// Graphviz in WebAssembly only has hard-coded metrics for a few Latin fonts. Layout uses
+// Helvetica metrics (CJK labels get a little extra margin); CSS swaps in the page font for display.
+const GV_FONT = "Helvetica";
+const NOISE = /non-ASCII character|hard-coded metrics/;
+const GV_NOTES = [
+  [/triangulation/, "這個 WebAssembly 版本沒有 GTS 三角化函式庫，sfdp 預設的 prism 去重疊會退回其他方法，圖仍會畫出"],
+  [/Orthogonal edges/, "ortho 直角連線不支援一般邊標籤，可改用 xlabel"],
+];
+let viz = null;
+const vizReady = Viz.instance().then((v) => (viz = v));
+
+const ENGINES = [
+  { id: "dot", zh: "分層有向圖" },
+  { id: "neato", zh: "彈簧模型" },
+  { id: "fdp", zh: "力導向，支援叢集" },
+  { id: "sfdp", zh: "多尺度力導向" },
+  { id: "circo", zh: "環狀排列" },
+  { id: "twopi", zh: "放射狀" },
+  { id: "osage", zh: "叢集打包" },
+  { id: "patchwork", zh: "面積樹狀圖" },
+];
+
+// ---------- helpers ----------
+async function ready(ctx) {
+  if (viz) return viz;
+  const s = ctx.status("載入 Graphviz（WebAssembly）…");
+  await vizReady;
+  s.done();
+  return viz;
+}
+
+// Merge per-call options with the -G/-N/-E defaults every scene shares.
+function gvOpts(o = {}) {
+  return {
+    ...o,
+    graphAttributes: { fontname: GV_FONT, bgcolor: "transparent", ...o.graphAttributes },
+    nodeAttributes: { fontname: GV_FONT, ...o.nodeAttributes },
+    edgeAttributes: { fontname: GV_FONT, ...o.edgeAttributes },
+  };
+}
+
+const svgOf = (o) => viz.renderSVGElement(o.src, gvOpts(o.opts));
+const notes = (errors) => errors.filter((e) => !NOISE.test(e.message));
+const parseSvg = (str) => new DOMParser().parseFromString(str, "image/svg+xml").documentElement;
+
+function timed(fn) {
+  const t0 = performance.now();
+  const out = fn();
+  return [out, performance.now() - t0];
+}
+
+function fit(box, max, padY) {
+  const svg = box.firstElementChild;
+  const vb = svg && svg.viewBox && svg.viewBox.baseVal;
+  if (!vb || !vb.width || !box.clientWidth) return;
+  // vertical margin leaves room for the tag (top) and meta (bottom) overlays
+  const s = Math.min((box.clientWidth - 16) / vb.width, (box.clientHeight - padY) / vb.height, max);
+  svg.style.width = `${Math.max(1, vb.width * s)}px`;
+  svg.style.height = `${Math.max(1, vb.height * s)}px`;
+}
+
+// Diagram viewport inside host; refits whenever the box resizes (controls may wrap after mount).
+function viewer(ctx, host, max = 1.6, padY = 44) {
+  const box = h("div", { class: "vz-svg" });
+  const tag = h("div", { class: "vz-tag" });
+  const meta = h("div", { class: "vz-meta" });
+  host.append(box, tag, meta);
+  const api = {
+    box, onSize: null,
+    set(svg) { box.replaceChildren(svg); box.classList.remove("vz-stale"); api.fit(); return svg; },
+    fit: () => fit(box, max, padY),
+    stale: (on) => box.classList.toggle("vz-stale", on),
+    info: (t) => { meta.textContent = t; },
+    tag: (t) => { tag.textContent = t; },
+    wide: () => box.clientWidth >= box.clientHeight * 1.1,
+  };
+  const ro = new ResizeObserver(() => { api.fit(); api.onSize?.(); });
+  ro.observe(box);
+  ctx.onCleanup(() => ro.disconnect());
+  return api;
+}
+
+function download(name, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  h("a", { href: url, download: name }).click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function chunk(arr, n) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+  return out;
+}
+
+// ---------- 1. samples ported from the original page ----------
 const SAMPLES = {
-  build: { engine: "dot", code: `digraph 建置流程 {
-  graph [label="前端專案：從原始碼到上線", labelloc=t,
-         fontname="Noto Sans TC, Microsoft JhengHei", fontsize=15,
-         fontcolor="#3b3a35", bgcolor="transparent", nodesep=0.25, ranksep=0.42]
-  node  [shape=box, style="rounded,filled", fontname="Noto Sans TC, Microsoft JhengHei",
-         fontsize=12, color="#b89500", fillcolor="#fff3b0", penwidth=1.4, margin="0.3,0.07"]
-  edge  [color="#6d6b64", arrowsize=0.7, fontname="Noto Sans TC, Microsoft JhengHei",
-         fontsize=11, fontcolor="#2f9e55"]
+  build: { name: "建置流程", engine: "dot", code: `digraph 建置流程 {
+  graph [label="前端專案：從原始碼到上線", labelloc=t, fontsize=15,
+         fontcolor="#3b3a35", nodesep=0.25, ranksep=0.42]
+  node  [shape=box, style="rounded,filled", fontsize=12,
+         color="#b89500", fillcolor="#fff3b0", penwidth=1.4, margin="0.3,0.07"]
+  edge  [color="#6d6b64", arrowsize=0.7, fontsize=11, fontcolor="#2f9e55"]
 
   subgraph cluster_src {
     label="原始碼"; style="rounded,filled"; fillcolor="#f1ecff"; color="#6a5ae0"
@@ -92,13 +262,11 @@ const SAMPLES = {
   opt -> cdn
   cdn -> site
 }` },
-  map: { engine: "neato", code: `graph 縣市相鄰 {
-  graph [label="台灣本島縣市相鄰關係（示意）", labelloc=t,
-         fontname="Noto Sans TC, Microsoft JhengHei", fontsize=15,
-         fontcolor="#3b3a35", bgcolor="transparent", overlap=false, sep="+8"]
+  map: { name: "縣市相鄰", engine: "neato", code: `graph 縣市相鄰 {
+  graph [label="台灣本島縣市相鄰關係（示意）", labelloc=t, fontsize=15,
+         fontcolor="#3b3a35", overlap=false, sep="+8"]
   node  [shape=circle, style=filled, fixedsize=true, width=0.66,
-         fontname="Noto Sans TC, Microsoft JhengHei", fontsize=12,
-         color="#ffffff", penwidth=2]
+         fontsize=12, color="#ffffff", penwidth=2]
   edge  [color="#9b998f", penwidth=1.3]
 
   // pos 是大致地理位置（英吋），neato 以此為起點再調整避免重疊
@@ -124,14 +292,12 @@ const SAMPLES = {
   嘉義縣 -- 臺南;  嘉義縣 -- 高雄;  臺南 -- 高雄;  高雄 -- 屏東
   高雄 -- 臺東;  屏東 -- 臺東;  花蓮 -- 臺東
 }` },
-  loop: { engine: "circo", code: `digraph 衝刺循環 {
-  graph [label="Scrum 兩週衝刺循環", labelloc=t,
-         fontname="Noto Sans TC, Microsoft JhengHei", fontsize=15,
-         fontcolor="#3b3a35", bgcolor="transparent", mindist=0.75]
-  node  [shape=box, style="rounded,filled", fontname="Noto Sans TC, Microsoft JhengHei",
-         fontsize=12, color="#6a5ae0", fillcolor="#f1ecff", penwidth=1.4, margin="0.3,0.08"]
-  edge  [color="#6a5ae0", penwidth=1.4, arrowsize=0.8,
-         fontname="Noto Sans TC, Microsoft JhengHei", fontsize=11, fontcolor="#d61f69"]
+  loop: { name: "衝刺循環", engine: "circo", code: `digraph 衝刺循環 {
+  graph [label="Scrum 兩週衝刺循環", labelloc=t, fontsize=15,
+         fontcolor="#3b3a35", mindist=0.75]
+  node  [shape=box, style="rounded,filled", fontsize=12,
+         color="#6a5ae0", fillcolor="#f1ecff", penwidth=1.4, margin="0.3,0.08"]
+  edge  [color="#6a5ae0", penwidth=1.4, arrowsize=0.8, fontsize=11, fontcolor="#d61f69"]
 
   待辦 [label="產品待辦清單", fillcolor="#fff3b0", color="#b89500"]
   規劃 [label="衝刺規劃會議"]
@@ -147,54 +313,658 @@ const SAMPLES = {
 }` },
 };
 
-const src = document.getElementById("src");
-const out = document.getElementById("out");
-const err = document.getElementById("err");
-const stat = document.getElementById("stat");
-let viz = null;
-let engine = "dot";
-
-// Scale the SVG into the preview box, never enlarging beyond 1.6x.
-function fit() {
-  const svg = out.querySelector("svg");
-  if (!svg) return;
-  const vb = svg.viewBox.baseVal;
-  const box = out.getBoundingClientRect();
-  const s = Math.min(box.width / vb.width, box.height / vb.height, 1.6);
-  svg.setAttribute("width", Math.floor(vb.width * s));
-  svg.setAttribute("height", Math.floor(vb.height * s));
+// ---------- 2. one graph, eight engines ----------
+function TEAM(clusters) {
+  const C = clusters ? "cluster_" : "group_";
+  return `graph 部門協作 {
+  graph [overlap=scale, nodesep=0.3, fontsize=12, fontcolor="#3b3a35"]
+  node [shape=box, style="rounded,filled", fillcolor="#ffffff", color="#6d6b64", fontsize=12, margin="0.18,0.06"]
+  edge [color="#8a877d", penwidth=1.2]
+  subgraph ${C}rd { label="研發"; style="rounded,filled"; fillcolor="#f0f9fd"; color="#1f8fb8"
+    node [fillcolor="#bfe6f5", color="#1f8fb8"]
+    前端 [area=3]; 後端 [area=4]; 測試 [area=2] }
+  subgraph ${C}ds { label="設計"; style="rounded,filled"; fillcolor="#f7f4ff"; color="#6a5ae0"
+    node [fillcolor="#ddd5ff", color="#6a5ae0"]
+    介面設計 [area=2]; 使用者研究 [area=2] }
+  subgraph ${C}mk { label="行銷"; style="rounded,filled"; fillcolor="#fffbe3"; color="#b89500"
+    node [fillcolor="#fff0a0", color="#b89500"]
+    社群 [area=2]; 廣告 [area=2]; 內容 [area=3] }
+  subgraph ${C}bz { label="業務"; style="rounded,filled"; fillcolor="#f2fbf4"; color="#2f9e55"
+    node [fillcolor="#c8ebd2", color="#2f9e55"]
+    北區 [area=3]; 南區 [area=2]; 客服 [area=2] }
+  前端 -- 後端; 後端 -- 測試; 前端 -- 測試; 前端 -- 介面設計; 介面設計 -- 使用者研究
+  使用者研究 -- 客服; 內容 -- 社群; 社群 -- 廣告; 廣告 -- 北區; 廣告 -- 南區
+  北區 -- 南區; 南區 -- 客服; 客服 -- 後端; 內容 -- 介面設計; 測試 -- 客服
+}`;
 }
 
-function draw() {
-  if (!viz) return;
-  const t0 = performance.now();
-  try {
-    const svg = viz.renderSVGElement(src.value, { engine });
-    out.replaceChildren(svg);
-    fit();
-    err.style.display = "none";
-    stat.textContent = `${engine} 排版，${Math.round(performance.now() - t0)} 毫秒`;
-  } catch (e) {
-    // Viz throws with Graphviz's own error text; keep the last good drawing.
-    err.textContent = `語法錯誤：${e.message}`;
-    err.style.display = "block";
-    stat.textContent = "等待修正語法";
+// ---------- 3. nested clusters ----------
+function ARCH({ clusters, compound, dir }) {
+  const C = clusters ? "cluster_" : "group_";
+  const cmp = clusters && compound;
+  // compound: one edge to the box replaces three (invisible edges keep the same ranks)
+  const links = cmp
+    ? `閘道 -> 課程 [lhead=${C}svc, label=" 轉送"]
+  閘道 -> 會員 [style=invis]; 閘道 -> 訂單 [style=invis]
+  課程 -> PG [ltail=${C}svc, lhead=${C}data, label=" 讀寫"]
+  會員 -> 快取 [style=invis]; 訂單 -> PG [style=invis]`
+    : `閘道 -> 會員; 閘道 -> 課程; 閘道 -> 訂單
+  會員 -> PG; 課程 -> PG; 訂單 -> PG; 課程 -> 快取; 會員 -> 快取`;
+  return `digraph 架構 {
+  graph [rankdir=${dir}, compound=${cmp}, newrank=true, nodesep=0.3, ranksep=0.45,
+         fontsize=13, fontcolor="#3b3a35", label="線上課程平台架構（示意）", labelloc=t]
+  node [shape=box, style="rounded,filled", fillcolor="#ffffff", color="#6d6b64", fontsize=12, margin="0.22,0.06"]
+  edge [color="#6d6b64", arrowsize=0.7, fontsize=11, fontcolor="#d61f69"]
+  subgraph ${C}user { label="使用者端"; style="rounded,dashed"; color="#9a978d"
+    瀏覽器; App [label="手機 App"] }
+  subgraph ${C}cloud { label="雲端（台北機房）"; style="rounded,filled"; fillcolor="#f4f1ea"; color="#c9c4b6"
+    subgraph ${C}gate { label="入口層"; fillcolor="#e6f6fc"; color="#1f8fb8"; CDN; 閘道 [label="API 閘道"] }
+    subgraph ${C}svc { label="服務層"; fillcolor="#fff7cc"; color="#b89500"
+      會員 [label="會員服務"]; 課程 [label="課程服務"]; 訂單 [label="訂單服務"] }
+    subgraph ${C}data { label="資料層"; fillcolor="#e8f7ec"; color="#2f9e55"
+      PG [label="PostgreSQL", shape=cylinder]; 快取 [label="Redis", shape=cylinder]; 影片 [label="影片儲存", shape=folder] }
   }
+  金流 [label="第三方金流", shape=component, fillcolor="#ffd0e1", color="#d61f69"]
+  瀏覽器 -> CDN; 瀏覽器 -> 閘道; App -> 閘道
+  CDN -> 影片 [style=dashed, label=" 串流"]
+  訂單 -> 金流 [label=" 付款"]
+  ${links}
+}`;
 }
 
-let timer;
-src.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(draw, 250); });
-function load(k) {
-  document.querySelectorAll("[data-k]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.k === k)));
-  engine = SAMPLES[k].engine;
-  src.value = SAMPLES[k].code;
-  draw();
-}
-document.querySelectorAll("[data-k]").forEach((b) => b.addEventListener("click", () => load(b.dataset.k)));
-addEventListener("resize", fit);
+// ---------- 4. shapes, record, HTML-like labels, images ----------
+const SHAPES = ["box", "ellipse", "circle", "doublecircle", "diamond", "hexagon", "octagon", "parallelogram",
+  "trapezium", "house", "invhouse", "triangle", "invtriangle", "cylinder", "note", "tab", "folder", "box3d",
+  "component", "cds", "star", "egg", "Mdiamond", "Msquare"];
+const FILLS = ["#fff3b0", "#e6f6fc", "#f1ecff", "#e8f7ec", "#ffd0e1", "#fde7d4"];
+const STYLES = [
+  ["圓角", `shape=box, style="rounded,filled", fillcolor="#fde7d4"`],
+  ["虛線框", `shape=box, style="dashed,filled", fillcolor="#ffffff"`],
+  ["線性漸層", `shape=box, style=filled, fillcolor="#fff3b0:#ffd0e1", gradientangle=90`],
+  ["放射漸層", `shape=ellipse, style=radial, fillcolor="#ffffff:#9fd6ee"`],
+  ["條紋", `shape=box, style=striped, fillcolor="#fff3b0:#bfe6f5:#ffd0e1"`],
+  ["扇形", `shape=ellipse, style=wedged, fillcolor="#fff3b0:#bfe6f5:#ffd0e1:#cfe9d6"`],
+];
 
-load("build");
-Viz.instance().then((v) => { viz = v; draw(); });
+function SHAPES_DOT(cols) {
+  const items = SHAPES.map((s, i) => [`s${i}`, `shape=${s}, label="${s}", fillcolor="${FILLS[i % FILLS.length]}"`])
+    .concat(STYLES.map(([lab, a], i) => [`t${i}`, `label="${lab}", ${a}`]));
+  const rows = chunk(items, cols);
+  const ranks = rows.map((r) => `  { rank=same; ${r.map(([id, a]) => `${id} [${a}]`).join("; ")} }`);
+  const links = [];
+  rows.slice(1).forEach((r, i) => r.forEach(([id], j) => links.push(`${rows[i][Math.min(j, rows[i].length - 1)][0]} -> ${id}`)));
+  return `digraph 形狀 {
+  graph [nodesep=0.22, ranksep=0.28]
+  node [style=filled, fontsize=11, color="#6d6b64", penwidth=1.2, width=0.95, height=0.5]
+  edge [style=invis]
+${ranks.join("\n")}
+  ${links.join("; ")}
+}`;
+}
+
+const ER = [
+  { id: "學生", bg: "#fff3b0", line: "#b89500", f: [["sid", "學號", "PK"], ["", "姓名", "文字"], ["dept", "系所代碼", "FK"]] },
+  { id: "選課", bg: "#ffd0e1", line: "#d61f69", f: [["sid", "學號", "FK"], ["cid", "課號", "FK"], ["", "學期", "文字"], ["", "成績", "數字"]] },
+  { id: "課程", bg: "#e6f6fc", line: "#1f8fb8", f: [["cid", "課號", "PK"], ["", "課名", "文字"], ["", "學分", "數字"], ["tid", "教師編號", "FK"]] },
+  { id: "教師", bg: "#f1ecff", line: "#6a5ae0", f: [["tid", "教師編號", "PK"], ["", "姓名", "文字"], ["dept", "系所代碼", "FK"]] },
+  { id: "系所", bg: "#e8f7ec", line: "#2f9e55", f: [["dept", "系所代碼", "PK"], ["", "系所名稱", "文字"]] },
+];
+const ER_LINKS = `學生:sid -> 選課:sid; 課程:cid -> 選課:cid; 教師:tid -> 課程:tid; 系所:dept -> 學生:dept; 系所:dept -> 教師:dept`;
+
+function RECORD_DOT(dir) {
+  // In LR the top-level fields stack vertically; in TB braces are needed to flip them.
+  const nodes = ER.map((t) => {
+    const fields = [t.id, ...t.f.map(([p, n, k]) => `${p ? `<${p}> ` : ""}${n} ${k}`)].join("|");
+    return `  ${t.id} [label="${dir === "LR" ? fields : `{${fields}}`}", fillcolor="${t.bg}", color="${t.line}"]`;
+  });
+  return `digraph 選課系統 {
+  graph [rankdir=${dir}, nodesep=0.4, ranksep=0.8]
+  node [shape=record, style=filled, fontsize=12, penwidth=1.3]
+  edge [color="#6d6b64", arrowsize=0.7, arrowhead=crow, arrowtail=tee, dir=both]
+${nodes.join("\n")}
+  ${ER_LINKS}
+}`;
+}
+
+function HTML_DOT(dir) {
+  const nodes = ER.map((t) => {
+    const rows = t.f.map(([p, n, k]) => `<tr><td align="left"${p ? ` port="${p}"` : ""}>${n}</td><td><font point-size="10" color="${k === "PK" ? "#d61f69" : k === "FK" ? "#1f8fb8" : "#9a978d"}">${k}</font></td></tr>`).join("");
+    return `  ${t.id} [label=<<table border="1" cellborder="0" cellspacing="0" cellpadding="5" color="${t.line}" bgcolor="#ffffff"><tr><td colspan="2" bgcolor="${t.bg}"><b>${t.id}</b></td></tr>${rows}</table>>]`;
+  });
+  return `digraph 選課系統 {
+  graph [rankdir=${dir}, nodesep=0.4, ranksep=0.8]
+  node [shape=plain, fontsize=12]
+  edge [color="#6d6b64", arrowsize=0.7, arrowhead=crow, arrowtail=tee, dir=both]
+${nodes.join("\n")}
+  ${ER_LINKS}
+}`;
+}
+
+const PHOTOS = [["峽灣", 1, "風景"], ["紅岩峽谷", 2, "風景"], ["山谷公路", 3, "風景"], ["瀑布彩虹", 5, "風景"],
+  ["巴哥犬", 4, "動物"], ["水母", 6, "動物"], ["母獅", 7, "動物"], ["海象", 8, "動物"]];
+const PHOTO_SIZES = PHOTOS.map(([, n]) => ({ name: `_shared/img/photo-${n}.jpg`, width: 1200, height: 800 }));
+
+function PHOTO_DOT() {
+  const nodes = PHOTOS.map(([name, n, group], i) => `  p${i} [label=<<table border="1" color="#c9c4b6" cellborder="0" cellspacing="0" cellpadding="3" bgcolor="#ffffff"><tr><td fixedsize="true" width="96" height="64"><img src="_shared/img/photo-${n}.jpg" scale="true"/></td></tr><tr><td>${name}</td></tr></table>>]
+  ${group} -> p${i}`);
+  return `digraph 相簿 {
+  graph [nodesep=0.18, ranksep=0.45]
+  node [shape=box, style="rounded,filled", fontsize=13, margin="0.2,0.06"]
+  edge [color="#8a877d", arrowsize=0.6]
+  相簿 [label="我的相簿", shape=folder, fillcolor="#f1ecff", color="#6a5ae0"]
+  風景 [fillcolor="#e6f6fc", color="#1f8fb8"]; 動物 [fillcolor="#ffd0e1", color="#d61f69"]
+  相簿 -> 風景; 相簿 -> 動物
+  node [shape=plain]
+${nodes.join("\n")}
+}`;
+}
+
+// ---------- 5. rankdir, splines, edge styles ----------
+const FLOW_EDGES = [
+  ["下單", "付款", "", "預設箭頭"],
+  ["付款", "出貨", "arrowhead=vee", "vee"],
+  ["付款", "退款", "style=dashed, arrowhead=empty", "dashed・empty"],
+  ["出貨", "簽收", "penwidth=2.6, arrowhead=diamond", "penwidth・diamond"],
+  ["簽收", "評價", "style=dotted, arrowhead=odot", "dotted・odot"],
+  ["出貨", "物流", "dir=both, arrowtail=crow, arrowhead=tee", "dir=both"],
+  ["退款", "下單", `color="#d61f69:#1f8fb8", constraint=false`, "雙色平行"],
+  ["評價", "會員", `arrowhead=box, color="#2f9e55"`, "box"],
+  ["下單", "會員", "style=bold, arrowhead=inv", "bold・inv"],
+];
+
+function FLOW_DOT({ rankdir, splines, labels, ranksep }) {
+  const key = splines === "ortho" ? "xlabel" : "label";
+  const edges = FLOW_EDGES.map(([a, b, attr, lab]) => {
+    const parts = [attr, labels ? `${key}="${lab}"` : ""].filter(Boolean).join(", ");
+    return `  ${a} -> ${b}${parts ? ` [${parts}]` : ""}`;
+  });
+  return `digraph 訂單流程 {
+  graph [rankdir=${rankdir}, splines=${splines}, nodesep=0.45, ranksep=${ranksep}]
+  node [shape=box, style="rounded,filled", fillcolor="#fff3b0", color="#b89500", fontsize=12, penwidth=1.3, margin="0.22,0.07"]
+  edge [color="#6d6b64", fontsize=10, fontcolor="#1f8fb8", penwidth=1.3]
+  退款 [fillcolor="#ffd0e1", color="#d61f69"]; 會員 [shape=cylinder, fillcolor="#e6f6fc", color="#1f8fb8"]
+${edges.join("\n")}
+}`;
+}
+
+// ---------- 6. output formats (Taipei MRT transfer stations, positions approximate) ----------
+const MRT_DOT = `graph 捷運轉乘 {
+  graph [label="台北捷運轉乘站之間的路段（位置示意）", labelloc=t, fontsize=13, fontcolor="#3b3a35"]
+  node [shape=circle, fixedsize=true, width=0.92, style=filled, fillcolor="#ffffff", penwidth=2.2, fontsize=10]
+  edge [penwidth=4]
+  西門 [pos="0.45,1.98!"]; 台北車站 [pos="1.8,2.64!"]; 中山 [pos="2.25,3.8!"]; 松江南京 [pos="4.2,3.63!"]
+  南京復興 [pos="5.85,3.63!"]; 忠孝新生 [pos="4.2,1.98!"]; 忠孝復興 [pos="5.85,1.98!"]
+  中正紀念堂 [pos="1.95,0.5!"]; 東門 [pos="3.6,0.66!"]; 大安 [pos="5.85,0.5!"]
+  edge [color="#0070bd"]; 西門 -- 台北車站 -- 忠孝新生 -- 忠孝復興
+  edge [color="#e3002c"]; 中山 -- 台北車站 -- 中正紀念堂 -- 東門 -- 大安
+  edge [color="#008659"]; 中正紀念堂 -- 西門 -- 中山 -- 松江南京 -- 南京復興
+  edge [color="#f8b61c"]; 東門 -- 忠孝新生 -- 松江南京
+  edge [color="#c48c31"]; 大安 -- 忠孝復興 -- 南京復興
+}`;
+const FORMATS = [
+  { id: "svg", ext: "svg", type: "image/svg+xml", zh: "向量圖，瀏覽器可直接顯示；renderSVGElement 就是把這段字串解析成元素。" },
+  { id: "json", ext: "json", type: "application/json", zh: "完整排版結果：座標、繪圖指令（_draw_）與所有屬性，適合交給自己的繪圖程式。" },
+  { id: "xdot", ext: "xdot", type: "text/plain", zh: "DOT 加上繪圖指令屬性，給其他工具二次繪製。" },
+  { id: "plain", ext: "txt", type: "text/plain", zh: "最精簡的純文字：每行一個節點或邊，座標單位是英吋。" },
+  { id: "dot", ext: "gv", type: "text/plain", zh: "原本的 DOT 加上排版後的 pos、bb 等座標屬性。" },
+];
+
+// ---------- 7. course prerequisites as a graph object ----------
+const YEARS = ["大一", "大二", "大三", "大四"];
+const COURSES = [
+  ["微積分", 0], ["計算機概論", 0], ["程式設計", 0], ["線性代數", 0],
+  ["離散數學", 1], ["資料結構", 1], ["機率與統計", 1], ["數位邏輯", 1], ["物件導向", 1],
+  ["演算法", 2], ["計算機組織", 2], ["作業系統", 2], ["資料庫", 2], ["計算機網路", 2], ["軟體工程", 2],
+  ["編譯器", 3], ["機器學習", 3], ["資訊安全", 3], ["分散式系統", 3], ["電腦圖學", 3], ["畢業專題", 3],
+];
+const COURSE_IDX = Object.fromEntries(COURSES.map(([n], i) => [n, i]));
+const PREREQ = ("微積分>機率與統計 計算機概論>數位邏輯 計算機概論>離散數學 程式設計>資料結構 程式設計>物件導向 " +
+  "線性代數>機器學習 線性代數>電腦圖學 離散數學>演算法 資料結構>演算法 資料結構>資料庫 資料結構>作業系統 " +
+  "數位邏輯>計算機組織 計算機組織>作業系統 物件導向>軟體工程 資料結構>計算機網路 機率與統計>機器學習 " +
+  "演算法>機器學習 演算法>編譯器 計算機組織>編譯器 作業系統>分散式系統 計算機網路>分散式系統 " +
+  "計算機網路>資訊安全 作業系統>資訊安全 演算法>電腦圖學 軟體工程>畢業專題 資料庫>畢業專題")
+  .split(" ").map((s) => s.split(">").map((n) => COURSE_IDX[n]));
+const YEAR_FILL = ["#fff3b0", "#e6f6fc", "#f1ecff", "#e8f7ec"];
+const YEAR_LINE = ["#b89500", "#1f8fb8", "#6a5ae0", "#2f9e55"];
+
+function courseGraph(dir) {
+  return {
+    directed: true,
+    graphAttributes: { rankdir: dir, nodesep: 0.16, ranksep: dir === "LR" ? 0.6 : 0.42 },
+    nodeAttributes: { shape: "box", style: "rounded,filled", fontsize: 12, margin: "0.16,0.05", penwidth: 1.3 },
+    edgeAttributes: { color: "#8a877d", arrowsize: 0.6 },
+    subgraphs: YEARS.map((y, yi) => ({
+      graphAttributes: { rank: "same" },
+      nodes: [
+        { name: `y${yi}`, attributes: { label: y, shape: "plaintext", style: "solid", fontcolor: "#9a978d", fontsize: 14 } },
+        ...COURSES.flatMap(([name, year], i) => (year === yi
+          ? [{ name: `c${i}`, attributes: { label: name, id: `vzc-${i}`, fillcolor: YEAR_FILL[yi], color: YEAR_LINE[yi] } }]
+          : [])),
+      ],
+    })),
+    edges: [
+      ...YEARS.slice(1).map((_, i) => ({ tail: `y${i}`, head: `y${i + 1}`, attributes: { style: "invis" } })),
+      ...PREREQ.map(([a, b], k) => ({ tail: `c${a}`, head: `c${b}`, attributes: { id: `vze-${k}` } })),
+    ],
+  };
+}
+
+// mode 0: direct neighbours, 1: all prerequisites (upstream), 2: everything it unlocks (downstream)
+function trace(s, mode) {
+  const nodes = new Set([s]), edges = new Set();
+  if (mode === 0) {
+    PREREQ.forEach(([a, b], k) => { if (a === s || b === s) { edges.add(k); nodes.add(a); nodes.add(b); } });
+    return { nodes, edges };
+  }
+  const up = mode === 1, stack = [s];
+  while (stack.length) {
+    const x = stack.pop();
+    PREREQ.forEach(([a, b], k) => {
+      const from = up ? b : a, to = up ? a : b;
+      if (from !== x) return;
+      edges.add(k);
+      if (!nodes.has(to)) { nodes.add(to); stack.push(to); }
+    });
+  }
+  return { nodes, edges };
+}
+
+// ---------- 8. stress graphs ----------
+const STRESS_SIZES = {
+  dot: [50, 100, 200, 400, 800, 1600, 3200],
+  neato: [50, 100, 200, 300, 400, 600, 800],
+  fdp: [25, 50, 75, 100, 150, 200],
+  sfdp: [100, 200, 400, 800, 1600, 3200, 6400],
+  circo: [25, 50, 100, 150, 200, 250],
+  twopi: [250, 500, 1000, 2000, 4000, 8000, 16000],
+  osage: [250, 500, 1000, 2000, 4000, 8000, 16000],
+  patchwork: [250, 500, 1000, 2000, 4000, 8000, 16000],
+};
+
+// Random tree plus about 30% extra edges; seeded so every engine sees the same graph.
+function bigGraph(n) {
+  let seed = 11;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const lines = [
+    "digraph G {",
+    `node [shape=box, style="rounded,filled", fillcolor="#fff3b0", color="#b89500", fontsize=10, margin="0.05,0.02", width=0.4, height=0.25]`,
+    `edge [color="#8a877d", arrowsize=0.5]`,
+  ];
+  let edges = 0;
+  for (let i = 0; i < n; i++) lines.push(`n${i} [label="${i}"]`);
+  for (let i = 1; i < n; i++) {
+    lines.push(`n${Math.floor(rnd() * i)} -> n${i}`); edges++;
+    if (rnd() < 0.3) { lines.push(`n${i} -> n${Math.floor(rnd() * n)}`); edges++; }
+  }
+  lines.push("}");
+  return { src: lines.join("\n"), edges };
+}
+
+Showcase.run({ scenes: [
+  {
+    id: "editor", title: "即時編輯", paper: true,
+    api: "viz.render(dot, { engine, format: \"svg\" }) 回傳 { status, output, errors }",
+    desc: "原本的三個範例：左邊改 DOT 文字，右邊即時重畫，也能換排版引擎。render() 遇到語法錯誤不丟例外，而是回傳 status 與 errors，畫面保留上一張圖並指出出錯的行；未知形狀這類警告也會列出。",
+    hint: "改文字即重畫・切換範例或引擎・點錯誤訊息跳到該行",
+    async mount(ctx) {
+      ctx.html(`<div class="vz-wrap"><div class="vz-ed"><div class="vz-ed-head"><span>DOT 原始碼</span><span class="vz-stat"></span></div><textarea class="vz-code" spellcheck="false" wrap="off" aria-label="DOT 原始碼"></textarea><div class="vz-msg" hidden></div></div><div class="vz-view"></div></div>`);
+      const code = ctx.$(".vz-code"), msg = ctx.$(".vz-msg"), stat = ctx.$(".vz-stat");
+      const view = viewer(ctx, ctx.$(".vz-view"));
+      let engine = "dot", jumpLine = 0, timer = 0;
+
+      const showMsg = (kind, text) => {
+        msg.hidden = !kind;
+        if (!kind) return;
+        const m = /line (\d+)/.exec(text);
+        jumpLine = m ? +m[1] : 0;
+        msg.className = `vz-msg vz-${kind}`;
+        const head = kind === "err" ? (jumpLine ? `第 ${jumpLine} 行附近語法錯誤` : "無法繪製") : "Graphviz 提醒";
+        msg.replaceChildren(h("b", {}, head), "：", text, jumpLine ? h("u", {}, "（點此跳到該行）") : "");
+      };
+      const draw = () => {
+        if (!viz) return;
+        const [r, ms] = timed(() => viz.render(code.value, gvOpts({ engine, format: "svg" })));
+        const list = notes(r.errors);
+        if (r.status !== "success") {
+          showMsg("err", (list.find((e) => e.level === "error") || list[0] || { message: "未知錯誤" }).message);
+          view.stale(true);
+          stat.textContent = "等待修正語法";
+          return;
+        }
+        const svg = view.set(parseSvg(r.output));
+        showMsg(list.length ? "warn" : null, list.map((e) => {
+          const zh = GV_NOTES.find(([re]) => re.test(e.message));
+          return e.message.trim() + (zh ? `（${zh[1]}）` : "");
+        }).join("\n"));
+        stat.textContent = `${engine}・${svg.querySelectorAll("g.node").length} 節點・${svg.querySelectorAll("g.edge").length} 條邊・${fmtMs(ms)}`;
+      };
+      const load = (k) => {
+        code.value = SAMPLES[k].code;
+        code.scrollTop = 0;
+        engine = SAMPLES[k].engine;
+        sel.value = engine;
+        draw();
+      };
+      ctx.on(code, "input", () => { clearTimeout(timer); timer = setTimeout(draw, 200); });
+      ctx.onCleanup(() => clearTimeout(timer));
+      ctx.on(msg, "click", () => {
+        if (!jumpLine) return;
+        const lines = code.value.split("\n");
+        const start = lines.slice(0, jumpLine - 1).reduce((a, l) => a + l.length + 1, 0);
+        code.focus();
+        code.setSelectionRange(start, start + (lines[jumpLine - 1] || "").length);
+        code.scrollTop = Math.max(0, (jumpLine - 4) * 20);
+      });
+
+      const keys = Object.keys(SAMPLES);
+      ctx.group(keys.map((k) => SAMPLES[k].name), 0, (i) => load(keys[i]));
+      const sel = ctx.select("引擎", ENGINES.map((e) => e.id), "dot", (v) => { engine = v; draw(); });
+      ctx.button("製造語法錯誤", () => {
+        const i = code.value.lastIndexOf("}");
+        code.value = `${code.value.slice(0, i)}  缺少終點 ->\n${code.value.slice(i)}`;
+        draw();
+      });
+      code.value = SAMPLES.build.code;
+      await ready(ctx);
+      load("build");
+    },
+  },
+  {
+    id: "engines", title: "排版引擎", paper: true,
+    api: "viz.renderSVGElement(dot, { engine: \"dot\" | \"neato\" | \"fdp\" | \"sfdp\" | \"circo\" | \"twopi\" | \"osage\" | \"patchwork\" })",
+    desc: "同一份 DOT 交給八個排版引擎。dot 依方向分層，neato／fdp／sfdp 用力學模型，circo 排成環，twopi 從中心放射，osage 只把叢集打包（忽略邊），patchwork 把叢集畫成面積樹狀圖（area 屬性決定大小）。",
+    hint: "點任一張放大比較・關掉叢集看 osage 與 patchwork 的差別",
+    async mount(ctx) {
+      ctx.html(`<div class="vz-wrap"><div class="vz-grid"></div></div>`);
+      const grid = ctx.$(".vz-grid");
+      let clusters = true;
+      const cards = ENGINES.map((e) => {
+        const mini = h("div", { class: "vz-mini" });
+        const ms = h("span", { class: "vz-ms" });
+        const card = h("div", { class: "vz-card", title: "點一下放大或縮回" }, mini,
+          h("div", { class: "vz-cap" }, h("code", {}, e.id), h("span", {}, e.zh), ms));
+        grid.append(card);
+        ctx.on(card, "click", () => {
+          const on = !card.classList.contains("vz-sel");
+          grid.querySelectorAll(".vz-sel").forEach((c) => c.classList.remove("vz-sel"));
+          card.classList.toggle("vz-sel", on);
+          grid.classList.toggle("vz-focus", on);
+        });
+        return { e, ms, view: viewer(ctx, mini, 2.5, 8) };
+      });
+      const draw = () => {
+        if (!viz) return;
+        const src = TEAM(clusters);
+        for (const c of cards) {
+          const [svg, t] = timed(() => svgOf({ src, opts: { engine: c.e.id } }));
+          c.view.set(svg);
+          c.ms.textContent = fmtMs(t);
+        }
+      };
+      ctx.toggle("叢集", true, (v) => { clusters = v; draw(); });
+      await ready(ctx);
+      draw();
+    },
+  },
+  {
+    id: "clusters", title: "叢集子圖", paper: true,
+    api: "subgraph cluster_名稱 { … }・compound=true・lhead／ltail・newrank",
+    desc: "名稱以 cluster 開頭的子圖會畫成框，而且可以層層巢狀；子圖會繼承外層的樣式屬性。打開 compound 後，邊可以用 lhead／ltail 直接接到框上，把多條重複的連線收斂成一條。",
+    hint: "關掉叢集框或 compound，看同一張架構圖的差別",
+    async mount(ctx) {
+      ctx.html(`<div class="vz-wrap"><div class="vz-view"></div></div>`);
+      const view = viewer(ctx, ctx.$(".vz-view"));
+      const { width, height } = ctx.size();
+      const opt = { clusters: true, compound: true, dir: width > height * 1.2 ? "LR" : "TB" };
+      const draw = () => {
+        if (!viz) return;
+        const [svg, t] = timed(() => svgOf({ src: ARCH(opt) }));
+        view.set(svg);
+        const boxes = svg.querySelectorAll("g.cluster").length;
+        view.tag(opt.clusters ? `${boxes} 個叢集框・最深 2 層巢狀` : "一般子圖：只分組，不畫框");
+        view.info(`${opt.clusters && opt.compound ? "compound：邊接到框" : "邊都接到節點"}・${svg.querySelectorAll("g.edge path").length} 條邊・${fmtMs(t)}`);
+      };
+      ctx.toggle("叢集框", true, (v) => { opt.clusters = v; draw(); });
+      ctx.toggle("邊接到框", true, (v) => { opt.compound = v; draw(); });
+      ctx.group(["由上而下", "由左而右"], opt.dir === "LR" ? 1 : 0, (i) => { opt.dir = i ? "LR" : "TB"; draw(); });
+      await ready(ctx);
+      draw();
+    },
+  },
+  {
+    id: "labels", title: "形狀與標籤", paper: true,
+    api: "shape=record 與 <port>・label=<<table>…</table>>・<img src>＋images 選項",
+    desc: "節點形狀與填色樣式（漸層、條紋、扇形）一次排開；同一張選課資料表分別用 record 與 HTML 表格標籤畫，邊接到欄位的 port。圖片節點要用 images 選項告訴 Graphviz 圖片尺寸，因為它在瀏覽器裡讀不到檔案。",
+    hint: "切換四種標籤寫法",
+    async mount(ctx) {
+      ctx.html(`<div class="vz-wrap"><div class="vz-view"></div></div>`);
+      const view = viewer(ctx, ctx.$(".vz-view"));
+      let mode = 0, shapeCols = 0, wide = true;
+      const TAGS = [
+        "24 種形狀＋6 種填色樣式",
+        "record：| 分隔欄位，<port> 命名連接點，{ } 翻轉方向",
+        "HTML 標籤：table、font、b，td 上的 port 可當連接點",
+        "<img> 放在表格儲存格，尺寸來自 images 選項",
+      ];
+      const cols = () => {
+        const n = SHAPES.length + STYLES.length;
+        const r = view.box.clientWidth / Math.max(1, view.box.clientHeight);
+        return Math.max(3, Math.min(10, Math.round(Math.sqrt(n * r * 0.55))));
+      };
+      const draw = () => {
+        if (!viz) return;
+        wide = view.wide();
+        shapeCols = cols();
+        const dir = wide ? "LR" : "TB";
+        const job = [
+          { src: SHAPES_DOT(shapeCols) },
+          { src: RECORD_DOT(dir) },
+          { src: HTML_DOT(dir) },
+          { src: PHOTO_DOT(), opts: { images: PHOTO_SIZES } },
+        ][mode];
+        const [svg, t] = timed(() => svgOf(job));
+        view.set(svg);
+        view.tag(TAGS[mode]);
+        view.info(`${svg.querySelectorAll("g.node").length} 個節點・${fmtMs(t)}`);
+      };
+      view.onSize = () => { if (viz && (view.wide() !== wide || (mode === 0 && cols() !== shapeCols))) draw(); };
+      ctx.group(["節點形狀", "record", "HTML 表格", "圖片節點"], 0, (i) => { mode = i; draw(); });
+      await ready(ctx);
+      draw();
+    },
+  },
+  {
+    id: "edges", title: "方向與連線", paper: true,
+    api: "rankdir=TB｜LR｜BT｜RL・splines=…・arrowhead／arrowtail・style・penwidth・color=\"a:b\"",
+    desc: "同一張訂單流程切換排版方向與連線演算法，每條邊示範一種箭頭或線條樣式，標籤寫著用到的屬性。ortho 直角連線不支援一般邊標籤，這裡自動改用 xlabel。",
+    hint: "切換方向與連線方式，拖曳層距",
+    async mount(ctx) {
+      ctx.html(`<div class="vz-wrap"><div class="vz-view"></div></div>`);
+      const view = viewer(ctx, ctx.$(".vz-view"));
+      const DIRS = ["TB", "LR", "BT", "RL"];
+      const DIR_ZH = { TB: "由上而下", LR: "由左而右", BT: "由下而上", RL: "由右而左" };
+      const { width, height } = ctx.size();
+      const opt = { rankdir: width > height ? "LR" : "TB", splines: "spline", labels: true, ranksep: 0.5 };
+      const draw = () => {
+        if (!viz) return;
+        const [r, t] = timed(() => viz.render(FLOW_DOT(opt), gvOpts({ format: "svg" })));
+        if (r.status !== "success") return;
+        view.set(parseSvg(r.output));
+        const warn = notes(r.errors).length ? "・Graphviz 有警告" : "";
+        view.tag(`rankdir=${opt.rankdir}（${DIR_ZH[opt.rankdir]}）・splines=${opt.splines}${opt.splines === "ortho" && opt.labels ? "・標籤改用 xlabel" : ""}`);
+        view.info(`${fmtMs(t)}${warn}`);
+      };
+      ctx.group(DIRS, DIRS.indexOf(opt.rankdir), (i) => { opt.rankdir = DIRS[i]; draw(); });
+      ctx.select("連線", [
+        { value: "spline", label: "spline 曲線" }, { value: "polyline", label: "polyline 折線" },
+        { value: "ortho", label: "ortho 直角" }, { value: "line", label: "line 直線" }, { value: "curved", label: "curved 弧線" },
+      ], "spline", (v) => { opt.splines = v; draw(); });
+      ctx.toggle("邊標籤", true, (v) => { opt.labels = v; draw(); });
+      ctx.slider("層距", { min: 0.2, max: 1.4, step: 0.1, value: 0.5, format: (v) => v.toFixed(1) }, (v) => { opt.ranksep = v; draw(); });
+      await ready(ctx);
+      draw();
+    },
+  },
+  {
+    id: "formats", title: "輸出格式", paper: true,
+    api: "viz.renderFormats(dot, [\"svg\", \"json\", \"xdot\", \"plain\", \"dot\"], { engine: \"neato\", yInvert })",
+    desc: "一次排版同時輸出五種格式：左邊是 SVG，右邊是選定格式的原文，可下載成檔案。節點位置用 pos=\"x,y!\" 固定，neato 只負責畫線；打開 y 軸反轉，座標會改成原點在左上角。",
+    hint: "切換輸出格式・下載目前格式",
+    async mount(ctx) {
+      ctx.html(`<div class="vz-wrap"><div class="vz-view vz-top"></div><div class="vz-side vz-out"><div><code class="vz-fmt"></code> <span class="vz-fdesc"></span></div><pre class="vz-pre vz-text"></pre><div class="vz-out-foot"></div></div></div>`);
+      const view = viewer(ctx, ctx.$(".vz-view"));
+      const fmtEl = ctx.$(".vz-fmt"), descEl = ctx.$(".vz-fdesc"), text = ctx.$(".vz-text"), foot = ctx.$(".vz-out-foot");
+      const LIMIT = 9000;
+      let cur = 1, yInvert = false, out = null, ms = 0;
+      const show = () => {
+        const f = FORMATS[cur], s = out[f.id];
+        fmtEl.textContent = f.id;
+        descEl.textContent = f.zh;
+        text.textContent = s.length > LIMIT ? `${s.slice(0, LIMIT)}\n…（以下省略，共 ${fmt(s.length)} 字元）` : s;
+        text.scrollTop = 0;
+        foot.textContent = `${fmt(new Blob([s]).size)} bytes・五種格式共用一次排版 ${fmtMs(ms)}`;
+      };
+      const draw = () => {
+        if (!viz) return;
+        const [r, t] = timed(() => viz.renderFormats(MRT_DOT, FORMATS.map((f) => f.id), gvOpts({ engine: "neato", yInvert })));
+        if (r.status !== "success") return;
+        out = r.output; ms = t;
+        view.set(parseSvg(out.svg));
+        view.tag(yInvert ? "yInvert：原點在左上" : "Graphviz 座標：原點在左下");
+        show();
+      };
+      ctx.group(FORMATS.map((f) => f.id), cur, (i) => { cur = i; if (out) show(); });
+      ctx.toggle("y 軸反轉", false, (v) => { yInvert = v; draw(); });
+      ctx.button("下載目前格式", () => {
+        if (!out) return;
+        const f = FORMATS[cur];
+        download(`捷運轉乘.${f.ext}`, out[f.id], f.type);
+      });
+      await ready(ctx);
+      draw();
+    },
+  },
+  {
+    id: "trace", title: "點選追蹤", paper: true,
+    api: "viz.renderSVGElement({ nodes, edges, subgraphs }) 圖物件輸入・id 屬性對應 SVG 元素",
+    desc: "資訊系課程先修地圖直接用 JavaScript 物件（graph object）輸入，不必拼 DOT 字串；每個節點與邊的 id 屬性會成為 SVG 元素的 id。點一門課，標出相鄰、全部先修或全部後續的課程與連線。",
+    hint: "點任一門課・切換追蹤範圍・點空白處取消",
+    async mount(ctx) {
+      ctx.html(`<div class="vz-wrap"><div class="vz-view vz-trace"></div><div class="vz-side vz-opt"></div></div>`);
+      const view = viewer(ctx, ctx.$(".vz-view"));
+      const side = ctx.$(".vz-side");
+      let sel = COURSE_IDX["資料結構"], mode = 0, dir = "";
+      const names = (set) => [...set].sort((a, b) => a - b).map((i) => COURSES[i][0]);
+      const apply = () => {
+        const svg = view.box.firstElementChild;
+        if (!svg) return;
+        svg.classList.toggle("vz-has", sel >= 0);
+        svg.querySelectorAll(".vz-hi, .vz-sel").forEach((el) => el.classList.remove("vz-hi", "vz-sel"));
+        if (sel < 0) {
+          side.replaceChildren(h("h3", {}, "點一門課"), h("p", {}, "顏色代表年級，箭頭從先修課指向後續課程。"));
+          view.info(`${COURSES.length} 門課・${PREREQ.length} 條先修關係`);
+          return;
+        }
+        const { nodes, edges } = trace(sel, mode);
+        nodes.forEach((i) => svg.querySelector(`#vzc-${i}`)?.classList.add("vz-hi"));
+        edges.forEach((k) => svg.querySelector(`#vze-${k}`)?.classList.add("vz-hi"));
+        svg.querySelector(`#vzc-${sel}`)?.classList.add("vz-sel");
+        const before = trace(sel, 1).nodes, after = trace(sel, 2).nodes;
+        before.delete(sel); after.delete(sel);
+        const direct = (pick) => new Set(PREREQ.filter((e) => e[pick ? 0 : 1] === sel).map((e) => e[pick ? 1 : 0]));
+        const list = (set) => (set.size ? h("div", { class: "vz-list" }, ...names(set).map((n) => h("span", {}, n))) : h("p", {}, "無"));
+        side.replaceChildren(
+          h("h3", {}, COURSES[sel][0], h("span", { class: "vz-pill" }, YEARS[COURSES[sel][1]])),
+          h("p", {}, "直接先修"), list(direct(false)),
+          h("p", {}, "直接後續"), list(direct(true)),
+          h("p", {}, `全部先修 ${before.size} 門・全部後續 ${after.size} 門`),
+        );
+        view.info(`${COURSES[sel][0]}：先修 ${before.size} 門・後續 ${after.size} 門`);
+      };
+      const draw = () => {
+        if (!viz) return;
+        dir = view.wide() ? "LR" : "TB";
+        view.set(viz.renderSVGElement(courseGraph(dir), gvOpts()));
+        apply();
+      };
+      view.onSize = () => { if (viz && (view.wide() ? "LR" : "TB") !== dir) draw(); };
+      ctx.on(view.box, "click", (ev) => {
+        const g = ev.target.closest("g.node");
+        sel = g && g.id.startsWith("vzc-") ? +g.id.slice(4) : -1;
+        apply();
+      });
+      ctx.group(["直接相鄰", "全部先修", "全部後續"], 0, (i) => { mode = i; apply(); });
+      await ready(ctx);
+      draw();
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress", paper: true,
+    api: "viz.renderSVGElement(dot, { engine })・每個引擎各自的節點數級距",
+    desc: "產生 N 個節點的隨機有向圖（一棵樹加上約三成額外的邊），量測選定引擎從排版到 SVG 放進頁面所需時間。換引擎會重建測試級距，右上角累積各引擎的紀錄方便比較。",
+    hint: "選引擎，按「開始測試」，換引擎再測一次比較",
+    async mount(ctx) {
+      ctx.html(`<div class="vz-stress"><div class="vz-view"></div><div class="vz-board"></div></div>`);
+      const view = viewer(ctx, ctx.$(".vz-view"), 1.3);
+      const board = ctx.$(".vz-board");
+      const best = {};
+      let engine = "dot", lab = null;
+      const showBoard = () => {
+        const rows = ENGINES.filter((e) => best[e.id]).map((e) => {
+          const b = best[e.id];
+          return h("tr", {}, h("td", {}, e.id), h("td", {}, b.n ? `${fmt(b.n)} 個` : "未達"), h("td", {}, b.n ? fmtMs(b.ms) : `${fmt(b.first)} 個就 ${fmtMs(b.firstMs)}`));
+        });
+        board.replaceChildren(h("b", {}, "各引擎 1 秒內最大節點數"),
+          rows.length ? h("table", {}, ...rows) : h("p", {}, "測完一個引擎後，結果會留在這裡。"));
+      };
+      const record = (eng, n, ms) => {
+        const b = best[eng] || (best[eng] = { n: 0, ms: 0, first: n, firstMs: ms });
+        if (ms <= 1000 && n >= b.n) { b.n = n; b.ms = ms; }
+        showBoard();
+      };
+      const preview = () => {
+        if (!viz) return;
+        const [svg, t] = timed(() => svgOf({ src: bigGraph(60).src, opts: { engine } }));
+        view.set(svg);
+        view.info(`${engine}・60 個節點預覽・${fmtMs(t)}`);
+      };
+      const makeBench = () => {
+        if (lab) {
+          const stop = lab.panel.querySelector(".row .btn:not(.primary)");
+          if (stop && !stop.disabled) stop.click();
+          lab.panel.parentElement.remove();
+        }
+        const eng = engine;
+        lab = ctx.bench({
+          title: `極限測試：${eng} 節點數`,
+          label: "節點數", unit: "個",
+          sizes: STRESS_SIZES[eng],
+          budget: 2000, target: 1000,
+          prepare: (n) => bigGraph(n),
+          async run(n, data) {
+            const t0 = performance.now();
+            const svg = viz.renderSVGElement(data.src, gvOpts({ engine: eng }));
+            view.set(svg);
+            view.box.getBoundingClientRect();
+            await ctx.frame(1);
+            record(eng, n, performance.now() - t0);
+            view.info(`${eng}・${fmt(n)} 個節點`);
+            return `${fmt(data.edges)} 條邊`;
+          },
+          note: "計時包含 Graphviz 排版、產生 SVG 字串、解析成元素、放進頁面與下一個畫格。各引擎成長速度差很多：circo 與 fdp 的計算量隨節點數急遽上升，neato 次之，dot 的分層與交叉最小化中等，sfdp、twopi、osage、patchwork 接近線性，所以每個引擎的級距不同。Graphviz 以 WebAssembly 在主執行緒同步執行，排版期間頁面會暫停回應。",
+        });
+      };
+      ctx.controls.classList.add("bottom");
+      ctx.select("引擎", ENGINES.map((e) => ({ value: e.id, label: `${e.id}（${e.zh}）` })), "dot", (v) => {
+        engine = v; makeBench(); preview();
+      });
+      showBoard();
+      makeBench();
+      await ready(ctx);
+      preview();
+    },
+  },
+] });
 </script>
 </body>
 </html>

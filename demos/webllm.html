@@ -3,408 +3,631 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>WebLLM 示範：瀏覽器內離線聊天機器人</title>
+<title>WebLLM 示範：七個場景看懂瀏覽器內的語言模型</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"click","needs":["webgpu"],"size":"約 213 MB","note":"SmolLM2 360M 模型在顯示卡上執行，存進瀏覽器快取後可離線聊天；小模型以英文為主"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"click","scenes":["離線聊天","WebGPU 偵測","模型目錄","OpenAI 相容 API","Token 機率","快取管理","極限測試"],"needs":["webgpu"],"size":"約 213 MB","note":"SmolLM2 360M 模型在顯示卡上執行，存進瀏覽器快取後可離線使用；沒有 WebGPU 的環境只能看偵測、模型目錄與快取場景"}</script>
 <style>
-  .app { position: fixed; inset: 0; padding: 12px 14px 46px; display: grid; grid-template-columns: minmax(0, 1fr) 232px; grid-template-rows: auto minmax(0, 1fr) auto; gap: 10px 14px; }
-  header { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; }
-  header h1 { margin: 0 4px 0 0; font-size: 16px; }
-  .chip { font: 400 11px var(--mono); color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
-  .chip.ok { color: var(--c4); border-color: rgba(123, 211, 137, .45); }
-  .chip.bad { color: #ff7b7f; border-color: rgba(229, 72, 77, .55); }
-  .chip[hidden] { display: none; }
-  header .btn { margin-left: auto; padding: 6px 10px; font-size: 12px; }
-  .btn:disabled { opacity: .4; cursor: default; transform: none; }
+  .wl-pad { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 12px calc(var(--sc-ctl-b, 0px) + 10px); box-sizing: border-box; }
+  .sc-scene.scroll > .wl-pad { position: relative; min-height: 100%; }
+  .wl-card { position: relative; min-width: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-2); padding: 12px 14px; }
+  .wl-k { font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .wl-n { font: 600 13px var(--mono); color: var(--fg); }
+  .wl-h { margin: 0 0 8px; font-size: 14px; font-weight: 700; }
 
-  .chat { grid-column: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: radial-gradient(120% 70% at 50% 0%, rgba(76, 201, 240, .08), transparent 60%), var(--bg-2); }
-  .msg { display: flex; gap: 8px; max-width: 88%; animation: rise .25s ease-out both; }
-  .msg.user { align-self: flex-end; }
-  .msg .body { padding: 8px 12px; border-radius: 14px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.55; }
-  .msg.user .body { background: var(--c1); color: #1a1a1a; border-bottom-right-radius: 4px; }
-  .msg.ai .body { background: rgba(255, 255, 255, .05); border: 1px solid var(--line); border-top-left-radius: 4px; min-height: 37px; }
-  .msg.ai.typing .body::after { content: "▍"; color: var(--c2); animation: blink 1s steps(1) infinite; }
-  .msg.ai.err .body { border-color: rgba(229, 72, 77, .6); color: #ffb3b5; }
-  .av { flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font: 700 10px var(--mono); color: #0e1013; background: linear-gradient(135deg, var(--c2), var(--c6)); }
-  .meta { margin-top: 4px; font: 11px var(--mono); color: var(--muted); }
-  @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
-  @keyframes blink { 50% { opacity: 0; } }
+  /* unsupported notice (shared) */
+  .wl-no { max-width: 520px; margin: 0 auto; }
+  .wl-no .ic { font-size: 30px; text-align: center; }
+  .wl-no h2 { margin: 6px 0; font-size: 17px; text-align: center; }
+  .wl-no p { margin: 0 0 8px; font-size: 13px; color: var(--muted); line-height: 1.7; }
+  .wl-no ul { margin: 6px 0 0; padding-left: 20px; font-size: 12.5px; line-height: 1.7; }
+  .wl-no .det { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); font: 11.5px/1.7 var(--mono); color: var(--muted); }
+  .wl-center { display: grid; align-content: center; }
 
-  .empty { margin: auto; max-width: 420px; text-align: center; padding: 4px; }
-  .empty h2 { margin: 14px 0 6px; font-size: 17px; }
-  .empty p { margin: 0; color: var(--muted); font-size: 13px; }
-  .orb { width: 74px; height: 74px; margin: 0 auto; border-radius: 50%; background: conic-gradient(from 0deg, var(--c2), var(--c6), var(--c3), var(--c1), var(--c2)); filter: blur(1px); animation: spin 6s linear infinite; position: relative; }
-  .orb::after { content: "💬"; position: absolute; inset: 9px; border-radius: 50%; background: var(--bg-2); display: grid; place-items: center; font-size: 26px; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .orb.idle { animation-duration: 18s; }
-  .empty.loading h2, .empty.loading p { visibility: hidden; }
-  .warn { text-align: left; max-width: 460px; }
-  .warn .icon { font-size: 30px; text-align: center; }
-  .warn h2 { text-align: center; }
-  .warn ul { margin: 10px 0 0; padding-left: 20px; font-size: 13px; }
-  .warn li { margin: 3px 0; }
+  /* 1. chat */
+  .wl-chatbox { display: grid; grid-template-columns: minmax(0, 1fr) 220px; grid-template-rows: minmax(0, 1fr) auto; gap: 10px 12px; }
+  .wl-chat { min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: radial-gradient(120% 70% at 50% 0%, rgba(76, 201, 240, .08), transparent 60%), var(--bg-2); }
+  .wl-msg { display: flex; gap: 8px; max-width: 88%; }
+  .wl-msg.user { align-self: flex-end; }
+  .wl-msg .body { padding: 8px 12px; border-radius: 14px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.55; }
+  .wl-msg.user .body { background: var(--accent); color: #1a1a1a; border-bottom-right-radius: 4px; }
+  .wl-msg.ai .body { background: rgba(255, 255, 255, .05); border: 1px solid var(--line); border-top-left-radius: 4px; min-height: 37px; }
+  .wl-msg.ai.typing .body::after { content: "▍"; color: var(--c2); animation: wl-blink 1s steps(1) infinite; }
+  .wl-msg.err .body { border-color: rgba(229, 72, 77, .6); color: #ffb3b5; }
+  .wl-av { flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font: 700 10px var(--mono); color: #0e1013; background: linear-gradient(135deg, var(--c2), var(--c6)); }
+  .wl-meta { margin-top: 4px; font: 11px var(--mono); color: var(--muted); }
+  @keyframes wl-blink { 50% { opacity: 0; } }
+  .wl-empty { margin: auto; text-align: center; max-width: 380px; }
+  .wl-empty h2 { margin: 10px 0 6px; font-size: 16px; }
+  .wl-empty p { margin: 0; font-size: 13px; color: var(--muted); }
+  .wl-composer { grid-column: 1; display: grid; gap: 8px; min-width: 0; }
+  .wl-sugs { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+  .wl-sug { flex: none; white-space: nowrap; cursor: pointer; font: 12px var(--font); color: var(--fg); background: transparent; border: 1px solid var(--line); border-radius: 999px; padding: 5px 10px; }
+  .wl-sug:hover:not(:disabled) { border-color: var(--c2); }
+  .wl-sug:disabled { opacity: .4; cursor: default; }
+  .wl-form { display: flex; gap: 8px; margin: 0; }
+  .wl-input { flex: 1; min-width: 0; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg-2); color: var(--fg); font: 14px var(--font); outline: none; }
+  .wl-input:focus { border-color: var(--c2); }
+  .wl-side { grid-column: 2; grid-row: 1 / 3; display: flex; flex-direction: column; gap: 12px; }
+  .wl-speed b { display: block; font: 700 40px/1 var(--mono); color: var(--c2); }
+  .wl-speed span { font-size: 12px; color: var(--muted); }
+  .wl-dl { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 10px; font-size: 12px; }
+  .wl-dl dt { color: var(--muted); }
+  .wl-dl dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+  @media (max-width: 680px) { .wl-chatbox { grid-template-columns: minmax(0, 1fr); } .wl-side { display: none; } .wl-msg { max-width: 94%; } }
 
-  .composer { grid-column: 1; display: grid; gap: 8px; min-width: 0; }
-  .sugs { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent); }
-  .sugs::-webkit-scrollbar { display: none; }
-  .sug { flex: none; white-space: nowrap; cursor: pointer; font: 12px var(--font); color: var(--fg); background: transparent; border: 1px solid var(--line); border-radius: 999px; padding: 5px 10px; transition: border-color .15s, background .15s; }
-  .sug:hover:not(:disabled) { border-color: var(--c2); background: rgba(76, 201, 240, .08); }
-  .sug:disabled { opacity: .4; cursor: default; }
-  form { display: flex; gap: 8px; margin: 0; }
-  #input { flex: 1; min-width: 0; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg-2); outline: none; }
-  #input:focus { border-color: var(--c2); }
-  #input:disabled { opacity: .55; }
-  form .btn { min-width: 64px; }
-  .app.unsupported .sugs { display: none; }
+  /* 2. gpu */
+  .wl-gpu { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-content: start; }
+  .wl-chk { display: grid; grid-template-columns: 1.3em minmax(0, 1fr); gap: 2px 8px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .wl-chk:last-child { border-bottom: 0; }
+  .wl-chk .ic { font: 700 14px var(--mono); }
+  .wl-chk .ic.y { color: var(--c4); } .wl-chk .ic.n { color: var(--c3); } .wl-chk .ic.m { color: var(--c5); }
+  .wl-chk small { grid-column: 2; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+  .wl-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .wl-chip { font: 11px var(--mono); padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .wl-chip.hot { color: #0e1013; background: var(--c4); border-color: var(--c4); font-weight: 700; }
+  .wl-lim { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .wl-lim td { padding: 4px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .wl-lim td:last-child { text-align: right; font-family: var(--mono); white-space: nowrap; padding-left: 8px; }
+  .wl-lim small { display: block; color: var(--muted); font-size: 11px; }
+  @media (max-width: 640px) { .wl-gpu { grid-template-columns: minmax(0, 1fr); } }
 
-  .side { grid-column: 2; grid-row: 2 / 4; display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: hidden; }
-  .speed b { display: block; font: 700 40px/1 var(--mono); color: var(--c2); }
-  .speed span { font-size: 12px; color: var(--muted); }
-  #lastStat { font-size: 12px; color: var(--muted); margin-top: 4px; }
-  dl { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 10px; font-size: 12px; }
-  dt { color: var(--muted); }
-  dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
-  .lock { margin: auto 0 0; font-size: 12px; color: var(--muted); }
+  /* 3. catalog */
+  .wl-sum { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-bottom: 10px; font-size: 12px; color: var(--muted); }
+  .wl-sum b { font: 700 18px var(--mono); color: var(--fg); margin-right: 4px; }
+  .wl-rows { display: grid; gap: 4px; }
+  .wl-row { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(90px, 1fr) 6.2em; gap: 4px 10px; align-items: center; padding: 6px 10px; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); }
+  .wl-row .id { font: 12px var(--mono); overflow-wrap: anywhere; }
+  .wl-row .tags { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px; }
+  .wl-row .tags span { font-size: 10.5px; padding: 1px 6px; border-radius: 5px; background: rgba(127, 127, 127, .16); color: var(--muted); }
+  .wl-row .tags span.f16 { color: var(--c5); } .wl-row .tags span.low { color: var(--c4); } .wl-row .tags span.fn { color: var(--c6); } .wl-row .tags span.no { color: var(--c3); }
+  .wl-row .bar { height: 8px; border-radius: 4px; background: rgba(127, 127, 127, .15); overflow: hidden; }
+  .wl-row .bar i { display: block; height: 100%; background: var(--c2); }
+  .wl-row .v { font: 12px var(--mono); text-align: right; }
+  .wl-row.mine { border-color: var(--accent); }
+  @media (max-width: 520px) { .wl-row { grid-template-columns: minmax(0, 1fr) 5.6em; } .wl-row .bar { display: none; } }
 
-  @media (max-width: 720px) {
-    .app { grid-template-columns: minmax(0, 1fr); padding: 10px 10px 46px; gap: 8px; }
-    .side { display: none; }
-    .chat { padding: 12px 10px; }
-    .msg { max-width: 94%; }
-    .chip.wide { display: none; }
-  }
+  /* 4. openai api */
+  .wl-api { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-content: start; }
+  .wl-code { margin: 0; font: 11.5px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); max-height: none; }
+  .wl-code .s { color: var(--c4); } .wl-code .k { color: var(--c2); } .wl-code .n { color: var(--c5); }
+  @media (max-width: 640px) { .wl-api { grid-template-columns: minmax(0, 1fr); } }
+
+  /* 5. logprobs */
+  .wl-lp { display: grid; gap: 10px; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); align-content: start; }
+  .wl-toks { line-height: 2.1; font: 14px var(--mono); }
+  .wl-toks span { padding: 2px 1px; border-radius: 4px; cursor: pointer; white-space: pre-wrap; color: #0e1013; }
+  .wl-toks span.on { outline: 2px solid var(--fg); }
+  .wl-alt { display: grid; grid-template-columns: minmax(0, 7em) minmax(0, 1fr) 4.2em; gap: 6px 8px; align-items: center; font-size: 12px; }
+  .wl-alt code { font: 12px var(--mono); white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+  .wl-alt .tr { height: 12px; border-radius: 4px; background: rgba(127, 127, 127, .15); overflow: hidden; }
+  .wl-alt .tr i { display: block; height: 100%; background: var(--c6); }
+  .wl-alt .tr i.pick { background: var(--accent); }
+  .wl-alt .v { font: 12px var(--mono); text-align: right; }
+  .wl-legend { display: flex; gap: 6px; align-items: center; font-size: 11px; color: var(--muted); margin-top: 8px; }
+  .wl-legend i { width: 90px; height: 8px; border-radius: 4px; background: linear-gradient(90deg, #f72585, #ff8c42, #7bd389); }
+  @media (max-width: 640px) { .wl-lp { grid-template-columns: minmax(0, 1fr); } }
+
+  /* 6. cache */
+  .wl-cache { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-content: start; }
+  .wl-meter { height: 12px; border-radius: 6px; background: rgba(127, 127, 127, .15); overflow: hidden; margin: 8px 0 4px; }
+  .wl-meter i { display: block; height: 100%; background: var(--c2); min-width: 2px; }
+  .wl-list { display: grid; gap: 6px; margin-top: 6px; }
+  .wl-item { display: flex; gap: 8px; align-items: center; justify-content: space-between; font-size: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .wl-item:last-child { border-bottom: 0; }
+  .wl-item code { font: 11.5px var(--mono); overflow-wrap: anywhere; }
+  .wl-item .btn { padding: 3px 9px; font-size: 12px; flex: none; }
+  @media (max-width: 640px) { .wl-cache { grid-template-columns: minmax(0, 1fr); } }
+
+  /* 7. stress */
+  .wl-stress { position: absolute; inset: 8px 8px 8px 350px; }
+  .wl-stress canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .wl-panel { position: absolute; left: 8px; top: 8px; width: 326px; max-width: calc(100% - 16px); z-index: 5; }
+  .wl-panel .btn { margin-top: 10px; }
+  .wl-panel p { margin: 8px 0 0; font-size: 12.5px; line-height: 1.7; color: var(--muted); }
+  .wl-panel .bad { color: #ff7b7f; font-weight: 700; }
+  @media (max-width: 760px) { .wl-stress { inset: 8px; opacity: .9; } }
 </style>
 </head>
 <body>
-<div class="app" id="app">
-  <header>
-    <h1>離線聊天機器人</h1>
-    <span class="chip wide">SmolLM2 360M・4-bit</span>
-    <span class="chip" id="chipGpu">WebGPU</span>
-    <span class="chip ok" id="chipCache" hidden>可離線</span>
-    <button class="btn" id="resetBtn" disabled>新對話</button>
-  </header>
-  <div class="chat" id="chat">
-    <div class="empty" id="empty">
-      <div class="orb idle"></div>
-      <h2 id="emptyTitle">裝在瀏覽器裡的 AI 聊天</h2>
-      <p id="emptyText">模型下載一次就存進瀏覽器快取，之後斷網也能對話，所有運算都在你的顯示卡上。</p>
-    </div>
-  </div>
-  <div class="composer">
-    <div class="sugs" id="sugs"></div>
-    <form id="form" autocomplete="off">
-      <input id="input" maxlength="500" placeholder="用英文輸入訊息，按 Enter 送出" aria-label="訊息" disabled>
-      <button class="btn primary" id="sendBtn" type="submit" disabled>送出</button>
-    </form>
-  </div>
-  <aside class="side panel">
-    <div class="speed"><b id="tps">--</b><span>tokens／秒（產生速度）</span><div id="lastStat">還沒有回覆</div></div>
-    <dl>
-      <dt>模型</dt><dd>SmolLM2 360M Instruct</dd>
-      <dt>量化</dt><dd id="quant">4-bit</dd>
-      <dt>下載量</dt><dd>約 213 MB</dd>
-      <dt>顯示記憶體</dt><dd id="vram">約 380 MB</dd>
-      <dt>GPU</dt><dd id="gpu">尚未偵測</dd>
-      <dt>快取</dt><dd id="cache">尚未下載</dd>
-    </dl>
-    <p class="lock">🔒 推論都在這台裝置上執行，對話內容不會上傳到伺服器。</p>
-  </aside>
-</div>
-<div class="hint">點下方題目或用英文提問，回覆會逐字串流出現</div>
-
-<script src="_shared/gate.js"></script>
-<script type="module">
-// WebLLM: run SmolLM2-360M-Instruct (4-bit, MLC prebuilt) on WebGPU with an OpenAI-style streaming chat API.
+<script src="_shared/showcase.js"></script>
+<script>
+// WebLLM showcase: real WebGPU detection, the prebuilt model catalog, cache management, and (with WebGPU)
+// streaming chat, the OpenAI-compatible API, token logprobs and a prefill/decode benchmark on SmolLM2-360M.
+// Without a usable WebGPU adapter, the model scenes say so and never produce placeholder output.
 const WEBLLM_URL = "https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.85/+esm";
-// Same 4-bit weights; the f16 build needs the shader-f16 GPU feature and uses less VRAM.
 const MODELS = {
-  f16: { id: "SmolLM2-360M-Instruct-q4f16_1-MLC", quant: "4-bit（q4f16_1）", vram: "約 380 MB" },
-  f32: { id: "SmolLM2-360M-Instruct-q4f32_1-MLC", quant: "4-bit（q4f32_1）", vram: "約 580 MB" },
+  f16: { id: "SmolLM2-360M-Instruct-q4f16_1-MLC", quant: "4-bit（q4f16_1）" },
+  f32: { id: "SmolLM2-360M-Instruct-q4f32_1-MLC", quant: "4-bit（q4f32_1）" },
 };
-const SYSTEM = "You are a friendly assistant running fully offline inside a web browser. Reply in English, clearly and briefly (under 120 words).";
-const SUGGESTIONS = [
-  { label: "🌧️ 寫一首台北雨天短詩", prompt: "Write a short poem about a rainy afternoon in Taipei." },
-  { label: "🧋 發想三種夏季手搖飲", prompt: "Invent three refreshing bubble tea flavors for summer, one line each." },
-  { label: "🧠 兩句話解釋 WebGPU", prompt: "Explain what WebGPU is in two simple sentences." },
-  { label: "🗺️ 規劃台南美食一日遊", prompt: "Plan a simple one-day food trip in Tainan, Taiwan." },
-  { label: "✉️ 寫一封請假信", prompt: "Write a short, polite email asking my manager for a day off tomorrow." },
-];
-const UNSUPPORTED = {
-  api: {
-    title: "這個瀏覽器沒有 WebGPU",
-    text: "WebLLM 要透過 WebGPU 讓顯示卡執行語言模型，目前的瀏覽器沒有提供這個功能，所以無法啟動。",
-  },
-  adapter: {
-    title: "瀏覽器拿不到可用的顯示卡",
-    text: "瀏覽器支援 WebGPU，但沒有取得顯示卡，可能是硬體加速被關閉、驅動程式太舊，或顯示卡在瀏覽器的封鎖清單上。",
-  },
-};
-const TIPS = [
-  "改用 Chrome 或 Edge 113 以上（Windows、macOS、ChromeOS）",
-  "Android 手機用 Chrome 121 以上，iPhone、Mac 用 Safari 26 以上",
-  "確認瀏覽器設定裡的「使用圖形加速功能」已開啟",
-  "顯示卡需要約 400 MB 以上可用記憶體",
-];
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const mb = (bytes) => `${Showcase.fmt(Math.round(bytes / 1048576))} MB`;
 
-const $ = (id) => document.getElementById(id);
-const chat = $("chat");
-const input = $("input");
-const sendBtn = $("sendBtn");
-const resetBtn = $("resetBtn");
-
-let engine = null;
-let history = [];
-let busy = false;
-
-for (const s of SUGGESTIONS) {
-  const b = document.createElement("button");
-  b.className = "sug";
-  b.type = "button";
-  b.textContent = s.label;
-  b.disabled = true;
-  b.addEventListener("click", () => send(s.prompt));
-  $("sugs").append(b);
-}
-
-function setReady(ready) {
-  input.disabled = !ready;
-  resetBtn.disabled = !ready;
-  sendBtn.disabled = !ready;
-  for (const b of $("sugs").children) b.disabled = !ready || busy;
-}
-
-function setBusy(on) {
-  busy = on;
-  sendBtn.textContent = on ? "停止" : "送出";
-  sendBtn.classList.toggle("primary", !on);
-  input.disabled = on;
-  resetBtn.disabled = on;
-  for (const b of $("sugs").children) b.disabled = on;
-}
-
-// While loading, the status overlay replaces the empty-state text and the orb spins faster
-function setLoading(on) {
-  $("empty").classList.toggle("loading", on);
-  document.querySelector(".orb").classList.toggle("idle", !on);
-}
-
-function setEmpty(title, text) {
-  $("emptyTitle").textContent = title;
-  $("emptyText").textContent = text;
-}
-
-function showUnsupported(reason) {
-  const info = UNSUPPORTED[reason];
-  $("app").classList.add("unsupported");
-  $("chipGpu").textContent = "WebGPU 不支援";
-  $("chipGpu").classList.add("bad");
-  $("gpu").textContent = "不支援";
-  input.placeholder = "這個瀏覽器無法執行";
-  const box = $("empty");
-  box.className = "empty warn";
-  box.replaceChildren();
-  const icon = document.createElement("div");
-  icon.className = "icon";
-  icon.textContent = "⚠️";
-  const h = document.createElement("h2");
-  h.textContent = info.title;
-  const p = document.createElement("p");
-  p.textContent = info.text;
-  const ul = document.createElement("ul");
-  for (const t of TIPS) {
-    const li = document.createElement("li");
-    li.textContent = t;
-    ul.append(li);
-  }
-  box.append(icon, h, p, ul);
-}
-
-async function probeGpu() {
+// ---------- shared: WebGPU probe ----------
+let gpuPromise;
+const probeGpu = () => (gpuPromise ||= (async () => {
   if (!navigator.gpu) return { ok: false, reason: "api" };
-  let adapter = null;
-  try {
-    adapter = await navigator.gpu.requestAdapter();
-  } catch (err) {
-    console.warn(err);
-  }
-  if (!adapter) return { ok: false, reason: "adapter" };
+  let adapter = null, err = "";
+  try { adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" }); } catch (e) { err = e.message; }
+  if (!adapter) return { ok: false, reason: "adapter", err };
   const info = adapter.info || {};
-  return { ok: true, f16: adapter.features.has("shader-f16"), label: [info.vendor, info.architecture].filter(Boolean).join(" ") };
+  return { ok: true, adapter, info, f16: adapter.features.has("shader-f16"), label: [info.vendor, info.architecture].filter(Boolean).join(" ") || "WebGPU" };
+})());
+
+function unsupportedHtml(gpu, what) {
+  const title = gpu.reason === "api" ? "此環境不支援 WebGPU" : "此環境拿不到可用的 WebGPU 顯示卡";
+  const why = gpu.reason === "api"
+    ? "瀏覽器沒有 navigator.gpu。WebLLM 只能透過 WebGPU 在顯示卡上執行模型，沒有 CPU 版本。"
+    : "瀏覽器有 navigator.gpu，但 requestAdapter() 回傳 null：可能是硬體加速被關閉、驅動程式太舊、顯示卡在封鎖清單上，或是無頭（headless）瀏覽器。";
+  return `<div class="wl-card wl-no">
+    <div class="ic">⚠️</div><h2>${title}</h2>
+    <p>${why}${what ? `因此無法${what}，這裡不顯示任何模擬或假造的輸出。` : ""}</p>
+    <ul><li>改用 Chrome 或 Edge 113 以上（Windows、macOS、ChromeOS）</li><li>Android 用 Chrome 121 以上；iPhone、Mac 用 Safari 26 以上</li><li>確認瀏覽器設定的「使用圖形加速功能」已開啟</li><li>顯示卡需要約 400 MB 以上可用記憶體</li></ul>
+    <div class="det">navigator.gpu：${navigator.gpu ? "有" : "無"}・requestAdapter()：${gpu.reason === "api" ? "無法呼叫" : "null"}${gpu.err ? `・${esc(gpu.err)}` : ""}</div>
+  </div>`;
 }
 
-// Map WebLLM's English progress text to Traditional Chinese status lines
+// ---------- shared: library + engine ----------
+let lib = null, libPromise = null, engine = null, enginePromise = null, engineModel = null;
+const progressSubs = new Set();
+const loadLib = () => (libPromise ||= import(WEBLLM_URL).then((m) => (lib = m), (e) => { libPromise = null; throw e; }));
+
+async function needLib(ctx) {
+  if (lib) return lib;
+  if (!libPromise) {
+    await ctx.gate({ icon: "📦", title: "載入 WebLLM 函式庫", desc: "只下載函式庫本身，不下載任何模型。這個場景不需要 WebGPU。", tags: ["約 6 MB JavaScript", "不含模型"], button: "載入函式庫" });
+  }
+  const st = ctx.status("載入 WebLLM 函式庫…");
+  try { await loadLib(); } catch (e) { st.error(`函式庫載入失敗：${e.message}`); return null; }
+  st.done();
+  return lib;
+}
+
+// Map WebLLM's English progress text to Traditional Chinese status lines.
 function onProgress(status, report) {
   const t = report.text || "";
   let m;
-  if ((m = t.match(/^Fetching param cache.*?(\d+)MB fetched\. (\d+)%/))) {
-    status.text(`下載模型權重中… ${m[1]} MB（${m[2]}%）`);
-    status.progress(report.progress);
-  } else if ((m = t.match(/^Loading model from cache.*?(\d+)%/))) {
-    status.text(`從瀏覽器快取載入模型… ${m[1]}%`);
-    status.progress(report.progress);
-  } else if ((m = t.match(/^Loading GPU shader modules.*?(\d+)%/))) {
-    status.text(`編譯 GPU 著色器… ${m[1]}%`);
-    status.progress(report.progress);
-  } else if (/^Start to fetch params/.test(t)) {
-    status.text("準備下載模型權重…");
-    status.progress(0);
-  }
+  if ((m = t.match(/^Fetching param cache.*?(\d+)MB fetched\. (\d+)%/))) status.text(`下載模型權重中… ${m[1]} MB（${m[2]}%）`);
+  else if ((m = t.match(/^Loading model from cache.*?(\d+)%/))) status.text(`從瀏覽器快取載入模型… ${m[1]}%`);
+  else if ((m = t.match(/^Loading GPU shader modules.*?(\d+)%/))) status.text(`編譯 GPU 著色器… ${m[1]}%`);
+  else if (/^Start to fetch params/.test(t)) status.text("準備下載模型權重…");
+  if (typeof report.progress === "number") status.progress(report.progress);
 }
 
-function addMessage(role, text) {
-  const row = document.createElement("div");
-  row.className = `msg ${role}`;
-  const body = document.createElement("div");
-  body.className = "body";
-  body.textContent = text;
-  const meta = document.createElement("div");
-  meta.className = "meta";
-  if (role === "ai") {
-    const av = document.createElement("div");
-    av.className = "av";
-    av.textContent = "AI";
-    const col = document.createElement("div");
-    col.append(body);
-    row.append(av, col);
-    col.append(meta);
-  } else {
-    row.append(body);
-  }
-  chat.append(row);
-  chat.scrollTop = chat.scrollHeight;
-  return { row, body, meta };
-}
-
-const FINISH_NOTE = { abort: "・已停止", length: "・達長度上限" };
-
-function showStats(meta, usage, finish) {
-  const extra = usage && usage.extra;
-  if (!extra) return;
-  const tps = extra.decode_tokens_per_s;
-  const ttft = extra.time_to_first_token_s;
-  meta.textContent = `${usage.completion_tokens} tokens・${tps.toFixed(1)} tokens/秒・首字 ${ttft.toFixed(2)} 秒${FINISH_NOTE[finish] || ""}`;
-  $("tps").textContent = tps.toFixed(1);
-  $("lastStat").textContent = `上一則：${usage.completion_tokens} tokens，首字 ${ttft.toFixed(2)} 秒`;
-}
-
-async function send(text) {
-  const prompt = text.trim();
-  if (!engine || busy || !prompt) return;
-  const empty = $("empty");
-  if (empty) empty.remove();
-  input.value = "";
-  setBusy(true);
-  addMessage("user", prompt);
-  history = [...history, { role: "user", content: prompt }];
-  const reply = addMessage("ai", "");
-  reply.row.classList.add("typing");
-  let answer = "";
-  let usage = null;
-  let finish = "";
-  try {
-    const stream = await engine.chat.completions.create({
-      messages: [{ role: "system", content: SYSTEM }, ...history],
-      stream: true,
-      stream_options: { include_usage: true },
-      temperature: 0.7,
-      max_tokens: 320,
-    });
-    for await (const chunk of stream) {
-      const choice = chunk.choices[0];
-      const delta = (choice && choice.delta.content) || "";
-      if (choice && choice.finish_reason) finish = choice.finish_reason;
-      if (delta) {
-        answer += delta;
-        reply.body.textContent = answer;
-        chat.scrollTop = chat.scrollHeight;
-      }
-      if (chunk.usage) usage = chunk.usage;
-    }
-    history = [...history, { role: "assistant", content: answer }];
-    if (!answer) reply.body.textContent = "（已停止）";
-    showStats(reply.meta, usage, finish);
-  } catch (err) {
-    console.warn(err);
-    history = history.slice(0, -1);
-    reply.row.classList.add("err");
-    reply.body.textContent = /context/i.test(err.message)
-      ? "對話超過模型能記住的長度，請按「新對話」重新開始。"
-      : `產生失敗：${err.message}`;
-  }
-  reply.row.classList.remove("typing");
-  setBusy(false);
-  input.focus();
-}
-
-$("form").addEventListener("submit", (e) => {
-  e.preventDefault();
-  if (busy) engine.interruptGenerate();
-  else send(input.value);
-});
-
-resetBtn.addEventListener("click", async () => {
-  if (busy) return;
-  await engine.resetChat();
-  history = [];
-  $("tps").textContent = "--";
-  $("lastStat").textContent = "還沒有回覆";
-  chat.replaceChildren();
-  const box = document.createElement("div");
-  box.className = "empty";
-  box.id = "empty";
-  box.innerHTML = '<div class="orb idle"></div><h2 id="emptyTitle"></h2><p id="emptyText"></p>';
-  chat.append(box);
-  setEmpty("新對話已開始", "點下方題目，或用英文輸入想問的事。");
-});
-
-async function main() {
-  await demoGate({
-    icon: "💬",
-    title: "瀏覽器內的離線聊天機器人",
-    desc: "按下後下載 SmolLM2 360M 語言模型並用顯示卡執行。模型會存進瀏覽器快取，之後斷網也能聊天，對話不會上傳。",
-    tags: ["需要 WebGPU", "約 213 MB", "英文對話"],
-    button: "下載模型並開始",
-  });
-
+// Returns { engine } when ready, { gpu } when WebGPU is unavailable, or { failed } after a load error.
+async function needEngine(ctx) {
   const gpu = await probeGpu();
-  if (!gpu.ok) {
-    showUnsupported(gpu.reason);
-    return;
+  if (!gpu.ok) return { gpu };
+  if (engine) return { engine };
+  if (!enginePromise) {
+    await ctx.gate({ icon: "💬", title: "下載語言模型", desc: "SmolLM2 360M Instruct（4-bit 量化）在你的顯示卡上執行。模型存進瀏覽器快取，之後可離線使用，對話不會上傳。", tags: ["需要 WebGPU", "模型約 213 MB", "函式庫約 6 MB"], button: "下載模型並開始" });
+    if (!enginePromise) {
+      const model = gpu.f16 ? MODELS.f16 : MODELS.f32;
+      enginePromise = loadLib()
+        .then((l) => l.CreateMLCEngine(model.id, { initProgressCallback: (r) => progressSubs.forEach((f) => f(r)) }))
+        .then((e) => { engine = e; engineModel = model; return e; }, (e) => { enginePromise = null; throw e; });
+    }
   }
-  const model = gpu.f16 ? MODELS.f16 : MODELS.f32;
-  $("quant").textContent = model.quant;
-  $("vram").textContent = model.vram;
-  $("gpu").textContent = gpu.label || "WebGPU";
-  setLoading(true);
-
-  const status = demoStatus("載入 WebLLM…");
-  try {
-    const webllm = await import(WEBLLM_URL);
-    const cached = await webllm.hasModelInCache(model.id);
-    status.text(cached ? "從瀏覽器快取載入模型…" : "下載模型中…");
-    engine = await webllm.CreateMLCEngine(model.id, { initProgressCallback: (r) => onProgress(status, r) });
-    status.done();
-    const stored = await webllm.hasModelInCache(model.id);
-    $("cache").textContent = stored ? "已存入，可離線使用" : "未快取";
-    $("chipCache").hidden = !stored;
-  } catch (err) {
-    console.warn(err);
-    // Hide the empty state so the error box is the only message
-    $("empty").hidden = true;
-    status.error(`模型載入失敗（可能是網路中斷或顯示卡記憶體不足），重新整理頁面可再試一次。原因：${err.message}`);
-    $("chipGpu").textContent = "載入失敗";
-    $("chipGpu").classList.add("bad");
-    return;
-  }
-  setLoading(false);
-  setEmpty("模型就緒，開始聊天吧", "這個 360M 小模型以英文為主，點下方題目或用英文提問。");
-  setReady(true);
-  input.focus();
+  const st = ctx.status(lib ? "載入模型…" : "載入 WebLLM 函式庫…");
+  const sub = (r) => onProgress(st, r);
+  progressSubs.add(sub);
+  try { await enginePromise; } catch (e) {
+    st.error(`模型載入失敗（可能是網路中斷或顯示卡記憶體不足），切換場景可再試一次。原因：${e.message}`);
+    return { failed: true };
+  } finally { progressSubs.delete(sub); }
+  st.done();
+  return { engine };
 }
 
-main();
+// One generation at a time on the shared engine.
+let lock = Promise.resolve();
+function exclusive(fn) { const p = lock.then(fn); lock = p.catch(() => {}); return p; }
+function guard(ctx) { ctx.onCleanup(() => { if (engine) engine.interruptGenerate(); }); }
+
+function jsonHtml(obj) {
+  const s = JSON.stringify(obj, null, 2);
+  return esc(s).replace(/(&quot;(?:[^&]|&(?!quot;))*?&quot;)(\s*:)?|\b(-?\d+(?:\.\d+)?(?:e[+-]?\d+)?)\b|\b(true|false|null)\b/g, (m, str, colon, num, lit) => {
+    if (str) return colon ? `<span class="k">${str}</span>${colon}` : `<span class="s">${str}</span>`;
+    if (num) return `<span class="n">${num}</span>`;
+    return `<span class="n">${lit}</span>`;
+  });
+}
+
+Showcase.run({ scenes: [
+  {
+    id: "chat", title: "離線聊天",
+    api: "engine.chat.completions.create({ messages, stream: true, stream_options: { include_usage: true } })",
+    desc: "原示範的聊天機器人：模型在 WebGPU 上逐字產生，串流的最後一個 chunk 帶 usage，裡面的 extra.decode_tokens_per_s 就是右側的產生速度。",
+    hint: "點題目或用英文提問，回覆會逐字串流出現",
+    async mount(ctx) {
+      ctx.html(`<div class="wl-pad wl-center"></div>`);
+      const res = await needEngine(ctx);
+      if (res.gpu) { ctx.el.classList.add("scroll"); ctx.$(".wl-pad").innerHTML = unsupportedHtml(res.gpu, "下載與執行模型"); return; }
+      if (!res.engine) return;
+      guard(ctx);
+      const gpu = await probeGpu();
+      const SYSTEM = "You are a friendly assistant running fully offline inside a web browser. Reply in English, clearly and briefly (under 120 words).";
+      const SUGS = [
+        ["🌧️ 寫一首台北雨天短詩", "Write a short poem about a rainy afternoon in Taipei."],
+        ["🧋 發想三種夏季手搖飲", "Invent three refreshing bubble tea flavors for summer, one line each."],
+        ["🧠 兩句話解釋 WebGPU", "Explain what WebGPU is in two simple sentences."],
+        ["🗺️ 規劃台南美食一日遊", "Plan a simple one-day food trip in Tainan, Taiwan."],
+      ];
+      const pad = ctx.$(".wl-pad");
+      pad.classList.remove("wl-center");
+      pad.classList.add("wl-chatbox");
+      pad.innerHTML = `
+        <div class="wl-chat"><div class="wl-empty"><h2>模型就緒，開始聊天吧</h2><p>這個 360M 小模型以英文為主，點下方題目或用英文提問。</p></div></div>
+        <div class="wl-composer">
+          <div class="wl-sugs">${SUGS.map(([l], i) => `<button class="wl-sug" type="button" data-i="${i}">${l}</button>`).join("")}</div>
+          <form class="wl-form" autocomplete="off"><input class="wl-input" maxlength="500" placeholder="用英文輸入訊息，按 Enter 送出" aria-label="訊息"><button class="btn primary send" type="submit">送出</button></form>
+        </div>
+        <aside class="wl-side wl-card">
+          <div class="wl-speed"><b class="tps">--</b><span>tokens／秒（產生速度）</span><div class="wl-k last">還沒有回覆</div></div>
+          <dl class="wl-dl"><dt>模型</dt><dd>SmolLM2 360M</dd><dt>量化</dt><dd>${engineModel.quant}</dd><dt>下載量</dt><dd>約 213 MB</dd><dt>GPU</dt><dd>${esc(gpu.label)}</dd></dl>
+          <p class="wl-k" style="margin:auto 0 0">🔒 推論都在這台裝置上執行，對話內容不會上傳。</p>
+        </aside>`;
+      const chat = ctx.$(".wl-chat"), input = ctx.$(".wl-input"), sendBtn = ctx.$(".send");
+      let history = [], busy = false;
+      const add = (role, text) => {
+        const body = Showcase.h("div", { class: "body", text });
+        const meta = Showcase.h("div", { class: "wl-meta" });
+        const row = role === "ai" ? Showcase.h("div", { class: "wl-msg ai" }, Showcase.h("div", { class: "wl-av", text: "AI" }), Showcase.h("div", {}, body, meta)) : Showcase.h("div", { class: "wl-msg user" }, body);
+        chat.append(row); chat.scrollTop = chat.scrollHeight;
+        return { row, body, meta };
+      };
+      const setBusy = (on) => { busy = on; sendBtn.textContent = on ? "停止" : "送出"; input.disabled = on; ctx.$$(".wl-sug").forEach((b) => { b.disabled = on; }); };
+      const send = (text) => exclusive(async () => {
+        const prompt = text.trim();
+        if (busy || !prompt || !ctx.active) return;
+        ctx.$(".wl-empty")?.remove();
+        input.value = "";
+        setBusy(true);
+        add("user", prompt);
+        history = [...history, { role: "user", content: prompt }];
+        const reply = add("ai", "");
+        reply.row.classList.add("typing");
+        let answer = "", usage = null, finish = "";
+        try {
+          const stream = await engine.chat.completions.create({ messages: [{ role: "system", content: SYSTEM }, ...history], stream: true, stream_options: { include_usage: true }, temperature: 0.7, max_tokens: 320 });
+          for await (const chunk of stream) {
+            const c = chunk.choices[0];
+            if (c?.finish_reason) finish = c.finish_reason;
+            if (c?.delta?.content) { answer += c.delta.content; reply.body.textContent = answer; chat.scrollTop = chat.scrollHeight; }
+            if (chunk.usage) usage = chunk.usage;
+          }
+          history = [...history, { role: "assistant", content: answer }];
+          if (!answer) reply.body.textContent = "（已停止）";
+          const x = usage?.extra;
+          if (x) {
+            reply.meta.textContent = `${usage.completion_tokens} tokens・${x.decode_tokens_per_s.toFixed(1)} tokens/秒・首字 ${x.time_to_first_token_s.toFixed(2)} 秒${finish === "abort" ? "・已停止" : finish === "length" ? "・達長度上限" : ""}`;
+            ctx.$(".tps").textContent = x.decode_tokens_per_s.toFixed(1);
+            ctx.$(".last").textContent = `上一則：${usage.completion_tokens} tokens，首字 ${x.time_to_first_token_s.toFixed(2)} 秒`;
+          }
+        } catch (err) {
+          history = history.slice(0, -1);
+          reply.row.classList.add("err");
+          reply.body.textContent = /context/i.test(err.message) ? "對話超過模型能記住的長度，請按「新對話」重新開始。" : `產生失敗：${err.message}`;
+        }
+        reply.row.classList.remove("typing");
+        if (ctx.active) { setBusy(false); input.focus(); }
+      });
+      ctx.on(ctx.$(".wl-form"), "submit", (e) => { e.preventDefault(); if (busy) engine.interruptGenerate(); else send(input.value); });
+      ctx.$$(".wl-sug").forEach((b) => ctx.on(b, "click", () => send(SUGS[+b.dataset.i][1])));
+      ctx.button("新對話", () => {
+        if (busy) return;
+        history = [];
+        chat.innerHTML = `<div class="wl-empty"><h2>新對話已開始</h2><p>點下方題目，或用英文輸入想問的事。</p></div>`;
+        ctx.$(".tps").textContent = "--"; ctx.$(".last").textContent = "還沒有回覆";
+      });
+    },
+  },
+  {
+    id: "gpu", title: "WebGPU 偵測",
+    api: "navigator.gpu.requestAdapter() → adapter.info / features / limits",
+    desc: "WebLLM 的前置檢查：有沒有 navigator.gpu、拿不拿得到 adapter、支不支援 shader-f16（決定用 q4f16 還是 q4f32 版本），以及單一 storage buffer 能多大（決定能載入多大的模型）。全部是這台裝置的實際讀值。",
+    hint: "這個場景不下載任何東西",
+    async mount(ctx) {
+      ctx.el.classList.add("scroll");
+      ctx.html(`<div class="wl-pad wl-gpu"><div class="wl-card chk"></div><div class="wl-card lim"></div></div>`);
+      const gpu = await probeGpu();
+      if (!ctx.active) return;
+      const row = (ok, title, note) => `<div class="wl-chk"><span class="ic ${ok === true ? "y" : ok === false ? "n" : "m"}">${ok === true ? "✓" : ok === false ? "✕" : "!"}</span><span>${title}</span><small>${note}</small></div>`;
+      const wgsl = navigator.gpu?.wgslLanguageFeatures ? [...navigator.gpu.wgslLanguageFeatures] : [];
+      const a = gpu.adapter;
+      const info = gpu.info || {};
+      ctx.$(".chk").innerHTML = `<h3 class="wl-h">WebLLM 需求檢查</h3>` + [
+        row(!!navigator.gpu, "navigator.gpu", navigator.gpu ? `瀏覽器提供 WebGPU API。偏好的畫布格式：<code>${navigator.gpu.getPreferredCanvasFormat()}</code>` : "瀏覽器沒有 WebGPU API，WebLLM 無法執行。"),
+        row(gpu.ok ? true : navigator.gpu ? false : null, "requestAdapter()", gpu.ok ? `廠商 <code>${esc(info.vendor || "未提供")}</code>・架構 <code>${esc(info.architecture || "未提供")}</code>${info.description ? `・${esc(info.description)}` : ""}${info.isFallbackAdapter ? "・這是軟體模擬的 fallback adapter，速度會很慢" : ""}` : navigator.gpu ? `回傳 null${gpu.err ? `（${esc(gpu.err)}）` : ""}：瀏覽器拿不到可用的顯示卡。` : "無法呼叫。"),
+        row(gpu.ok ? gpu.f16 : null, "shader-f16", gpu.ok ? (gpu.f16 ? "支援。WebLLM 會選 q4f16_1 版本（權重解壓成 16 位元，較省顯示記憶體）。" : "不支援。只能用 q4f32_1 版本，顯示記憶體需求較高。") : "需要 adapter 才能查詢。"),
+        row(gpu.ok ? a.limits.maxStorageBufferBindingSize >= 128 * 1048576 : null, "maxStorageBufferBindingSize", gpu.ok ? `${mb(a.limits.maxStorageBufferBindingSize)}。WebLLM 把權重切片放進 storage buffer，這個上限太小時大模型會載入失敗。` : "需要 adapter 才能查詢。"),
+        row(wgsl.length ? true : null, "WGSL 語言功能", wgsl.length ? `<span class="wl-chips">${wgsl.map((f) => `<span class="wl-chip">${esc(f)}</span>`).join("")}</span>` : "瀏覽器沒有回報 wgslLanguageFeatures。"),
+      ].join("");
+      if (!gpu.ok) {
+        ctx.$(".lim").innerHTML = `<h3 class="wl-h">adapter 限制與功能</h3><p class="wl-k">沒有 adapter，因此沒有 features 與 limits 可讀。這裡不填任何預設值或推測值。</p><p class="wl-k">在支援 WebGPU 的瀏覽器開啟此頁，這裡會列出 maxBufferSize、maxComputeWorkgroupStorageSize 等實際上限，以及 shader-f16、timestamp-query 等功能。</p>`;
+        return;
+      }
+      const LIMITS = [
+        ["maxBufferSize", "單一 GPU buffer 上限", true],
+        ["maxStorageBufferBindingSize", "單一 storage buffer 綁定上限", true],
+        ["maxComputeWorkgroupStorageSize", "workgroup 共用記憶體（矩陣乘法分塊用）", true],
+        ["maxComputeInvocationsPerWorkgroup", "每個 workgroup 的執行緒數", false],
+        ["maxComputeWorkgroupSizeX", "workgroup X 方向大小", false],
+        ["maxStorageBuffersPerShaderStage", "每個 shader 可綁的 storage buffer 數", false],
+      ];
+      const feats = [...a.features].sort();
+      ctx.$(".lim").innerHTML = `<h3 class="wl-h">adapter 限制與功能</h3>
+        <table class="wl-lim">${LIMITS.map(([k, note, bytes]) => `<tr><td><code>${k}</code><small>${note}</small></td><td>${bytes && a.limits[k] >= 1048576 ? mb(a.limits[k]) : Showcase.fmt(a.limits[k])}</td></tr>`).join("")}</table>
+        <p class="wl-k" style="margin:10px 0 6px">features（${feats.length} 項，WebLLM 會用到的標亮）</p>
+        <div class="wl-chips">${feats.map((f) => `<span class="wl-chip ${f === "shader-f16" || f === "subgroups" ? "hot" : ""}">${esc(f)}</span>`).join("")}</div>`;
+    },
+  },
+  {
+    id: "catalog", title: "模型目錄",
+    api: "webllm.prebuiltAppConfig.model_list",
+    desc: "WebLLM 內建一份預先編譯好的模型清單，每筆都寫明顯示記憶體需求、context 長度、是否適合低資源裝置、是否需要 shader-f16。這裡讀出這份清單，並對照這台裝置的 WebGPU 能力標出能不能跑。",
+    hint: "切換篩選條件或排序",
+    async mount(ctx) {
+      ctx.el.classList.add("scroll");
+      ctx.html(`<div class="wl-pad"></div>`);
+      const l = await needLib(ctx);
+      if (!l || !ctx.active) return;
+      const gpu = await probeGpu();
+      const list = l.prebuiltAppConfig.model_list;
+      const fn = new Set(l.functionCallingModelIds || []);
+      const maxVram = Math.max(...list.map((m) => m.vram_required_MB || 0));
+      let filter = "all", sort = "vram";
+      const FILTERS = { all: "全部", low: "低資源可用", f16: "需要 shader-f16", fn: "支援函式呼叫", embed: "向量嵌入模型" };
+      const isEmbed = (m) => m.model_type === l.ModelType?.embedding || /embed/i.test(m.model_id);
+      const verdict = (m) => {
+        if (!gpu.ok) return { cls: "no", text: "無 WebGPU" };
+        if ((m.required_features || []).includes("shader-f16") && !gpu.f16) return { cls: "no", text: "缺 shader-f16" };
+        return { cls: "low", text: "功能符合" };
+      };
+      const render = () => {
+        let rows = list.filter((m) => filter === "all" || (filter === "low" && m.low_resource_required) || (filter === "f16" && (m.required_features || []).includes("shader-f16")) || (filter === "fn" && fn.has(m.model_id)) || (filter === "embed" && isEmbed(m)));
+        rows = [...rows].sort(sort === "vram" ? (a, b) => (a.vram_required_MB || 0) - (b.vram_required_MB || 0) : (a, b) => a.model_id.localeCompare(b.model_id));
+        const families = new Set(list.map((m) => m.model_id.split(/[-_]/)[0]));
+        ctx.$(".wl-pad").innerHTML = `
+          <div class="wl-sum"><span><b>${list.length}</b>個預建模型</span><span><b>${families.size}</b>個模型家族</span><span><b>${list.filter((m) => m.low_resource_required).length}</b>個低資源可用</span><span><b>${rows.length}</b>筆符合「${FILTERS[filter]}」</span><span>模型版本 <code class="wl-n">${esc(l.modelVersion)}</code></span></div>
+          <div class="wl-rows">${rows.map((m) => {
+            const v = verdict(m), ctxLen = m.overrides?.context_window_size;
+            const tags = [
+              ctxLen ? `<span>context ${Showcase.fmt(ctxLen)}</span>` : "",
+              m.low_resource_required ? `<span class="low">低資源可用</span>` : "",
+              (m.required_features || []).map((f) => `<span class="f16">需要 ${esc(f)}</span>`).join(""),
+              fn.has(m.model_id) ? `<span class="fn">函式呼叫</span>` : "",
+              isEmbed(m) ? `<span>嵌入模型</span>` : "",
+              `<span class="${v.cls}">此裝置：${v.text}</span>`,
+            ].join("");
+            return `<div class="wl-row ${Object.values(MODELS).some((x) => x.id === m.model_id) ? "mine" : ""}"><span class="id">${esc(m.model_id)}</span><span class="bar"><i style="width:${((m.vram_required_MB || 0) / maxVram) * 100}%"></i></span><span class="v">${m.vram_required_MB ? `${Showcase.fmt(Math.round(m.vram_required_MB))} MB` : "未標示"}</span><span class="tags">${tags}</span></div>`;
+          }).join("")}</div>
+          <p class="wl-k">黃框是聊天場景用的模型。右側數字是 vram_required_MB（清單提供的顯示記憶體需求，不是下載量）。「功能符合」只比對 WebGPU 與 shader-f16，顯示記憶體是否足夠要實際載入才知道。</p>`;
+      };
+      ctx.select("篩選", Object.entries(FILTERS).map(([value, label]) => ({ value, label })), filter, (v) => { filter = v; render(); });
+      ctx.select("排序", [{ value: "vram", label: "顯示記憶體" }, { value: "name", label: "名稱" }], sort, (v) => { sort = v; render(); });
+      render();
+    },
+  },
+  {
+    id: "api", title: "OpenAI 相容 API",
+    api: "await engine.chat.completions.create(request) → ChatCompletion",
+    desc: "WebLLM 的介面照抄 OpenAI Chat Completions：同樣的 messages、temperature、max_tokens、response_format、stream，回傳同樣結構的 JSON（多一個 usage.extra 放效能數據）。左邊是送出的請求，右邊是引擎回傳的原始物件。",
+    hint: "切換請求範本後按「送出請求」",
+    async mount(ctx) {
+      ctx.el.classList.add("scroll");
+      const PRESETS = [
+        { label: "非串流", req: { messages: [{ role: "system", content: "Answer in one sentence." }, { role: "user", content: "Why is Taipei 101 famous?" }], temperature: 0.7, max_tokens: 60 } },
+        { label: "JSON 模式", req: { messages: [{ role: "user", content: "Suggest one weekend trip in Taiwan. Reply as JSON with keys city, reason and days." }], response_format: { type: "json_object" }, temperature: 0.3, max_tokens: 120 } },
+        { label: "多輪對話", req: { messages: [{ role: "user", content: "My name is Mei and I like hiking." }, { role: "assistant", content: "Nice to meet you, Mei! Hiking is a great hobby." }, { role: "user", content: "What is my name and what do I like?" }], temperature: 0, max_tokens: 40 } },
+        { label: "串流 chunk", req: { messages: [{ role: "user", content: "Count from one to five in words." }], stream: true, stream_options: { include_usage: true }, temperature: 0, max_tokens: 30 } },
+      ];
+      let preset = 0;
+      ctx.html(`<div class="wl-pad wl-api"><div class="wl-card"><h3 class="wl-h">請求 request</h3><pre class="wl-code req"></pre></div><div class="wl-card"><h3 class="wl-h">回應 response</h3><div class="out"></div></div></div>`);
+      const showReq = () => { ctx.$(".req").innerHTML = jsonHtml(PRESETS[preset].req); };
+      showReq();
+      let eng = null;
+      const send = () => exclusive(async () => {
+        if (!eng || !ctx.active) return;
+        const { req, label } = PRESETS[preset];
+        const out = ctx.$(".out");
+        out.innerHTML = `<p class="wl-k">產生中…</p>`;
+        const t0 = performance.now();
+        try {
+          if (req.stream) {
+            const chunks = [];
+            for await (const c of await eng.chat.completions.create(req)) chunks.push(c);
+            if (!ctx.active) return;
+            const text = chunks.map((c) => c.choices[0]?.delta?.content || "").join("");
+            out.innerHTML = `<p class="wl-k">共收到 <b class="wl-n">${chunks.length}</b> 個 chunk（object = chat.completion.chunk），拼起來是：「${esc(text)}」。下面是第 1 個與最後 1 個（含 usage）：</p><pre class="wl-code">${jsonHtml(chunks[0])}</pre><pre class="wl-code">${jsonHtml(chunks[chunks.length - 1])}</pre>`;
+          } else {
+            const r = await eng.chat.completions.create(req);
+            if (!ctx.active) return;
+            let parsed = "";
+            if (req.response_format) {
+              try { JSON.parse(r.choices[0].message.content); parsed = `<p class="wl-k">✓ content 可以直接 JSON.parse()（JSON 模式用文法限制取樣，保證輸出是合法 JSON）。</p>`; } catch { parsed = `<p class="wl-k">content 無法 JSON.parse()，通常是 max_tokens 太小被截斷。</p>`; }
+            }
+            out.innerHTML = `<p class="wl-k">${label}・耗時 ${Showcase.fmtMs(performance.now() - t0)}</p>${parsed}<pre class="wl-code">${jsonHtml(r)}</pre>`;
+          }
+        } catch (e) { out.innerHTML = `<p class="wl-k">產生失敗：${esc(e.message)}</p>`; }
+      });
+      ctx.group(PRESETS.map((p) => p.label), 0, (i) => { preset = i; showReq(); send(); });
+      ctx.button("送出請求", send, { primary: true });
+      const res = await needEngine(ctx);
+      if (!ctx.active) return;
+      if (res.gpu) { ctx.$(".out").innerHTML = `<p class="wl-k" style="color:#ff7b7f">此環境不支援 WebGPU，無法執行這個請求。這裡不顯示假造的回應；請求格式可在左側檢視。</p>` + unsupportedHtml(res.gpu, ""); return; }
+      if (!res.engine) return;
+      guard(ctx);
+      eng = res.engine;
+      send();
+    },
+  },
+  {
+    id: "logprobs", title: "Token 機率",
+    api: "create({ logprobs: true, top_logprobs: 5, temperature, seed })",
+    desc: "開啟 logprobs 後，每個產生的 token 都附上它的機率與前 5 名候選。顏色越綠代表模型越有把握，紅色是猶豫的地方。拉高 temperature 會讓低機率的候選更常被選中。",
+    hint: "點任一個 token 看候選清單・拖 temperature 再產生",
+    async mount(ctx) {
+      ctx.el.classList.add("scroll");
+      const PROMPTS = [
+        ["台灣首都", "The capital city of Taiwan is"],
+        ["寫一句俳句", "Write a haiku about bubble tea."],
+        ["列出三種水果", "List three fruits, separated by commas."],
+      ];
+      let pIdx = 0, temp = 0.7, eng = null, picked = 0, data = [];
+      ctx.html(`<div class="wl-pad wl-lp"><div class="wl-card"><h3 class="wl-h">模型輸出（每格一個 token）</h3><div class="wl-toks"><span class="wl-k" style="color:var(--muted);background:none">等待模型…</span></div><div class="wl-legend">低機率<i></i>高機率</div><p class="wl-k sum"></p></div><div class="wl-card"><h3 class="wl-h">候選 token</h3><div class="alts wl-k">點左邊的 token</div></div></div>`);
+      const color = (p) => { const h = Math.round(Math.max(0, Math.min(1, p)) * 130); return `hsl(${h} 75% 62%)`; };
+      const showAlts = () => {
+        const t = data[picked];
+        if (!t) return;
+        ctx.$$(".wl-toks span").forEach((s, i) => s.classList.toggle("on", i === picked));
+        ctx.$(".alts").innerHTML = `<p class="wl-k">第 ${picked + 1} 個 token，實際選中 <code class="wl-n">${esc(JSON.stringify(t.token))}</code>（${(Math.exp(t.logprob) * 100).toFixed(1)}%）</p><div class="wl-alt">${t.top_logprobs.map((a) => `<code>${esc(JSON.stringify(a.token))}</code><span class="tr"><i class="${a.token === t.token ? "pick" : ""}" style="width:${Math.exp(a.logprob) * 100}%"></i></span><span class="v">${(Math.exp(a.logprob) * 100).toFixed(1)}%</span>`).join("")}</div>`;
+      };
+      const run = () => exclusive(async () => {
+        if (!eng || !ctx.active) return;
+        ctx.$(".wl-toks").innerHTML = `<span style="background:none;color:var(--muted)">產生中…</span>`;
+        try {
+          const r = await eng.chat.completions.create({ messages: [{ role: "user", content: PROMPTS[pIdx][1] }], logprobs: true, top_logprobs: 5, temperature: temp, seed: 7, max_tokens: 40 });
+          if (!ctx.active) return;
+          data = r.choices[0].logprobs?.content || [];
+          picked = 0;
+          ctx.$(".wl-toks").innerHTML = data.map((t, i) => `<span data-i="${i}" style="background:${color(Math.exp(t.logprob))}">${esc(t.token)}</span>`).join("");
+          const avg = data.reduce((s, t) => s + t.logprob, 0) / Math.max(1, data.length);
+          ctx.$(".sum").innerHTML = `${data.length} 個 token・平均機率 <b class="wl-n">${(Math.exp(avg) * 100).toFixed(1)}%</b>・困惑度 <b class="wl-n">${Math.exp(-avg).toFixed(2)}</b>・temperature ${temp}・seed 7`;
+          showAlts();
+        } catch (e) { ctx.$(".wl-toks").textContent = `產生失敗：${e.message}`; }
+      });
+      ctx.on(ctx.$(".wl-toks"), "click", (e) => { const s = e.target.closest("span[data-i]"); if (s) { picked = +s.dataset.i; showAlts(); } });
+      ctx.select("提示", PROMPTS.map(([label], i) => ({ value: String(i), label })), "0", (v) => { pIdx = +v; run(); });
+      ctx.slider("temperature", { min: 0, max: 1.5, step: 0.1, value: temp, format: (v) => v.toFixed(1) }, (v) => { temp = v; });
+      ctx.button("產生", run, { primary: true });
+      const res = await needEngine(ctx);
+      if (!ctx.active) return;
+      if (res.gpu) { ctx.$(".wl-lp").innerHTML = unsupportedHtml(res.gpu, "產生 token 與機率"); ctx.$(".wl-lp").style.display = "block"; return; }
+      if (!res.engine) return;
+      guard(ctx);
+      eng = res.engine;
+      run();
+    },
+  },
+  {
+    id: "cache", title: "快取管理",
+    api: "hasModelInCache(id) / deleteModelAllInfoInCache(id) / caches.keys()",
+    desc: "WebLLM 把權重、編譯好的 wasm 與設定檔分別存進瀏覽器的 Cache Storage（webllm/model、webllm/wasm、webllm/config），第二次開啟直接從快取載入，所以能離線。這裡掃描清單中每個模型是否已快取，並列出實際占用的儲存空間。",
+    hint: "已快取的模型可在這裡刪除",
+    async mount(ctx) {
+      ctx.el.classList.add("scroll");
+      ctx.html(`<div class="wl-pad wl-cache"><div class="wl-card quota"></div><div class="wl-card models"></div></div>`);
+      const l = await needLib(ctx);
+      if (!l || !ctx.active) return;
+      const scan = async () => {
+        const est = navigator.storage?.estimate ? await navigator.storage.estimate() : null;
+        const persisted = navigator.storage?.persisted ? await navigator.storage.persisted() : null;
+        const names = self.caches ? (await caches.keys()).filter((k) => k.startsWith("webllm")) : [];
+        const counts = await Promise.all(names.map(async (k) => (await (await caches.open(k)).keys()).length));
+        const ids = l.prebuiltAppConfig.model_list.map((m) => m.model_id);
+        const t0 = performance.now();
+        const hit = [];
+        for (const id of ids) if (await l.hasModelInCache(id)) hit.push(id);
+        const scanMs = performance.now() - t0;
+        if (!ctx.active) return;
+        const usage = est?.usage || 0, quota = est?.quota || 0;
+        ctx.$(".quota").innerHTML = `<h3 class="wl-h">此網站的儲存空間</h3>
+          ${est ? `<div class="wl-meter"><i style="width:${quota ? (usage / quota) * 100 : 0}%"></i></div><p class="wl-k">已用 <b class="wl-n">${mb(usage)}</b>，瀏覽器配額約 <b class="wl-n">${mb(quota)}</b>（navigator.storage.estimate()）</p>` : `<p class="wl-k">瀏覽器不提供 navigator.storage.estimate()。</p>`}
+          <p class="wl-k">持久儲存：${persisted === null ? "無法查詢" : persisted ? "已開啟，瀏覽器不會自動清除" : "未開啟，空間不足時瀏覽器可能清掉模型"}</p>
+          <h3 class="wl-h" style="margin-top:12px">WebLLM 使用的 Cache Storage</h3>
+          <div class="wl-list">${names.length ? names.map((k, i) => `<div class="wl-item"><code>${esc(k)}</code><span class="wl-n">${counts[i]} 個檔案</span></div>`).join("") : `<p class="wl-k">還沒有 webllm 開頭的快取（尚未下載過模型）。</p>`}</div>`;
+        ctx.$(".models").innerHTML = `<h3 class="wl-h">已快取的模型</h3>
+          <p class="wl-k">用 hasModelInCache() 掃描清單中 ${ids.length} 個模型，耗時 ${Showcase.fmtMs(scanMs)}，找到 <b class="wl-n">${hit.length}</b> 個。</p>
+          <div class="wl-list">${hit.length ? hit.map((id) => `<div class="wl-item"><code>${esc(id)}</code><button class="btn del" type="button" data-id="${esc(id)}">刪除</button></div>`).join("") : `<p class="wl-k">目前沒有任何模型在快取裡。到「離線聊天」場景下載後，這裡會列出 ${MODELS.f16.id.replace("-q4f16_1-MLC", "")} 的檔案。</p>`}</div>`;
+      };
+      ctx.on(ctx.el, "click", async (e) => {
+        const b = e.target.closest(".del");
+        if (!b) return;
+        if (!b.classList.contains("arm")) { b.classList.add("arm"); b.textContent = "再按一次確認"; return; }
+        b.disabled = true; b.textContent = "刪除中…";
+        if (engine && engineModel?.id === b.dataset.id) { await engine.unload(); engine = null; enginePromise = null; }
+        await l.deleteModelAllInfoInCache(b.dataset.id);
+        await scan();
+      });
+      ctx.button("重新掃描", scan);
+      await scan();
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "usage.extra.prefill_tokens_per_s / decode_tokens_per_s",
+    desc: "同一個模型，提示詞從約 50 個 token 加長到約 3000 個，每級產生 32 個 token。prefill（讀進提示詞）是平行運算，越長越能吃滿 GPU；decode（逐字產生）受 KV cache 長度與記憶體頻寬限制。數字全部來自引擎回傳的 usage.extra。",
+    hint: "按「開始測試」，需要 WebGPU",
+    async mount(ctx) {
+      const gpu = await probeGpu();
+      if (!ctx.active) return;
+      if (!gpu.ok) {
+        ctx.html(`<div class="wl-card wl-panel"><h3 class="wl-h">極限測試：prefill 與 decode</h3><p class="bad">此環境沒有可用的 WebGPU adapter，無法執行（不產生假數據）。</p><p>${gpu.reason === "api" ? "瀏覽器沒有 navigator.gpu。" : "navigator.gpu.requestAdapter() 回傳 null。"}這個測試要實際在顯示卡上跑語言模型，量提示詞長度對 prefill 與 decode 速度的影響。</p><button class="btn primary" type="button" data-sc-run>開始測試</button><p class="msg"></p></div><div class="wl-stress wl-card"><canvas></canvas></div>`);
+        ctx.on(ctx.$("[data-sc-run]"), "click", () => { ctx.$(".msg").innerHTML = `<span class="bad">無法開始：沒有 WebGPU。</span>已重新偵測 navigator.gpu${navigator.gpu ? "（存在，但沒有 adapter）" : "（不存在）"}，沒有執行任何推論。`; });
+        const cv = ctx.$("canvas");
+        const paint = () => {
+          const dpr = Math.min(2, devicePixelRatio || 1), w = cv.clientWidth, h = cv.clientHeight;
+          cv.width = w * dpr; cv.height = h * dpr;
+          const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+          g.fillStyle = cssVar("--muted"); g.font = `600 14px ${cssVar("--font")}`; g.textAlign = "center"; g.textBaseline = "middle";
+          const pr = ctx.$(".wl-panel").getBoundingClientRect(), cr = cv.getBoundingClientRect();
+          const covered = pr.right > cr.left + 10;
+          g.fillText("沒有 WebGPU：沒有量測資料", w / 2, covered ? Math.min(h - 20, pr.bottom - cr.top + 40) : h / 2);
+        };
+        paint(); ctx.onResize(paint);
+        return;
+      }
+      ctx.html(`<div class="wl-stress wl-card"><canvas></canvas></div>`);
+      const res = await needEngine(ctx);
+      if (!res.engine || !ctx.active) return;
+      guard(ctx);
+      const eng = res.engine;
+      const FILL = "Taiwan is an island in East Asia with high mountains, night markets, bubble tea and a busy rail network. ";
+      const points = [];
+      const b = ctx.bench({
+        label: "提示詞", unit: "字", sizes: [8, 32, 96, 192, 288],
+        budget: 60000, target: 20000,
+        async prepare(n) {
+          await eng.resetChat();
+          return [{ role: "user", content: `${FILL.repeat(n)}\nSummarize the text above in one short sentence.` }];
+        },
+        async run(n, messages) {
+          const r = await exclusive(() => eng.chat.completions.create({ messages, temperature: 0, max_tokens: 32 }));
+          const x = r.usage.extra;
+          points.push({ prompt: r.usage.prompt_tokens, pf: x.prefill_tokens_per_s, dc: x.decode_tokens_per_s, ttft: x.time_to_first_token_s });
+          return `${Math.round(x.prefill_tokens_per_s)}／${Math.round(x.decode_tokens_per_s)} t/s`;
+        },
+        note: "detail 欄是 prefill／decode tokens/秒。提示詞長度以重複的英文段落組成（每段約 20 個 token），實際 token 數畫在右側。context 上限 4096 token，超過會報錯，所以最大一級約 3000。",
+      });
+      const cv = ctx.$("canvas");
+      ctx.raf(() => {
+        const dpr = Math.min(2, devicePixelRatio || 1), w = cv.clientWidth, h = cv.clientHeight;
+        if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+        const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+        g.textAlign = "left"; g.textBaseline = "top";
+        g.fillStyle = cssVar("--fg"); g.font = `600 14px ${cssVar("--font")}`; g.fillText("提示詞長度 vs 速度（tokens/秒）", 16, 14);
+        g.font = `12px ${cssVar("--font")}`;
+        g.fillStyle = "#4cc9f0"; g.fillText("■ prefill", 16, 36); g.fillStyle = "#f7df1e"; g.fillText("■ decode", 96, 36);
+        if (!points.length) { g.fillStyle = cssVar("--muted"); g.fillText(b.results.length ? "量測中…" : "尚未測試", 16, 62); return; }
+        const top = 64, rowH = Math.min(56, (h - top - 10) / 5), maxPf = Math.max(...points.map((p) => p.pf)), maxDc = Math.max(...points.map((p) => p.dc));
+        g.font = `12px ${cssVar("--mono")}`;
+        points.forEach((p, i) => {
+          const y = top + i * rowH, x0 = 110, bw = w - x0 - 130;
+          g.fillStyle = cssVar("--muted"); g.textBaseline = "middle"; g.fillText(`${Showcase.fmt(p.prompt)} tok`, 16, y + rowH * 0.35);
+          g.fillText(`首字 ${p.ttft.toFixed(2)}s`, 16, y + rowH * 0.7);
+          g.fillStyle = "#4cc9f0"; g.fillRect(x0, y + rowH * 0.15, Math.max(2, (p.pf / maxPf) * bw), rowH * 0.3);
+          g.fillStyle = "#f7df1e"; g.fillRect(x0, y + rowH * 0.52, Math.max(2, (p.dc / maxDc) * bw), rowH * 0.3);
+          g.fillStyle = cssVar("--fg");
+          g.fillText(`${Math.round(p.pf)}`, x0 + Math.max(2, (p.pf / maxPf) * bw) + 6, y + rowH * 0.3);
+          g.fillText(`${p.dc.toFixed(1)}`, x0 + Math.max(2, (p.dc / maxDc) * bw) + 6, y + rowH * 0.67);
+        });
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

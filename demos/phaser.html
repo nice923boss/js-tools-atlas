@@ -3,327 +3,1293 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Phaser 示範：星星跳跳平台遊戲</title>
+<title>Phaser 示範：8 個場景看懂 2D 遊戲引擎與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["星星跳跳","Matter 物理","補間與時間軸","粒子系統","攝影機與地圖","濾鏡","拖曳與繪圖","極限測試"]}</script>
 <style>
-  body { background: radial-gradient(120% 90% at 50% 0%, #1d2540 0%, #12151d 55%, #0e1013 100%); }
-  #game { position: fixed; inset: 0; }
-  #game canvas { display: block; touch-action: none; }
-  .hud { position: fixed; left: 12px; top: 12px; z-index: 40; display: flex; gap: 8px; font-weight: 700; }
-  .hud .panel { padding: 6px 12px; font-size: 14px; }
-  .hud b { color: var(--accent); }
-  .title {
-    position: fixed; inset: 0; z-index: 45; display: grid; place-items: center; pointer-events: none;
-    transition: opacity .4s;
+  .ph-box { position: absolute; inset: 0; overflow: hidden; }
+  .ph-box canvas, .stress-box canvas { display: block; touch-action: none; }
+  .sc-scene.ph-night { background: radial-gradient(120% 90% at 50% 0%, #1d2540 0%, #12151d 55%, #0e1013 100%); }
+  .sc-scene.ph-studio { background: radial-gradient(70% 90% at 50% 40%, #20232c, #0e1013); }
+  .sc-scene.ph-paper { background: #15181e radial-gradient(rgba(255,255,255,.10) 1px, transparent 1.6px) 0 0 / 22px 22px; }
+  .readout {
+    position: absolute; left: 10px; bottom: 10px; z-index: 20; max-width: calc(100% - 20px); padding: 6px 10px; border-radius: 8px;
+    background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(6px); pointer-events: none;
+    font: 500 11.5px/1.45 var(--font); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
-  .title .card { text-align: center; padding: 18px 28px; border-radius: 16px; background: rgba(14, 16, 19, .62); backdrop-filter: blur(4px); }
-  .title h1 { margin: 0; font-size: clamp(30px, 7vw, 52px); letter-spacing: 4px; color: var(--accent);
-    text-shadow: 0 4px 0 #8a7a00, 0 10px 30px rgba(247, 223, 30, .35); }
-  .title p { margin: 6px 0 0; color: var(--fg); }
-  .title .blink { color: var(--c2); animation: blink 1.2s steps(2) infinite; }
-  @keyframes blink { 50% { opacity: .2; } }
-  .title.hide { opacity: 0; }
-  .msg { position: fixed; left: 50%; top: 22%; transform: translateX(-50%); z-index: 45; font-size: 22px; font-weight: 800;
-    color: var(--accent); text-shadow: 0 3px 12px rgba(0,0,0,.6); pointer-events: none; opacity: 0; transition: opacity .3s; white-space: nowrap; }
-  .msg.show { opacity: 1; }
-  .pad { position: fixed; right: 12px; bottom: 12px; z-index: 50; display: flex; gap: 8px; }
-  .pad .btn { width: 52px; height: 46px; padding: 0; font-size: 18px; touch-action: none; user-select: none; }
-  .pad .btn.primary { width: 64px; font-size: 15px; }
-  @media (max-width: 600px) { .hint { bottom: 68px; } }
+  .readout b { font-family: var(--mono); color: var(--accent); font-weight: 600; }
+  .readout code { font-family: var(--mono); color: var(--fg); }
+  .ph-msg {
+    position: absolute; left: 50%; top: 22%; transform: translateX(-50%); z-index: 15; pointer-events: none; white-space: nowrap;
+    font: 800 22px/1.2 var(--font); color: var(--accent); text-shadow: 0 3px 12px rgba(0,0,0,.6); opacity: 0; transition: opacity .3s;
+  }
+  .ph-msg.show { opacity: 1; }
+  .ph-pad { position: absolute; right: 10px; bottom: 10px; z-index: 25; display: none; gap: 8px; }
+  .ph-pad .btn { width: 52px; height: 46px; padding: 0; font-size: 18px; touch-action: none; user-select: none; }
+  .ph-pad .btn.primary { width: 64px; font: 700 15px var(--font); }
+  @media (pointer: coarse) { .ph-pad { display: flex; } .ph-night .readout { bottom: 66px; } }
+  .ph-mini { position: absolute; z-index: 12; border: 1.5px solid rgba(255,255,255,.35); border-radius: 3px; pointer-events: none; box-shadow: 0 4px 18px rgba(0,0,0,.45); }
+  .ph-mini[hidden] { display: none; }
+  .ph-has-mini .readout { max-width: calc(100% - var(--mini-w, 0px) - 30px); }
+  .stress-box {
+    position: absolute; top: 8px; right: 8px; bottom: calc(var(--sc-ctl-b, 0px) + 8px); left: 350px;
+    border-radius: 12px; border: 1px solid var(--line); background: rgba(255,255,255,.02); overflow: hidden;
+  }
+  @media (max-width: 760px) { .stress-box { left: 8px; } }
 </style>
 </head>
 <body>
-<div id="game"></div>
-<div class="hud">
-  <div class="panel">星星 <b id="stars">0</b> / <span id="total">0</span></div>
-  <div class="panel">踩扁 <b id="stomps">0</b></div>
-</div>
-<div class="controls"><button class="btn" id="restart">重新開始</button></div>
-<div class="title" id="title">
-  <div class="card">
-    <h1>星星跳跳</h1>
-    <p>收集所有星星，從上方踩扁史萊姆</p>
-    <p class="blink">按任意鍵或點擊開始</p>
-  </div>
-</div>
-<div class="msg" id="msg"></div>
-<div class="pad">
-  <button class="btn" id="bl" aria-label="向左">◀</button>
-  <button class="btn" id="br" aria-label="向右">▶</button>
-  <button class="btn primary" id="bj">跳</button>
-</div>
-<div class="hint">← → 移動，↑ 或空白鍵跳（可二段跳）</div>
-
 <script src="https://cdn.jsdelivr.net/npm/phaser@4.2.1/dist/phaser.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Phaser 4 platformer: generated textures, Arcade physics, particles, tweens, camera follow.
-const W = 2400, H = 540;
-const touch = { left: false, right: false, jump: false };
-const $ = (id) => document.getElementById(id);
+// Phaser showcase: eight scenes from the original star platformer to an Arcade physics stress ramp.
+const rootCss = getComputedStyle(document.documentElement);
+const cssVar = (name, fallback) => rootCss.getPropertyValue(name).trim() || fallback;
+const C = {
+  c1: cssVar("--c1", "#f7df1e"), c2: cssVar("--c2", "#4cc9f0"), c3: cssVar("--c3", "#f72585"),
+  c4: cssVar("--c4", "#7bd389"), c5: cssVar("--c5", "#ff8c42"), c6: cssVar("--c6", "#9d8cff"),
+};
+const COLORS = [C.c1, C.c2, C.c3, C.c4, C.c5, C.c6];
+const HEXN = COLORS.map((c) => parseInt(c.slice(1), 16));
+const FONT = cssVar("--font", "sans-serif");
+const MONO = cssVar("--mono", "monospace");
+const DPR = Math.min(2, devicePixelRatio || 1);
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const rnd = (lo, hi) => lo + Math.random() * (hi - lo);
+const fmtN = (n) => n.toLocaleString("en-US");
+// Y just below the top-right control cluster, so scene content starts under the buttons.
+const belowControls = (ctx) => ctx.controls.offsetHeight + 20;
+const PHOTO = (i) => `_shared/img/photo-${i}.jpg`;
+const unmounted = () => new DOMException("Scene unmounted", "AbortError");
+const hsv = (h, s = 0.65, v = 1) => Phaser.Display.Color.HSVToRGB(((h % 1) + 1) % 1, s, v).color;
 
-function makeTextures(scene) {
-  const g = scene.add.graphics();
-  // hero
-  g.fillStyle(0xf7df1e).fillRoundedRect(0, 0, 28, 32, 8);
-  g.fillStyle(0x1a1a14).fillRect(15, 9, 4, 8).fillRect(21, 9, 4, 8);
-  g.fillStyle(0xff8c42).fillRect(0, 22, 28, 4);
-  g.generateTexture("hero", 28, 32).clear();
-  // ground tile: grass + soil
-  g.fillStyle(0x262c3a).fillRect(0, 0, 32, 64);
-  g.fillStyle(0x30384a).fillRect(4, 22, 6, 6).fillRect(20, 40, 8, 6).fillRect(12, 54, 5, 5);
-  g.fillStyle(0x7bd389).fillRect(0, 0, 32, 8);
-  g.fillStyle(0x5cb06b).fillRect(0, 8, 32, 3);
-  g.generateTexture("ground", 32, 64).clear();
-  // floating platform tile
-  g.fillStyle(0x343c50).fillRect(0, 0, 32, 18);
-  g.fillStyle(0x4cc9f0).fillRect(0, 0, 32, 5);
-  g.fillStyle(0x2a3040).fillRect(31, 0, 1, 18);
-  g.generateTexture("plat", 32, 18).clear();
-  // star
+function canvas2d(w, h, draw) {
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  draw(c.getContext("2d"), w, h);
+  return c;
+}
+// Soft white dot; tinted per sprite or particle. `core` widens the solid centre (brush vs glow).
+function glowCanvas(s, core = 0.25) {
+  return canvas2d(s, s, (g) => {
+    const r = s / 2, grd = g.createRadialGradient(r, r, 0, r, r, r);
+    grd.addColorStop(0, "rgba(255,255,255,1)");
+    grd.addColorStop(core, "rgba(255,255,255,0.8)");
+    grd.addColorStop(1, "rgba(255,255,255,0)");
+    g.fillStyle = grd;
+    g.fillRect(0, 0, s, s);
+  });
+}
+// Status line in the bottom-left corner; returns a setter that takes HTML.
+function readout(ctx, parent = ctx.el) {
+  const el = document.createElement("div");
+  el.className = "readout";
+  parent.append(el);
+  return (html) => { el.innerHTML = html; };
+}
+// Centred toast; returns a function that shows a line of text for 1.8 s.
+function message(ctx) {
+  const el = document.createElement("div");
+  el.className = "ph-msg";
+  ctx.el.append(el);
+  let id = 0;
+  ctx.onCleanup(() => clearTimeout(id));
+  return (text) => {
+    el.textContent = text;
+    el.classList.add("show");
+    clearTimeout(id);
+    id = setTimeout(() => el.classList.remove("show"), 1800);
+  };
+}
+function starPoints(cx, cy, r1, r2, n = 5, rot = -Math.PI / 2) {
   const pts = [];
-  for (let i = 0; i < 10; i++) {
-    const r = i % 2 ? 5 : 11, a = -Math.PI / 2 + (i * Math.PI) / 5;
-    pts.push({ x: 11 + r * Math.cos(a), y: 11 + r * Math.sin(a) });
+  for (let i = 0; i < n * 2; i++) {
+    const r = i % 2 ? r2 : r1, a = rot + (i * Math.PI) / n;
+    pts.push({ x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) });
   }
-  g.fillStyle(0xf7df1e).fillPoints(pts, true);
-  g.generateTexture("star", 22, 22).clear();
-  // slime
-  g.fillStyle(0xf72585).fillRoundedRect(0, 0, 30, 22, { tl: 11, tr: 11, bl: 3, br: 3 });
-  g.fillStyle(0xffffff).fillCircle(10, 9, 4).fillCircle(20, 9, 4);
-  g.fillStyle(0x1a1a14).fillCircle(11, 10, 2).fillCircle(21, 10, 2);
-  g.generateTexture("slime", 30, 22).clear();
-  // spark
-  g.fillStyle(0xffffff).fillCircle(4, 4, 4);
-  g.generateTexture("spark", 8, 8).clear();
+  return pts;
+}
+// Bakes a Graphics drawing into a texture once per game; textures outlive scene restarts.
+function bake(scene, key, w, h, draw) {
+  if (scene.textures.exists(key)) return;
+  const g = scene.make.graphics({}, false);
+  draw(g);
+  g.generateTexture(key, w, h);
   g.destroy();
 }
+function canvasTex(scene, key, canvas) {
+  if (!scene.textures.exists(key)) scene.textures.addCanvas(key, canvas);
+  return scene.textures.get(key);
+}
+const txt = (scene, x, y, str, size, color = "#c9c7bd", family = FONT) =>
+  scene.add.text(x, y, str, { fontFamily: family, fontSize: `${size}px`, color, resolution: DPR });
+const fpsOf = (scene) => scene.game.loop.actualFps.toFixed(0);
 
-class Play extends Phaser.Scene {
-  constructor() { super("play"); }
-
-  create(data) {
-    if (!this.textures.exists("hero")) makeTextures(this);
-    this.started = false;
-    this.score = 0;
-    this.stomps = 0;
-    this.drawBackdrop();
-
-    this.physics.world.setBounds(0, 0, W, H + 300);
-    this.physics.world.setBoundsCollision(true, true, false, false);
-
-    // level geometry
-    this.solids = this.physics.add.staticGroup();
-    const ground = (x, w) => this.addSolid(x, H - 64, w, 64, "ground");
-    const plat = (x, y, n) => this.addSolid(x, y, n * 32, 18, "plat");
-    ground(0, 704); ground(832, 512); ground(1472, 928);
-    plat(220, 380, 4); plat(420, 300, 3); plat(600, 220, 4);
-    plat(700, 390, 4); plat(980, 330, 5); plat(1220, 250, 3);
-    plat(1360, 380, 3); plat(1600, 300, 4); plat(1820, 220, 4); plat(2060, 330, 5);
-
-    // stars
-    this.stars = this.physics.add.staticGroup();
-    const starAt = [
-      [120, 430], [260, 340], [460, 260], [640, 180], [700, 180], [760, 350], [790, 430], [1030, 290],
-      [1090, 290], [1250, 210], [1300, 430], [1400, 340], [1650, 260], [1860, 180], [1920, 180],
-      [2100, 290], [2180, 290], [2300, 430],
-    ];
-    for (const [x, y] of starAt) {
-      const s = this.stars.create(x, y, "star");
-      this.tweens.add({ targets: s, scaleX: 0.25, duration: 520, yoyo: true, repeat: -1, ease: "Sine.inOut", delay: x % 500 });
-    }
-    $("total").textContent = starAt.length;
-
-    // enemies patrol between bounds
-    this.slimes = this.physics.add.group();
-    for (const [x, min, max] of [[400, 260, 660], [1000, 860, 1320], [1700, 1500, 2000], [2200, 2050, 2380]]) {
-      const e = this.slimes.create(x, H - 90, "slime");
-      e.setData({ min, max }).setVelocityX(70).setBounce(0);
-    }
-
-    // player
-    this.spawn = { x: 80, y: H - 120 };
-    this.player = this.physics.add.sprite(this.spawn.x, this.spawn.y, "hero");
-    this.player.setCollideWorldBounds(true).setSize(22, 30).setDepth(5);
-    this.player.body.setMaxVelocityY(900);
-    this.jumps = 0;
-
-    this.physics.add.collider(this.player, this.solids);
-    this.physics.add.collider(this.slimes, this.solids);
-    this.physics.add.overlap(this.player, this.stars, (p, s) => this.collect(s));
-    this.physics.add.overlap(this.player, this.slimes, (p, e) => this.hitSlime(e));
-
-    this.fx = this.add.particles(0, 0, "spark", {
-      speed: { min: 60, max: 260 }, lifespan: 600, scale: { start: 0.9, end: 0 },
-      gravityY: 400, blendMode: "ADD", emitting: false, tint: [0xf7df1e, 0xff8c42, 0xffffff],
-    }).setDepth(6);
-    this.dust = this.add.particles(0, 0, "spark", {
-      speed: { min: 20, max: 90 }, angle: { min: 160, max: 380 }, lifespan: 380,
-      scale: { start: 0.6, end: 0 }, alpha: { start: 0.7, end: 0 }, emitting: false, tint: 0x4cc9f0,
-    }).setDepth(4);
-
-    // camera: zoom so the 540 px tall world fills the viewport height
-    const cam = this.cameras.main;
-    cam.setBounds(0, 0, W, H);
-    this.fitCamera();
-    this.scale.on("resize", this.fitCamera, this);
-    this.events.once("shutdown", () => this.scale.off("resize", this.fitCamera, this));
-    this.ghost = this.add.zone(200, H / 2, 2, 2);
-    this.tweens.add({ targets: this.ghost, x: W - 200, duration: 12000, yoyo: true, repeat: -1, ease: "Sine.inOut" });
-    cam.startFollow(this.ghost, true, 0.08, 0.08);
-
-    // input
-    this.keys = this.input.keyboard.addKeys("LEFT,RIGHT,UP,SPACE,A,D,W,R");
-    this.input.keyboard.on("keydown", (ev) => {
-      if (ev.code === "KeyR") this.scene.restart({ go: true });
-      else this.begin();
+// Phaser.Game filling `box` with one object-config scene; resolves with the Scene after its first create().
+// Per-frame work goes in `this.tick`, which create() sets again on every restart. game.destroy(true) is
+// deferred to the next step and DESTROY fires before the renderer is torn down, so the WebGL context
+// is released on a later tick.
+function phaserIn(ctx, box, scene, config = {}) {
+  return new Promise((resolve, reject) => {
+    const game = new Phaser.Game({
+      type: Phaser.WEBGL, parent: box, transparent: true, banner: false, autoFocus: false,
+      scale: { mode: Phaser.Scale.RESIZE, width: "100%", height: "100%" },
+      ...config,
+      scene: {
+        ...scene,
+        create(data) {
+          this.tick = null;
+          if (!ctx.active) return;
+          scene.create.call(this, data);
+          resolve(this);
+        },
+        update(time, delta) { if (this.tick) this.tick(time, delta); },
+      },
     });
-    this.input.on("pointerdown", () => { if (this.started) touch.jump = true; else this.begin(); });
-    $("title").classList.remove("hide");
-    $("msg").classList.remove("show");
-    this.updateHud();
-    if (data && data.go) this.begin();
-  }
-
-  addSolid(x, y, w, h, key) {
-    const ts = this.add.tileSprite(x + w / 2, y + h / 2, w, h, key);
-    this.physics.add.existing(ts, true);
-    this.solids.add(ts);
-  }
-
-  drawBackdrop() {
-    const sky = this.add.graphics().setScrollFactor(0.05);
-    for (let i = 0; i < 90; i++) {
-      sky.fillStyle(0xffffff, Phaser.Math.FloatBetween(0.15, 0.7));
-      sky.fillCircle(Phaser.Math.Between(0, 1400), Phaser.Math.Between(0, 320), Phaser.Math.FloatBetween(0.6, 1.6));
-    }
-    const ridge = (color, sf, base, amp, step) => {
-      const g = this.add.graphics().setScrollFactor(sf, 1);
-      g.fillStyle(color);
-      const pts = [{ x: -200, y: H + 200 }];
-      for (let x = -200; x <= W + 200; x += step) pts.push({ x, y: base - Math.abs(Math.sin(x * 0.0037) * amp) - Math.random() * 30 });
-      pts.push({ x: W + 200, y: H + 200 });
-      g.fillPoints(pts, true);
-    };
-    ridge(0x1a2033, 0.25, 360, 140, 120);
-    ridge(0x20283c, 0.5, 430, 90, 80);
-  }
-
-  fitCamera() {
-    const cam = this.cameras.main;
-    this.cameras.resize(this.scale.width, this.scale.height);
-    cam.setZoom(this.scale.height / H);
-  }
-
-  begin() {
-    if (this.started) return;
-    this.started = true;
-    $("title").classList.add("hide");
-    this.cameras.main.startFollow(this.player, true, 0.1, 0.1);
-  }
-
-  collect(star) {
-    star.disableBody(true, true);
-    this.fx.explode(18, star.x, star.y);
-    this.score++;
-    this.updateHud();
-    if (this.score === this.stars.getLength()) {
-      this.flash("全部收集！按 R 再玩一次");
-      this.cameras.main.flash(400, 247, 223, 30);
-      this.time.addEvent({ delay: 120, repeat: 8, callback: () => this.fx.explode(30, this.player.x + Phaser.Math.Between(-160, 160), this.player.y - Phaser.Math.Between(40, 200)) });
-    }
-  }
-
-  hitSlime(e) {
-    const p = this.player;
-    if (p.body.velocity.y > 0 && p.body.bottom <= e.body.top + 14) {
-      this.fx.explode(24, e.x, e.y);
-      e.destroy();
-      p.setVelocityY(-420);
-      this.jumps = 1;
-      this.stomps++;
-      this.updateHud();
-      this.cameras.main.shake(120, 0.006);
-    } else {
-      this.respawn("被史萊姆撞到了！");
-    }
-  }
-
-  respawn(text) {
-    this.cameras.main.shake(260, 0.012);
-    this.player.setVelocity(0, 0).setPosition(this.spawn.x, this.spawn.y - 30);
-    this.player.setAlpha(0.3);
-    this.tweens.add({ targets: this.player, alpha: 1, duration: 600 });
-    this.flash(text);
-  }
-
-  flash(text) {
-    const m = $("msg");
-    m.textContent = text;
-    m.classList.add("show");
-    clearTimeout(this.msgTimer);
-    this.msgTimer = setTimeout(() => m.classList.remove("show"), 1800);
-  }
-
-  updateHud() {
-    $("stars").textContent = this.score;
-    $("stomps").textContent = this.stomps;
-  }
-
-  update() {
-    // slimes patrol
-    for (const e of this.slimes.getChildren()) {
-      if (e.x < e.getData("min")) e.setVelocityX(70);
-      if (e.x > e.getData("max")) e.setVelocityX(-70);
-      e.setFlipX(e.body.velocity.x < 0);
-      e.scaleY = 1 + Math.sin(this.time.now * 0.012 + e.x) * 0.08;
-    }
-    const p = this.player, k = this.keys;
-    if (!this.started) return;
-    const onGround = p.body.blocked.down || p.body.touching.down;
-    const left = k.LEFT.isDown || k.A.isDown || touch.left;
-    const right = k.RIGHT.isDown || k.D.isDown || touch.right;
-    p.setVelocityX(left ? -230 : right ? 230 : p.body.velocity.x * 0.8);
-    if (left) p.setFlipX(true);
-    if (right) p.setFlipX(false);
-
-    const jump = Phaser.Input.Keyboard.JustDown(k.UP) || Phaser.Input.Keyboard.JustDown(k.SPACE) ||
-      Phaser.Input.Keyboard.JustDown(k.W) || touch.jump;
-    touch.jump = false;
-    if (onGround) {
-      this.jumps = 0;
-      if (p.y < H - 40) this.spawn = { x: p.x, y: p.y };
-    }
-    if (jump && (onGround || this.jumps < 2)) {
-      this.jumps = onGround ? 1 : 2;
-      p.setVelocityY(onGround ? -560 : -480);
-      this.dust.explode(onGround ? 6 : 12, p.x, p.y + 16);
-      this.tweens.add({ targets: p, scaleX: 0.8, scaleY: 1.2, duration: 90, yoyo: true });
-    }
-    if (p.y > H + 80) this.respawn("掉下去了！");
-  }
+    game.events.once(Phaser.Core.Events.DESTROY, () => {
+      const gl = game.renderer && game.renderer.gl;
+      if (gl) setTimeout(() => { const ext = gl.getExtension("WEBGL_lose_context"); if (ext) ext.loseContext(); }, 0);
+    });
+    ctx.onCleanup(() => { reject(unmounted()); game.destroy(true); });
+  });
+}
+// Layout-dependent scenes rebuild once a new size settles.
+function restartOnResize(ctx, scene) {
+  const w0 = scene.scale.width, h0 = scene.scale.height;
+  let id = 0;
+  const fn = () => {
+    clearTimeout(id);
+    id = setTimeout(() => {
+      if (ctx.active && (scene.scale.width !== w0 || scene.scale.height !== h0)) scene.scene.restart();
+    }, 250);
+  };
+  scene.scale.on("resize", fn);
+  scene.events.once("shutdown", () => { scene.scale.off("resize", fn); clearTimeout(id); });
 }
 
-const game = new Phaser.Game({
-  type: Phaser.AUTO,
-  parent: "game",
-  transparent: true,
-  scale: { mode: Phaser.Scale.RESIZE, width: "100%", height: "100%" },
-  physics: { default: "arcade", arcade: { gravity: { y: 1300 } } },
-  scene: Play,
-  banner: false,
-});
+// ---------- textures drawn in code ----------
+function platformTextures(scene) {
+  bake(scene, "hero", 28, 32, (g) => {
+    g.fillStyle(0xf7df1e).fillRoundedRect(0, 0, 28, 32, 8);
+    g.fillStyle(0x1a1a14).fillRect(15, 9, 4, 8).fillRect(21, 9, 4, 8);
+    g.fillStyle(0xff8c42).fillRect(0, 22, 28, 4);
+  });
+  bake(scene, "ground", 32, 64, (g) => {
+    g.fillStyle(0x262c3a).fillRect(0, 0, 32, 64);
+    g.fillStyle(0x30384a).fillRect(4, 22, 6, 6).fillRect(20, 40, 8, 6).fillRect(12, 54, 5, 5);
+    g.fillStyle(0x7bd389).fillRect(0, 0, 32, 8);
+    g.fillStyle(0x5cb06b).fillRect(0, 8, 32, 3);
+  });
+  bake(scene, "plat", 32, 18, (g) => {
+    g.fillStyle(0x343c50).fillRect(0, 0, 32, 18);
+    g.fillStyle(0x4cc9f0).fillRect(0, 0, 32, 5);
+    g.fillStyle(0x2a3040).fillRect(31, 0, 1, 18);
+  });
+  bake(scene, "star", 22, 22, (g) => g.fillStyle(0xf7df1e).fillPoints(starPoints(11, 11, 11, 5), true));
+  bake(scene, "slime", 30, 22, (g) => {
+    g.fillStyle(0xf72585).fillRoundedRect(0, 0, 30, 22, { tl: 11, tr: 11, bl: 3, br: 3 });
+    g.fillStyle(0xffffff).fillCircle(10, 9, 4).fillCircle(20, 9, 4);
+    g.fillStyle(0x1a1a14).fillCircle(11, 10, 2).fillCircle(21, 10, 2);
+  });
+  bake(scene, "spark", 8, 8, (g) => g.fillStyle(0xffffff).fillCircle(4, 4, 4));
+}
+// Matter's Bodies.polygon vertex layout, shifted so the bounding box starts at 0,0: Phaser derives
+// the sprite origin from the body bounds, so the texture must match that box exactly.
+function polygonShape(sides, radius) {
+  const raw = Array.from({ length: sides }, (_, i) => {
+    const a = Math.PI / sides + (i * 2 * Math.PI) / sides;
+    return { x: Math.cos(a) * radius, y: Math.sin(a) * radius };
+  });
+  const minX = Math.min(...raw.map((p) => p.x)), minY = Math.min(...raw.map((p) => p.y));
+  const maxX = Math.max(...raw.map((p) => p.x)), maxY = Math.max(...raw.map((p) => p.y));
+  return { pts: raw.map((p) => ({ x: p.x - minX, y: p.y - minY })), w: Math.round(maxX - minX), h: Math.round(maxY - minY) };
+}
+function ballAtlas() {
+  return canvas2d(96, 16, (g) => COLORS.forEach((c, i) => {
+    const grd = g.createRadialGradient(i * 16 + 6, 6, 1, i * 16 + 8, 8, 8);
+    grd.addColorStop(0, "#ffffff");
+    grd.addColorStop(0.35, c);
+    grd.addColorStop(1, c);
+    g.fillStyle = grd;
+    g.beginPath(); g.arc(i * 16 + 8, 8, 7.5, 0, Math.PI * 2); g.fill();
+  }));
+}
+// 128 x 32 dungeon tileset: 0 floor, 1 wall, 2 cracked floor, 3 mossy floor.
+function dungeonTiles() {
+  return canvas2d(128, 32, (g) => {
+    const floor = (ox) => {
+      g.fillStyle = "#1b1f2b"; g.fillRect(ox, 0, 32, 32);
+      g.fillStyle = "#222736"; g.fillRect(ox + 1, 1, 14, 14); g.fillRect(ox + 17, 17, 14, 14);
+      g.fillStyle = "#1f2431"; g.fillRect(ox + 17, 1, 14, 14); g.fillRect(ox + 1, 17, 14, 14);
+    };
+    floor(0); floor(64); floor(96);
+    g.fillStyle = "#3a4256"; g.fillRect(32, 0, 32, 32);
+    g.fillStyle = "#4b556d"; g.fillRect(32, 0, 32, 6);
+    g.fillStyle = "#2c3344";
+    g.fillRect(32, 15, 32, 2); g.fillRect(32, 25, 32, 2); g.fillRect(46, 6, 2, 9); g.fillRect(38, 17, 2, 8); g.fillRect(54, 17, 2, 8);
+    g.strokeStyle = "#0f1118"; g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(70, 6); g.lineTo(78, 14); g.lineTo(75, 20); g.lineTo(84, 27); g.stroke();
+    g.fillStyle = "rgba(123,211,137,.55)";
+    for (const [x, y, r] of [[104, 8, 3], [110, 11, 2], [119, 22, 3], [101, 25, 2], [124, 6, 1.5]]) { g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); }
+  });
+}
+function stickerTextures(scene) {
+  bake(scene, "st-star", 64, 64, (g) => {
+    g.fillStyle(0x000000, 0.25).fillPoints(starPoints(33, 35, 29, 13), true);
+    g.fillStyle(HEXN[0]).fillPoints(starPoints(32, 33, 29, 13), true);
+  });
+  bake(scene, "st-heart", 64, 64, (g) => {
+    g.fillStyle(HEXN[2]).fillCircle(21, 24, 14).fillCircle(43, 24, 14).fillTriangle(8, 30, 56, 30, 32, 58);
+    g.fillStyle(0xffffff, 0.45).fillCircle(17, 20, 4);
+  });
+  bake(scene, "st-bolt", 64, 64, (g) => {
+    g.fillStyle(HEXN[4]).fillPoints([{ x: 38, y: 2 }, { x: 12, y: 36 }, { x: 30, y: 36 }, { x: 24, y: 62 }, { x: 52, y: 26 }, { x: 34, y: 26 }], true);
+  });
+  bake(scene, "st-ring", 64, 64, (g) => {
+    g.lineStyle(9, HEXN[1]).strokeCircle(32, 32, 24);
+    g.lineStyle(3, 0xffffff, 0.5).strokeCircle(32, 32, 16);
+  });
+  bake(scene, "st-smile", 64, 64, (g) => {
+    g.fillStyle(HEXN[3]).fillCircle(32, 32, 28);
+    g.fillStyle(0x14171d).fillCircle(22, 26, 4).fillCircle(42, 26, 4);
+    g.lineStyle(4, 0x14171d).beginPath().arc(32, 32, 16, 0.5, Math.PI - 0.5).strokePath();
+  });
+}
 
-// on-screen pad for touch / mouse
-const play = () => game.scene.getScene("play");
-const hold = (id, key) => {
-  const b = $(id);
-  b.addEventListener("pointerdown", (e) => { e.preventDefault(); touch[key] = true; play().begin(); });
-  for (const ev of ["pointerup", "pointerleave", "pointercancel"]) b.addEventListener(ev, () => { if (key !== "jump") touch[key] = false; });
-};
-hold("bl", "left"); hold("br", "right"); hold("bj", "jump");
-$("restart").addEventListener("click", () => play().scene.restart({ go: true }));
+// Breadth-first search over walkable tiles; returns tile steps to the nearest goal (start excluded).
+function bfs(grid, sx, sy, goal) {
+  const W = grid[0].length, start = sy * W + sx, prev = new Int32Array(W * grid.length).fill(-1), q = [start];
+  prev[start] = start;
+  for (let qi = 0; qi < q.length; qi++) {
+    const id = q[qi], x = id % W, y = (id / W) | 0;
+    if (id !== start && goal(id)) {
+      const path = [];
+      for (let c = id; c !== start; c = prev[c]) path.push([c % W, (c / W) | 0]);
+      return path.reverse();
+    }
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const n = (y + dy) * W + x + dx;
+      if (grid[y + dy][x + dx] !== 1 && prev[n] === -1) { prev[n] = id; q.push(n); }
+    }
+  }
+  return null;
+}
+// Seeded rooms-and-corridors dungeon, so every visit shows the same map.
+function makeDungeon(MW, MH) {
+  const rng = new Phaser.Math.RandomDataGenerator(["atlas"]);
+  const grid = Array.from({ length: MH }, () => Array(MW).fill(1));
+  const rooms = [];
+  for (let tries = 0; tries < 120 && rooms.length < 10; tries++) {
+    const rw = rng.between(5, 10), rh = rng.between(4, 8);
+    const rx = rng.between(1, MW - rw - 2), ry = rng.between(1, MH - rh - 2);
+    if (rooms.some((r) => rx <= r.x + r.w && rx + rw >= r.x && ry <= r.y + r.h && ry + rh >= r.y)) continue;
+    rooms.push({ x: rx, y: ry, w: rw, h: rh, cx: rx + (rw >> 1), cy: ry + (rh >> 1) });
+  }
+  rooms.sort((a, b) => a.cx - b.cx);
+  const carve = (x, y) => { if (x > 0 && y > 0 && x < MW - 1 && y < MH - 1) grid[y][x] = 0; };
+  for (const r of rooms) for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) carve(x, y);
+  for (let i = 1; i < rooms.length; i++) {
+    const a = rooms[i - 1], b = rooms[i];
+    for (let x = Math.min(a.cx, b.cx); x <= Math.max(a.cx, b.cx); x++) { carve(x, a.cy); carve(x, a.cy + 1); }
+    for (let y = Math.min(a.cy, b.cy); y <= Math.max(a.cy, b.cy) + 1; y++) { carve(b.cx, y); carve(b.cx + 1, y); }
+  }
+  for (let y = 0; y < MH; y++) for (let x = 0; x < MW; x++) {
+    if (grid[y][x] !== 0) continue;
+    const r = rng.frac();
+    grid[y][x] = r < 0.05 ? 2 : r < 0.11 ? 3 : 0;
+  }
+  return { grid, rooms };
+}
+
+// FPS-independent WebGL draw-call counter: wraps the context's draw functions until cleanup.
+const DRAWS = ["drawElements", "drawArrays", "drawElementsInstanced", "drawArraysInstanced"];
+function countDraws(ctx, gl, onCall) {
+  if (!gl) return false;
+  for (const n of DRAWS) {
+    const orig = gl[n];
+    if (typeof orig !== "function") continue;
+    gl[n] = function (...a) { onCall(); return orig.apply(gl, a); };
+  }
+  ctx.onCleanup(() => DRAWS.forEach((n) => delete gl[n]));
+  return true;
+}
+
+const PLATFORMS = [[220, 380, 4], [420, 300, 3], [600, 220, 4], [700, 390, 4], [980, 330, 5], [1220, 250, 3], [1360, 380, 3], [1600, 300, 4], [1820, 220, 4], [2060, 330, 5]];
+const STARS = [
+  [120, 430], [260, 340], [460, 260], [640, 180], [700, 180], [760, 350], [790, 430], [1030, 290],
+  [1090, 290], [1250, 210], [1300, 430], [1400, 340], [1650, 260], [1860, 180], [1920, 180],
+  [2100, 290], [2180, 290], [2300, 430],
+];
+const SLIMES = [[400, 260, 660], [1000, 860, 1320], [1700, 1500, 2000], [2200, 2050, 2380]];
+const EASES = [
+  { name: "Linear" }, { name: "Sine.easeInOut" }, { name: "Quad.easeOut" }, { name: "Cubic.easeInOut" },
+  { name: "Back.easeOut" }, { name: "Elastic.easeOut", params: [1, 0.4] }, { name: "Bounce.easeOut" }, { name: "Expo.easeIn" },
+];
+
+Showcase.run({ scenes: [
+  {
+    id: "platformer", title: "星星跳跳",
+    api: "physics.add.staticGroup()・add.tileSprite()・physics.add.collider() / overlap()・add.particles()・cameras.main.startFollow()・physics.overlapRect()",
+    desc: "原版平台小遊戲：所有圖形都在執行時用 Graphics.generateTexture() 畫出，Arcade 物理處理重力與碰撞。自動示範用 overlapRect() 偵測前方坑洞，再看史萊姆與頭上的星星決定何時跳。",
+    hint: "← → 移動・↑ 或空白鍵跳（可二段跳）・從上方踩扁史萊姆・R 重新開始・按方向鍵即接手",
+    async mount(ctx) {
+      ctx.el.classList.add("ph-night");
+      ctx.html(`<div class="ph-box"></div><div class="ph-pad"><button class="btn" data-k="left" aria-label="向左">◀</button><button class="btn" data-k="right" aria-label="向右">▶</button><button class="btn primary" data-k="jump">跳</button></div>`);
+      const W = 2400, H = 540;
+      const touch = { left: false, right: false, jump: false };
+      const say = message(ctx), show = readout(ctx);
+      let auto = true, sc = null;
+      const autoBtn = ctx.toggle("自動示範", true, (v) => { auto = v; say(v ? "自動示範中" : "手動操作中"); });
+      ctx.button("重新開始", () => sc && sc.scene.restart());
+      const takeOver = () => {
+        if (!auto) return;
+        auto = false;
+        autoBtn.setAttribute("aria-pressed", "false");
+        say("手動操作中");
+      };
+      for (const b of ctx.$$(".ph-pad .btn")) {
+        const k = b.dataset.k;
+        b.addEventListener("pointerdown", (e) => { e.preventDefault(); touch[k] = true; takeOver(); });
+        for (const ev of ["pointerup", "pointerleave", "pointercancel"]) b.addEventListener(ev, () => { if (k !== "jump") touch[k] = false; });
+      }
+
+      sc = await phaserIn(ctx, ctx.$(".ph-box"), {
+        create() {
+          platformTextures(this);
+          let stars = 0, stomps = 0, jumps = 0, dir = 1, hopAt = 0, hurtUntil = 0;
+          // backdrop: star field and two parallax ridges
+          const sky = this.add.graphics().setScrollFactor(0.05);
+          for (let i = 0; i < 90; i++) {
+            sky.fillStyle(0xffffff, Phaser.Math.FloatBetween(0.15, 0.7));
+            sky.fillCircle(Phaser.Math.Between(0, 1400), Phaser.Math.Between(0, 320), Phaser.Math.FloatBetween(0.6, 1.6));
+          }
+          for (const [color, sf, base, amp, step] of [[0x1a2033, 0.25, 360, 140, 120], [0x20283c, 0.5, 430, 90, 80]]) {
+            const g = this.add.graphics().setScrollFactor(sf, 1).fillStyle(color);
+            const pts = [{ x: -200, y: H + 200 }];
+            for (let x = -200; x <= W + 200; x += step) pts.push({ x, y: base - Math.abs(Math.sin(x * 0.0037) * amp) - Math.random() * 30 });
+            pts.push({ x: W + 200, y: H + 200 });
+            g.fillPoints(pts, true);
+          }
+
+          this.physics.world.setBounds(0, 0, W, H + 300);
+          this.physics.world.setBoundsCollision(true, true, false, false);
+          const solids = this.physics.add.staticGroup();
+          const solid = (x, y, w, h, key) => {
+            const ts = this.add.tileSprite(x + w / 2, y + h / 2, w, h, key);
+            this.physics.add.existing(ts, true);
+            solids.add(ts);
+          };
+          for (const [x, w] of [[0, 704], [832, 512], [1472, 928]]) solid(x, H - 64, w, 64, "ground");
+          for (const [x, y, n] of PLATFORMS) solid(x, y, n * 32, 18, "plat");
+
+          const starGroup = this.physics.add.staticGroup();
+          for (const [x, y] of STARS) {
+            const s = starGroup.create(x, y, "star");
+            this.tweens.add({ targets: s, scaleX: 0.25, duration: 520, yoyo: true, repeat: -1, ease: "Sine.easeInOut", delay: x % 500 });
+          }
+          const slimes = this.physics.add.group();
+          for (const [x, min, max] of SLIMES) slimes.create(x, H - 90, "slime").setData({ min, max }).setVelocityX(70).setBounce(0);
+
+          let spawn = { x: 80, y: H - 120 };
+          const p = this.physics.add.sprite(spawn.x, spawn.y, "hero");
+          p.setCollideWorldBounds(true).setSize(22, 30).setDepth(5);
+          p.body.setMaxVelocityY(900);
+          const fx = this.add.particles(0, 0, "spark", {
+            speed: { min: 60, max: 260 }, lifespan: 600, scale: { start: 0.9, end: 0 },
+            gravityY: 400, blendMode: "ADD", emitting: false, tint: [0xf7df1e, 0xff8c42, 0xffffff],
+          }).setDepth(6);
+          const dust = this.add.particles(0, 0, "spark", {
+            speed: { min: 20, max: 90 }, angle: { min: 160, max: 380 }, lifespan: 380,
+            scale: { start: 0.6, end: 0 }, alpha: { start: 0.7, end: 0 }, emitting: false, tint: 0x4cc9f0,
+          }).setDepth(4);
+
+          const cam = this.cameras.main;
+          cam.setBounds(0, 0, W, H);
+          const fit = () => { this.cameras.resize(this.scale.width, this.scale.height); cam.setZoom(this.scale.height / H); };
+          fit();
+          this.scale.on("resize", fit);
+          this.events.once("shutdown", () => this.scale.off("resize", fit));
+          cam.startFollow(p, true, 0.1, 0.1);
+
+          const respawn = (text) => {
+            cam.shake(260, 0.012);
+            p.setVelocity(0, 0).setPosition(spawn.x, spawn.y - 30).setAlpha(0.3);
+            hurtUntil = this.time.now + 900;
+            this.tweens.add({ targets: p, alpha: 1, duration: 600 });
+            say(text);
+          };
+          this.physics.add.collider(p, solids);
+          this.physics.add.collider(slimes, solids);
+          this.physics.add.overlap(p, starGroup, (_, s) => {
+            s.disableBody(true, true);
+            fx.explode(18, s.x, s.y);
+            if (++stars < STARS.length) return;
+            say(auto ? "全部收集！" : "全部收集！按 R 再玩一次");
+            cam.flash(400, 247, 223, 30);
+            this.time.addEvent({ delay: 120, repeat: 8, callback: () => fx.explode(30, p.x + Phaser.Math.Between(-160, 160), p.y - Phaser.Math.Between(40, 200)) });
+            if (auto) this.time.delayedCall(2500, () => this.scene.restart());
+          });
+          this.physics.add.overlap(p, slimes, (_, e) => {
+            if (this.time.now < hurtUntil) return;
+            if (p.body.velocity.y > 0 && p.body.bottom <= e.body.top + 14) {
+              fx.explode(24, e.x, e.y);
+              e.destroy();
+              p.setVelocityY(-420);
+              jumps = 1;
+              stomps++;
+              cam.shake(120, 0.006);
+            } else respawn("被史萊姆撞到了！");
+          });
+
+          const k = this.input.keyboard.addKeys("LEFT,RIGHT,UP,SPACE,A,D,W,R");
+          const MANUAL = ["ArrowLeft", "ArrowRight", "ArrowUp", "Space", "KeyA", "KeyD", "KeyW"];
+          this.input.keyboard.on("keydown", (ev) => {
+            if (ev.code === "KeyR") this.scene.restart();
+            else if (MANUAL.includes(ev.code)) takeOver();
+          });
+          const JustDown = Phaser.Input.Keyboard.JustDown;
+
+          // Autopilot: walk, flip at the world edges, jump over pits, slimes and toward stars overhead.
+          const pilot = (time, onGround) => {
+            if (p.x > W - 60) dir = -1; else if (p.x < 60) dir = 1;
+            let jump = false;
+            if (onGround) {
+              const pit = this.physics.overlapRect(p.x + dir * 34, p.y + 18, 6, 240, false, true).length === 0;
+              const foe = slimes.getChildren().some((e) => Math.abs(e.y - p.y) < 40 && (e.x - p.x) * dir > 0 && (e.x - p.x) * dir < 120);
+              const above = starGroup.getChildren().some((s) => s.active && Math.abs(s.x - p.x) < 24 && p.y - s.y > 24 && p.y - s.y < 170);
+              if (pit || foe || above || time > hopAt) { jump = true; hopAt = time + Phaser.Math.Between(900, 2600); }
+            } else if (p.body.velocity.y > 60 && jumps < 2) {
+              jump = this.physics.overlapRect(p.x - 10, p.y + 16, 20, 200, false, true).length === 0;
+            }
+            return { left: dir < 0, right: dir > 0, jump };
+          };
+
+          this.stats = () => ({ stars, stomps });
+          this.tick = (time) => {
+            for (const e of slimes.getChildren()) {
+              if (e.x < e.getData("min")) e.setVelocityX(70);
+              if (e.x > e.getData("max")) e.setVelocityX(-70);
+              e.setFlipX(e.body.velocity.x < 0);
+              e.scaleY = 1 + Math.sin(time * 0.012 + e.x) * 0.08;
+            }
+            const onGround = p.body.blocked.down || p.body.touching.down;
+            const keyJump = JustDown(k.UP) | JustDown(k.SPACE) | JustDown(k.W);
+            const input = auto ? pilot(time, onGround) : {
+              left: k.LEFT.isDown || k.A.isDown || touch.left,
+              right: k.RIGHT.isDown || k.D.isDown || touch.right,
+              jump: !!keyJump || touch.jump,
+            };
+            touch.jump = false;
+            p.setVelocityX(input.left ? -230 : input.right ? 230 : p.body.velocity.x * 0.8);
+            if (input.left) p.setFlipX(true);
+            if (input.right) p.setFlipX(false);
+            if (onGround) {
+              jumps = 0;
+              if (p.y < H - 40) spawn = { x: p.x, y: p.y };
+            }
+            if (input.jump && (onGround || jumps < 2)) {
+              jumps = onGround ? 1 : 2;
+              p.setVelocityY(onGround ? -560 : -480);
+              dust.explode(onGround ? 6 : 12, p.x, p.y + 16);
+              this.tweens.add({ targets: p, scaleX: 0.8, scaleY: 1.2, duration: 90, yoyo: true });
+            }
+            if (p.y > H + 80) respawn("掉下去了！");
+          };
+        },
+      }, { physics: { default: "arcade", arcade: { gravity: { y: 1300 } } } });
+
+      const paint = () => {
+        const s = sc.stats();
+        show(`星星 <b>${s.stars}</b> / ${STARS.length}・踩扁 <b>${s.stomps}</b>・${auto ? "自動示範" : "手動操作"}・<b>${fpsOf(sc)}</b> FPS`);
+      };
+      paint();
+      ctx.interval(paint, 250);
+    },
+  },
+  {
+    id: "matter", title: "Matter 物理",
+    api: "physics: { default: \"matter\" }・matter.add.image(x, y, key, null, { shape })・matter.add.constraint() / worldConstraint()・matter.add.mouseSpring()・matter.world.on(\"collisionstart\")",
+    desc: "Phaser 內建 Matter.js 剛體物理：木板以約束串成吊橋，鐵球是掛在繩上的擺錘，一開場就撞向右邊的木箱金字塔。圓形、六角形、三角形持續落下，碰撞夠猛就噴出火花。",
+    hint: "拖曳任何物體・點空白處生成形狀・「丟鐵球」再推一次擺錘・「顯示碰撞體」看 Matter 實際的形狀與約束",
+    async mount(ctx) {
+      ctx.el.classList.add("ph-studio");
+      ctx.html(`<div class="ph-box"></div>`);
+      const show = readout(ctx);
+      let sc = null, debug = false, hits = 0, rate = 0;
+      ctx.button("丟鐵球", () => sc && sc.kick());
+      ctx.button("重置", () => sc && sc.scene.restart());
+      ctx.toggle("顯示碰撞體", false, (v) => { debug = v; if (sc) sc.setDebug(v); });
+
+      sc = await phaserIn(ctx, ctx.$(".ph-box"), {
+        create() {
+          const shapes = { hex: polygonShape(6, 17), tri: polygonShape(3, 20) };
+          bake(this, "m-plank", 36, 12, (g) => { g.fillStyle(0x8a5a33).fillRoundedRect(0, 0, 36, 12, 3); g.fillStyle(0xa8703f).fillRect(3, 2, 30, 3); });
+          bake(this, "m-crate", 30, 30, (g) => {
+            g.fillStyle(0xc98a4b).fillRoundedRect(0, 0, 30, 30, 3);
+            g.lineStyle(3, 0x8a5a33).strokeRect(3, 3, 24, 24).lineBetween(4, 4, 26, 26);
+          });
+          bake(this, "m-ball", 52, 52, (g) => { g.fillStyle(0x5b6378).fillCircle(26, 26, 26); g.fillStyle(0x8892a8).fillCircle(19, 18, 9); });
+          bake(this, "m-circle", 28, 28, (g) => g.fillStyle(0xffffff).fillCircle(14, 14, 14));
+          for (const [key, s] of Object.entries(shapes)) bake(this, `m-${key}`, s.w, s.h, (g) => g.fillStyle(0xffffff).fillPoints(s.pts, true));
+          bake(this, "spark", 8, 8, (g) => g.fillStyle(0xffffff).fillCircle(4, 4, 4));
+
+          const { width: w, height: h } = this.scale, M = this.matter, world = M.world;
+          world.setBounds(0, 0, w, h, 64, true, true, false, true);
+          const all = new Set();
+          const img = (x, y, key, opts) => {
+            const o = M.add.image(x, y, key, null, opts).setAlpha(debug ? 0.35 : 1);
+            all.add(o);
+            return o;
+          };
+
+          // suspension bridge between two static pillars
+          const deckY = Math.round(h * 0.55), lx = w * 0.04, rx = w * 0.34;
+          for (const x of [lx, rx]) {
+            const ph = h - deckY - 6, py = deckY + 6 + ph / 2;
+            all.add(this.add.rectangle(x, py, 24, ph, 0x3a4152).setStrokeStyle(2, 0x4b556d));
+            M.add.rectangle(x, py, 24, ph, { isStatic: true });
+          }
+          const span = rx - lx - 24, n = Math.max(3, Math.floor(span / 38)), gap = span / n, group = world.nextGroup(true);
+          const planks = [];
+          for (let i = 0; i < n; i++) {
+            planks.push(img(lx + 12 + gap * (i + 0.5), deckY, "m-plank", { collisionFilter: { group }, chamfer: 3, density: 0.005, frictionAir: 0.02 }));
+          }
+          for (let i = 1; i < n; i++) M.add.constraint(planks[i - 1], planks[i], gap - 36 + 2, 0.9, { pointA: { x: 18, y: 0 }, pointB: { x: -18, y: 0 } });
+          M.add.worldConstraint(planks[0], 2, 0.9, { pointA: { x: lx + 12, y: deckY }, pointB: { x: -18, y: 0 } });
+          M.add.worldConstraint(planks[n - 1], 2, 0.9, { pointA: { x: rx - 12, y: deckY }, pointB: { x: 18, y: 0 } });
+
+          // crate pyramid and the pendulum that rests just left of it
+          const nb = clamp(Math.floor((w * 0.3) / 32), 2, 6), cx = w * 0.76;
+          for (let r = 0; r < nb; r++) {
+            for (let j = 0; j < nb - r; j++) img(cx + (j - (nb - r - 1) / 2) * 33, h - 15.5 - r * 30.5, "m-crate", { chamfer: 3, friction: 0.6 });
+          }
+          const ax = cx - ((nb - 1) * 33) / 2 - 15 - 28 - 26, ay = Math.round(h * 0.12);
+          const by = Math.min(h - 30, h - 15 - ((nb - 1) * 30.5) / 2);
+          const ball = img(ax, by, "m-ball", { shape: { type: "circle", radius: 26 }, density: 0.04, frictionAir: 0.002 });
+          M.add.worldConstraint(ball, by - ay, 1, { pointA: { x: ax, y: ay } });
+          const rope = this.add.graphics();
+          this.kick = () => ball.setVelocity(15, 0);
+          this.time.delayedCall(800, this.kick);
+
+          // falling shapes, capped at 60
+          const drops = [];
+          const KINDS = [
+            ["m-circle", { shape: { type: "circle", radius: 14 } }],
+            ["m-hex", { shape: { type: "polygon", sides: 6, radius: 17 } }],
+            ["m-tri", { shape: { type: "polygon", sides: 3, radius: 20 } }],
+            ["m-crate", { chamfer: 3 }],
+          ];
+          const drop = (x, y) => {
+            const [key, opts] = Phaser.Utils.Array.GetRandom(KINDS);
+            const o = img(x, y, key, { ...opts, restitution: 0.3, friction: 0.4 });
+            if (key !== "m-crate") o.setTint(Phaser.Utils.Array.GetRandom(HEXN));
+            o.setAngle(rnd(0, 360));
+            drops.push(o);
+            if (drops.length > 60) { const old = drops.shift(); all.delete(old); old.destroy(); }
+          };
+          this.time.addEvent({ delay: 650, loop: true, callback: () => drop(rnd(w * 0.06, w * 0.94), -30) });
+
+          M.add.mouseSpring({ length: 1, stiffness: 0.2 });
+          this.input.on("pointerdown", (ptr) => { if (!M.intersectPoint(ptr.worldX, ptr.worldY).length) drop(ptr.worldX, ptr.worldY); });
+
+          const sparks = this.add.particles(0, 0, "spark", {
+            speed: { min: 40, max: 220 }, lifespan: 420, scale: { start: 0.8, end: 0 },
+            blendMode: "ADD", tint: [0xf7df1e, 0xff8c42, 0xffffff], emitting: false,
+          }).setDepth(10);
+          world.on("collisionstart", (ev) => {
+            let shown = 0;
+            for (const pair of ev.pairs) {
+              const a = pair.bodyA, b = pair.bodyB;
+              const rv = Math.hypot(a.velocity.x - b.velocity.x, a.velocity.y - b.velocity.y);
+              if (rv < 3) continue;
+              hits++;
+              if (shown++ >= 4) continue;
+              const c = pair.collision, s = c && c.supports && c.supports[0];
+              const ok = s && Number.isFinite(s.x);
+              sparks.explode(Math.min(14, 3 + Math.round(rv)), ok ? s.x : (a.position.x + b.position.x) / 2, ok ? s.y : (a.position.y + b.position.y) / 2);
+            }
+          });
+
+          // debug renderer exists from boot (so body styles are registered) and is toggled here
+          this.setDebug = (v) => {
+            world.drawDebug = v;
+            if (!v) world.debugGraphic.clear();
+            for (const o of all) o.setAlpha(v ? 0.35 : 1);
+          };
+          world.drawDebug = debug;
+          if (!debug) world.debugGraphic.clear();
+
+          this.stats = () => ({
+            bodies: M.composite.allBodies(world.localWorld).length,
+            cons: M.composite.allConstraints(world.localWorld).length,
+          });
+          this.tick = () => {
+            rope.clear().lineStyle(2, 0x9b998f, 0.9).lineBetween(ax, ay, ball.x, ball.y);
+            rope.fillStyle(0xc9c7bd).fillCircle(ax, ay, 4);
+          };
+          restartOnResize(ctx, this);
+        },
+      }, { physics: { default: "matter", matter: { gravity: { y: 1 }, debug: { showJoint: true, showCollisions: true, lineThickness: 1.5 } } } });
+
+      ctx.interval(() => { rate = hits; hits = 0; }, 1000);
+      const paint = () => {
+        const s = sc.stats();
+        show(`剛體 <b>${s.bodies}</b>・約束 <b>${s.cons}</b>・強碰撞 <b>${rate}</b> 次/秒・<b>${fpsOf(sc)}</b> FPS`);
+      };
+      paint();
+      ctx.interval(paint, 300);
+    },
+  },
+  {
+    id: "tweens", title: "補間與時間軸",
+    api: "tweens.add({ ease, yoyo, hold, repeat })・tweens.stagger(55, { grid, from })・add.timeline([{ at, run, tween }])・tweens.chain()",
+    desc: "三種動畫編排：同一段位移套用 8 種緩動曲線並排比較，左側小圖是曲線本身；用 stagger 依格點距離錯開延遲做出波紋；用 Timeline 把 9 個事件排在 4.6 秒的時間軸上循環播放。",
+    hint: "切換三個檢視・交錯格點可點任一格當波紋起點",
+    async mount(ctx) {
+      ctx.el.classList.add("ph-studio");
+      ctx.html(`<div class="ph-box"></div>`);
+      const show = readout(ctx);
+      let view = 0, sc = null;
+      ctx.group(["緩動曲線", "交錯格點", "時間軸"], 0, (i) => { view = i; if (sc) sc.scene.restart(); });
+
+      function easeView() {
+        const { width: w, height: h } = this.scale, top = belowControls(ctx), bottom = h - 50;
+        const wide = w >= 560, lane = (bottom - top) / EASES.length;
+        const labelW = wide ? 132 : 0, plotW = wide ? clamp(lane * 1.7, 56, 120) : 0, plotH = lane * 0.74;
+        const x0 = wide ? 16 + labelW + plotW + 26 : 22, x1 = x0 + (w - 30 - x0) / 1.3;
+        const g = this.add.graphics();
+        const TW = { duration: 1600, yoyo: true, hold: 500, repeat: -1, repeatDelay: 500 };
+        const rows = EASES.map((e, i) => {
+          const y = top + lane * (i + 0.5), color = HEXN[i % 6], fn = Phaser.Tweens.Builders.GetEaseFunction(e.name, e.params);
+          const ty = wide ? y : y + lane * 0.18;
+          txt(this, 16, wide ? y : y - lane * 0.24, e.name, 12, "#c9c7bd", MONO).setOrigin(0, 0.5);
+          g.lineStyle(2, 0xffffff, 0.08).lineBetween(x0, ty, x1, ty);
+          g.lineStyle(2, color, 0.5).lineBetween(x1, ty - 7, x1, ty + 7);
+          let plot = null;
+          if (wide) {
+            const px = 16 + labelW, py = y - plotH / 2;
+            const map = (u, v) => ({ x: px + u * plotW, y: py + plotH - ((v + 0.3) / 1.6) * plotH });
+            g.fillStyle(0xffffff, 0.04).fillRect(px, py, plotW, plotH);
+            g.lineStyle(1, 0xffffff, 0.12).lineBetween(px, map(0, 0).y, px + plotW, map(0, 0).y).lineBetween(px, map(0, 1).y, px + plotW, map(0, 1).y);
+            const pts = [];
+            for (let s = 0; s <= 48; s++) pts.push(map(s / 48, fn(s / 48)));
+            g.lineStyle(1.5, color, 0.95).strokePoints(pts);
+            plot = { map, dot: this.add.circle(px, py, 3, 0xffffff) };
+          }
+          const ball = this.add.image(x0, ty, "ph-dot").setTint(color);
+          this.tweens.add({ targets: ball, x: x1, ease: e.name, easeParams: e.params, ...TW });
+          return { fn, plot };
+        });
+        const clock = { t: 0 };
+        this.tweens.add({ targets: clock, t: 1, ease: "Linear", ...TW });
+        this.tick = () => {
+          for (const r of rows) if (r.plot) { const p = r.plot.map(clock.t, r.fn(clock.t)); r.plot.dot.setPosition(p.x, p.y); }
+        };
+        show(`8 條相同的 <code>tweens.add({ duration: 1600, yoyo, hold: 500 })</code>，只換 <b>ease</b>・進度 <b>${(0).toFixed(2)}</b>`);
+        let last = 0;
+        const base = this.tick;
+        this.tick = (t) => {
+          base();
+          if (t - last < 120) return;
+          last = t;
+          show(`8 條相同的 <code>tweens.add({ duration: 1600, yoyo, hold: 500 })</code>，只換 <b>ease</b>・進度 <b>${clock.t.toFixed(2)}</b>`);
+        };
+      }
+
+      function gridView() {
+        const { width: w, height: h } = this.scale, top = belowControls(ctx), bottom = h - 50;
+        const [cols, rows] = w >= 560 ? [14, 8] : [8, 10];
+        const s = Math.min((w - 32) / cols, (bottom - top) / rows);
+        const ox = (w - s * cols) / 2 + s / 2, oy = top + (bottom - top - s * rows) / 2 + s / 2;
+        const cells = [];
+        let timer = null, k = 0;
+        const wave = (from) => {
+          this.tweens.killTweensOf(cells);
+          for (const c of cells) c.setScale(1).setAngle(0).setAlpha(1);
+          this.tweens.add({
+            targets: cells, scale: 0.15, angle: 180, alpha: 0.35, yoyo: true, duration: 600, ease: "Sine.easeInOut",
+            delay: this.tweens.stagger(55, { grid: [cols, rows], from }),
+          });
+          const label = typeof from === "number" ? `<b>${from}</b>` : `<b>"${from}"</b>`;
+          show(`<code>tweens.stagger(55, { grid: [${cols}, ${rows}], from: </code>${label}<code> })</code>・${cols * rows} 格`);
+        };
+        const next = () => {
+          const from = k % 4 === 3 ? Phaser.Math.Between(0, cells.length - 1) : ["center", "first", "last"][k % 4];
+          k++;
+          wave(from);
+        };
+        const restartTimer = () => {
+          if (timer) timer.remove();
+          timer = this.time.addEvent({ delay: 2200, loop: true, callback: next });
+        };
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            const idx = cells.length;
+            const cell = this.add.rectangle(ox + c * s, oy + r * s, s * 0.78, s * 0.78, hsv(c / cols * 0.75 + r / rows * 0.25, 0.6, 1));
+            cell.setInteractive({ useHandCursor: true }).on("pointerdown", () => { wave(idx); restartTimer(); });
+            cells.push(cell);
+          }
+        }
+        next();
+        restartTimer();
+      }
+
+      function timelineView() {
+        const { width: w, height: h } = this.scale, top = belowControls(ctx), trackY = h - 74;
+        const cx = w / 2, cy = (top + trackY - 40) / 2 + 10, gap = Math.min(110, w * 0.24), T = 4600;
+        bake(this, "tl-sq", 44, 44, (g) => g.fillStyle(0xffffff).fillRoundedRect(0, 0, 44, 44, 8));
+        bake(this, "tl-ball", 44, 44, (g) => g.fillStyle(0xffffff).fillCircle(22, 22, 22));
+        bake(this, "tl-tri", 48, 44, (g) => g.fillStyle(0xffffff).fillTriangle(24, 0, 48, 44, 0, 44));
+        const box = this.add.image(0, 0, "tl-sq").setTint(HEXN[1]);
+        const ball = this.add.image(0, 0, "tl-ball").setTint(HEXN[2]);
+        const tri = this.add.image(0, 0, "tl-tri").setTint(HEXN[0]);
+        const label = txt(this, cx, cy + 66, "九個事件，一條時間軸", 18, C.c1).setOrigin(0.5);
+        const burst = this.add.particles(0, 0, "ph-dot", { speed: { min: 80, max: 280 }, lifespan: 700, scale: { start: 0.7, end: 0 }, blendMode: "ADD", tint: HEXN, emitting: false });
+        const reset = () => {
+          box.setPosition(-60, cy).setAlpha(1).setScale(1);
+          ball.setPosition(cx, top - 60).setAlpha(1).setScale(1);
+          tri.setPosition(w + 60, cy).setAlpha(1).setAngle(0).setScale(0.3);
+          label.setAlpha(0).setScale(0.6);
+        };
+        reset();
+        let cur = "";
+        const EV = [
+          [0, "重設", reset],
+          [100, "方塊滑入", null, { targets: box, x: cx - gap, ease: "Back.easeOut", duration: 600 }],
+          [600, "圓球落下", null, { targets: ball, y: cy, ease: "Bounce.easeOut", duration: 900 }],
+          [1300, "三角旋入", null, { targets: tri, x: cx + gap, angle: 360, scale: 1, ease: "Cubic.easeOut", duration: 800 }],
+          [2200, "粒子爆發", () => { burst.explode(60, cx, cy); this.cameras.main.shake(200, 0.006); }],
+          [2500, "依序跳起", () => this.tweens.add({ targets: [box, ball, tri], y: cy - 50, yoyo: true, duration: 260, ease: "Quad.easeOut", delay: this.tweens.stagger(90) })],
+          [2900, "文字出現", null, { targets: label, alpha: 1, scale: 1, ease: "Back.easeOut", duration: 500 }],
+          [4000, "全部淡出", null, { targets: [box, ball, tri, label], alpha: 0, duration: 500 }],
+          [T, "結束", null],
+        ];
+        const tl = this.add.timeline(EV.map(([at, name, fn, tween]) => ({ at, tween, run: () => { cur = name; if (fn) fn(); } })));
+        tl.repeat(-1).play();
+
+        const tx0 = 24, tx1 = w - 24;
+        const g = this.add.graphics();
+        g.lineStyle(3, 0xffffff, 0.12).lineBetween(tx0, trackY, tx1, trackY);
+        for (const [at] of EV) { const x = tx0 + (at / T) * (tx1 - tx0); g.lineStyle(2, HEXN[0], 0.6).lineBetween(x, trackY - 7, x, trackY + 7); }
+        const head = this.add.rectangle(tx0, trackY, 3, 22, 0xffffff);
+        const evText = txt(this, tx0, trackY - 30, "", 13, C.c1);
+
+        const fx0 = Math.max(16, cx - gap - 70), fx1 = Math.min(w - 16, cx + gap + 70), fy0 = top + 4, fy1 = trackY - 46;
+        this.add.graphics().lineStyle(1, 0xffffff, 0.1).strokeRect(fx0, fy0, fx1 - fx0, fy1 - fy0);
+        txt(this, fx0 + 10, fy0 + 6, "tweens.chain()", 11, "#9b998f", MONO);
+        const sat = this.add.image(fx0, fy0, "ph-dot").setTint(HEXN[3]).setScale(0.8);
+        this.tweens.chain({
+          targets: sat, loop: -1,
+          tweens: [
+            { x: fx1, duration: 900, ease: "Sine.easeInOut" }, { y: fy1, duration: 600, ease: "Sine.easeInOut" },
+            { x: fx0, duration: 900, ease: "Sine.easeInOut" }, { y: fy0, duration: 600, ease: "Sine.easeInOut" },
+          ],
+        });
+        let last = 0;
+        this.tick = (t) => {
+          const p = clamp(tl.elapsed / T, 0, 1);
+          head.x = tx0 + p * (tx1 - tx0);
+          evText.setText(cur);
+          evText.x = clamp(head.x - evText.width / 2, tx0, tx1 - evText.width);
+          if (t - last < 120) return;
+          last = t;
+          show(`<code>timeline.elapsed</code> <b>${String(Math.round(tl.elapsed)).padStart(4, " ")}</b> ms・<code>getProgress()</code> <b>${tl.getProgress().toFixed(2)}</b>・第 <b>${tl.iteration + 1}</b> 輪`);
+        };
+      }
+
+      sc = await phaserIn(ctx, ctx.$(".ph-box"), {
+        create() {
+          bake(this, "ph-dot", 22, 22, (g) => { g.fillStyle(0xffffff).fillCircle(11, 11, 11); });
+          [easeView, gridView, timelineView][view].call(this);
+          restartOnResize(ctx, this);
+        },
+      });
+    },
+  },
+  {
+    id: "particles", title: "粒子系統",
+    api: "add.particles(x, y, key, config)・explode() / emitParticleAt()・emitZone: { type: \"edge\", source }・color + colorEase・createGravityWell()・startFollow()",
+    desc: "同一張發光圓點材質，四種發射器設定：煙火用 explode() 一次噴出並受重力；火焰用 color 陣列讓顏色隨壽命漸變；光環沿圓形與星形邊緣發射並整組旋轉；重力井把上千顆粒子拉進軌道。",
+    hint: "切換四種效果・移動滑鼠帶動火焰與重力井，停 2.5 秒改走自動路徑・點擊施放煙火或爆發",
+    async mount(ctx) {
+      ctx.el.classList.add("ph-night");
+      ctx.html(`<div class="ph-box"></div>`);
+      const show = readout(ctx);
+      let view = 0, sc = null;
+      ctx.group(["煙火", "火焰", "光環", "重力井"], 0, (i) => { view = i; if (sc) sc.scene.restart(); });
+
+      sc = await phaserIn(ctx, ctx.$(".ph-box"), {
+        create() {
+          canvasTex(this, "ph-glow", glowCanvas(64));
+          const { width: w, height: h } = this.scale, top = belowControls(ctx);
+          const cx = w / 2, cy = (top + h - 40) / 2;
+          const em = [];
+          const add = (x, y, cfg) => { const e = this.add.particles(x, y, "ph-glow", cfg); em.push(e); return e; };
+          const target = { x: cx, y: cy }, follow = { x: cx, y: cy };
+          let moved = -1e9, onDown = null, onTick = null;
+          this.input.on("pointermove", (ptr) => { target.x = ptr.worldX; target.y = ptr.worldY; moved = this.time.now; });
+          this.input.on("pointerdown", (ptr) => onDown && onDown(ptr.worldX, ptr.worldY));
+
+          if (view === 0) {
+            const trail = add(0, 0, { lifespan: 520, speed: { min: 5, max: 35 }, scale: { start: 0.32, end: 0 }, alpha: { start: 0.9, end: 0 }, blendMode: "ADD", tint: 0xffd27a, emitting: false });
+            const burst = add(0, 0, { lifespan: { min: 900, max: 1500 }, speed: { min: 60, max: 320 }, scale: { start: 0.42, end: 0 }, alpha: { start: 1, end: 0 }, gravityY: 180, blendMode: "ADD", emitting: false });
+            const launch = (tx, ty) => {
+              const rocket = { x: tx + rnd(-40, 40), y: h + 10 }, color = Phaser.Utils.Array.GetRandom(HEXN);
+              this.tweens.add({
+                targets: rocket, x: tx, y: ty, duration: rnd(700, 1000), ease: "Quad.easeOut",
+                onUpdate: () => trail.emitParticleAt(rocket.x, rocket.y, 2),
+                onComplete: () => { burst.setParticleTint(color); burst.explode(90, rocket.x, rocket.y); },
+              });
+            };
+            this.time.addEvent({ delay: 650, loop: true, callback: () => launch(rnd(w * 0.15, w * 0.85), rnd(top + 30, h * 0.5)) });
+            launch(cx, top + (h - top) * 0.3);
+            onDown = launch;
+          } else if (view === 1) {
+            const smoke = add(0, 0, { lifespan: 1700, speedY: { min: -70, max: -35 }, speedX: { min: -18, max: 18 }, scale: { start: 0.5, end: 1.6 }, alpha: { start: 0.28, end: 0 }, tint: 0x3a3f4c, frequency: 60 });
+            const fire = add(0, 0, {
+              lifespan: { min: 600, max: 1000 }, speedY: { min: -230, max: -120 }, speedX: { min: -22, max: 22 },
+              scale: { start: 0.85, end: 0.15 }, alpha: { start: 0.7, end: 0 },
+              color: [0xfff0a0, 0xffa62b, 0xf0501c, 0x501010], colorEase: "Quad.easeIn", blendMode: "ADD", frequency: 10, quantity: 1,
+            });
+            const embers = add(0, 0, { lifespan: 1300, speedY: { min: -160, max: -60 }, speedX: { min: -50, max: 50 }, gravityY: -40, scale: { start: 0.12, end: 0 }, tint: 0xffc46b, blendMode: "ADD", frequency: 90 });
+            smoke.startFollow(follow, 0, -40);
+            fire.startFollow(follow);
+            embers.startFollow(follow);
+          } else if (view === 2) {
+            const R = Math.min(w * 0.42, (h - top - 50) * 0.42);
+            const ring = add(cx, cy, {
+              lifespan: 1400, speed: { min: 2, max: 18 }, scale: { start: 0.3, end: 0 }, alpha: { start: 1, end: 0 }, blendMode: "ADD",
+              frequency: 10, quantity: 3, tint: { onEmit: () => hsv(this.time.now * 0.00025, 0.7) },
+              emitZone: { type: "edge", source: new Phaser.Geom.Circle(0, 0, R), quantity: 120 },
+            });
+            const star = add(cx, cy, {
+              lifespan: 1000, speed: { min: 0, max: 10 }, scale: { start: 0.22, end: 0 }, alpha: { start: 1, end: 0 }, blendMode: "ADD",
+              frequency: 14, quantity: 2, tint: HEXN[0],
+              emitZone: { type: "edge", source: new Phaser.Geom.Polygon(starPoints(0, 0, R * 0.62, R * 0.27)), quantity: 90 },
+            });
+            onTick = (dt) => { ring.rotation += dt * 0.0005; star.rotation -= dt * 0.0009; };
+            onDown = (x, y) => { ring.explode(80, x - cx, y - cy); };
+          } else {
+            const field = add(0, 0, {
+              x: { min: 0, max: w }, y: { min: top, max: h }, lifespan: 4000, speed: { min: 10, max: 40 },
+              scale: { start: 0.2, end: 0.05 }, alpha: { start: 0.9, end: 0 }, blendMode: "ADD", tint: HEXN,
+              frequency: 8, quantity: 3, maxVelocityX: 400, maxVelocityY: 400,
+            });
+            const wellA = field.createGravityWell({ x: cx, y: cy, power: 3, epsilon: 250, gravity: 100 });
+            const wellB = field.createGravityWell({ x: cx, y: cy, power: 2, epsilon: 250, gravity: 100 });
+            const rings = this.add.graphics();
+            onTick = () => {
+              const t = this.time.now * 0.0007, r = Math.min(w, h - top) * 0.3;
+              wellA.x = follow.x; wellA.y = follow.y;
+              wellB.x = cx + Math.cos(t) * r; wellB.y = cy + Math.sin(t) * r * 0.6;
+              rings.clear().lineStyle(1.5, 0xffffff, 0.35).strokeCircle(wellA.x, wellA.y, 14).strokeCircle(wellB.x, wellB.y, 10);
+            };
+            onDown = (x, y) => field.explode(100, x, y);
+          }
+
+          this.stats = () => ({ alive: em.reduce((s, e) => s + e.getAliveParticleCount(), 0), emitters: em.length });
+          this.tick = (time, dt) => {
+            if (time - moved > 2500) {
+              // idle path: the flame sways low in the frame, the gravity well wanders a wide figure
+              const fire = view === 1;
+              target.x = cx + Math.sin(time * 0.0007) * w * (fire ? 0.12 : 0.28);
+              target.y = fire ? cy + (h - top) * 0.18 + Math.sin(time * 0.0013) * 12 : cy + Math.sin(time * 0.0011) * (h - top) * 0.22;
+            }
+            follow.x += (target.x - follow.x) * 0.12;
+            follow.y += (target.y - follow.y) * 0.12;
+            if (onTick) onTick(dt);
+          };
+          restartOnResize(ctx, this);
+        },
+      });
+
+      const paint = () => {
+        const s = sc.stats();
+        show(`存活粒子 <b>${fmtN(s.alive)}</b>・發射器 <b>${s.emitters}</b>・<b>${fpsOf(sc)}</b> FPS`);
+      };
+      paint();
+      ctx.interval(paint, 250);
+    },
+  },
+  {
+    id: "camera", title: "攝影機與地圖",
+    api: "make.tilemap({ data })・createLayer()・setCollision()・cameras.add()・camera.ignore()・startFollow() / setDeadzone()・zoomTo() / shake() / flash() / fadeOut()",
+    desc: "用程式產生的 48×32 格地下城：Tilemap 圖層負責牆壁碰撞，小機器人用 BFS 找最近的金幣。主攝影機跟隨並保留死區，右下另開一台縮小的攝影機當小地圖，兩台各自 ignore 不同物件。",
+    hint: "方向鍵或 WASD 接手 2.5 秒・切換縮放，試試震動、閃光、淡出淡入",
+    async mount(ctx) {
+      ctx.el.classList.add("ph-studio", "ph-has-mini");
+      ctx.html(`<div class="ph-box"></div><div class="ph-mini"></div>`);
+      const show = readout(ctx), miniEl = ctx.$(".ph-mini");
+      const ZOOMS = [0.75, 1.25, 2];
+      let sc = null, zoom = 1.25, miniOn = true;
+      ctx.group(ZOOMS.map((z) => `${z}×`), 1, (i) => { zoom = ZOOMS[i]; if (sc) sc.cameras.main.zoomTo(zoom, 500, "Sine.easeInOut", true); });
+      ctx.button("震動", () => sc && sc.cameras.main.shake(320, 0.01));
+      ctx.button("閃光", () => sc && sc.cameras.main.flash(320, 247, 223, 30));
+      ctx.button("淡出淡入", () => {
+        if (!sc) return;
+        const cam = sc.cameras.main;
+        cam.fadeOut(400, 14, 16, 19);
+        cam.once(Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE, () => cam.fadeIn(400, 14, 16, 19));
+      });
+      ctx.toggle("小地圖", true, (v) => { miniOn = v; if (sc) sc.setMini(v); });
+
+      sc = await phaserIn(ctx, ctx.$(".ph-box"), {
+        create() {
+          canvasTex(this, "dgn-tiles", dungeonTiles());
+          bake(this, "bot", 24, 24, (g) => {
+            g.fillStyle(HEXN[1]).fillCircle(12, 12, 11);
+            g.fillStyle(0x0e1013).fillRoundedRect(5, 8, 14, 7, 3);
+            g.fillStyle(0xffffff).fillCircle(9, 11.5, 2).fillCircle(15, 11.5, 2);
+          });
+          bake(this, "coin", 16, 16, (g) => { g.fillStyle(0xd4a514).fillCircle(8, 8, 8); g.fillStyle(0xf7df1e).fillCircle(8, 8, 6); g.fillStyle(0xfff7b0).fillRect(6, 4, 2, 7); });
+          bake(this, "spark", 8, 8, (g) => g.fillStyle(0xffffff).fillCircle(4, 4, 4));
+
+          const MW = 48, MH = 32, TS = 32, mapW = MW * TS, mapH = MH * TS;
+          const { grid, rooms } = makeDungeon(MW, MH);
+          const map = this.make.tilemap({ data: grid, tileWidth: TS, tileHeight: TS });
+          const layer = map.createLayer(0, map.addTilesetImage("tiles", "dgn-tiles", TS, TS, 0, 0), 0, 0);
+          layer.setCollision([1]);
+          const floor = [];
+          grid.forEach((row, y) => row.forEach((v, x) => { if (v !== 1) floor.push(y * MW + x); }));
+
+          const r0 = rooms[0];
+          const bot = this.physics.add.image(r0.cx * TS + 16, r0.cy * TS + 16, "bot").setDepth(3);
+          bot.setCircle(11, 1, 1);
+          this.physics.add.collider(bot, layer);
+
+          const coins = new Map();
+          let got = 0;
+          const pop = this.add.particles(0, 0, "spark", { speed: { min: 40, max: 140 }, lifespan: 420, scale: { start: 0.8, end: 0 }, tint: 0xf7df1e, blendMode: "ADD", emitting: false }).setDepth(4);
+          const fillCoins = () => {
+            const bt = ((bot.y / TS) | 0) * MW + ((bot.x / TS) | 0);
+            const pool = Phaser.Utils.Array.Shuffle(floor.filter((id) => id !== bt));
+            for (const id of pool.slice(0, 24)) {
+              const c = this.add.image((id % MW) * TS + 16, ((id / MW) | 0) * TS + 16, "coin").setDepth(2);
+              this.tweens.add({ targets: c, y: c.y - 4, duration: 600, yoyo: true, repeat: -1, ease: "Sine.easeInOut", delay: id % 600 });
+              coins.set(id, c);
+            }
+          };
+          fillCoins();
+
+          const cam = this.cameras.main;
+          cam.setBounds(0, 0, mapW, mapH).setZoom(zoom).startFollow(bot, true, 0.1, 0.1).setDeadzone(80, 60);
+          const mini = this.cameras.add(0, 0, 10, 10).setBackgroundColor("rgba(10,12,18,0.9)");
+          const viewRect = this.add.graphics().setDepth(9), blip = this.add.circle(0, 0, 4, HEXN[2]).setDepth(9);
+          cam.ignore([viewRect, blip]);
+          const placeMini = () => {
+            const w = this.scale.width, h = this.scale.height;
+            const mw = Math.round(Math.min(180, w * 0.38)), z = mw / mapW, mh = Math.round(mapH * z);
+            const x = w - mw - 10, y = h - mh - (w < 560 ? 52 : 10);
+            mini.setViewport(x, y, mw, mh).setZoom(z).centerOn(mapW / 2, mapH / 2);
+            miniEl.style.cssText = `left:${x - 1.5}px;top:${y - 1.5}px;width:${mw + 3}px;height:${mh + 3}px`;
+            ctx.el.style.setProperty("--mini-w", w < 560 ? "0px" : `${mw + 10}px`);
+            blip.setRadius(3.5 / z);
+            viewRect.setData("lw", 1.5 / z);
+          };
+          placeMini();
+          this.scale.on("resize", placeMini);
+          this.events.once("shutdown", () => this.scale.off("resize", placeMini));
+          this.setMini = (v) => { mini.setVisible(v); miniEl.hidden = !v; };
+          this.setMini(miniOn);
+
+          const keys = this.input.keyboard.addKeys("LEFT,RIGHT,UP,DOWN,W,A,S,D");
+          let manualUntil = 0, path = null;
+          this.stats = () => ({ got, manual: this.time.now < manualUntil });
+          this.tick = (time) => {
+            const L = keys.LEFT.isDown || keys.A.isDown, R = keys.RIGHT.isDown || keys.D.isDown;
+            const U = keys.UP.isDown || keys.W.isDown, D = keys.DOWN.isDown || keys.S.isDown;
+            if (L || R || U || D) { manualUntil = time + 2500; path = null; }
+            if (time < manualUntil) {
+              const v = new Phaser.Math.Vector2((R ? 1 : 0) - (L ? 1 : 0), (D ? 1 : 0) - (U ? 1 : 0)).normalize().scale(170);
+              bot.setVelocity(v.x, v.y);
+            } else {
+              if (!path || !path.length) path = bfs(grid, (bot.x / TS) | 0, (bot.y / TS) | 0, (id) => coins.has(id));
+              if (path && path.length) {
+                const [tx, ty] = path[0], px = tx * TS + 16, py = ty * TS + 16;
+                if (Phaser.Math.Distance.Between(bot.x, bot.y, px, py) < 6) path.shift();
+                else this.physics.moveTo(bot, px, py, 170);
+              } else bot.setVelocity(0, 0);
+            }
+            const id = ((bot.y / TS) | 0) * MW + ((bot.x / TS) | 0), c = coins.get(id);
+            if (c && Phaser.Math.Distance.Between(bot.x, bot.y, c.x, c.y) < 18) {
+              pop.explode(14, c.x, c.y);
+              c.destroy();
+              coins.delete(id);
+              got++;
+              path = null;
+              if (!coins.size) { cam.flash(300, 247, 223, 30); fillCoins(); }
+            }
+            const v = cam.worldView;
+            viewRect.clear().lineStyle(viewRect.getData("lw"), 0xffffff, 0.9).strokeRect(v.x, v.y, v.width, v.height);
+            blip.setPosition(bot.x, bot.y);
+          };
+        },
+      }, { physics: { default: "arcade", arcade: { gravity: { x: 0, y: 0 } } } });
+
+      const paint = () => {
+        const s = sc.stats();
+        show(`金幣 <b>${s.got}</b>・地圖 <b>48×32</b> 格・縮放 <b>${sc.cameras.main.zoom.toFixed(2)}×</b>・${s.manual ? "手動" : "BFS 尋路"}・<b>${fpsOf(sc)}</b> FPS`);
+      };
+      paint();
+      ctx.interval(paint, 250);
+    },
+  },
+  {
+    id: "filters", title: "濾鏡",
+    api: "enableFilters()・filters.internal.addGlow() / addBlur() / addPixelate() / addColorMatrix() / addBarrel() / addThreshold() / addWipe()・camera.filters.external・Actions.AddEffectBloom()",
+    desc: "Phaser 4 的濾鏡系統：同一張照片套上 7 種物件濾鏡，參數持續來回變化；上方切換整台攝影機的後製（泛光、暈影、移軸），物件濾鏡與攝影機濾鏡會疊加。",
+    hint: "切換攝影機濾鏡，觀察它疊在每張卡片的物件濾鏡之上",
+    async mount(ctx) {
+      ctx.el.classList.add("ph-studio");
+      ctx.html(`<div class="ph-box"></div>`);
+      let sc = null, camMode = 0;
+      ctx.group(["無", "泛光", "暈影", "移軸"], 0, (i) => { camMode = i; if (sc) sc.setCam(i); });
+
+      sc = await phaserIn(ctx, ctx.$(".ph-box"), {
+        preload() {
+          this.load.image("p6", PHOTO(6));
+          this.load.image("p1", PHOTO(1));
+        },
+        create() {
+          const { width: w, height: h } = this.scale, top = belowControls(ctx);
+          const cols = w >= 520 ? 4 : 2, rows = 8 / cols, gap = 10, labelH = 36;
+          const cw = (w - 24 - gap * (cols - 1)) / cols;
+          const room = (h - top - 12 - gap * (rows - 1)) / rows - labelH;
+          let iw = cw, ih = (iw * 2) / 3;
+          if (ih > room) { ih = room; iw = ih * 1.5; }
+          const gw = iw * cols + gap * (cols - 1), x0 = (w - gw) / 2 + iw / 2;
+          const y0 = top + (h - top - 12 - (ih + labelH) * rows - gap * (rows - 1)) / 2 + ih / 2;
+          // internal filters run in the object's texture space: give them a card-sized copy, not the 1200x800 source
+          if (this.textures.exists("p6s")) this.textures.remove("p6s");
+          const card = this.textures.createCanvas("p6s", Math.round(iw), Math.round(ih));
+          card.context.drawImage(this.textures.get("p6").getSourceImage(), 0, 0, card.width, card.height);
+          card.refresh();
+          const CARDS = [
+            ["原圖", "沒有濾鏡", null],
+            ["光暈", "addGlow()", (f) => {
+              // the photo is opaque, so the glow only exists outside its edge: let the filter pad itself
+              const c = f.addGlow(HEXN[1], 4, 0, 1, false, 8, 10);
+              c.setPaddingOverride(null);
+              return (s) => { c.outerStrength = 1 + s * 7; };
+            }],
+            ["模糊", "addBlur()", (f) => { const c = f.addBlur(0, 2, 2, 1, 0xffffff, 4); return (s) => { c.strength = s * 2; }; }],
+            ["像素化", "addPixelate()", (f) => { const c = f.addPixelate(8); return (s) => { c.amount = 2 + s * 8; }; }],
+            ["色相旋轉", "addColorMatrix()", (f) => { const c = f.addColorMatrix(); return (s, t) => { c.colorMatrix.hue((t * 0.06) % 360); }; }],
+            ["桶形變形", "addBarrel()", (f) => { const c = f.addBarrel(1); return (s) => { c.amount = 0.4 + s * 1.2; }; }],
+            ["臨界值", "addThreshold()", (f) => { const c = f.addThreshold(0.5, 0.55, false); return (s) => { const v = 0.25 + s * 0.5; c.setEdge(v, v + 0.05); }; }],
+            ["轉場擦除", "addWipe()", (f) => { const c = f.addWipe(0.1, 0, 0, 0, "p1"); return (s) => { c.progress = s; }; }],
+          ];
+          const anims = [];
+          CARDS.forEach(([name, api, make], i) => {
+            const x = x0 + (i % cols) * (iw + gap), y = y0 + Math.floor(i / cols) * (ih + labelH + gap);
+            const img = this.add.image(x, y, "p6s").setDisplaySize(iw, ih);
+            if (make) { img.enableFilters(); anims.push(make(img.filters.internal)); }
+            txt(this, x - iw / 2, y + ih / 2 + 5, name, 13, "#ecebe4");
+            txt(this, x - iw / 2, y + ih / 2 + 21, api, 10.5, "#9b998f", MONO);
+          });
+
+          const cam = this.cameras.main;
+          this.setCam = (mode) => {
+            cam.filters.external.clear();
+            if (mode === 1) Phaser.Actions.AddEffectBloom(cam, { threshold: 0.4, blurRadius: 3, blurSteps: 4, blendAmount: 1.6 });
+            else if (mode === 2) cam.filters.external.addVignette(0.5, 0.5, 0.7, 0.45);
+            else if (mode === 3) cam.filters.external.addTiltShift();
+          };
+          this.setCam(camMode);
+          this.tick = (time) => {
+            const s = (Math.sin(time * 0.0015) + 1) / 2;
+            for (const a of anims) a(s, time);
+          };
+          restartOnResize(ctx, this);
+        },
+      });
+    },
+  },
+  {
+    id: "draw", title: "拖曳與繪圖",
+    api: "add.renderTexture()・rt.stamp(key, frame, x, y, { tint, scale, alpha })・rt.erase()・rt.draw()・rt.render()・setInteractive({ draggable: true })・input.on(\"drag\")",
+    desc: "一張 2048×1280 的 RenderTexture 當畫布：筆刷沿滑鼠軌跡連續 stamp() 柔邊圓點，橡皮擦用 erase() 挖掉像素，「蓋章」用 draw() 把貼紙烙進畫布。五個貼紙是可拖曳的互動物件。",
+    hint: "空白處拖曳作畫・拖曳貼紙移動・「蓋章」把貼紙印進畫布",
+    async mount(ctx) {
+      ctx.el.classList.add("ph-paper");
+      ctx.html(`<div class="ph-box"></div>`);
+      const show = readout(ctx);
+      const PALETTE = { rainbow: -1, yellow: HEXN[0], cyan: HEXN[1], pink: HEXN[2], green: HEXN[3] };
+      let sc = null, tool = 0, color = "rainbow", size = 18;
+      ctx.group(["畫筆", "橡皮擦"], 0, (i) => { tool = i; });
+      ctx.select("顏色", [
+        { value: "rainbow", label: "彩虹" }, { value: "yellow", label: "黃" }, { value: "cyan", label: "青" },
+        { value: "pink", label: "桃紅" }, { value: "green", label: "綠" },
+      ], color, (v) => { color = v; });
+      ctx.slider("粗細", { min: 4, max: 64, step: 1, value: size }, (v) => { size = v; });
+      ctx.button("蓋章", () => sc && sc.stampStickers());
+      ctx.button("清除", () => sc && sc.clearCanvas());
+
+      sc = await phaserIn(ctx, ctx.$(".ph-box"), {
+        create() {
+          canvasTex(this, "ph-brush", glowCanvas(64, 0.5));
+          stickerTextures(this);
+          const { width: w, height: h } = this.scale;
+          const rt = this.add.renderTexture(0, 0, 2048, 1280).setOrigin(0, 0);
+          const eraser = this.make.image({ key: "ph-brush", add: false });
+          let dirty = false, stamps = 0, dist = 0, last = null, drawing = false, auto = 0;
+          const tint = () => (PALETTE[color] < 0 ? hsv(dist * 0.0012, 0.75) : PALETTE[color]);
+          const dab = (x, y) => {
+            if (tool === 0) rt.stamp("ph-brush", null, x, y, { tint: tint(), scale: size / 64, alpha: 0.9 });
+            else { eraser.setScale((size * 1.5) / 64); rt.erase([eraser], x, y); }
+            stamps++;
+            dirty = true;
+          };
+          const strokeTo = (x, y) => {
+            if (!last) { dab(x, y); last = { x, y }; return; }
+            const dx = x - last.x, dy = y - last.y, d = Math.hypot(dx, dy), step = Math.max(1.5, size * 0.18);
+            if (d < step) return;
+            let s = step;
+            for (; s <= d; s += step) dab(last.x + (dx * s) / d, last.y + (dy * s) / d);
+            s -= step;
+            dist += s;
+            last = { x: last.x + (dx * s) / d, y: last.y + (dy * s) / d };
+          };
+
+          const KEYS = ["st-star", "st-heart", "st-bolt", "st-ring", "st-smile"];
+          const spot = (i) => ({ x: w * (0.14 + i * 0.18), y: h * 0.72 + (i % 2 ? -22 : 18) });
+          const stickers = KEYS.map((key, i) => this.add.image(spot(i).x, spot(i).y, key).setInteractive({ draggable: true, useHandCursor: true }));
+          this.input.on("dragstart", (_, o) => { this.children.bringToTop(o); o.setScale(1.15); });
+          this.input.on("drag", (_, o, x, y) => o.setPosition(x, y));
+          this.input.on("dragend", (_, o) => o.setScale(1));
+          this.input.on("pointerdown", (ptr, over) => {
+            if (over.length) return;
+            drawing = true;
+            auto = 1e9;
+            last = null;
+            strokeTo(ptr.worldX, ptr.worldY);
+          });
+          this.input.on("pointermove", (ptr) => { if (drawing && ptr.isDown) strokeTo(ptr.worldX, ptr.worldY); });
+          this.input.on("pointerup", () => { drawing = false; last = null; });
+
+          this.stampStickers = () => {
+            for (const s of stickers) rt.draw([s], s.x, s.y);
+            dirty = true;
+            stickers.forEach((s, i) => this.tweens.add({ targets: s, x: rnd(50, w - 50), y: rnd(Math.min(h - 60, belowControls(ctx) + 40), h - 60), angle: rnd(-25, 25), duration: 600, ease: "Back.easeOut", delay: i * 60 }));
+          };
+          this.clearCanvas = () => { rt.clear(); dirty = true; };
+          this.stats = () => stamps;
+          this.tick = (time, dt) => {
+            if (auto < 2200) {
+              // opening flourish: a lemniscate drawn by the same stroke code
+              auto += dt;
+              const a = (auto / 2200) * Math.PI * 2, r = Math.min(w * 0.3, h * 0.24);
+              const cx = w / 2, cy = h * 0.42, d = 1 + Math.sin(a) ** 2;
+              strokeTo(cx + (r * Math.cos(a)) / d, cy + (r * Math.sin(a) * Math.cos(a)) / d);
+              if (auto >= 2200) last = null;
+            }
+            if (dirty) { rt.render(); dirty = false; }
+          };
+        },
+      });
+
+      const paint = () => show(`筆刷蓋印 <b>${fmtN(sc.stats())}</b> 次・RenderTexture <b>2048×1280</b>・<b>${fpsOf(sc)}</b> FPS`);
+      paint();
+      ctx.interval(paint, 250);
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "physics.add.group({ classType: Arcade.Image })・physics.add.collider(group, group)・disableBody() / enableBody()・game.events PRE_STEP / POST_RENDER",
+    desc: "同一張 6 色圖集的小球，數量逐級增加直到掉到 30 FPS 以下。可切換 Arcade 物理彼此互撞、只撞牆，或關掉物理改由 JavaScript 直接搬位置，比較物理與繪製各自的成本。",
+    hint: "按「自動加壓」開始・切換「Arcade 互撞、只撞牆、純 Sprite」再測一次比較",
+    async mount(ctx) {
+      ctx.html(`<div class="stress-box"></div>`);
+      ctx.controls.classList.add("bottom");
+      const MODES = ["Arcade 互撞", "Arcade 只撞牆", "純 Sprite"];
+      let mode = 0, sc = null, upd = 0, drw = 0, calls = 0, dc = 0;
+      ctx.group(MODES, 0, (i) => { mode = i; if (sc) sc.setMode(i); });
+
+      sc = await phaserIn(ctx, ctx.$(".stress-box"), {
+        create() {
+          const tex = canvasTex(this, "balls", ballAtlas());
+          for (let i = 0; i < 6; i++) if (!tex.has(i)) tex.add(i, 0, i * 16, 0, 16, 16);
+          const world = this.physics.world;
+          world.setBounds(0, 0, this.scale.width, this.scale.height);
+          this.scale.on("resize", (s) => world.setBounds(0, 0, s.width, s.height));
+          const group = this.physics.add.group({ classType: Phaser.Physics.Arcade.Image, collideWorldBounds: true, bounceX: 1, bounceY: 1 });
+          const collider = this.physics.add.collider(group, group);
+          const MAX = 100000, vx = new Float32Array(MAX), vy = new Float32Array(MAX), pool = [];
+          let count = 0, live = 0;
+
+          const usePhysics = (b, i) => { b.enableBody(false, 0, 0, true, true); b.setVelocity(vx[i], vy[i]); };
+          this.setCount = (n) => {
+            const { width: w, height: h } = this.scale;
+            while (pool.length < n) {
+              const i = pool.length, a = Math.random() * Math.PI * 2, s = rnd(60, 160);
+              const b = group.create(rnd(8, w - 8), rnd(8, h - 8), "balls", i % 6);
+              b.setCircle(8);
+              vx[i] = Math.cos(a) * s; vy[i] = Math.sin(a) * s;
+              b.disableBody(true, true);
+              pool.push(b);
+            }
+            for (let i = count; i < n; i++) {
+              const b = pool[i];
+              b.setPosition(rnd(8, w - 8), rnd(8, h - 8)).setActive(true).setVisible(true);
+              if (live !== 2) usePhysics(b, i);
+            }
+            for (let i = n; i < count; i++) pool[i].disableBody(true, true);
+            count = n;
+          };
+          this.setMode = (m) => {
+            collider.active = m === 0;
+            if ((m === 2) !== (live === 2)) {
+              for (let i = 0; i < count; i++) {
+                const b = pool[i];
+                if (m === 2) { vx[i] = b.body.velocity.x; vy[i] = b.body.velocity.y; b.disableBody(false, false); }
+                else usePhysics(b, i);
+              }
+            }
+            live = m;
+          };
+          this.setMode(mode);
+          // disableBody() only clears body.enable; pooled bodies stay in world.bodies, so count the enabled ones
+          this.bodies = () => { let n = 0; for (const b of world.bodies) if (b.enable) n++; return n; };
+          this.tick = (time, dt) => {
+            if (live !== 2) return;
+            const k = Math.min(dt, 100) / 1000, w = this.scale.width, h = this.scale.height;
+            for (let i = 0; i < count; i++) {
+              const b = pool[i];
+              let x = b.x + vx[i] * k, y = b.y + vy[i] * k;
+              if (x < 8) { x = 8; vx[i] = Math.abs(vx[i]); } else if (x > w - 8) { x = w - 8; vx[i] = -Math.abs(vx[i]); }
+              if (y < 8) { y = 8; vy[i] = Math.abs(vy[i]); } else if (y > h - 8) { y = h - 8; vy[i] = -Math.abs(vy[i]); }
+              b.x = x; b.y = y;
+            }
+          };
+        },
+      }, { physics: { default: "arcade", arcade: { gravity: { x: 0, y: 0 } } }, render: { antialias: false } });
+
+      // Destroying 100k display-list children one by one is quadratic; empty the list in one splice first.
+      ctx.onCleanup(() => sc.children.removeBetween(0, sc.children.length));
+      const E = Phaser.Core.Events, ev = sc.game.events;
+      let t0 = 0, t1 = 0;
+      ev.on(E.PRE_STEP, () => { t0 = performance.now(); });
+      ev.on(E.POST_STEP, () => { upd += (performance.now() - t0 - upd) * 0.1; });
+      ev.on(E.PRE_RENDER, () => { t1 = performance.now(); calls = 0; });
+      ev.on(E.POST_RENDER, () => { drw += (performance.now() - t1 - drw) * 0.1; dc += (calls - dc) * 0.2; });
+      const counting = countDraws(ctx, sc.game.renderer.gl, () => { calls++; });
+      ctx.ramp({
+        label: "小球", unit: "顆", steps: [500, 1000, 2000, 5000, 10000, 20000, 50000, 100000], minFps: 30,
+        apply: (n) => sc.setCount(n),
+        metrics: () => ({
+          更新: `${upd.toFixed(1)} ms`,
+          繪製: `${drw.toFixed(1)} ms`,
+          "draw call": counting ? (dc < 10 ? dc.toFixed(1) : dc.toFixed(0)) : "不適用",
+          物理物體: fmtN(sc.bodies()),
+          模式: MODES[mode],
+        }),
+        note: "更新量的是 game.step() 裡場景更新的時間，Arcade 物理就在這段：互撞模式每格要用空間樹找出彼此重疊的配對再分離，成本隨數量與密度快速上升；只撞牆模式只剩積分速度與邊界檢查；純 Sprite 關掉物理，只剩 JavaScript 搬座標。繪製量的是 scene.render() 送出繪圖指令的時間，同一張圖集的小球會被批次合併，draw call 很少，CPU 主要花在逐一計算每顆的變形並填頂點。GPU 是非同步執行，實際瓶頸也可能在顯示卡。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

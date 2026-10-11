@@ -3,265 +3,806 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OGL 示範：旋臂星系與追光彩帶</title>
+<title>OGL 示範：六個場景看懂極簡 WebGL 引擎</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["旋臂星系","幾何體與拾取","照片流場","後製濾鏡","GPGPU 粒子","極限測試"]}</script>
 <style>
-  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
-  .controls .label { font-size: 12px; align-self: center; padding: 6px 8px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); }
-  .btn { padding: 7px 10px; font-size: 12px; }
-  .stat { position: fixed; left: 12px; top: 12px; z-index: 50; font: 12px/1.5 var(--mono); color: var(--muted); padding: 6px 10px; }
-  .stat b { color: var(--fg); font-weight: 600; }
-  @media (max-width: 520px) { .stat { top: auto; bottom: 48px; } }
+  .sc-scene canvas.gl { position: absolute; left: 0; top: 0; display: block; touch-action: none; }
+  .info { position: absolute; z-index: 5; left: 10px; top: calc(var(--sc-ctl-h, 0px) + 10px); max-width: min(300px, calc(100% - 20px));
+    padding: 8px 11px; font: 12px/1.6 var(--mono); color: var(--muted); pointer-events: none; }
+  .info b { color: var(--fg); font-weight: 600; }
+  .info code { color: var(--accent); }
+  .stress-box { position: absolute; inset: 8px 8px 8px 350px; border-radius: 10px; overflow: hidden; }
+  @media (max-width: 760px) { .stress-box { inset: 0; border-radius: 0; } }
 </style>
 </head>
 <body>
-<div class="controls" id="palettes"><span class="label">配色</span></div>
-<div class="stat panel" id="stat"></div>
-<div class="hint">移動滑鼠，彩帶會用彈簧物理追著游標跑</div>
-
+<script src="_shared/showcase.js"></script>
 <script type="module">
-import { Renderer, Camera, Transform, Program, Mesh, Geometry, Polyline, Vec3, Color } from "https://cdn.jsdelivr.net/npm/ogl@1.0.11/+esm";
+import {
+  Renderer, Camera, Transform, Mesh, Program, Geometry, Texture, Color, Vec2, Vec3,
+  Polyline, Box, Sphere, Torus, Cylinder, Plane, Orbit, Raycast, GridHelper, Flowmap, Triangle, Post, GPGPU,
+} from "https://cdn.jsdelivr.net/npm/ogl@1.0.11/+esm";
 
-const STAR_COUNT = 30000;
-const RIBBON_COUNT = 5;
-const PALETTES = [
-  { key: "milky", label: "銀河", core: "#fff1c4", mid: "#ff8c42", edge: "#4c6cf0", ribbons: ["#f7df1e", "#4cc9f0", "#f72585", "#ffffff", "#9d8cff"] },
-  { key: "aurora", label: "極光", core: "#e9fff4", mid: "#7bd389", edge: "#1b6fd8", ribbons: ["#7bd389", "#4cc9f0", "#c8ff8a", "#9d8cff", "#ffffff"] },
-  { key: "lava", label: "熔岩", core: "#fff6d0", mid: "#f72585", edge: "#6a1bd8", ribbons: ["#ff8c42", "#f72585", "#f7df1e", "#ff5e5e", "#ffd6a5"] },
-];
+// ---------- shared helpers ----------
 
-const renderer = new Renderer({ dpr: Math.min(devicePixelRatio, 2), antialias: true });
-const gl = renderer.gl;
-gl.clearColor(0.035, 0.04, 0.055, 1);
-document.body.prepend(gl.canvas);
-
-// ---------- Galaxy: one draw call of GPU-animated points ----------
-const camera = new Camera(gl, { fov: 45, near: 0.1, far: 100 });
-camera.position.set(0, 2.5, 6);
-const galaxyScene = new Transform();
-
-const base = new Float32Array(STAR_COUNT * 3);   // radius, arm angle, brightness
-const offset = new Float32Array(STAR_COUNT * 3); // scatter around the arm
-const ARMS = 3;
-for (let i = 0; i < STAR_COUNT; i++) {
-  const r = Math.pow(Math.random(), 1.7);
-  base[i * 3] = r;
-  base[i * 3 + 1] = (Math.floor(Math.random() * ARMS) / ARMS) * Math.PI * 2;
-  base[i * 3 + 2] = 0.35 + Math.random() * 0.65;
-  for (let k = 0; k < 3; k++) {
-    const s = Math.pow(Math.random(), 3) * (Math.random() < 0.5 ? -1 : 1);
-    offset[i * 3 + k] = s * (k === 1 ? 0.35 : 1);
-  }
+// One Renderer per scene. The canvas fills `host` (default: the scene element) and the
+// WebGL context is released on unmount so switching scenes never exhausts the context limit.
+function glStage(ctx, { host = ctx.el, clear = [0.035, 0.04, 0.055, 1], antialias = true } = {}) {
+  const renderer = new Renderer({ dpr: Math.min(window.devicePixelRatio || 1, 2), antialias });
+  const gl = renderer.gl;
+  gl.clearColor(...clear);
+  gl.canvas.className = "gl";
+  host.append(gl.canvas);
+  const listeners = [];
+  const view = {
+    renderer, gl, width: 1, height: 1, aspect: 1,
+    onResize(fn) { listeners.push(fn); fn(view.width, view.height); },
+  };
+  const fit = () => {
+    view.width = Math.max(1, host.clientWidth);
+    view.height = Math.max(1, host.clientHeight);
+    view.aspect = view.width / view.height;
+    renderer.setSize(view.width, view.height);
+    listeners.forEach((fn) => fn(view.width, view.height));
+  };
+  fit();
+  ctx.onResize(fit);
+  ctx.onCleanup(() => { gl.getExtension("WEBGL_lose_context")?.loseContext(); gl.canvas.remove(); });
+  return view;
 }
-const galaxyGeo = new Geometry(gl, {
-  position: { size: 3, data: base },
-  offset: { size: 3, data: offset },
-});
 
-const galaxyProgram = new Program(gl, {
-  vertex: /* glsl */ `
-    attribute vec3 position;
-    attribute vec3 offset;
-    uniform mat4 modelViewMatrix;
-    uniform mat4 projectionMatrix;
-    uniform float uTime;
-    uniform float uDPR;
-    uniform vec3 uCore;
-    uniform vec3 uMid;
-    uniform vec3 uEdge;
-    varying vec3 vColor;
-    varying float vAlpha;
-    void main() {
-      float r = position.x * 3.2 + 0.04;
-      // Differential rotation: inner stars orbit faster than outer ones
-      float angle = position.y + r * 1.35 + uTime * 0.55 / (r + 0.45);
-      vec3 p = vec3(cos(angle) * r, 0.0, sin(angle) * r);
-      p += offset * (0.18 + r * 0.22);
-      vec4 mv = modelViewMatrix * vec4(p, 1.0);
-      gl_Position = projectionMatrix * mv;
-      gl_PointSize = (2.5 + position.z * 6.0) * uDPR * (3.4 / -mv.z);
-      float t = clamp(r / 3.2, 0.0, 1.0);
-      vColor = mix(mix(uCore, uMid, smoothstep(0.0, 0.35, t)), uEdge, smoothstep(0.3, 0.9, t));
-      vAlpha = position.z * (1.0 - t * 0.55);
-    }`,
-  fragment: /* glsl */ `
-    precision highp float;
-    varying vec3 vColor;
-    varying float vAlpha;
-    void main() {
-      float d = length(gl_PointCoord - 0.5);
-      float a = smoothstep(0.5, 0.0, d);
-      gl_FragColor = vec4(vColor, a * a * vAlpha);
-    }`,
-  uniforms: {
-    uTime: { value: 0 },
-    uDPR: { value: renderer.dpr },
-    uCore: { value: new Color() },
-    uMid: { value: new Color() },
-    uEdge: { value: new Color() },
-  },
-  transparent: true,
-  depthTest: false,
-  depthWrite: false,
-});
-galaxyProgram.setBlendFunc(gl.SRC_ALPHA, gl.ONE);
-const galaxy = new Mesh(gl, { mode: gl.POINTS, geometry: galaxyGeo, program: galaxyProgram });
-galaxy.frustumCulled = false;
-galaxy.rotation.z = 0.18;
-galaxy.setParent(galaxyScene);
+// Pointer tracker in canvas pixels and normalized device coordinates.
+function trackPointer(ctx, el) {
+  const p = { x: 0, y: 0, nx: 0, ny: 0, last: -1e9, idle: (ms = 2000) => performance.now() - p.last > ms };
+  const move = (e) => {
+    const r = el.getBoundingClientRect();
+    p.x = e.clientX - r.left; p.y = e.clientY - r.top;
+    p.nx = (p.x / r.width) * 2 - 1; p.ny = -((p.y / r.height) * 2 - 1);
+    p.last = performance.now();
+  };
+  ctx.on(el, "pointermove", move);
+  ctx.on(el, "pointerdown", move);
+  return p;
+}
 
-// ---------- Ribbons: OGL Polyline with spring-follow physics ----------
-const ortho = new Camera(gl, { left: -1, right: 1, bottom: -1, top: 1, near: 0.1, far: 10 });
-ortho.position.z = 1;
-const ribbonScene = new Transform();
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || "#ffffff";
 
-const ribbonVertex = /* glsl */ `
-  precision highp float;
+// Shared lit shader for the primitive and stress scenes.
+const LIT_VERTEX = /* glsl */ `
   attribute vec3 position;
-  attribute vec3 next;
-  attribute vec3 prev;
+  attribute vec3 normal;
   attribute vec2 uv;
-  attribute float side;
   uniform mat4 modelViewMatrix;
   uniform mat4 projectionMatrix;
-  uniform vec2 uResolution;
-  uniform float uDPR;
-  uniform float uThickness;
+  uniform mat3 normalMatrix;
+  varying vec3 vNormal;
+  varying vec3 vView;
   varying vec2 vUv;
   void main() {
     vUv = uv;
-    mat4 mvp = projectionMatrix * modelViewMatrix;
-    vec4 current = mvp * vec4(position, 1.0);
-    vec2 aspect = vec2(uResolution.x / uResolution.y, 1.0);
-    vec2 cur = current.xy / current.w * aspect;
-    vec4 n = mvp * vec4(next, 1.0);
-    vec4 pv = mvp * vec4(prev, 1.0);
-    vec2 dir1 = normalize(cur - pv.xy / pv.w * aspect + 1e-6);
-    vec2 dir2 = normalize(n.xy / n.w * aspect - cur + 1e-6);
-    vec2 dir = normalize(dir1 + dir2 + 1e-6);
-    vec2 normal = vec2(-dir.y, dir.x) / aspect;
-    // Taper from the head (uv.y = 0) to the tail
-    float taper = 1.0 - pow(uv.y, 1.3) * 0.92;
-    normal *= current.w / (uResolution.y / uDPR) * uThickness * taper;
-    current.xy -= normal * side;
-    gl_Position = current;
-  }`;
-const ribbonFragment = /* glsl */ `
-  precision highp float;
-  uniform vec3 uColor;
-  varying vec2 vUv;
-  void main() {
-    float edge = 1.0 - abs(vUv.x * 2.0 - 1.0);
-    float fade = 1.0 - vUv.y;
-    gl_FragColor = vec4(mix(uColor, vec3(1.0), edge * edge * 0.25), smoothstep(0.0, 0.6, edge) * fade * 0.9);
+    vNormal = normalize(normalMatrix * normal);
+    vec4 mv = modelViewMatrix * vec4(position, 1.0);
+    vView = -mv.xyz;
+    gl_Position = projectionMatrix * mv;
   }`;
 
-const mouse = new Vec3();
-const ribbons = [];
-for (let i = 0; i < RIBBON_COUNT; i++) {
-  const points = Array.from({ length: 40 }, (_, k) => new Vec3(k * 0.01, 0, 0));
-  const line = new Polyline(gl, {
-    points,
-    vertex: ribbonVertex,
-    fragment: ribbonFragment,
-    uniforms: {
-      uColor: { value: new Color("#ffffff") },
-      uThickness: { value: 7 + i * 3 },
-    },
-  });
-  line.program.transparent = true;
-  line.program.depthTest = false;
-  line.program.setBlendFunc(gl.SRC_ALPHA, gl.ONE);
-  line.mesh.frustumCulled = false;
-  line.mesh.setParent(ribbonScene);
-  ribbons.push({
-    line,
-    spring: 0.025 + i * 0.012,
-    friction: 0.9 - i * 0.012,
-    velocity: new Vec3(),
-    offset: new Vec3(Math.cos(i * 1.26) * 0.16, Math.sin(i * 1.26) * 0.16, 0),
-  });
-}
+Showcase.run({ scenes: [
+  {
+    id: "galaxy", title: "旋臂星系",
+    api: "new Geometry(gl, { position, offset })・new Polyline(gl, { points })",
+    desc: "三萬顆星點只用一次 draw call，差速旋轉全在頂點著色器計算；五條 Polyline 彩帶以彈簧追著游標，疊加混色（SRC_ALPHA, ONE）。",
+    hint: "移動游標牽動彩帶與鏡頭・切換配色與旋臂數",
+    mount(ctx) {
+      const STARS = 30000, RIBBONS = 5;
+      const PALETTES = [
+        { core: "#fff1c4", mid: "#ff8c42", edge: "#4c6cf0", ribbons: ["#f7df1e", "#4cc9f0", "#f72585", "#ffffff", "#9d8cff"] },
+        { core: "#e9fff4", mid: "#7bd389", edge: "#1b6fd8", ribbons: ["#7bd389", "#4cc9f0", "#c8ff8a", "#9d8cff", "#ffffff"] },
+        { core: "#fff6d0", mid: "#f72585", edge: "#6a1bd8", ribbons: ["#ff8c42", "#f72585", "#f7df1e", "#ff5e5e", "#ffd6a5"] },
+      ];
+      const v = glStage(ctx);
+      const { gl, renderer } = v;
+      const camera = new Camera(gl, { fov: 45, near: 0.1, far: 100 });
+      camera.position.set(0, 2.5, 6);
+      const galaxyScene = new Transform();
 
-// ---------- Palette switching ----------
-let palette = PALETTES[0];
-function applyPalette(key) {
-  palette = PALETTES.find((p) => p.key === key);
-  galaxyProgram.uniforms.uCore.value.set(palette.core);
-  galaxyProgram.uniforms.uMid.value.set(palette.mid);
-  galaxyProgram.uniforms.uEdge.value.set(palette.edge);
-  ribbons.forEach((r, i) => r.line.program.uniforms.uColor.value.set(palette.ribbons[i]));
-  document.querySelectorAll("#palettes .btn").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.k === key)));
-}
-const bar = document.getElementById("palettes");
-for (const p of PALETTES) {
-  const b = document.createElement("button");
-  b.className = "btn"; b.type = "button"; b.dataset.k = p.key; b.textContent = p.label;
-  b.addEventListener("click", () => applyPalette(p.key));
-  bar.append(b);
-}
-applyPalette("milky");
-document.getElementById("stat").innerHTML = `星點 <b>${STAR_COUNT.toLocaleString()}</b>・彩帶 <b>${RIBBON_COUNT}</b>`;
+      const program = new Program(gl, {
+        vertex: /* glsl */ `
+          attribute vec3 position;
+          attribute vec3 offset;
+          uniform mat4 modelViewMatrix;
+          uniform mat4 projectionMatrix;
+          uniform float uTime;
+          uniform float uDPR;
+          uniform vec3 uCore;
+          uniform vec3 uMid;
+          uniform vec3 uEdge;
+          varying vec3 vColor;
+          varying float vAlpha;
+          void main() {
+            float r = position.x * 3.2 + 0.04;
+            // Differential rotation: inner stars orbit faster than outer ones
+            float angle = position.y + r * 1.35 + uTime * 0.55 / (r + 0.45);
+            vec3 p = vec3(cos(angle) * r, 0.0, sin(angle) * r);
+            p += offset * (0.18 + r * 0.22);
+            vec4 mv = modelViewMatrix * vec4(p, 1.0);
+            gl_Position = projectionMatrix * mv;
+            gl_PointSize = (2.5 + position.z * 6.0) * uDPR * (3.4 / -mv.z);
+            float t = clamp(r / 3.2, 0.0, 1.0);
+            vColor = mix(mix(uCore, uMid, smoothstep(0.0, 0.35, t)), uEdge, smoothstep(0.3, 0.9, t));
+            vAlpha = position.z * (1.0 - t * 0.55);
+          }`,
+        fragment: /* glsl */ `
+          precision highp float;
+          varying vec3 vColor;
+          varying float vAlpha;
+          void main() {
+            float d = length(gl_PointCoord - 0.5);
+            float a = smoothstep(0.5, 0.0, d);
+            gl_FragColor = vec4(vColor, a * a * vAlpha);
+          }`,
+        uniforms: {
+          uTime: { value: 0 }, uDPR: { value: renderer.dpr },
+          uCore: { value: new Color() }, uMid: { value: new Color() }, uEdge: { value: new Color() },
+        },
+        transparent: true, depthTest: false, depthWrite: false,
+      });
+      program.setBlendFunc(gl.SRC_ALPHA, gl.ONE);
 
-// ---------- Input ----------
-let aspect = 1;
-const pointer = { x: 0, y: 0, last: -1e9 };
-addEventListener("pointermove", (e) => {
-  pointer.x = (e.clientX / innerWidth) * 2 - 1;
-  pointer.y = -((e.clientY / innerHeight) * 2 - 1);
-  pointer.last = performance.now();
-});
+      let galaxy = null;
+      const build = (arms) => {
+        if (galaxy) { galaxy.setParent(null); galaxy.geometry.remove(); }
+        const base = new Float32Array(STARS * 3);   // radius, arm angle, brightness
+        const offset = new Float32Array(STARS * 3); // scatter around the arm
+        for (let i = 0; i < STARS; i++) {
+          base[i * 3] = Math.pow(Math.random(), 1.7);
+          base[i * 3 + 1] = (Math.floor(Math.random() * arms) / arms) * Math.PI * 2;
+          base[i * 3 + 2] = 0.35 + Math.random() * 0.65;
+          for (let k = 0; k < 3; k++) {
+            const s = Math.pow(Math.random(), 3) * (Math.random() < 0.5 ? -1 : 1);
+            offset[i * 3 + k] = s * (k === 1 ? 0.35 : 1);
+          }
+        }
+        const geometry = new Geometry(gl, { position: { size: 3, data: base }, offset: { size: 3, data: offset } });
+        galaxy = new Mesh(gl, { mode: gl.POINTS, geometry, program, frustumCulled: false });
+        galaxy.rotation.z = 0.18;
+        galaxy.setParent(galaxyScene);
+      };
+      build(3);
 
-function resize() {
-  renderer.setSize(innerWidth, innerHeight);
-  aspect = innerWidth / innerHeight;
-  camera.perspective({ aspect, fov: aspect < 1 ? 62 : 45 });
-  ortho.orthographic({ left: -aspect, right: aspect, bottom: -1, top: 1 });
-  ribbons.forEach((r) => r.line.resize());
-}
-addEventListener("resize", resize);
-resize();
-
-// ---------- Loop ----------
-const tmp = new Vec3();
-const target = new Vec3();
-requestAnimationFrame(function frame(t) {
-  requestAnimationFrame(frame);
-  const time = t * 0.001;
-  const idle = performance.now() - pointer.last > 2000;
-
-  // Mouse target in ortho space; follow a Lissajous path when idle
-  if (idle) {
-    mouse.set(Math.sin(time * 0.9) * 0.62 * aspect, Math.sin(time * 1.37) * 0.55, 0);
-  } else {
-    mouse.set(pointer.x * aspect, pointer.y, 0);
-  }
-
-  for (const r of ribbons) {
-    const pts = r.line.points;
-    for (let i = pts.length - 1; i >= 0; i--) {
-      if (i === 0) {
-        tmp.copy(mouse).add(r.offset).sub(pts[0]).multiply(r.spring);
-        r.velocity.add(tmp).multiply(r.friction);
-        pts[0].add(r.velocity);
-      } else {
-        pts[i].lerp(pts[i - 1], 0.6);
+      // Ribbons: Polyline with a custom tapered vertex shader, drawn in an orthographic pass.
+      const ortho = new Camera(gl, { left: -1, right: 1, bottom: -1, top: 1, near: 0.1, far: 10 });
+      ortho.position.z = 1;
+      const ribbonScene = new Transform();
+      const ribbonVertex = /* glsl */ `
+        precision highp float;
+        attribute vec3 position;
+        attribute vec3 next;
+        attribute vec3 prev;
+        attribute vec2 uv;
+        attribute float side;
+        uniform mat4 modelViewMatrix;
+        uniform mat4 projectionMatrix;
+        uniform vec2 uResolution;
+        uniform float uDPR;
+        uniform float uThickness;
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          mat4 mvp = projectionMatrix * modelViewMatrix;
+          vec4 current = mvp * vec4(position, 1.0);
+          vec2 aspect = vec2(uResolution.x / uResolution.y, 1.0);
+          vec2 cur = current.xy / current.w * aspect;
+          vec4 n = mvp * vec4(next, 1.0);
+          vec4 pv = mvp * vec4(prev, 1.0);
+          vec2 dir1 = normalize(cur - pv.xy / pv.w * aspect + 1e-6);
+          vec2 dir2 = normalize(n.xy / n.w * aspect - cur + 1e-6);
+          vec2 dir = normalize(dir1 + dir2 + 1e-6);
+          vec2 normal = vec2(-dir.y, dir.x) / aspect;
+          float taper = 1.0 - pow(uv.y, 1.3) * 0.92;
+          normal *= current.w / (uResolution.y / uDPR) * uThickness * taper;
+          current.xy -= normal * side;
+          gl_Position = current;
+        }`;
+      const ribbonFragment = /* glsl */ `
+        precision highp float;
+        uniform vec3 uColor;
+        varying vec2 vUv;
+        void main() {
+          float edge = 1.0 - abs(vUv.x * 2.0 - 1.0);
+          float fade = 1.0 - vUv.y;
+          gl_FragColor = vec4(mix(uColor, vec3(1.0), edge * edge * 0.25), smoothstep(0.0, 0.6, edge) * fade * 0.9);
+        }`;
+      const ribbons = [];
+      for (let i = 0; i < RIBBONS; i++) {
+        const points = Array.from({ length: 40 }, (_, k) => new Vec3(k * 0.01, 0, 0));
+        const line = new Polyline(gl, {
+          points, vertex: ribbonVertex, fragment: ribbonFragment,
+          uniforms: { uColor: { value: new Color("#ffffff") }, uThickness: { value: 7 + i * 3 } },
+        });
+        line.program.transparent = true;
+        line.program.depthTest = false;
+        line.program.setBlendFunc(gl.SRC_ALPHA, gl.ONE);
+        line.mesh.frustumCulled = false;
+        line.mesh.setParent(ribbonScene);
+        ribbons.push({
+          line, velocity: new Vec3(),
+          spring: 0.025 + i * 0.012, friction: 0.9 - i * 0.012,
+          offset: new Vec3(Math.cos(i * 1.26) * 0.16, Math.sin(i * 1.26) * 0.16, 0),
+        });
       }
-    }
-    r.line.updateGeometry();
-  }
 
-  // Gentle camera parallax that leans toward the cursor
-  target.set(mouse.x * 0.6, 2.5 + mouse.y * 0.8, aspect < 1 ? 7.2 : 5.6);
-  camera.position.lerp(target, 0.04);
-  camera.lookAt([0, 0, 0]);
+      const applyPalette = (p) => {
+        program.uniforms.uCore.value.set(p.core);
+        program.uniforms.uMid.value.set(p.mid);
+        program.uniforms.uEdge.value.set(p.edge);
+        ribbons.forEach((r, i) => r.line.program.uniforms.uColor.value.set(p.ribbons[i]));
+      };
+      applyPalette(PALETTES[0]);
 
-  galaxyProgram.uniforms.uTime.value = time;
-  renderer.render({ scene: galaxyScene, camera });
-  renderer.render({ scene: ribbonScene, camera: ortho, clear: false });
-});
+      v.onResize(() => {
+        camera.perspective({ aspect: v.aspect, fov: v.aspect < 1 ? 62 : 45 });
+        ortho.orthographic({ left: -v.aspect, right: v.aspect, bottom: -1, top: 1 });
+        ribbons.forEach((r) => r.line.resize());
+      });
+
+      const pointer = trackPointer(ctx, gl.canvas);
+      let showRibbons = true;
+      ctx.group(["銀河", "極光", "熔岩"], 0, (i) => applyPalette(PALETTES[i]));
+      ctx.select("", [{ value: 2, label: "2 條旋臂" }, { value: 3, label: "3 條旋臂" }, { value: 4, label: "4 條旋臂" }, { value: 6, label: "6 條旋臂" }], 3, (val) => build(+val));
+      ctx.toggle("彩帶", true, (on) => { showRibbons = on; });
+      ctx.fps({ position: "right bottom", extra: () => ({ 星點: STARS, "draw call": showRibbons ? 1 + RIBBONS : 1 }) });
+
+      const mouse = new Vec3(), tmp = new Vec3(), target = new Vec3();
+      ctx.raf((t) => {
+        const time = t * 0.001;
+        // Follow a Lissajous path when the pointer is idle so the scene keeps moving.
+        if (pointer.idle()) mouse.set(Math.sin(time * 0.9) * 0.62 * v.aspect, Math.sin(time * 1.37) * 0.55, 0);
+        else mouse.set(pointer.nx * v.aspect, pointer.ny, 0);
+        for (const r of ribbons) {
+          const pts = r.line.points;
+          for (let i = pts.length - 1; i >= 0; i--) {
+            if (i === 0) {
+              tmp.copy(mouse).add(r.offset).sub(pts[0]).multiply(r.spring);
+              r.velocity.add(tmp).multiply(r.friction);
+              pts[0].add(r.velocity);
+            } else pts[i].lerp(pts[i - 1], 0.6);
+          }
+          r.line.updateGeometry();
+        }
+        target.set(mouse.x * 0.6, 2.5 + mouse.y * 0.8, v.aspect < 1 ? 7.2 : 5.6);
+        camera.position.lerp(target, 0.04);
+        camera.lookAt([0, 0, 0]);
+        program.uniforms.uTime.value = time;
+        renderer.render({ scene: galaxyScene, camera });
+        if (showRibbons) renderer.render({ scene: ribbonScene, camera: ortho, clear: false });
+      });
+    },
+  },
+  {
+    id: "primitives", title: "幾何體與拾取",
+    api: "new Box / Sphere / Torus / Cylinder / Plane(gl)・new Orbit(camera)・raycast.intersectMeshes()",
+    desc: "五種內建幾何體都附 position、normal、uv 屬性；Orbit 提供拖曳旋轉與滾輪縮放，Raycast 從游標射線找出命中的物件與命中點 UV。",
+    hint: "拖曳旋轉・滾輪縮放・滑過物件看拾取結果・切換著色模式",
+    mount(ctx) {
+      ctx.html(`<div class="info panel"></div>`);
+      const info = ctx.$(".info");
+      const v = glStage(ctx, { clear: [0.04, 0.045, 0.065, 1] });
+      const { gl, renderer } = v;
+      const camera = new Camera(gl, { fov: 40, near: 0.1, far: 100 });
+      camera.position.set(0, 2.6, 7.4);
+      const orbit = new Orbit(camera, { element: gl.canvas, target: new Vec3(0, 0, 0), autoRotate: true, autoRotateSpeed: 0.5, minDistance: 3, maxDistance: 16, maxPolarAngle: Math.PI * 0.49 });
+      ctx.onCleanup(() => orbit.remove());
+      const scene = new Transform();
+      const mode = { value: 0 };
+      const time = { value: 0 };
+
+      const program = (color) => new Program(gl, {
+        vertex: LIT_VERTEX,
+        fragment: /* glsl */ `
+          precision highp float;
+          uniform vec3 uColor;
+          uniform float uHover;
+          uniform float uMode;
+          uniform float uTime;
+          varying vec3 vNormal;
+          varying vec3 vView;
+          varying vec2 vUv;
+          void main() {
+            vec3 n = normalize(vNormal);
+            if (!gl_FrontFacing) n = -n;
+            if (uMode > 1.5) { gl_FragColor = vec4(vUv, 0.6 + 0.4 * sin(uTime), 1.0); return; }
+            if (uMode > 0.5) { gl_FragColor = vec4(n * 0.5 + 0.5, 1.0); return; }
+            float diff = max(dot(n, normalize(vec3(0.5, 0.8, 0.6))), 0.0);
+            float rim = pow(1.0 - max(dot(n, normalize(vView)), 0.0), 2.5);
+            float check = mod(floor(vUv.x * 8.0) + floor(vUv.y * 8.0), 2.0);
+            vec3 base = uColor * mix(0.78, 1.0, check);
+            vec3 col = base * (0.22 + 0.78 * diff) + rim * mix(0.12, 0.9, uHover);
+            col = mix(col, vec3(1.0, 0.92, 0.45), uHover * 0.3);
+            gl_FragColor = vec4(col, 1.0);
+          }`,
+        uniforms: { uColor: { value: new Color(color) }, uHover: { value: 0 }, uMode: mode, uTime: time },
+        cullFace: false,
+      });
+
+      const items = [
+        { name: "Box", geo: new Box(gl, { width: 1.1, height: 1.1, depth: 1.1 }), color: css("--c1") },
+        { name: "Sphere", geo: new Sphere(gl, { radius: 0.7, widthSegments: 40 }), color: css("--c2") },
+        { name: "Torus", geo: new Torus(gl, { radius: 0.55, tube: 0.2, radialSegments: 24, tubularSegments: 72 }), color: css("--c3") },
+        { name: "Cylinder", geo: new Cylinder(gl, { radiusTop: 0.25, radiusBottom: 0.65, height: 1.3, radialSegments: 36 }), color: css("--c4") },
+        { name: "Plane", geo: new Plane(gl, { width: 1.3, height: 1.3, widthSegments: 8, heightSegments: 8 }), color: css("--c5") },
+      ];
+      const meshes = items.map((it, i) => {
+        const mesh = new Mesh(gl, { geometry: it.geo, program: program(it.color) });
+        const a = (i / items.length) * Math.PI * 2;
+        mesh.position.set(Math.sin(a) * 2.3, 0, Math.cos(a) * 2.3);
+        mesh.rotation.x = it.name === "Plane" ? -0.4 : 0;
+        mesh.item = it;
+        mesh.setParent(scene);
+        return mesh;
+      });
+      const grid = new GridHelper(gl, { size: 12, divisions: 12, color: new Vec3(0.3, 0.33, 0.42) });
+      grid.position.y = -1.05;
+      grid.setParent(scene);
+
+      const describe = (mesh, uvText) => {
+        if (!mesh) { info.innerHTML = `滑過任一物件<br><span>射線拾取 <code>Raycast</code></span>`; return; }
+        const g = mesh.geometry;
+        info.innerHTML = `<b>new ${mesh.item.name}(gl)</b><br>頂點 ${g.attributes.position.count.toLocaleString()}・三角形 ${(g.attributes.index.count / 3).toLocaleString()}<br>${uvText}`;
+      };
+
+      v.onResize(() => camera.perspective({ aspect: v.aspect, fov: v.aspect < 1 ? 62 : 40 }));
+      const pointer = trackPointer(ctx, gl.canvas);
+      const raycast = new Raycast();
+      ctx.group(["打光", "法線", "UV"], 0, (i) => { mode.value = i; });
+      ctx.fps({ position: "right bottom", extra: () => ({ 物件: meshes.length }) });
+
+      let hovered = null, lastLabel = "";
+      ctx.raf((t) => {
+        time.value = t * 0.001;
+        meshes.forEach((m, i) => { m.rotation.y += 0.006 + i * 0.001; });
+        orbit.update();
+        let hit = null, label;
+        if (pointer.idle(2500)) {
+          // Idle: cycle the highlight so the picking feedback is always visible.
+          hit = meshes[Math.floor(t / 1400) % meshes.length];
+          label = "自動輪播中，移動游標改用射線拾取";
+        } else {
+          raycast.castMouse(camera, [pointer.nx, pointer.ny]);
+          hit = raycast.intersectMeshes(meshes, { includeUV: true, cullFace: false })[0] || null;
+          label = hit ? `命中 UV <b>${hit.hit.uv.x.toFixed(2)}, ${hit.hit.uv.y.toFixed(2)}</b>・距離 ${hit.hit.distance.toFixed(2)}` : "";
+        }
+        meshes.forEach((m) => {
+          const u = m.program.uniforms.uHover;
+          u.value += ((m === hit ? 1 : 0) - u.value) * 0.18;
+        });
+        const key = (hit ? hit.item.name : "-") + label;
+        if (key !== lastLabel || hit !== hovered) { describe(hit, label); lastLabel = key; hovered = hit; }
+        gl.canvas.style.cursor = hit && !pointer.idle(2500) ? "pointer" : "grab";
+        renderer.render({ scene, camera });
+      });
+    },
+  },
+  {
+    id: "flowmap", title: "照片流場",
+    api: "new Texture(gl, { image })・new Flowmap(gl)・flowmap.update()",
+    desc: "Flowmap 把游標速度寫進一張乒乓交換的浮點紋理並逐格消散，片段著色器用它推移照片 UV，RGB 三色分開取樣做出色散拖影。",
+    hint: "在照片上快速劃過・可切換照片與顯示流場本身",
+    mount(ctx) {
+      const PHOTOS = [
+        { value: "6", label: "水母" }, { value: "1", label: "峽灣" }, { value: "5", label: "瀑布" }, { value: "7", label: "獅子" },
+      ];
+      const v = glStage(ctx);
+      const { gl, renderer } = v;
+      const flowmap = new Flowmap(gl, { falloff: 0.25, dissipation: 0.96 });
+      const texture = new Texture(gl, { generateMipmaps: false, minFilter: gl.LINEAR });
+      let imageAspect = 1.5;
+      const program = new Program(gl, {
+        vertex: /* glsl */ `
+          attribute vec2 uv;
+          attribute vec2 position;
+          varying vec2 vUv;
+          void main() { vUv = uv; gl_Position = vec4(position, 0.0, 1.0); }`,
+        fragment: /* glsl */ `
+          precision highp float;
+          uniform sampler2D tMap;
+          uniform sampler2D tFlow;
+          uniform vec2 uScale;
+          uniform float uStrength;
+          uniform float uShowFlow;
+          varying vec2 vUv;
+          void main() {
+            vec3 flow = texture2D(tFlow, vUv).rgb;
+            vec2 uv = (vUv - 0.5) * uScale + 0.5;
+            vec2 shift = flow.xy * uStrength;
+            float r = texture2D(tMap, uv - shift * 1.25).r;
+            float g = texture2D(tMap, uv - shift).g;
+            float b = texture2D(tMap, uv - shift * 0.75).b;
+            vec3 col = vec3(r, g, b) + flow.b * 0.08;
+            vec3 field = vec3(flow.xy * 0.5 + 0.5, flow.b);
+            gl_FragColor = vec4(mix(col, field, uShowFlow), 1.0);
+          }`,
+        uniforms: {
+          tMap: { value: texture }, tFlow: flowmap.uniform,
+          uScale: { value: new Vec2(1, 1) }, uStrength: { value: 0.18 }, uShowFlow: { value: 0 },
+        },
+      });
+      const mesh = new Mesh(gl, { geometry: new Triangle(gl), program });
+
+      const cover = () => {
+        const s = program.uniforms.uScale.value;
+        if (v.aspect > imageAspect) s.set(1, imageAspect / v.aspect); else s.set(v.aspect / imageAspect, 1);
+      };
+      v.onResize(() => { flowmap.aspect = v.aspect; cover(); });
+      const status = ctx.status("載入照片…");
+      const load = (n) => {
+        const img = new Image();
+        img.onload = () => {
+          if (!ctx.active) return;
+          texture.image = img;
+          imageAspect = img.naturalWidth / img.naturalHeight;
+          cover();
+          status.done();
+        };
+        img.onerror = () => status.error("照片載入失敗");
+        img.src = `_shared/img/photo-${n}.jpg`;
+      };
+      load(PHOTOS[0].value);
+
+      ctx.select("", PHOTOS, PHOTOS[0].value, load);
+      ctx.slider("推移", { min: 0, max: 0.5, step: 0.01, value: 0.18 }, (x) => { program.uniforms.uStrength.value = x; });
+      ctx.slider("消散", { min: 0.9, max: 0.995, step: 0.005, value: 0.96, format: (x) => x.toFixed(3) }, (x) => { flowmap.mesh.program.uniforms.uDissipation.value = x; });
+      ctx.toggle("顯示流場", false, (on) => { program.uniforms.uShowFlow.value = on ? 1 : 0; });
+
+      const pointer = trackPointer(ctx, gl.canvas);
+      const last = new Vec2(-1, -1), vel = new Vec2();
+      ctx.raf((t, dt) => {
+        let x, y;
+        if (pointer.idle(1500)) {
+          // Scripted stroke while idle
+          const s = t * 0.001;
+          x = v.width * (0.5 + 0.36 * Math.sin(s * 1.1));
+          y = v.height * (0.5 + 0.3 * Math.sin(s * 1.9));
+        } else { x = pointer.x; y = pointer.y; }
+        if (last.x < 0) last.set(x, y);
+        vel.set((x - last.x) / dt, (y - last.y) / dt);
+        last.set(x, y);
+        flowmap.mouse.set(x / v.width, 1 - y / v.height);
+        flowmap.velocity.lerp(vel, vel.len() ? 0.5 : 0.1);
+        flowmap.update();
+        renderer.render({ scene: mesh });
+      });
+    },
+  },
+  {
+    id: "post", title: "後製濾鏡",
+    api: "new Post(gl)・post.addPass({ fragment, uniforms })・pass.enabled",
+    desc: "場景先畫進 Post 內建的乒乓 RenderTarget，再依序套用四道全螢幕濾鏡：輝光、色差、網點、暗角與掃描線；每道都能即時開關。",
+    hint: "逐一開關濾鏡比較效果・拖曳「網點」看半色調",
+    mount(ctx) {
+      const v = glStage(ctx, { clear: [0.02, 0.025, 0.04, 1] });
+      const { gl, renderer } = v;
+      const camera = new Camera(gl, { fov: 45, near: 0.1, far: 100 });
+      camera.position.set(0, 1.6, 8);
+      camera.lookAt([0, 0, 0]);
+      const scene = new Transform();
+      const time = { value: 0 };
+      const program = new Program(gl, {
+        vertex: LIT_VERTEX,
+        fragment: /* glsl */ `
+          precision highp float;
+          uniform float uTime;
+          uniform vec3 uTint;
+          uniform float uEmit;
+          varying vec3 vNormal;
+          varying vec3 vView;
+          varying vec2 vUv;
+          void main() {
+            vec3 n = normalize(vNormal);
+            float f = pow(1.0 - abs(dot(n, normalize(vView))), 2.0);
+            vec3 hue = 0.5 + 0.5 * cos(6.2831 * (f * 0.8 + uTime * 0.05 + vUv.x * 0.2 + vec3(0.0, 0.33, 0.67)));
+            float diff = max(dot(n, normalize(vec3(0.4, 0.8, 0.5))), 0.0);
+            vec3 col = uTint * (0.12 + 0.7 * diff) + hue * f * 0.9 + uTint * uEmit;
+            gl_FragColor = vec4(col, 1.0);
+          }`,
+        uniforms: { uTime: time, uTint: { value: new Color() }, uEmit: { value: 0 } },
+      });
+      const geos = [new Torus(gl, { radius: 0.42, tube: 0.13, radialSegments: 16, tubularSegments: 48 }), new Sphere(gl, { radius: 0.38, widthSegments: 28 }), new Box(gl, { width: 0.6, height: 0.6, depth: 0.6 })];
+      const tints = ["--c1", "--c2", "--c3", "--c4", "--c6"].map((c) => new Color(css(c)));
+      const ring = new Transform();
+      ring.setParent(scene);
+      const meshes = [];
+      for (let i = 0; i < 14; i++) {
+        const mesh = new Mesh(gl, { geometry: geos[i % 3], program });
+        const a = (i / 14) * Math.PI * 2;
+        mesh.position.set(Math.cos(a) * 3, Math.sin(a * 2) * 0.35, Math.sin(a) * 3);
+        mesh.tint = tints[i % tints.length];
+        mesh.emit = i % 4 === 0 ? 1.4 : 0;
+        mesh.onBeforeRender(() => { program.uniforms.uTint.value.copy(mesh.tint); program.uniforms.uEmit.value = mesh.emit; });
+        mesh.setParent(ring);
+        meshes.push(mesh);
+      }
+      const core = new Mesh(gl, { geometry: new Sphere(gl, { radius: 0.9, widthSegments: 48 }), program });
+      core.onBeforeRender(() => { program.uniforms.uTint.value.set(css("--accent")); program.uniforms.uEmit.value = 0.8; });
+      core.setParent(scene);
+
+      const post = new Post(gl);
+      const resolution = { value: new Vec2() };
+      const FRAG_HEAD = "precision highp float;\nuniform sampler2D tMap;\nuniform vec2 uResolution;\nvarying vec2 vUv;\n";
+      const glow = post.addPass({ fragment: FRAG_HEAD + /* glsl */ `
+        uniform float uGlow;
+        void main() {
+          vec3 base = texture2D(tMap, vUv).rgb;
+          vec3 sum = vec3(0.0);
+          // Golden-angle disk of taps; only bright pixels bleed outward
+          for (int i = 0; i < 24; i++) {
+            float a = float(i) * 2.39996;
+            vec2 o = vec2(cos(a), sin(a)) * sqrt(float(i) + 0.5) * 6.0 / uResolution * (uResolution.y / 600.0);
+            sum += max(texture2D(tMap, vUv + o).rgb - 0.6, 0.0);
+          }
+          gl_FragColor = vec4(base + sum / 24.0 * uGlow, 1.0);
+        }`, uniforms: { uResolution: resolution, uGlow: { value: 4 } } });
+      const aberr = post.addPass({ fragment: FRAG_HEAD + /* glsl */ `
+        void main() {
+          vec2 dir = vUv - 0.5;
+          vec2 off = dir * length(dir) * 0.06;
+          gl_FragColor = vec4(texture2D(tMap, vUv + off).r, texture2D(tMap, vUv).g, texture2D(tMap, vUv - off).b, 1.0);
+        }`, uniforms: { uResolution: resolution } });
+      const halftone = post.addPass({ fragment: FRAG_HEAD + /* glsl */ `
+        uniform float uCell;
+        void main() {
+          vec2 px = vUv * uResolution;
+          vec2 cell = floor(px / uCell) * uCell + uCell * 0.5;
+          vec3 c = texture2D(tMap, cell / uResolution).rgb;
+          float lum = dot(c, vec3(0.299, 0.587, 0.114));
+          float r = sqrt(clamp(lum, 0.0, 1.0)) * uCell * 0.65;
+          float mask = smoothstep(r + 0.9, r - 0.9, length(px - cell));
+          gl_FragColor = vec4(c * mask * 1.3 + c * 0.06, 1.0);
+        }`, uniforms: { uResolution: resolution, uCell: { value: 8 } }, enabled: false });
+      const film = post.addPass({ fragment: FRAG_HEAD + /* glsl */ `
+        uniform float uTime;
+        void main() {
+          vec3 c = texture2D(tMap, vUv).rgb;
+          float vig = smoothstep(0.95, 0.2, length(vUv - 0.5));
+          float scan = 0.9 + 0.1 * sin(vUv.y * uResolution.y * 1.5);
+          float n = fract(sin(dot(vUv * uResolution + uTime * 61.0, vec2(12.9898, 78.233))) * 43758.5453);
+          gl_FragColor = vec4(c * vig * scan + (n - 0.5) * 0.05, 1.0);
+        }`, uniforms: { uResolution: resolution, uTime: time } });
+
+      v.onResize(() => {
+        camera.perspective({ aspect: v.aspect, fov: v.aspect < 1 ? 66 : 45 });
+        post.resize();
+        resolution.value.set(post.resolutionWidth, post.resolutionHeight);
+      });
+      const passes = [["輝光", glow], ["色差", aberr], ["網點", halftone], ["暗角", film]];
+      for (const [label, pass] of passes) ctx.toggle(label, pass.enabled, (on) => { pass.enabled = on; });
+      ctx.fps({ position: "right bottom", extra: () => ({ 濾鏡: passes.filter(([, p]) => p.enabled).length }) });
+
+      ctx.raf((t) => {
+        time.value = t * 0.001;
+        ring.rotation.y = time.value * 0.25;
+        meshes.forEach((m, i) => { m.rotation.x = time.value * (0.6 + i * 0.05); m.rotation.y = time.value * 0.8; });
+        core.scale.set(1 + Math.sin(time.value * 2) * 0.06);
+        post.render({ scene, camera });
+      });
+    },
+  },
+  {
+    id: "gpgpu", title: "GPGPU 粒子",
+    api: "new GPGPU(gl, { data })・gpgpu.addPass({ fragment })・gpgpu.uniform",
+    desc: "65,536 顆粒子的位置與速度各存在一張 256×256 浮點紋理，每格由兩道片段著色器更新（速度、位置互相讀取），繪製時頂點著色器再從紋理取回座標；CPU 完全不碰粒子資料。",
+    hint: "移動游標牽引粒子・切換吸引、漩渦、排斥",
+    mount(ctx) {
+      const SIZE = 256, N = SIZE * SIZE;
+      const v = glStage(ctx, { clear: [0.02, 0.022, 0.035, 1] });
+      const { gl, renderer } = v;
+      const type = renderer.extensions.EXT_color_buffer_float ? gl.FLOAT : undefined;
+      const pos = new Float32Array(N * 4), vel = new Float32Array(N * 4), rnd = new Float32Array(N * 4), coords = new Float32Array(N * 2);
+      for (let i = 0; i < N; i++) {
+        const r = Math.sqrt(Math.random()) * 0.9, a = Math.random() * Math.PI * 2;
+        pos.set([Math.cos(a) * r, Math.sin(a) * r, 0, 1], i * 4);
+        rnd.set([Math.random(), Math.random(), Math.random(), Math.random()], i * 4);
+        // Sample texel centres so each particle reads exactly its own pixel
+        coords.set([((i % SIZE) + 0.5) / SIZE, (Math.floor(i / SIZE) + 0.5) / SIZE], i * 2);
+      }
+      const position = new GPGPU(gl, { data: pos, type });
+      const velocity = new GPGPU(gl, { data: vel, type });
+      const mouse = { value: new Vec2() }, mode = { value: 0 }, aspect = { value: 1 };
+      velocity.addPass({
+        fragment: /* glsl */ `
+          precision highp float;
+          uniform sampler2D tMap;
+          uniform sampler2D tPosition;
+          uniform vec2 uMouse;
+          uniform float uMode;
+          varying vec2 vUv;
+          void main() {
+            vec4 p = texture2D(tPosition, vUv);
+            vec4 v = texture2D(tMap, vUv);
+            vec2 d = uMouse - p.xy;
+            float len = length(d) + 1e-4;
+            vec2 dir = d / len;
+            vec2 acc = vec2(0.0);
+            if (uMode < 0.5) acc = dir * 0.00035 / (len * len + 0.04);
+            else if (uMode < 1.5) acc = (vec2(-dir.y, dir.x) * 1.2 + dir * 0.6) * 0.0003 / (len + 0.15);
+            else acc = -dir * 0.0006 / (len * len + 0.02) * step(len, 0.6);
+            acc -= p.xy * 0.00025; // weak pull back toward the centre
+            v.xy = (v.xy + acc) * 0.972;
+            gl_FragColor = v;
+          }`,
+        uniforms: { tPosition: position.uniform, uMouse: mouse, uMode: mode },
+      });
+      position.addPass({
+        fragment: /* glsl */ `
+          precision highp float;
+          uniform sampler2D tMap;
+          uniform sampler2D tVelocity;
+          varying vec2 vUv;
+          void main() {
+            vec4 p = texture2D(tMap, vUv);
+            p.xy += texture2D(tVelocity, vUv).xy;
+            gl_FragColor = p;
+          }`,
+        uniforms: { tVelocity: velocity.uniform },
+      });
+      const program = new Program(gl, {
+        vertex: /* glsl */ `
+          attribute vec2 coords;
+          attribute vec4 random;
+          uniform sampler2D tPosition;
+          uniform sampler2D tVelocity;
+          uniform float uAspect;
+          uniform float uDPR;
+          varying vec4 vRandom;
+          varying float vSpeed;
+          void main() {
+            vec4 p = texture2D(tPosition, coords);
+            vSpeed = length(texture2D(tVelocity, coords).xy);
+            vRandom = random;
+            gl_Position = vec4(p.x / uAspect, p.y, 0.0, 1.0);
+            gl_PointSize = (1.2 + random.x * 1.8) * uDPR;
+          }`,
+        fragment: /* glsl */ `
+          precision highp float;
+          uniform vec3 uSlow;
+          uniform vec3 uFast;
+          varying vec4 vRandom;
+          varying float vSpeed;
+          void main() {
+            float d = length(gl_PointCoord - 0.5);
+            if (d > 0.5) discard;
+            vec3 col = mix(uSlow, uFast, smoothstep(0.002, 0.03, vSpeed));
+            gl_FragColor = vec4(col, (0.35 + vRandom.y * 0.4) * smoothstep(0.5, 0.1, d));
+          }`,
+        uniforms: {
+          tPosition: position.uniform, tVelocity: velocity.uniform, uAspect: aspect, uDPR: { value: renderer.dpr },
+          uSlow: { value: new Color(css("--c2")) }, uFast: { value: new Color(css("--c5")) },
+        },
+        transparent: true, depthTest: false, depthWrite: false,
+      });
+      program.setBlendFunc(gl.SRC_ALPHA, gl.ONE);
+      const points = new Mesh(gl, {
+        mode: gl.POINTS, frustumCulled: false, program,
+        geometry: new Geometry(gl, { coords: { size: 2, data: coords }, random: { size: 4, data: rnd } }),
+      });
+      v.onResize(() => { aspect.value = v.aspect; });
+
+      const pointer = trackPointer(ctx, gl.canvas);
+      ctx.group(["吸引", "漩渦", "排斥"], 0, (i) => { mode.value = i; });
+      // Reset = point both simulations back at read-only textures holding the initial data.
+      const dataTexture = (image) => new Texture(gl, { image, type: gl.FLOAT, format: gl.RGBA, internalFormat: gl.RGBA32F, width: SIZE, generateMipmaps: false, minFilter: gl.NEAREST, magFilter: gl.NEAREST, flipY: false });
+      const initPos = dataTexture(pos.slice()), initVel = dataTexture(vel.slice());
+      ctx.button("重置", () => { position.uniform.value = initPos; velocity.uniform.value = initVel; });
+      ctx.fps({ position: "right bottom", extra: () => ({ 粒子: N, 紋理: `${SIZE}²` }) });
+
+      ctx.raf((t) => {
+        const s = t * 0.001;
+        if (pointer.idle()) mouse.value.set(Math.sin(s * 0.7) * 0.75 * v.aspect, Math.sin(s * 1.3) * 0.5);
+        else mouse.value.set(pointer.nx * v.aspect, pointer.ny);
+        velocity.render();
+        position.render();
+        renderer.render({ scene: points });
+      });
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "new Geometry(gl, { offset: { instanced: 1, size: 4, data } })",
+    desc: "內建 Box 幾何體加上一個 instanced 屬性，所有方塊只用一次 drawElementsInstanced；旋轉與脈衝都在頂點著色器算。逐級增加方塊數直到掉到 30 FPS 以下。",
+    hint: "按「自動加壓」開始；也可拖曳滑桿手動調整方塊數",
+    mount(ctx) {
+      ctx.html(`<div class="stress-box"></div>`);
+      const v = glStage(ctx, { host: ctx.$(".stress-box"), clear: [0.03, 0.035, 0.05, 1] });
+      const { gl, renderer } = v;
+      const camera = new Camera(gl, { fov: 45, near: 0.1, far: 200 });
+      camera.position.set(0, 4, 17);
+      camera.lookAt([0, 0, 0]);
+      const scene = new Transform();
+      const box = new Box(gl);
+      const time = { value: 0 }, scale = { value: 0.3 };
+      const program = new Program(gl, {
+        vertex: /* glsl */ `
+          attribute vec3 position;
+          attribute vec3 normal;
+          attribute vec4 offset;
+          uniform mat4 modelViewMatrix;
+          uniform mat4 projectionMatrix;
+          uniform mat3 normalMatrix;
+          uniform float uTime;
+          uniform float uScale;
+          varying vec3 vNormal;
+          varying float vSeed;
+          varying float vPulse;
+          void main() {
+            float s = offset.w;
+            float a = uTime * (0.6 + s) + s * 6.2831;
+            float b = a * 0.7;
+            mat3 ry = mat3(cos(a), 0.0, -sin(a), 0.0, 1.0, 0.0, sin(a), 0.0, cos(a));
+            mat3 rx = mat3(1.0, 0.0, 0.0, 0.0, cos(b), sin(b), 0.0, -sin(b), cos(b));
+            mat3 r = ry * rx;
+            float pulse = sin(length(offset.xyz) * 1.4 - uTime * 2.4) * 0.5 + 0.5;
+            vec3 p = r * position * uScale * (0.55 + pulse * 0.75) + offset.xyz;
+            vNormal = normalize(normalMatrix * (r * normal));
+            vSeed = s;
+            vPulse = pulse;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+          }`,
+        fragment: /* glsl */ `
+          precision highp float;
+          uniform vec3 uA;
+          uniform vec3 uB;
+          varying vec3 vNormal;
+          varying float vSeed;
+          varying float vPulse;
+          void main() {
+            vec3 n = normalize(vNormal);
+            float diff = 0.3 + 0.7 * max(dot(n, normalize(vec3(0.4, 0.9, 0.5))), 0.0);
+            vec3 col = mix(uA, uB, vSeed) * diff + vPulse * 0.18;
+            gl_FragColor = vec4(col, 1.0);
+          }`,
+        uniforms: { uTime: time, uScale: scale, uA: { value: new Color(css("--c2")) }, uB: { value: new Color(css("--c3")) } },
+      });
+      let mesh = null, count = 0;
+      const build = (n) => {
+        if (mesh) { mesh.setParent(null); mesh.geometry.remove(); }
+        const data = new Float32Array(n * 4);
+        for (let i = 0; i < n; i++) {
+          // Fibonacci sphere shell with random thickness
+          const y = 1 - (2 * (i + 0.5)) / n, rr = Math.sqrt(1 - y * y), phi = i * 2.399963;
+          const R = 6 * (0.72 + 0.28 * Math.random());
+          data.set([Math.cos(phi) * rr * R, y * R, Math.sin(phi) * rr * R, Math.random()], i * 4);
+        }
+        const geometry = new Geometry(gl, {
+          position: { size: 3, data: box.attributes.position.data },
+          normal: { size: 3, data: box.attributes.normal.data },
+          index: { data: box.attributes.index.data },
+          offset: { instanced: 1, size: 4, data },
+        });
+        mesh = new Mesh(gl, { geometry, program, frustumCulled: false });
+        mesh.setParent(scene);
+        scale.value = Math.min(0.45, 5.5 / Math.cbrt(n));
+        count = n;
+      };
+      v.onResize(() => camera.perspective({ aspect: v.aspect, fov: v.aspect < 1 ? 64 : 45 }));
+      ctx.raf((t) => {
+        time.value = t * 0.001;
+        scene.rotation.y = time.value * 0.15;
+        scene.rotation.x = Math.sin(time.value * 0.2) * 0.2;
+        renderer.render({ scene, camera });
+      });
+      ctx.controls.classList.add("bottom");
+      ctx.ramp({
+        label: "方塊", steps: [1000, 5000, 20000, 50000, 100000, 250000, 500000, 1000000],
+        minFps: 30,
+        apply: build,
+        metrics: () => ({ 三角形: count * 12, "draw call": 1 }),
+        note: "每一級都重建 instanced 緩衝區。方塊數再多，CPU 每格也只送一次繪製指令，瓶頸落在 GPU 的頂點處理與填充率；無頭瀏覽器用軟體算繪，數字會遠低於實機。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

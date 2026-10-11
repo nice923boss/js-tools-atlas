@@ -3,65 +3,294 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Shader Park 示範：用 JavaScript 雕出 SDF 雕塑</title>
+<title>Shader Park 示範：八個場景看懂 SDF 雕塑語法與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["雕塑實驗室","基本形體","布林運算","空間變形","即時編輯","滑鼠互動","材質與光線","極限測試"]}</script>
 <style>
-  body {
+  .sp-bg {
     background:
       radial-gradient(55% 70% at 50% 45%, #232838 0%, transparent 70%),
       radial-gradient(40% 50% at 85% 10%, rgba(157, 140, 255, 0.16), transparent 70%),
       radial-gradient(40% 50% at 10% 95%, rgba(76, 201, 240, 0.12), transparent 70%),
       var(--bg);
   }
-  #stage { position: fixed; inset: 0; }
-  #stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
-  .controls .label { font-size: 12px; align-self: center; padding: 6px 8px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); }
-  .btn { padding: 7px 10px; font-size: 12px; }
-  #code {
-    position: fixed; left: 12px; top: 12px; z-index: 40; width: 300px; padding: 10px 12px;
-    font: 11.5px/1.55 var(--mono); color: #c9c7bf; pointer-events: none;
+  .sp-stage { position: absolute; inset: 0; }
+  canvas.sp { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+
+  /* code panel + auto-generated input() sliders */
+  .sp-code { position: absolute; left: 10px; top: 10px; z-index: 20; width: 290px; max-height: calc(100% - 20px); overflow: auto; padding: 10px 12px; }
+  .sp-code h2 { margin: 0 0 7px; font: 600 12.5px/1.4 var(--font); }
+  .sp-code h2 small { display: block; color: var(--muted); font-weight: 500; font-size: 11.5px; }
+  .sp-code pre { margin: 0; font: 11.5px/1.55 var(--mono); color: var(--fg); white-space: pre-wrap; word-break: break-word; }
+  .hl-k { color: var(--c6); } .hl-f { color: var(--c2); } .hl-n { color: var(--c5); } .hl-in { color: var(--c1); font-weight: 600; }
+  .sp-knobs { position: absolute; right: 10px; bottom: 10px; z-index: 20; width: min(250px, calc(100% - 20px)); padding: 8px 10px; display: grid; gap: 6px; }
+  .sp-knobs .sp-row { display: grid; grid-template-columns: 64px minmax(0, 1fr) 40px; align-items: center; gap: 8px; font-size: 12px; }
+  .sp-knobs .sp-row input { width: 100%; min-width: 0; margin: 0; }
+  .sp-knobs .sp-row span:last-child { font: 500 11px/1 var(--mono); color: var(--muted); text-align: right; }
+  .sp-knobs .sp-meta { font: 500 10.5px/1.45 var(--mono); color: var(--muted); border-top: 1px dashed var(--line); padding-top: 5px; }
+
+  /* labels pinned under / over sculpted objects */
+  .sp-tag { position: absolute; z-index: 10; transform: translateX(-50%); padding: 2px 8px; border-radius: 999px; background: var(--panel);
+    border: 1px solid var(--line); font: 500 11px/1.4 var(--mono); color: var(--fg); white-space: nowrap; pointer-events: none; }
+  .sp-tag b { font: 600 11px/1.4 var(--font); color: var(--accent); margin-right: 5px; }
+  .sp-tag.sp-short b { margin-right: 0; }
+  .sp-tag.sp-short .sp-sig { display: none; }
+  .sp-readout { position: absolute; left: 10px; bottom: 10px; z-index: 20; padding: 7px 11px; max-width: calc(100% - 20px);
+    font: 500 11.5px/1.55 var(--mono); color: var(--muted); }
+  .sp-readout b { color: var(--fg); font-weight: 600; }
+  .sp-readout .sp-live { color: var(--accent); }
+
+  /* 5. live editor */
+  .sp-edit { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 6px) 10px 10px; display: grid; gap: 10px;
+    grid-template-columns: minmax(0, 340px) minmax(0, 1fr); }
+  .sp-ed { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+  .sp-ed textarea { flex: 1; min-height: 0; resize: none; border: 0; outline: 0; background: transparent; color: var(--fg);
+    font: 12px/1.55 var(--mono); padding: 10px 12px; white-space: pre; overflow: auto; }
+  .sp-ed pre.sp-glsl { flex: 1; min-height: 0; margin: 0; overflow: auto; padding: 10px 12px; font: 10.5px/1.5 var(--mono); color: var(--muted); white-space: pre; }
+  .sp-ed .sp-st { padding: 7px 12px; border-top: 1px solid var(--line); font: 500 11.5px/1.45 var(--mono); color: var(--muted); }
+  .sp-ed .sp-st.sp-ok b { color: var(--c4); }
+  .sp-ed .sp-st.sp-bad { color: var(--c3); }
+  .sp-view { position: relative; min-width: 0; min-height: 0; border-radius: 12px; overflow: hidden; border: 1px solid var(--line); }
+
+  /* 8. stress */
+  .sp-stress { position: absolute; inset: 8px; border-radius: 12px; overflow: hidden; }
+  @media (min-width: 561px) { .sp-stress { inset: 8px 8px 8px 350px; } }
+  .sp-badge { position: absolute; top: 10px; right: 10px; z-index: 5; padding: 8px 12px; text-align: right; pointer-events: none; }
+  .sp-badge b { display: block; font: 800 34px/1 var(--mono); color: var(--accent); }
+  .sp-badge span { display: block; margin-top: 5px; font: 500 11px/1.45 var(--mono); color: var(--muted); }
+
+  @media (max-width: 760px) {
+    .sp-code { display: none; }
+    .sp-edit { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   }
-  #code h2 { margin: 0 0 6px; font: 600 12px/1.4 var(--font); color: var(--fg); }
-  #code h2 small { color: var(--muted); font-weight: 400; margin-left: 6px; }
-  #code pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
-  #code .k { color: var(--c6); }
-  #code .f { color: var(--c2); }
-  #code .n { color: var(--c5); }
-  #code .in { color: var(--c1); }
-  #knobs {
-    position: fixed; right: 12px; bottom: 12px; z-index: 50; width: 250px; padding: 10px 12px;
-    display: grid; gap: 6px; font-size: 12px;
+  @media (max-width: 560px) {
+    .sp-badge { top: auto; bottom: calc(var(--sc-ctl-b, 0px) + 6px); z-index: 119; padding: 6px 10px; }
+    .sp-badge b { font-size: 24px; }
+    .sp-badge span { display: none; }
   }
-  #knobs .row { display: grid; grid-template-columns: 64px 1fr 40px; align-items: center; gap: 8px; }
-  #knobs .row span:last-child { font-family: var(--mono); color: var(--muted); text-align: right; }
-  #knobs input { width: 100%; margin: 0; }
-  #knobs .err { color: var(--c3); font-size: 12px; }
-  @media (max-width: 760px) { #code { display: none; } }
   @media (max-width: 520px) {
-    #knobs { left: 12px; right: 12px; width: auto; bottom: 46px; }
+    .sp-knobs { left: 10px; width: auto; padding: 6px 10px; gap: 4px; }
+    .sp-tag { font-size: 10px; padding: 1px 6px; }
+    .sp-tag b { font-size: 10px; margin-right: 3px; }
+    .sp-edit { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 0.9fr) minmax(0, 1.1fr); }
+    .sp-ed textarea { font-size: 11px; }
   }
 </style>
 </head>
 <body>
-<div id="stage"></div>
-<div class="controls" id="bar"><span class="label">雕塑</span></div>
-<div class="panel" id="code"><h2 id="codeTitle"></h2><pre id="codeSrc"></pre></div>
-<div class="panel" id="knobs"></div>
-<div class="hint">拖滑桿即時改 uniform，游標在雕塑上移動可轉動它</div>
-
+<script src="_shared/showcase.js"></script>
 <script type="module">
-import { sculptToMinimalRenderer } from "https://cdn.jsdelivr.net/npm/shader-park-core@0.2.8/dist/shader-park-core.esm.js";
+import {
+  sculptToGLSL, uniformsToGLSL, minimalHeader, usePBRHeader, useHemisphereLight,
+  sculptureStarterCode, fragFooter, minimalVertexSource,
+} from "https://cdn.jsdelivr.net/npm/shader-park-core@0.2.8/dist/shader-park-core.esm.js";
 
-// Each preset is real Shader Park code; input(value, min, max) becomes a GLSL uniform.
+// Shader Park showcase: eight scenes from the original sculpture lab to a resolution stress ramp.
+const { h, fmtMs, fmtCompact } = Showcase;
+const BASE = new Set(["time", "opacity", "_scale", "mouse", "stepSize", "resolution"]);
+const DPR = () => Math.min(2, window.devicePixelRatio || 1);
+const TRI = new Float32Array([-1, -1, 0, 3, -1, 0, -1, 3, 0]);
+// GLSL ES 3.0 has no implicit int -> float conversion, so setStepSize(1) must emit "1.0".
+const glslFloat = (n) => (Number.isInteger(n) ? n.toFixed(1) : String(n));
+
+// Same assembly as shader-park-core's sculptToFullGLSLSource, keeping the parts we report on.
+function compileSculpture(src) {
+  const t0 = performance.now();
+  const g = sculptToGLSL(src);
+  const jsMs = performance.now() - t0;
+  const frag = minimalHeader + usePBRHeader + useHemisphereLight + uniformsToGLSL(g.uniforms)
+    + `const float STEP_SIZE_CONSTANT = ${glslFloat(g.stepSizeConstant)};\n`
+    + `const int MAX_ITERATIONS = ${g.maxIterations};\n`
+    + `#define MAX_REFLECTIONS ${g.maxReflections}\n`
+    + sculptureStarterCode + g.geoGLSL + "\n" + g.colorGLSL + "\n" + fragFooter;
+  return {
+    frag, jsMs, glMs: 0, lines: frag.split("\n").length,
+    uniforms: g.uniforms, inputs: g.uniforms.filter((u) => !BASE.has(u.name)),
+    maxIterations: g.maxIterations, maxReflections: g.maxReflections, glsl: `${g.geoGLSL}\n${g.colorGLSL}`,
+  };
+}
+const compileLine = (i) => `GLSL ${i.lines} 行・JS→GLSL ${fmtMs(i.jsMs)}・GPU 編譯 ${fmtMs(i.glMs)}`;
+
+// Minimal WebGL2 host for one sculpture. The library's own minimal renderer sizes itself to the
+// window and has no dispose(), so every scene owns one of these and releases it on cleanup.
+function createRenderer(ctx, host, { dpr = true, pointer = true } = {}) {
+  const canvas = h("canvas", { class: "sp" });
+  host.append(canvas);
+  const gl = canvas.getContext("webgl2", { alpha: true, premultipliedAlpha: false, antialias: false });
+  if (!gl) throw new Error("此瀏覽器不支援 WebGL2，Shader Park 需要 WebGL2 才能執行。");
+  const LIM = Math.min(4096, ...gl.getParameter(gl.MAX_VIEWPORT_DIMS));
+  const vs = gl.createShader(gl.VERTEX_SHADER);
+  gl.shaderSource(vs, minimalVertexSource);
+  gl.compileShader(vs);
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, TRI, gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  const setU = (loc, type, v) => {
+    if (!loc || v == null) return;
+    if (type === "float") gl.uniform1f(loc, v);
+    else if (type === "vec2") gl.uniform2fv(loc, v);
+    else if (type === "vec3") gl.uniform3fv(loc, v);
+  };
+
+  const r = {
+    canvas, gl, info: null, prog: null, loc: {}, values: {}, scale: 1,
+    time: 0, speed: 1, playing: true, mouse: [0, 0, -0.5], target: [0, 0], hover: false, idle: null, onFrame: null,
+    // Compile a sculpture; throws (and keeps the previous program) when JS or GLSL fails.
+    load(src, { keep = false } = {}) {
+      const info = compileSculpture(src);
+      const t0 = performance.now();
+      const fs = gl.createShader(gl.FRAGMENT_SHADER);
+      gl.shaderSource(fs, info.frag);
+      gl.compileShader(fs);
+      if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+        const log = (gl.getShaderInfoLog(fs) || "").trim().split("\n")[0];
+        gl.deleteShader(fs);
+        throw new Error(`GLSL 編譯失敗：${log}`);
+      }
+      const prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.bindAttribLocation(prog, 0, "coordinates");
+      gl.linkProgram(prog);
+      gl.deleteShader(fs);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        const log = (gl.getProgramInfoLog(prog) || "").trim().split("\n")[0];
+        gl.deleteProgram(prog);
+        throw new Error(`著色器連結失敗：${log}`);
+      }
+      info.glMs = performance.now() - t0;
+      if (r.prog) gl.deleteProgram(r.prog);
+      // Keep slider values across recompiles unless the declared default changed.
+      const prevDefault = Object.fromEntries((r.info ? r.info.inputs : []).map((u) => [u.name, u.value]));
+      const old = r.values;
+      r.values = {};
+      for (const u of info.inputs) r.values[u.name] = keep && u.name in old && prevDefault[u.name] === u.value ? old[u.name] : u.value;
+      r.prog = prog;
+      r.info = info;
+      r.loc = Object.fromEntries(info.uniforms.map((u) => [u.name, gl.getUniformLocation(prog, u.name)]));
+      return info;
+    },
+    resize() {
+      const px = (dpr ? DPR() : 1) * r.scale;
+      const w = Math.max(1, Math.min(LIM, Math.round(host.clientWidth * px)));
+      const hh = Math.max(1, Math.min(LIM, Math.round(host.clientHeight * px)));
+      if (canvas.width !== w || canvas.height !== hh) { canvas.width = w; canvas.height = hh; }
+    },
+    draw() {
+      if (!r.prog) return;
+      const w = canvas.width, hh = canvas.height;
+      gl.viewport(0, 0, w, hh);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.useProgram(r.prog);
+      const vals = { time: r.time, opacity: 1, _scale: 1, mouse: r.mouse, stepSize: 0.85, resolution: [w, hh], ...r.values };
+      for (const u of r.info.uniforms) setU(r.loc[u.name], u.type, vals[u.name]);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    },
+  };
+
+  if (pointer) {
+    // Same mapping as the library's minimal renderer: x, y in [-1, 1], y up.
+    const aim = (e) => {
+      const b = canvas.getBoundingClientRect();
+      r.target = [(2 * (e.clientX - b.left)) / b.width - 1, 2 * (1 - (e.clientY - b.top) / b.height) - 1];
+      r.hover = true;
+    };
+    ctx.on(canvas, "pointermove", aim);
+    ctx.on(canvas, "pointerdown", aim);
+    ctx.on(canvas, "pointerleave", () => { r.hover = false; });
+  }
+  ctx.on(canvas, "webglcontextlost", (e) => {
+    e.preventDefault();
+    if (ctx.active) ctx.status("").error("WebGL 內容遺失（GPU 負載過重或被系統回收），切到別的場景再回來即可重建。");
+  });
+  const ro = new ResizeObserver(() => r.resize());
+  ro.observe(host);
+  ctx.onCleanup(() => {
+    ro.disconnect();
+    if (r.prog) gl.deleteProgram(r.prog);
+    gl.deleteShader(vs);
+    gl.deleteBuffer(buf);
+    gl.deleteVertexArray(vao);
+    const lose = gl.getExtension("WEBGL_lose_context");
+    if (lose) lose.loseContext();
+  });
+  r.resize();
+  ctx.raf((t, dt) => {
+    if (r.playing) r.time += (dt / 1000) * r.speed;
+    const tgt = r.hover ? r.target : r.idle ? r.idle(r.time) : [0, 0];
+    const k = 1 - Math.exp(-dt / 110);
+    r.mouse = [r.mouse[0] + (tgt[0] - r.mouse[0]) * k, r.mouse[1] + (tgt[1] - r.mouse[1]) * k, -0.5];
+    if (r.onFrame) r.onFrame(dt);
+    r.draw();
+  });
+  return r;
+}
+
+// One slider per input() the sculpture declared, plus a compile-cost line.
+function buildKnobs(box, r, labels = {}, hidden = []) {
+  box.textContent = "";
+  for (const u of r.info.inputs) {
+    if (hidden.includes(u.name)) continue;
+    const out = h("span");
+    const inp = h("input", { type: "range", min: u.min, max: u.max, step: (u.max - u.min) / 100, value: r.values[u.name] });
+    const show = () => (out.textContent = (+inp.value).toFixed(2));
+    inp.addEventListener("input", () => { r.values[u.name] = +inp.value; show(); });
+    show();
+    box.append(h("label", { class: "sp-row", title: `let ${u.name} = input(…)` }, h("span", { text: labels[u.name] || u.name }), inp, out));
+  }
+  box.append(h("div", { class: "sp-meta", text: compileLine(r.info) }));
+}
+
+function highlight(src) {
+  const esc = src.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  return esc
+    .replace(/\b(let|for)\b/g, '<span class="hl-k">$1</span>')
+    .replace(/\b(input)\(/g, '<span class="hl-in">$1</span>(')
+    .replace(/\b([a-zA-Z][a-zA-Z0-9]*)\(/g, (m, name) => (name === "span" ? m : `<span class="hl-f">${name}</span>(`))
+    .replace(/(?<![\w.#-])(\d+(?:\.\d+)?)/g, '<span class="hl-n">$1</span>');
+}
+
+// Screen px -> sculpture space on the z = 0 plane (camera at z = -2, view height 1.75 units).
+const toWorld = (x, y, w, hh) => [(x / w - 0.5) * 1.75 * (w / hh), (0.5 - y / hh) * 1.75];
+
+// Column count that gives the biggest square cell; rows are centred. Returns cell centres in px.
+function gridCells(n, w, hh, top, bottom) {
+  const H = Math.max(1, hh - top - bottom);
+  let best = null;
+  for (let cols = 1; cols <= n; cols++) {
+    const rows = Math.ceil(n / cols);
+    const size = Math.min(w / cols, H / rows);
+    if (!best || size > best.size) best = { cols, rows, size };
+  }
+  const { cols, rows, size } = best;
+  const cw = w / cols, ch = H / rows;
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const row = Math.floor(i / cols), inRow = Math.min(cols, n - row * cols);
+    pts.push({ x: w / 2 + ((i % cols) - (inRow - 1) / 2) * cw, y: top + (row + 0.5) * ch });
+  }
+  return { pts, size, rows, cw };
+}
+// Tags drop the signature and keep only the Chinese name when their grid cell is too narrow.
+const addTag = (host, zh, sig) => { const t = h("div", { class: "sp-tag" }, h("b", { text: zh }), h("span", { class: "sp-sig", text: sig })); host.append(t); return t; };
+function placeTag(tag, x, y, w, hh, room = w) {
+  tag.classList.remove("sp-short");
+  if (tag.offsetWidth > room - 6) tag.classList.add("sp-short");
+  const tw = tag.offsetWidth, th = tag.offsetHeight;
+  tag.style.left = `${Math.min(w - tw / 2 - 4, Math.max(tw / 2 + 4, x))}px`;
+  tag.style.top = `${Math.min(hh - th - 4, Math.max(4, y))}px`;
+}
+
+// ---------- 1. original presets ----------
 const PRESETS = [
-  {
-    key: "orb",
-    label: "噪波金屬球",
-    note: "noise 位移 + boxFrame 混合",
-    knobs: [["morph", "框球混合", 0, 1, 0.3], ["bumps", "起伏", 0, 1, 0.6], ["hue", "色相", 0, 1, 0.58]],
-    source: `setMaxIterations(48);
+  { name: "噪波金屬球", note: "noise 位移 + boxFrame 混合", code: `setMaxIterations(48);
 let morph = input(0.3, 0, 1);
 let bumps = input(0.6, 0, 1);
 let hue = input(0.58, 0, 1);
@@ -77,14 +306,8 @@ rotateY(time * 0.3 + mouse.x * 1.5);
 rotateX(mouse.y * 1.2);
 boxFrame(vec3(0.46), abs(n) * 0.05 + 0.012);
 mixGeo(morph);
-sphere(0.42 + n * bumps * 0.12);`,
-  },
-  {
-    key: "goo",
-    label: "黏土融合",
-    note: "blend() 平滑聯集",
-    knobs: [["goo", "黏稠度", 0, 0.3, 0.14], ["speed", "公轉速度", 0, 2, 0.8], ["hue", "色相", 0, 1, 0.9]],
-    source: `setMaxIterations(48);
+sphere(0.42 + n * bumps * 0.12);` },
+  { name: "黏土融合", note: "blend() 平滑聯集", code: `setMaxIterations(48);
 let goo = input(0.14, 0, 0.3);
 let speed = input(0.8, 0, 2);
 let hue = input(0.9, 0, 1);
@@ -102,14 +325,8 @@ for (let i = 0; i < 4; i++) {
   color(hsv2rgb(vec3(hue + i * 0.07, 0.8, 0.9)));
   sphere(0.1);
   displace(p * -1.0);
-}`,
-  },
-  {
-    key: "crystal",
-    label: "碎形晶體",
-    note: "mirrorXYZ() 摺疊 + 旋轉",
-    knobs: [["fold", "摺疊間距", 0.1, 0.22, 0.16], ["twist", "扭轉", 0, 1, 0.35], ["hue", "色相", 0, 1, 0.12]],
-    source: `setMaxIterations(56);
+}` },
+  { name: "碎形晶體", note: "mirrorXYZ() 摺疊 + 旋轉", code: `setMaxIterations(56);
 let fold = input(0.16, 0.1, 0.22);
 let twist = input(0.35, 0, 1);
 let hue = input(0.12, 0, 1);
@@ -128,83 +345,529 @@ for (let i = 0; i < 3; i++) {
   rotateX(twist * 0.6);
   size = size * 0.5;
 }
-box(vec3(size * 1.3));`,
-  },
+box(vec3(size * 1.3));` },
+];
+const LABELS = {
+  morph: "框球混合", bumps: "起伏", hue: "色相", goo: "黏稠度", speed: "公轉速度", fold: "摺疊間距", twist: "扭轉",
+  gap: "間距", tilt: "傾斜", count: "數量", lift: "起伏", turn: "旋轉", amount: "扭轉量", amp: "振幅", freq: "頻率",
+  size: "尺寸", holes: "孔徑",
+};
+
+// ---------- 2. primitives ----------
+const PRIMS = [
+  { zh: "球", sig: "sphere(r)", col: [0.97, 0.8, 0.2], code: "sphere(0.5 * k);" },
+  { zh: "方塊", sig: "box(x, y, z)", col: [0.3, 0.75, 0.95], code: "box(0.36 * k, 0.36 * k, 0.36 * k);" },
+  { zh: "圓環", sig: "torus(R, r)", col: [0.97, 0.3, 0.55], code: "rotateX(1.1);\n  torus(0.4 * k, 0.13 * k);" },
+  { zh: "圓柱", sig: "cylinder(r, h)", col: [0.5, 0.85, 0.55], code: "cylinder(0.3 * k, 0.38 * k);" },
+  { zh: "框線", sig: "boxFrame(b, e)", col: [1, 0.6, 0.3], code: "boxFrame(vec3(0.38 * k), 0.05 * k);" },
+  { zh: "線段", sig: "line(a, b, r)", col: [0.65, 0.58, 1], code: "line(vec3(-0.34 * k, -0.34 * k, 0), vec3(0.34 * k, 0.34 * k, 0), 0.12 * k);" },
+  { zh: "圓錐", sig: "roundCone(a, b, r1, r2)", col: [0.4, 0.9, 0.85], code: "roundCone(vec3(0, -0.3 * k, 0), vec3(0, 0.36 * k, 0), 0.26 * k, 0.07 * k);" },
+  { zh: "鏈環", sig: "link(le, r1, r2)", col: [0.92, 0.92, 0.88], code: "rotateX(0.9);\n  link(0.2 * k, 0.26 * k, 0.09 * k);" },
+];
+const primSource = () => [
+  "setMaxIterations(64);",
+  "let k = input(0.3, 0.05, 1);",
+  "let bevel = input(0, 0, 0.12);",
+  "let ang = input(0, 0, 7);",
+  "let nrm = input(0, 0, 1);",
+  "lightDirection(-0.4, 0.8, -0.6);",
+  ...PRIMS.map((p, i) => [
+    `let px${i} = input(0, -9, 9);`,
+    `let py${i} = input(0, -9, 9);`,
+    "shape(() => {",
+    `  displace(px${i}, py${i}, 0);`,
+    `  rotateY(ang + ${(i * 0.7).toFixed(1)});`,
+    "  rotateX(0.35);",
+    `  color(mix(vec3(${p.col.join(", ")}), normal * 0.5 + 0.5, nrm));`,
+    "  shine(0.6);",
+    `  ${p.code}`,
+    "  expand(bevel * k);",
+    "})();",
+  ].join("\n")),
+].join("\n");
+
+// ---------- 3. boolean ops ----------
+const OPS = [
+  { zh: "聯集", sig: "union()", op: "union();" },
+  { zh: "差集", sig: "difference()", op: "difference();" },
+  { zh: "交集", sig: "intersect()", op: "intersect();" },
+  { zh: "平滑融合", sig: "blend(soft)", op: "blend(soft);" },
+  { zh: "形狀內插", sig: "mixGeo(morph)", op: "mixGeo(morph);" },
+];
+const boolSource = () => [
+  "setMaxIterations(64);",
+  "let k = input(0.3, 0.05, 1);",
+  "let soft = input(0.12, 0, 0.3);",
+  "let morph = input(0.5, 0, 1);",
+  "let off = input(0.32, 0, 1);",
+  "lightDirection(-0.4, 0.8, -0.6);",
+  ...OPS.map((o, i) => [
+    `let px${i} = input(0, -9, 9);`,
+    `let py${i} = input(0, -9, 9);`,
+    "shape(() => {",
+    `  displace(px${i}, py${i}, 0);`,
+    "  rotateY(0.6);",
+    "  rotateX(0.45);",
+    "  color(0.97, 0.78, 0.22);",
+    "  shine(0.55);",
+    "  box(0.42 * k, 0.42 * k, 0.42 * k);",
+    `  ${o.op}`,
+    "  displace(off * k, 0, 0);",
+    "  color(0.3, 0.72, 0.95);",
+    "  sphere(0.55 * k);",
+    "})();",
+  ].join("\n")),
+].join("\n");
+
+// ---------- 4. space warps ----------
+const WARPS = [
+  { name: "重複", note: "repeat(間距, 次數) 把空間切成格子，一個方塊變 125 個", code: `setMaxIterations(64);
+let gap = input(0.2, 0.14, 0.3);
+let tilt = input(0.5, 0, 1.2);
+rotateY(time * 0.25 + mouse.x);
+rotateX(tilt + mouse.y * 0.5);
+let s = getSpace();
+color(hsv2rgb(vec3(0.55 + s.y * 0.4, 0.65, 0.95)));
+shine(0.6);
+repeat(vec3(gap), vec3(2));
+box(vec3(gap * 0.28));
+expand(0.015);` },
+  { name: "環形", note: "repeatRadial(n) 繞 Y 軸複製，並回傳每份的索引", code: `setMaxIterations(64);
+let count = input(8, 3, 16);
+let lift = input(0.12, 0, 0.3);
+rotateX(0.8 + mouse.y * 0.5);
+rotateY(time * 0.3 + mouse.x);
+let i = repeatRadial(floor(count));
+displace(0.36, sin(time * 2.0 + i) * lift, 0);
+color(hsv2rgb(vec3(i / floor(count), 0.7, 0.95)));
+shine(0.7);
+sphere(0.08);` },
+  { name: "鏡射", note: "mirrorXYZ() 取絕對值，一個圓環摺成八份", code: `setMaxIterations(64);
+let fold = input(0.18, 0.05, 0.3);
+let turn = input(0.5, 0, 1.6);
+rotateY(time * 0.2 + mouse.x * 1.5);
+rotateX(0.4 + mouse.y);
+mirrorXYZ();
+displace(fold, fold, fold);
+rotateZ(turn);
+color(0.97, 0.55, 0.25);
+metal(0.6);
+shine(0.8);
+torus(0.12, 0.035);` },
+  { name: "扭轉", note: "旋轉角度跟著高度變：rotateY(s.y × 扭轉量)", code: `setMaxIterations(80);
+setStepSize(0.6);
+let amount = input(3, 0, 8);
+rotateY(mouse.x);
+rotateX(mouse.y * 0.5);
+let s = getSpace();
+rotateY(s.y * amount + time * 0.6);
+color(0.62, 0.55, 1.0);
+shine(0.7);
+box(0.2, 0.5, 0.2);
+expand(0.02);` },
+  { name: "噪波", note: "用三組 noise() 推移座標，表面跟著流動", code: `setMaxIterations(80);
+setStepSize(0.5);
+let amp = input(0.12, 0, 0.3);
+let freq = input(3, 1, 8);
+rotateY(time * 0.2 + mouse.x);
+rotateX(mouse.y);
+let s = getSpace() * freq;
+let d = vec3(noise(s + vec3(time * 0.3, 0, 0)), noise(s + vec3(0, time * 0.3, 4.1)), noise(s + vec3(7.3, 0, time * 0.3)));
+displace(d * amp);
+color(hsv2rgb(vec3(0.5 + d.x * 0.3, 0.7, 0.9)));
+shine(0.6);
+sphere(0.4);` },
 ];
 
-const stage = document.getElementById("stage");
-const knobsEl = document.getElementById("knobs");
-let values = {};
-let canvas = null;
+// ---------- 5. editor examples ----------
+const EXAMPLES = [
+  { name: "三孔方塊", code: `let size = input(0.3, 0.15, 0.4);
+let holes = input(0.14, 0.05, 0.25);
+rotateY(time * 0.3 + mouse.x);
+rotateX(0.5 + mouse.y);
+color(0.9, 0.75, 0.3);
+metal(0.5);
+shine(0.7);
+box(size, size, size);
+expand(0.02);
+difference();
+cylinder(holes, 1);
+rotateX(PI / 2);
+cylinder(holes, 1);
+rotateZ(PI / 2);
+cylinder(holes, 1);` },
+  { name: "螺旋珠串", code: `let twist = input(0.6, 0, 1.5);
+let hue = input(0.8, 0, 1);
+rotateY(time * 0.3 + mouse.x);
+rotateX(mouse.y * 0.8);
+shine(0.8);
+blend(0.05);
+for (let i = 0; i < 12; i++) {
+  let a = i * twist + time;
+  let p = vec3(cos(a) * 0.3, i * 0.06 - 0.33, sin(a) * 0.3);
+  displace(p);
+  color(hsv2rgb(vec3(hue + i * 0.03, 0.7, 0.95)));
+  sphere(0.07 + i * 0.004);
+  displace(p * -1.0);
+}` },
+  { name: "噪波地形", code: `setStepSize(0.4);
+let amp = input(0.15, 0, 0.3);
+let freq = input(4, 1, 10);
+rotateX(0.7 + mouse.y * 0.4);
+rotateY(time * 0.15 + mouse.x);
+let s = getSpace();
+let n = noise(vec3(s.x * freq, time * 0.3, s.z * freq));
+color(hsv2rgb(vec3(0.3 - n * 0.2, 0.6, 0.8)));
+shine(0.4);
+box(0.55, 0.04 + (n * 0.5 + 0.5) * amp, 0.55);` },
+];
 
-function highlight(src) {
-  const esc = src.replace(/&/g, "&amp;").replace(/</g, "&lt;");
-  return esc
-    .replace(/\b(let|for)\b/g, '<span class="k">$1</span>')
-    .replace(/\b(input)\(/g, '<span class="in">$1</span>(')
-    .replace(/\b([a-zA-Z][a-zA-Z0-9]*)\(/g, (m, name) => (name === "span" ? m : `<span class="f">${name}</span>(`))
-    .replace(/(?<![\w.#-])(\d+(?:\.\d+)?)/g, '<span class="n">$1</span>');
+// ---------- 6. mouse ----------
+const MOUSE_SRC = `setMaxIterations(56);
+let aspect = input(1.6, 0.2, 5);
+let pull = input(0.12, 0.02, 0.3);
+let press = input(0, 0, 1);
+let m = vec3(mouse.x * aspect * 0.875, mouse.y * 0.875, 0);
+let s = getSpace();
+let near = clamp(1.0 - length(s - m) * 2.2, 0.0, 1.0);
+lightDirection(-0.3, 0.6, -0.8);
+color(hsv2rgb(vec3(0.62 - near * 0.5, 0.75, 0.95)));
+shine(0.7);
+repeat(vec3(0.15, 0.15, 1), vec3(12, 7, 0));
+sphere(0.022 + near * 0.05);
+reset();
+blend(pull);
+displace(m);
+color(1.0, 0.85, 0.25);
+metal(0.3);
+sphere(0.06 + press * 0.07);`;
+
+// ---------- 7. materials ----------
+const MATS = [
+  { zh: "霧面", sig: "shine(0)", code: ["color(0.85, 0.3, 0.28);", "metal(0);", "shine(0);", "reflectiveColor(0, 0, 0);", "sphere(0.42 * k);"] },
+  { zh: "塑膠", sig: "shine(0.9)", code: ["color(0.2, 0.5, 0.95);", "metal(0);", "shine(0.9);", "reflectiveColor(0.06, 0.06, 0.06);", "sphere(0.42 * k);"] },
+  { zh: "金屬", sig: "metal(1)", code: ["color(0.95, 0.7, 0.28);", "metal(1);", "shine(0.75);", "reflectiveColor(0.55, 0.42, 0.2);", "sphere(0.42 * k);"] },
+  { zh: "邊緣光", sig: "fresnel(3)", code: ["color(vec3(0.05, 0.04, 0.16) + vec3(0.4, 0.9, 1.0) * fresnel(3));", "metal(0);", "shine(0.4);", "reflectiveColor(0, 0, 0);", "sphere(0.42 * k);"] },
+  { zh: "環境遮蔽", sig: "occlusion(ao)", code: ["color(0.9, 0.88, 0.82);", "metal(0);", "shine(0.3);", "reflectiveColor(0, 0, 0);", "sphere(0.31 * k);", "mirrorXYZ();", "displace(0.17 * k, 0.17 * k, 0.17 * k);", "sphere(0.17 * k);"] },
+  { zh: "法向量色", sig: "color(normal)", code: ["color(normal * 0.5 + 0.5);", "metal(0);", "shine(0.5);", "reflectiveColor(0, 0, 0);", "sphere(0.42 * k);"] },
+];
+const matSource = (refl) => [
+  "setMaxIterations(72);",
+  `setMaxReflections(${refl ? 1 : 0});`,
+  "let k = input(0.3, 0.05, 1);",
+  "let lx = input(-0.7, -1, 1);",
+  "let ly = input(0.75, -1, 1);",
+  "let lz = input(-0.7, -1, 1);",
+  "let ao = input(1, 0, 1);",
+  "let floorY = input(-0.6, -2, 0);",
+  "lightDirection(lx, ly, lz);",
+  "backgroundColor(vec3(0.55, 0.6, 0.85));",
+  "shape(() => {",
+  "  displace(0, floorY, 0.4);",
+  "  color(0.06, 0.065, 0.08);",
+  "  reflectiveColor(0.35, 0.35, 0.4);",
+  "  metal(0);",
+  "  shine(0.9);",
+  "  occlusion(ao);",
+  "  box(3.5, 0.015, 1.6);",
+  "})();",
+  ...MATS.map((m, i) => [
+    `let px${i} = input(0, -9, 9);`,
+    `let py${i} = input(0, -9, 9);`,
+    "shape(() => {",
+    `  displace(px${i}, py${i}, 0);`,
+    "  occlusion(ao);",
+    ...m.code.map((c) => `  ${c}`),
+    "})();",
+  ].join("\n")),
+].join("\n");
+
+// ---------- 8. stress ----------
+const stressSource = (iters, refl) => `setMaxIterations(${iters});
+setMaxReflections(${refl});
+let twist = input(0.42, 0, 1);
+backgroundColor(vec3(0.35, 0.3, 0.5));
+rotateY(time * 0.2 + mouse.x * 1.5);
+rotateX(time * 0.13 + mouse.y);
+let s = getSpace();
+metal(0.75);
+shine(0.85);
+color(hsv2rgb(vec3(0.5 + length(s) * 0.9, 0.75, 0.9)));
+let size = 0.17;
+for (let i = 0; i < 4; i++) {
+  mirrorXYZ();
+  displace(size);
+  rotateZ(twist + sin(time * 0.5) * 0.15);
+  rotateX(twist * 0.6);
+  size = size * 0.58;
+}
+box(vec3(size * 1.5));`;
+
+// Code panel + knob panel layout shared by scenes 1 and 4.
+function labScene(ctx, list, intro) {
+  ctx.html(`<div class="sp-stage sp-bg"><div class="sp-code panel"><h2></h2><pre></pre></div><div class="sp-knobs panel"></div></div>`);
+  const r = createRenderer(ctx, ctx.$(".sp-stage"));
+  const show = (i) => {
+    const p = list[i];
+    r.load(p.code);
+    ctx.$(".sp-code h2").innerHTML = `${p.name}<small>${p.note}${intro ? `・${intro}` : ""}</small>`;
+    ctx.$(".sp-code pre").innerHTML = highlight(p.code);
+    buildKnobs(ctx.$(".sp-knobs"), r, LABELS);
+  };
+  ctx.group(list.map((p) => p.name), 0, show);
+  show(0);
+  return r;
 }
 
-function buildKnobs(preset) {
-  knobsEl.textContent = "";
-  values = {};
-  for (const [name, label, min, max, value] of preset.knobs) {
-    values[name] = value;
-    const row = document.createElement("label");
-    row.className = "row";
-    const out = document.createElement("span");
-    out.textContent = value.toFixed(2);
-    const range = Object.assign(document.createElement("input"), {
-      type: "range", min, max, step: (max - min) / 100, value,
-    });
-    range.addEventListener("input", () => {
-      values[name] = Number(range.value);
-      out.textContent = values[name].toFixed(2);
-    });
-    const tag = document.createElement("span");
-    tag.textContent = label;
-    row.append(tag, range, out);
-    knobsEl.append(row);
-  }
-}
-
-function load(key) {
-  const preset = PRESETS.find((p) => p.key === key);
-  document.querySelectorAll("#bar .btn").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.k === key)));
-  document.getElementById("codeTitle").innerHTML = `${preset.label}<small>${preset.note}</small>`;
-  document.getElementById("codeSrc").innerHTML = highlight(preset.source);
-  buildKnobs(preset);
-
-  // The minimal renderer has no dispose(), so swap in a fresh canvas and drop the old context.
-  if (canvas) {
-    const old = canvas;
-    old.getContext("webgl2")?.getExtension("WEBGL_lose_context")?.loseContext();
-    old.remove();
-  }
-  canvas = document.createElement("canvas");
-  stage.append(canvas);
-  try {
-    sculptToMinimalRenderer(canvas, preset.source, () => ({ ...values }));
-    // Transparent clear so missed rays reveal the page gradient behind the sculpture.
-    canvas.getContext("webgl2").clearColor(0, 0, 0, 0);
-  } catch (err) {
-    console.warn(err);
-    const msg = document.createElement("div");
-    msg.className = "err";
-    msg.textContent = "此瀏覽器無法建立 WebGL2 雕塑：" + (err?.message || err);
-    knobsEl.append(msg);
-  }
-}
-
-const bar = document.getElementById("bar");
-for (const p of PRESETS) {
-  const b = document.createElement("button");
-  b.className = "btn"; b.type = "button"; b.dataset.k = p.key; b.textContent = p.label;
-  b.addEventListener("click", () => load(p.key));
-  bar.append(b);
-}
-load("orb");
+Showcase.run({
+  scenes: [
+    {
+      id: "lab",
+      title: "雕塑實驗室",
+      api: "sculptToGLSL(code)・input()",
+      desc: "原版的三個雕塑：左側是 Shader Park 原始碼，input() 宣告的變數自動變成右下滑桿，拖動只改 uniform、不必重新編譯。",
+      hint: "拖滑桿即時改 uniform，游標在雕塑上移動可轉動它",
+      mount(ctx) {
+        labScene(ctx, PRESETS);
+      },
+    },
+    {
+      id: "prims",
+      title: "基本形體",
+      api: "sphere・box・torus・cylinder・boxFrame・line・roundCone・link",
+      desc: "八種內建 SDF 基本形體，各自包在 shape() 裡定位旋轉；expand() 把距離場往外推一點，稜角就變圓角。",
+      hint: "拖「圓角」看 expand() 效果，「法向量著色」顯示表面朝向",
+      mount(ctx) {
+        ctx.html(`<div class="sp-stage sp-bg"></div>`);
+        const stage = ctx.$(".sp-stage");
+        const r = createRenderer(ctx, stage, { pointer: false });
+        r.load(primSource());
+        const tags = PRIMS.map((p) => addTag(stage, p.zh, p.sig));
+        let spin = true, nrmTarget = 0;
+        ctx.slider("圓角", { min: 0, max: 0.12, step: 0.01, value: 0 }, (v) => (r.values.bevel = v));
+        ctx.toggle("旋轉", true, (v) => (spin = v));
+        ctx.toggle("法向量著色", false, (v) => (nrmTarget = v ? 1 : 0));
+        r.onFrame = (dt) => {
+          if (spin) r.values.ang = (r.values.ang + dt * 0.0006) % (Math.PI * 2);
+          r.values.nrm += (nrmTarget - r.values.nrm) * Math.min(1, dt / 150);
+        };
+        const layout = () => {
+          const w = stage.clientWidth, hh = stage.clientHeight;
+          const { pts, size, cw } = gridCells(PRIMS.length, w, hh, ctx.controls.offsetHeight + 14, 4);
+          r.values.k = size * (1.75 / hh) * 0.5;
+          pts.forEach((p, i) => {
+            const [x, y] = toWorld(p.x, p.y - size * 0.08, w, hh);
+            r.values[`px${i}`] = x;
+            r.values[`py${i}`] = y;
+            placeTag(tags[i], p.x, p.y + size * 0.27, w, hh, cw);
+          });
+        };
+        layout();
+        ctx.onResize(layout);
+      },
+    },
+    {
+      id: "bool",
+      title: "布林運算",
+      api: "union()・difference()・intersect()・blend(k)・mixGeo(t)",
+      desc: "同一組金色方塊加藍色球，只換中間那行組合模式：聯集、差集、交集、平滑融合與形狀內插。",
+      hint: "拖「平滑」與「內插」滑桿，關掉動畫可定格比較",
+      mount(ctx) {
+        ctx.html(`<div class="sp-stage sp-bg"></div>`);
+        const stage = ctx.$(".sp-stage");
+        const r = createRenderer(ctx, stage, { pointer: false });
+        r.load(boolSource());
+        const tags = OPS.map((o) => addTag(stage, o.zh, o.sig));
+        let anim = true, phase = 0;
+        ctx.slider("平滑", { min: 0, max: 0.3, step: 0.01, value: 0.12 }, (v) => (r.values.soft = v));
+        ctx.slider("內插", { min: 0, max: 1, step: 0.01, value: 0.5 }, (v) => (r.values.morph = v));
+        ctx.toggle("動畫", true, (v) => (anim = v));
+        r.onFrame = (dt) => {
+          if (anim) phase += dt * 0.0009;
+          r.values.off = 0.3 + 0.22 * Math.sin(phase);
+        };
+        const layout = () => {
+          const w = stage.clientWidth, hh = stage.clientHeight;
+          const { pts, size, cw } = gridCells(OPS.length, w, hh, ctx.controls.offsetHeight + 14, 4);
+          const k = size * (1.75 / hh) * 0.46;
+          r.values.k = k;
+          pts.forEach((p, i) => {
+            const [x, y] = toWorld(p.x, p.y - size * 0.08, w, hh);
+            r.values[`px${i}`] = x - 0.18 * k;
+            r.values[`py${i}`] = y;
+            placeTag(tags[i], p.x, p.y + size * 0.29, w, hh, cw);
+          });
+        };
+        layout();
+        ctx.onResize(layout);
+      },
+    },
+    {
+      id: "warp",
+      title: "空間變形",
+      api: "repeat・repeatRadial・mirrorXYZ・rotateY(s.y)・displace(noise)",
+      desc: "形體不變，只改座標空間：重複、環形陣列、鏡射摺疊、扭轉與噪波位移。換變形要重新編譯 shader，拖滑桿只改 uniform。",
+      hint: "切換變形看右下的編譯耗時，滑桿則是即時的",
+      mount(ctx) {
+        labScene(ctx, WARPS, "換這一頁要重新編譯");
+      },
+    },
+    {
+      id: "editor",
+      title: "即時編輯",
+      api: "sculptToGLSL(src) → WebGL2",
+      desc: "在瀏覽器裡寫雕塑：停手 0.45 秒自動編譯，語法錯誤會標出行號，畫面保留上一個成功的版本。",
+      hint: "改數字、刪掉一行或加個 sphere() 看看",
+      mount(ctx) {
+        ctx.html(`<div class="sp-edit">
+          <div class="sp-ed panel"><textarea spellcheck="false" aria-label="Shader Park 程式碼"></textarea><pre class="sp-glsl" hidden></pre><div class="sp-st"></div></div>
+          <div class="sp-view sp-bg"><div class="sp-knobs panel"></div></div>
+        </div>`);
+        const ta = ctx.$("textarea"), st = ctx.$(".sp-st"), glsl = ctx.$(".sp-glsl");
+        const r = createRenderer(ctx, ctx.$(".sp-view"));
+        const compile = () => {
+          try {
+            const info = r.load(ta.value, { keep: true });
+            st.className = "sp-st sp-ok";
+            st.innerHTML = `<b>✓ 編譯成功</b>・input() ${info.inputs.length} 個・最多 ${info.maxIterations} 步`;
+            buildKnobs(ctx.$(".sp-knobs"), r, LABELS);
+            glsl.textContent = `// sculptToGLSL() 為這段程式產生的 GLSL（完整 shader 共 ${info.lines} 行）\n${info.glsl}`;
+          } catch (e) {
+            const line = e && e.lineNumber ? `第 ${e.lineNumber} 行：` : "";
+            const msg = (e && (e.description || e.message)) || String(e);
+            st.className = "sp-st sp-bad";
+            st.textContent = `✗ ${line}${msg}（畫面保留上一個成功版本）`;
+          }
+        };
+        let timer = 0;
+        ctx.on(ta, "input", () => { clearTimeout(timer); timer = setTimeout(() => ctx.active && compile(), 450); });
+        ctx.onCleanup(() => clearTimeout(timer));
+        ctx.select("範例", EXAMPLES.map((x, i) => ({ value: String(i), label: x.name })), "0", (v) => {
+          ta.value = EXAMPLES[+v].code;
+          compile();
+        });
+        ctx.toggle("顯示 GLSL", false, (v) => { glsl.hidden = !v; ta.hidden = v; });
+        ta.value = EXAMPLES[0].code;
+        compile();
+      },
+    },
+    {
+      id: "mouse",
+      title: "滑鼠互動",
+      api: "mouse・repeat()・blend()",
+      desc: "內建的 mouse uniform 對應游標位置：網格裡的球靠近游標會放大，黃色游標球用 blend() 跟網格黏在一起。",
+      hint: "移動游標，按住滑鼠讓游標球變大",
+      mount(ctx) {
+        ctx.html(`<div class="sp-stage sp-bg"><div class="sp-readout panel"></div></div>`);
+        const stage = ctx.$(".sp-stage"), out = ctx.$(".sp-readout");
+        const r = createRenderer(ctx, stage);
+        r.load(MOUSE_SRC);
+        r.idle = (t) => [0.62 * Math.sin(t * 0.55), 0.55 * Math.sin(t * 0.9 + 0.6)];
+        let pressTarget = 0;
+        ctx.on(r.canvas, "pointerdown", () => (pressTarget = 1));
+        ctx.on(window, "pointerup", () => (pressTarget = 0));
+        ctx.on(r.canvas, "pointerleave", () => (pressTarget = 0));
+        ctx.slider("吸附", { min: 0.02, max: 0.3, step: 0.01, value: 0.12 }, (v) => (r.values.pull = v));
+        r.onFrame = (dt) => { r.values.press += (pressTarget - r.values.press) * Math.min(1, dt / 90); };
+        const paint = () => {
+          const [mx, my] = r.mouse;
+          out.innerHTML = `<span class="sp-live">${r.hover ? "游標控制中" : "自動示範中"}</span><br>mouse = <b>(${mx.toFixed(2)}, ${my.toFixed(2)}, -0.50)</b>`;
+        };
+        ctx.interval(paint, 100);
+        paint();
+        const fit = () => (r.values.aspect = stage.clientWidth / Math.max(1, stage.clientHeight));
+        fit();
+        ctx.onResize(fit);
+      },
+    },
+    {
+      id: "material",
+      title: "材質與光線",
+      api: "color・shine・metal・fresnel・occlusion・reflectiveColor・lightDirection",
+      desc: "六顆球各換一種材質設定，地板開反射；光源方向與環境遮蔽是即時 uniform，反射次數寫死在 shader 裡，切換要重新編譯。",
+      hint: "拖「光源方位」看高光移動，關掉反射比較地板",
+      mount(ctx) {
+        ctx.html(`<div class="sp-stage sp-bg"><div class="sp-readout panel"></div></div>`);
+        const stage = ctx.$(".sp-stage"), out = ctx.$(".sp-readout");
+        const r = createRenderer(ctx, stage, { pointer: false });
+        let refl = true, aoTarget = 1;
+        const compile = () => {
+          const info = r.load(matSource(refl), { keep: true });
+          out.innerHTML = `setMaxReflections(<b>${info.maxReflections}</b>)・${compileLine(info)}`;
+        };
+        compile();
+        const tags = MATS.map((m) => addTag(stage, m.zh, m.sig));
+        const light = (deg) => {
+          const a = (deg * Math.PI) / 180;
+          r.values.lx = Math.cos(a);
+          r.values.lz = Math.sin(a);
+        };
+        ctx.slider("光源方位", { min: 0, max: 360, step: 5, value: 225, format: (v) => `${v}°` }, light);
+        ctx.toggle("環境遮蔽", true, (v) => (aoTarget = v ? 1 : 0));
+        ctx.toggle("反射", true, (v) => { refl = v; compile(); });
+        light(225);
+        r.onFrame = (dt) => { r.values.ao += (aoTarget - r.values.ao) * Math.min(1, dt / 150); };
+        const layout = () => {
+          const w = stage.clientWidth, hh = stage.clientHeight;
+          const floorPx = hh * 0.84;
+          const { pts, size, cw } = gridCells(MATS.length, w, hh, ctx.controls.offsetHeight + 34, hh - floorPx + hh * 0.05);
+          r.values.k = size * (1.75 / hh) * 0.72;
+          r.values.floorY = toWorld(0, floorPx, w, hh)[1];
+          pts.forEach((p, i) => {
+            const [x, y] = toWorld(p.x, p.y, w, hh);
+            r.values[`px${i}`] = x;
+            r.values[`py${i}`] = y;
+            placeTag(tags[i], p.x, p.y - size * 0.31 - 24, w, hh, cw);
+          });
+        };
+        layout();
+        ctx.onResize(layout);
+      },
+    },
+    {
+      id: "stress",
+      title: "極限測試",
+      kind: "stress",
+      api: "canvas 解析度 × MAX_ITERATIONS",
+      desc: "光線步進的成本約等於像素數乘上每像素的步數：逐級放大繪圖緩衝的解析度倍率，看 FPS 何時跌破 30。",
+      hint: "按「自動加壓」開始",
+      mount(ctx) {
+        ctx.html(`<div class="sp-stress sp-bg"><div class="sp-badge panel"><b>×1</b><span></span></div></div>`);
+        const host = ctx.$(".sp-stress"), badgeN = ctx.$(".sp-badge b"), badgeInfo = ctx.$(".sp-badge span");
+        ctx.controls.classList.add("bottom");
+        const r = createRenderer(ctx, host, { dpr: false });
+        let iters = 96, refl = 0;
+        const compile = () => r.load(stressSource(iters, refl), { keep: true });
+        compile();
+        const paint = () => {
+          const { width: w, height: hh } = r.canvas;
+          badgeN.textContent = `×${r.scale}`;
+          badgeInfo.textContent = `${w}×${hh} px・${((w * hh) / 1e6).toFixed(2)} MP・每像素最多 ${iters * (1 + refl)} 步`;
+        };
+        ctx.select("最大步數", [48, 96, 192, 384].map((n) => ({ value: String(n), label: `${n} 步` })), "96", (v) => { iters = +v; compile(); paint(); });
+        ctx.toggle("反射 1 次", false, (v) => { refl = v ? 1 : 0; compile(); paint(); });
+        ctx.interval(paint, 500);
+        ctx.ramp({
+          label: "解析度倍率",
+          steps: [0.25, 0.5, 0.75, 1, 1.5, 2, 3],
+          initial: 3,
+          format: (n) => `×${n}`,
+          async apply(n) {
+            r.scale = n;
+            r.resize();
+            paint();
+            await ctx.frame(2);
+          },
+          metrics: () => {
+            const { width: w, height: hh } = r.canvas;
+            return { "繪圖緩衝": `${w}×${hh}`, "百萬像素": ((w * hh) / 1e6).toFixed(2), "步進上限/幀": fmtCompact(w * hh * iters * (1 + refl)) };
+          },
+          note: "倍率是每個 CSS 像素對應幾個繪圖像素，倍率加倍時像素數變四倍。每個像素沿光線最多走「最大步數」次距離場，所以成本約為像素數乘步數。軟體算圖（SwiftShader）會比實體 GPU 早很多掉幀。",
+        });
+      },
+    },
+  ],
+});
 </script>
 </body>
 </html>

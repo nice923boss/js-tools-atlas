@@ -3,48 +3,135 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hydra 示範：滑鼠即時操控的影像合成器</title>
+<title>Hydra 示範：八個場景看懂即時影像合成</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["即時編碼","五種訊號源","座標變換","色彩運算","合成與多輸出","調變扭曲","回授迴圈","極限測試"]}</script>
 <style>
-  body { background: #000; }
-  #hy { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  .hy { position: absolute; inset: 0; overflow: hidden; background: #000; touch-action: none; }
+  .hy canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .hy.stress { inset: 8px; border-radius: 10px; }
+  @media (min-width: 761px) { .hy.stress { inset: 8px 8px 8px 350px; } }
+
   .code {
-    position: fixed; left: 12px; bottom: 50px; z-index: 50;
-    margin: 0; padding: 10px 14px; max-width: min(520px, calc(100% - 24px));
-    font: 12px/1.55 var(--mono); white-space: pre-wrap; overflow: hidden;
-    background: rgba(0, 0, 0, 0.62); border-color: rgba(255, 255, 255, 0.16);
+    position: absolute; left: 10px; bottom: 10px; z-index: 105; margin: 0; padding: 8px 12px;
+    max-width: min(540px, calc(100% - 20px)); max-height: calc(100% - var(--sc-ctl-h, 0px) - 30px); overflow: auto;
+    font: 12px/1.55 var(--mono); background: rgba(0, 0, 0, 0.66); border-color: rgba(255, 255, 255, 0.16);
   }
+  .code pre { margin: 0; font: inherit; white-space: pre-wrap; word-break: break-word; }
+  .code .tag { display: block; color: var(--muted); font: 11px/1.4 var(--font); margin-bottom: 4px; }
+  .code .tag.err { color: #ff8a8a; }
   .code .fn { color: #4cc9f0; }
   .code .num { color: #f7df1e; }
   .code .kw { color: #ff8fb8; }
-  .tag { display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; font-family: var(--font); }
-  @media (max-width: 560px) { .code { font-size: 10.5px; padding: 8px 10px; } }
+  .ed { position: relative; }
+  .ed textarea {
+    position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; outline: 0; resize: none; overflow: hidden;
+    background: transparent; color: transparent; caret-color: #fff; font: inherit; white-space: pre-wrap; word-break: break-word;
+  }
+  .ed textarea::selection { background: rgba(76, 201, 240, 0.35); color: transparent; }
+  @media (max-width: 560px) { .code { font-size: 10.5px; padding: 6px 9px; } }
+
+  .lbl { position: absolute; z-index: 104; padding: 2px 7px; border-radius: 5px; background: rgba(0, 0, 0, 0.62);
+    color: #fff; font: 500 11px/1.5 var(--mono); white-space: nowrap; pointer-events: none; }
+  .divider { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; z-index: 103; background: #fff; opacity: .85; pointer-events: none; }
+  .quad .lbl { max-width: calc(50% - 16px); overflow: hidden; text-overflow: ellipsis; }
 </style>
 </head>
 <body>
-<canvas id="hy"></canvas>
-<div class="controls" id="presets"></div>
-<pre class="panel code" id="code"></pre>
-<div class="hint">移動滑鼠即時改變參數・點選預設切換畫面</div>
-
 <script src="https://cdn.jsdelivr.net/npm/hydra-synth@1.4.0/dist/hydra-synth.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Each preset is real Hydra code: chained video-synth functions compiled to a GLSL shader.
-// Arrow functions are re-evaluated every frame, so mouse position drives parameters live.
+const { h } = Showcase;
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+
+// One Hydra instance and one WebGL canvas shared by every scene, so switching never piles up contexts.
+// autoLoop is off: each scene drives hydra.tick(dt) from ctx.raf, which stops automatically on unmount.
+const RATIO = Math.min(devicePixelRatio || 1, 1.5);
+const canvas = document.createElement("canvas");
+let H = null;
+let resScale = 1;
+// `ptr` is the pointer position over the canvas, 0..1. When idle it drifts so the scene keeps moving.
+window.ptr = { x: 0.5, y: 0.5 };
+let lastMove = -1e9;
+
+function hydra(ctx, cls = "") {
+  if (!H) {
+    H = new Hydra({ canvas, width: 64, height: 64, autoLoop: false, makeGlobal: true, detectAudio: false, enableStreamCapture: false });
+  }
+  const wrap = h("div", { class: `hy ${cls}` }, canvas);
+  ctx.el.prepend(wrap);
+  const fit = () => {
+    const w = Math.max(2, Math.round(wrap.clientWidth * RATIO * resScale));
+    const hh = Math.max(2, Math.round(wrap.clientHeight * RATIO * resScale));
+    if (w !== canvas.width || hh !== canvas.height) H.setResolution(w, hh);
+  };
+  fit();
+  ctx.onResize(fit);
+  ctx.on(wrap, "pointermove", (e) => {
+    const r = wrap.getBoundingClientRect();
+    ptr.x = clamp((e.clientX - r.left) / r.width);
+    ptr.y = clamp((e.clientY - r.top) / r.height);
+    lastMove = performance.now();
+  });
+  ctx.raf((t, dt) => {
+    if (t - lastMove > 2500) {
+      const s = t / 1000;
+      ptr.x = 0.5 + 0.32 * Math.sin(s * 0.53);
+      ptr.y = 0.5 + 0.3 * Math.sin(s * 0.71 + 1);
+    }
+    H.tick(dt);
+  });
+  ctx.onCleanup(() => {
+    H.hush();
+    window.speed = 1;
+    resScale = 1;
+    canvas.remove();
+  });
+  return { wrap, fit };
+}
+
+// Runs a code string exactly as shown on screen; returns an error message or "".
+function exec(code) {
+  try { new Function(code)(); return ""; } catch (e) { return e.message; }
+}
+const glslLines = (chain) => chain.glsl()[0].frag.split("\n").length;
+
+function highlight(src) {
+  const esc = src.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return esc
+    .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="num">$1</span>')
+    .replace(/(\.?)([a-zA-Z]+)(?=\()/g, '$1<span class="fn">$2</span>')
+    .replace(/\b(ptr|time|amt|fb|o0|o1|o2|o3)\b/g, '<span class="kw">$1</span>');
+}
+
+function codeBox(ctx) {
+  const tag = h("span", { class: "tag" });
+  const pre = h("pre");
+  ctx.el.append(h("div", { class: "panel code" }, tag, pre));
+  return {
+    set(code, note, err = false) {
+      pre.innerHTML = highlight(code);
+      tag.textContent = note;
+      tag.className = err ? "tag err" : "tag";
+    },
+  };
+}
+
+// ---------- 1. live coding (ported presets, now editable) ----------
 const PRESETS = [
   { name: "萬花筒", code:
 `osc(18, 0.06, 1.4)
   .kaleid(6)
   .color(1.1, 0.55, 1.2)
   .rotate(0, 0.08)
-  .modulate(noise(3, 0.2), () => 0.05 + mouse.x / width * 0.3)
-  .modulateScale(osc(6, 0.02), () => mouse.y / height * 0.6)
+  .modulate(noise(3, 0.2), () => 0.01 + ptr.x * 0.08)
+  .modulateScale(osc(6, 0.02), () => ptr.y * 0.15)
   .out()` },
   { name: "流體", code:
 `osc(10, 0.04, 1.6)
-  .modulate(noise(2.2, 0.08), () => 0.6 + mouse.x / width)
+  .modulate(noise(2.2, 0.08), () => 0.6 + ptr.x)
   .modulateRotate(noise(1.4, 0.05), 1.2)
   .saturate(1.6)
   .color(1, 0.7, 1.1)
@@ -55,7 +142,7 @@ const PRESETS = [
   .diff(
     src(o0)
       .scale(1.04)
-      .rotate(() => 0.02 + mouse.x / width * 0.06)
+      .rotate(() => 0.02 + ptr.x * 0.06)
       .hue(0.03)
   )
   .out()` },
@@ -63,67 +150,321 @@ const PRESETS = [
 `voronoi(7, 0.5, 0.3)
   .mult(osc(8, 0.1, 1.6).saturate(2))
   .modulate(noise(2, 0.15), 0.2)
-  .kaleid(() => 3 + Math.floor(mouse.x / width * 6))
+  .kaleid(() => 3 + Math.floor(ptr.x * 6))
   .out()` },
   { name: "故障", code:
 `osc(40, 0.02, 0.9)
   .rotate(0.5)
   .pixelate(48, 18)
   .diff(osc(24, -0.03, 0.6).rotate(-0.3))
-  .modulateScrollX(noise(3, 0.2), () => mouse.x / width * 0.4)
+  .modulateScrollX(noise(3, 0.2), () => ptr.x * 0.4)
   .contrast(1.4)
   .out()` },
 ];
 
-const canvas = document.getElementById("hy");
-const ratio = Math.min(devicePixelRatio || 1, 1.5);
-const hydra = new Hydra({
-  canvas,
-  width: Math.round(innerWidth * ratio),
-  height: Math.round(innerHeight * ratio),
-  detectAudio: false,
-  enableStreamCapture: false,
-  makeGlobal: true,
-});
-
-function highlight(src) {
-  const esc = src.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  return esc
-    .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="num">$1</span>')
-    .replace(/(\.?)([a-zA-Z]+)(?=\()/g, '$1<span class="fn">$2</span>')
-    .replace(/\b(mouse|width|height|o0)\b/g, '<span class="kw">$1</span>');
+function mountLive(ctx) {
+  hydra(ctx);
+  const tag = h("span", { class: "tag" });
+  const pre = h("pre", { "aria-hidden": "true" });
+  const ta = h("textarea", { spellcheck: "false", "aria-label": "Hydra 程式碼，可直接修改" });
+  ctx.el.append(h("div", { class: "panel code" }, tag, h("div", { class: "ed" }, pre, ta)));
+  const paint = () => (pre.innerHTML = highlight(ta.value) + "\n");
+  let cur = 0;
+  const run = () => {
+    const err = exec(ta.value);
+    tag.textContent = err ? `執行失敗：${err}` : `${PRESETS[cur].name}・可直接改寫，Ctrl＋Enter 執行`;
+    tag.className = err ? "tag err" : "tag";
+  };
+  const load = (i) => { cur = i; ta.value = PRESETS[i].code; paint(); run(); };
+  ctx.on(ta, "input", paint);
+  ctx.on(ta, "keydown", (e) => {
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); run(); }
+  });
+  ctx.group(PRESETS.map((p) => p.name), 0, load);
+  ctx.button("執行", run, { primary: true });
+  ctx.slider("speed", { min: 0, max: 3, step: 0.05, value: 1, format: (v) => `${v.toFixed(2)}×` }, (v) => (window.speed = v));
+  load(0);
 }
 
-const codeEl = document.getElementById("code");
-const bar = document.getElementById("presets");
-const buttons = PRESETS.map((p, i) => {
-  const b = document.createElement("button");
-  b.className = "btn";
-  b.textContent = p.name;
-  b.addEventListener("click", () => run(i));
-  bar.appendChild(b);
-  return b;
-});
-
-function run(i) {
-  const p = PRESETS[i];
-  try {
-    new Function(p.code)();
-  } catch (err) {
-    console.error("Hydra preset failed", p.name, err);
-    codeEl.textContent = "這段程式碼無法執行：" + err.message;
-    return;
+// ---------- 2. sources with live parameters ----------
+const SOURCES = [
+  { name: "osc", p: [["frequency", 1, 80, 1, 30], ["sync", 0, 1, 0.01, 0.1], ["offset", 0, 3.14, 0.01, 1.2]] },
+  { name: "noise", p: [["scale", 0.5, 20, 0.1, 4], ["offset", 0, 1, 0.01, 0.1]] },
+  { name: "voronoi", p: [["scale", 1, 30, 0.5, 6], ["speed", 0, 2, 0.01, 0.3], ["blending", 0, 1, 0.01, 0.3]] },
+  { name: "shape", p: [["sides", 3, 12, 1, 5], ["radius", 0.05, 0.9, 0.01, 0.4], ["smoothing", 0, 0.5, 0.01, 0.01]] },
+  { name: "gradient", p: [["speed", 0, 3, 0.05, 0.5]] },
+];
+function mountSources(ctx) {
+  hydra(ctx);
+  const box = codeBox(ctx);
+  window.knob = [0, 0, 0];
+  let src = SOURCES[0];
+  const num = (v) => (Math.abs(v) >= 10 ? v.toFixed(0) : v.toFixed(2));
+  const show = () => {
+    const args = src.p.map((_, k) => num(knob[k])).join(", ");
+    box.set(`${src.name}(${args})\n  .out()`, `${src.name}：編譯成 ${glslLines(window[src.name]())} 行 GLSL，滑桿以 () => 值 即時傳入，不需重新編譯`);
+  };
+  ctx.group(SOURCES.map((s) => s.name), 0, (i) => pick(i));
+  const sliders = [0, 1, 2].map((k) => ctx.slider(SOURCES[0].p[k][0], { min: 0, max: 1, step: 0.01, value: 0, format: num }, (v) => { knob[k] = v; show(); }));
+  function pick(i) {
+    src = SOURCES[i];
+    sliders.forEach((input, k) => {
+      const spec = src.p[k];
+      input.parentNode.style.display = spec ? "" : "none";
+      if (!spec) return;
+      const [label, min, max, step, value] = spec;
+      input.parentNode.firstChild.textContent = label;
+      Object.assign(input, { min, max, step });
+      input.value = value;
+      input.dispatchEvent(new Event("input"));
+    });
+    exec(`${src.name}(${src.p.map((_, k) => `() => knob[${k}]`).join(", ")}).out()`);
+    show();
   }
-  buttons.forEach((b, k) => b.setAttribute("aria-pressed", k === i));
-  codeEl.innerHTML = '<span class="tag">hydra 即時程式碼・' + p.name + "</span>" + highlight(p.code);
+  pick(0);
 }
 
-let rt;
-addEventListener("resize", () => {
-  clearTimeout(rt);
-  rt = setTimeout(() => hydra.setResolution(Math.round(innerWidth * ratio), Math.round(innerHeight * ratio)), 150);
-});
-run(0);
+// ---------- 3. coordinate transforms ----------
+const TRANSFORMS = [
+  ["repeat", ".repeat(3, 3)", true],
+  ["kaleid", ".kaleid([3, 5, 7].fast(0.5))", false],
+  ["rotate", ".rotate(0, 0.15)", true],
+  ["scale", ".scale(() => 0.8 + 0.4 * Math.sin(time))", false],
+  ["pixelate", ".pixelate(48, 32)", false],
+  ["scroll", ".scrollX(0, 0.05)", false],
+];
+function mountCoords(ctx) {
+  hydra(ctx);
+  const box = codeBox(ctx);
+  const on = TRANSFORMS.map((t) => t[2]);
+  const build = () => {
+    const used = TRANSFORMS.filter((_, i) => on[i]);
+    const code = ["osc(30, 0.05, 1.3)", "  .mult(shape(3, 0.42, 0.01))", ...used.map((t) => "  " + t[1]), "  .out()"].join("\n");
+    const err = exec(code);
+    box.set(code, err ? `執行失敗：${err}` : `已串接 ${used.length} 個座標函式，順序不同結果就不同`, !!err);
+  };
+  TRANSFORMS.forEach((t, i) => ctx.toggle(t[0], on[i], (v) => { on[i] = v; build(); }));
+  build();
+}
+
+// ---------- 4. color operations, before / after split ----------
+const COLOR_OPS = [
+  ["hue", ".hue(() => amt)"],
+  ["saturate", ".saturate(() => amt * 4)"],
+  ["contrast", ".contrast(() => 0.5 + amt * 3)"],
+  ["posterize", ".posterize(() => 2 + amt * 8, 0.6)"],
+  ["colorama", ".colorama(() => amt * 0.3)"],
+  ["invert", ".invert(() => amt)"],
+  ["thresh", ".thresh(() => amt, 0.04)"],
+  ["shift", ".shift(() => amt, () => amt * 0.5, 0)"],
+];
+function mountColor(ctx) {
+  hydra(ctx);
+  const box = codeBox(ctx);
+  window.amt = 0.6;
+  const line = h("div", { class: "divider" });
+  const left = h("div", { class: "lbl", text: "原始" });
+  const right = h("div", { class: "lbl" });
+  ctx.el.append(line, left, right);
+  let op = COLOR_OPS[3];
+  const build = () => {
+    const code = [
+      "const base = () => osc(8, 0.05, 1.4)",
+      "  .modulate(noise(2, 0.05), 0.4)",
+      "base()",
+      `  .layer(base()${op[1]}`,
+      "    .mask(gradient().r().thresh(() => ptr.x, 0)))",
+      "  .out()",
+    ].join("\n");
+    const err = exec(code);
+    box.set(code, err ? `執行失敗：${err}` : "同一支著色器裡左右對照，分隔線跟著指標", !!err);
+    right.textContent = `.${op[0]}()`;
+  };
+  ctx.select("運算", COLOR_OPS.map((o) => o[0]), op[0], (v) => { op = COLOR_OPS.find((o) => o[0] === v); build(); });
+  ctx.slider("amt", { min: 0, max: 1, step: 0.01, value: amt }, (v) => (window.amt = v));
+  ctx.raf(() => {
+    const x = `${(ptr.x * 100).toFixed(2)}%`;
+    line.style.left = x;
+    left.style.cssText = `top:50%; right:calc(100% - ${x} + 8px)`;
+    right.style.cssText = `top:50%; left:calc(${x} + 8px)`;
+  });
+  build();
+}
+
+// ---------- 5. combine functions across four outputs ----------
+const COMBINE = [
+  ["add", (a, b) => `src(${a}).add(src(${b}), 0.8)`],
+  ["sub", (a, b) => `src(${a}).sub(src(${b}))`],
+  ["mult", (a, b) => `src(${a}).mult(src(${b}))`],
+  ["diff", (a, b) => `src(${a}).diff(src(${b}))`],
+  ["blend", (a, b) => `src(${a}).blend(src(${b}), 0.3)`],
+  ["layer", (a, b) => `src(${a}).layer(src(${b}).luma(0.2))`],
+  ["mask", (a, b) => `src(${a}).mask(src(${b}))`],
+];
+function mountCombine(ctx) {
+  const { wrap } = hydra(ctx);
+  wrap.classList.add("quad");
+  const A = "osc(20, 0.08, 1.2).rotate(0.4)";
+  const B = "shape(5, 0.45, 0.02).color(1, 0.6, 0.2).rotate(0, 0.2)";
+  // render() lays outputs out as o0 top-left, o2 top-right, o1 bottom-left, o3 bottom-right.
+  const pos = { o0: "left:8px; bottom:calc(50% + 8px)", o2: "left:calc(50% + 8px); bottom:calc(50% + 8px)", o1: "left:8px; bottom:8px", o3: "left:calc(50% + 8px); bottom:8px" };
+  const tags = Object.fromEntries(Object.entries(pos).map(([k, css]) => {
+    const t = h("div", { class: "lbl", style: css });
+    wrap.append(t);
+    return [k, t];
+  }));
+  let op = COMBINE[3], quad = true;
+  const build = () => {
+    const lines = { o0: A, o1: B, o2: op[1]("o0", "o1"), o3: op[1]("o1", "o0") };
+    const code = Object.entries(lines).map(([o, c]) => `${c}.out(${o})`).join("\n") + (quad ? "\nrender()" : "\nrender(o2)");
+    exec(code);
+    for (const [o, c] of Object.entries(lines)) {
+      tags[o].textContent = `${o}：${c}`;
+      tags[o].style.display = quad || o === "o2" ? "" : "none";
+    }
+    tags.o2.style.bottom = quad ? "calc(50% + 8px)" : "8px";
+    tags.o2.style.left = quad ? "calc(50% + 8px)" : "8px";
+  };
+  ctx.group(COMBINE.map((c) => c[0]), 3, (i) => { op = COMBINE[i]; build(); });
+  ctx.toggle("四分割 render()", true, (v) => { quad = v; build(); });
+  build();
+}
+
+// ---------- 6. modulation (texture-driven coordinate warps) ----------
+const MODS = [
+  ["modulate", (m) => `.modulate(${m}, () => amt * 0.5)`],
+  ["modulateScale", (m) => `.modulateScale(${m}, () => amt * 3, 1)`],
+  ["modulateRotate", (m) => `.modulateRotate(${m}, () => amt * 4)`],
+  ["modulatePixelate", (m) => `.modulatePixelate(${m}, () => amt * 40, 4)`],
+  ["modulateKaleid", (m) => `.modulateKaleid(${m}, () => 2 + amt * 8)`],
+  ["modulateRepeat", (m) => `.modulateRepeat(${m}, 3, 3, () => amt, () => amt)`],
+  ["modulateScrollX", (m) => `.modulateScrollX(${m}, () => amt, 0)`],
+];
+const MODULATORS = [["noise", "noise(3, 0.1)"], ["osc", "osc(6, 0.05, 0)"], ["voronoi", "voronoi(5, 0.3)"]];
+function mountModulate(ctx) {
+  hydra(ctx);
+  const box = codeBox(ctx);
+  window.amt = 0.5;
+  let mod = MODS[0], src = MODULATORS[0];
+  const build = () => {
+    const code = ["shape(4, 0.8, 0.02)", "  .repeat(10, 6)", "  .mult(gradient(0.5))", `  ${mod[1](src[1])}`, "  .out()"].join("\n");
+    const err = exec(code);
+    box.set(code, err ? `執行失敗：${err}` : `用 ${src[0]} 的亮度去推動方格的座標`, !!err);
+  };
+  ctx.select("", MODS.map((m) => m[0]), mod[0], (v) => { mod = MODS.find((m) => m[0] === v); build(); });
+  ctx.group(MODULATORS.map((m) => m[0]), 0, (i) => { src = MODULATORS[i]; build(); });
+  ctx.slider("amt", { min: 0, max: 1, step: 0.01, value: amt }, (v) => (window.amt = v));
+  build();
+}
+
+// ---------- 7. feedback through src(o0) ----------
+const FEEDBACK = [
+  { name: "指標殘影", code:
+`shape(32, 0.035, 0.04)
+  .color(1, 0.35, 0.75)
+  .scroll(() => 0.5 - ptr.x, () => 0.5 - ptr.y)
+  .add(src(o0).scale(1.01).rotate(0.01).hue(0.02), () => fb)
+  .out()` },
+  { name: "無限隧道", code:
+`shape(4, 0.3, 0.01)
+  .color(1, 0.3, 0.7)
+  .diff(src(o0).scale(1.04).rotate(0.03).hue(0.03))
+  .out()` },
+  { name: "自我調變", code:
+`osc(6, 0.1, 1.5)
+  .mask(shape(3, 0.25, 0.01).rotate(0, 0.6))
+  .add(src(o0).modulate(src(o0), 0.004).scale(1.004), () => fb)
+  .out()` },
+];
+function mountFeedback(ctx) {
+  hydra(ctx);
+  const box = codeBox(ctx);
+  window.fb = 0.94;
+  let cur = 0;
+  const run = () => {
+    const err = exec(FEEDBACK[cur].code);
+    box.set(FEEDBACK[cur].code, err ? `執行失敗：${err}` : "src(o0) 讀回上一格畫面，再疊回自己", !!err);
+  };
+  const clear = async () => {
+    exec("solid(0, 0, 0).out()");
+    await ctx.frame(3);
+    run();
+  };
+  ctx.group(FEEDBACK.map((f) => f.name), 0, (i) => { cur = i; clear(); });
+  ctx.slider("fb", { min: 0.5, max: 0.99, step: 0.01, value: fb }, (v) => (window.fb = v));
+  ctx.button("清空", clear);
+  run();
+}
+
+// ---------- 8. stress: N layers compiled into one fragment shader ----------
+function layerChain(n) {
+  let c = osc(6, 0.05, 1.2).color(0.2, 0.2, 0.3);
+  for (let i = 0; i < n; i++) {
+    c = c.add(
+      osc(10 + (i % 7) * 4, 0.05, i * 0.5)
+        .mask(shape(3 + (i % 5), 0.12, 0.01))
+        .rotate(i * 0.7, 0.3)
+        .scroll(((i * 0.618) % 1) - 0.5, ((i * 0.382) % 1) - 0.5, 0.02, 0.03)
+    );
+  }
+  return c;
+}
+function mountStress(ctx) {
+  const { fit } = hydra(ctx, "stress");
+  ctx.controls.classList.add("bottom");
+  const gl = H.regl._gl;
+  let lines = 0, compileMs = 0;
+  const apply = (n) => {
+    const c = layerChain(n);
+    lines = glslLines(c);
+    c.out(o0);
+    // The new program compiles on its first draw; time that draw and force the GPU to finish.
+    const t0 = performance.now();
+    H.tick(0);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(4));
+    compileMs = performance.now() - t0;
+  };
+  const lab = ctx.ramp({
+    label: "疊加層數", unit: "層",
+    steps: [1, 8, 16, 32, 64, 128, 192, 256],
+    minFps: 30,
+    apply,
+    metrics: () => ({ "著色器": `${Showcase.fmt(lines)} 行`, "編譯＋首格": Showcase.fmtMs(compileMs), "畫布": `${canvas.width}×${canvas.height}` }),
+    note: "每一層是 osc 遮成多邊形，再旋轉、平移後用 add 疊上去；Hydra 把整條鏈編譯成一支片段著色器，層數越多，每個像素要算的函式越多，著色器也越長、編譯越久。解析度倍率會改變像素數量，直接影響 FPS。",
+  });
+  ctx.select("解析度", [{ value: "0.5", label: "0.5×" }, { value: "1", label: "1×" }, { value: "2", label: "2×" }], "1", (v) => {
+    resScale = +v;
+    fit();
+    lab.set(lab.value);
+  });
+}
+
+Showcase.run({ scenes: [
+  { id: "live", title: "即時編碼", api: "osc().kaleid().modulate(noise()).out()",
+    desc: "原本的五種預設改成可編輯的程式碼面板：每一行函式串接都會即時編譯成 GLSL 著色器，ptr 是指標在畫面上的 0 到 1 位置。",
+    hint: "移動指標改變參數，改寫程式碼後按 Ctrl＋Enter", mount: mountLive },
+  { id: "sources", title: "五種訊號源", api: "osc(freq, sync, offset)・noise・voronoi・shape・gradient",
+    desc: "Hydra 的畫面都從訊號源開始。切換五種來源並拖曳它們的參數，數值透過箭頭函式每格讀取，畫面即時改變。",
+    hint: "切換來源，拖曳參數滑桿", mount: mountSources },
+  { id: "coords", title: "座標變換", api: ".repeat()・.kaleid([3,5,7].fast())・.rotate()・.pixelate()",
+    desc: "座標函式改變取樣位置而不是顏色。開關各個變換觀察串接效果，kaleid 用陣列參數依節拍自動切換邊數。",
+    hint: "開關變換函式，看程式碼同步更新", mount: mountCoords },
+  { id: "color", title: "色彩運算", api: ".hue()・.posterize()・.colorama()・.thresh()",
+    desc: "八種色彩函式在同一支著色器裡左右對照：左邊原始，右邊套用運算；遮罩由 gradient 加 thresh 產生。",
+    hint: "移動指標拖曳分隔線，調整 amt 強度", mount: mountColor },
+  { id: "combine", title: "合成與多輸出", api: "src(o0).diff(src(o1)).out(o2)・render()",
+    desc: "四個輸出緩衝區 o0 到 o3 同時運作：A、B 兩個來源，上右是 A 合成 B，下右對調順序，看出哪些運算有方向性。",
+    hint: "切換合成函式，關閉四分割只看 o2", mount: mountCombine },
+  { id: "modulate", title: "調變扭曲", api: ".modulate(noise(3), amt)・.modulateRotate()・.modulateKaleid()",
+    desc: "modulate 系列用另一個訊號的顏色去推動座標，產生流動、旋轉、像素化等扭曲。可換調變來源與強度。",
+    hint: "選擇調變函式與來源，拖曳強度", mount: mountModulate },
+  { id: "feedback", title: "回授迴圈", api: "src(o0).scale(1.01).rotate(0.01)",
+    desc: "src(o0) 把上一格的輸出當成輸入，形成殘影、無限隧道與自我調變。fb 控制回授量。",
+    hint: "移動指標畫出殘影，按「清空」重來", mount: mountFeedback },
+  { id: "stress", title: "極限測試", kind: "stress", api: "osc().mask(shape()).add(...) × N",
+    desc: "逐級增加疊加層數，量測片段著色器變長之後的編譯時間與 FPS。",
+    hint: "按「自動加壓」開始，可切換解析度倍率", mount: mountStress },
+] });
 </script>
 </body>
 </html>

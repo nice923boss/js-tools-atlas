@@ -3,145 +3,843 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Two.js 示範：一套程式切換 SVG、Canvas、WebGL 的扁平動態海報</title>
+<title>Two.js 示範：8 個場景切換 SVG、Canvas、WebGL 渲染器</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["動態海報","錨點與曲線","SVG 解析與描邊","漸層、文字與遮罩","紋理與影像","群組階層","命中測試","極限測試"],"note":"每個場景上方都能切換 SVG／Canvas／WebGL，三種渲染器共用同一份場景程式；切換時重建 Two 實例，WebGL 會主動釋放 context。選定的渲染器會沿用到下一個場景"}</script>
 <style>
-  #stage { position: fixed; inset: 0; }
-  #stage > * { display: block; }
-  .info {
-    position: fixed; right: 12px; bottom: 12px; z-index: 50;
-    padding: 8px 12px; font-size: 12px; line-height: 1.5; text-align: right;
+  .tw-host {
+    position: absolute; inset: 0; overflow: hidden; touch-action: none;
+    background:
+      radial-gradient(circle at 1px 1px, rgba(255, 255, 255, .07) 1px, transparent 1.5px) 0 0 / 22px 22px,
+      radial-gradient(80% 70% at 50% 40%, #161a24, var(--bg));
   }
-  .info b { color: var(--accent); font-family: var(--mono); font-size: 14px; }
-  @media (max-width: 560px) { .info { bottom: 52px; } }
+  .tw-host > svg, .tw-host > canvas { position: absolute; left: 0; top: 0; display: block; }
+  .tw-tag {
+    position: absolute; right: 10px; bottom: 10px; text-align: right; z-index: 2; max-width: calc(100% - 20px);
+    padding: 5px 9px; border-radius: 6px; border: 1px solid var(--line);
+    background: rgba(14, 16, 19, .82); color: var(--fg); font: 600 12px/1.45 var(--mono);
+    pointer-events: none;
+  }
+  .tw-tag b { color: var(--accent); font-weight: 600; }
+  .stress-host {
+    position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 8px;
+    border-radius: 10px; overflow: hidden; background: #0b0d10;
+  }
+  @media (min-width: 761px) { .stress-host { inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px) 350px; } }
 </style>
 </head>
 <body>
-<div id="stage"></div>
-<div class="controls">
-  <button class="btn" data-type="svg" aria-pressed="true">SVG</button>
-  <button class="btn" data-type="canvas">Canvas</button>
-  <button class="btn" data-type="webgl">WebGL</button>
-</div>
-<div class="panel info">目前渲染器 <b id="rtype">SVG</b><div class="muted">同一份場景程式・<span id="count">0</span> 個圖形</div></div>
-<div class="hint">移動滑鼠控制波紋中心・點擊換配色</div>
-
 <script src="https://cdn.jsdelivr.net/npm/two.js@0.8.24/build/two.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// Bauhaus-style kinetic poster. The scene-building code is identical for all three renderers;
-// switching only changes the `type` passed to new Two().
-const THEMES = [
-  ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#9d8cff", "#ecebe6", "#1a1d24"],
-  ["#e63946", "#f1c453", "#2a9d8f", "#264653", "#f4a261", "#ecebe6", "#1d3557", "#a8dadc"],
-  ["#ff5d8f", "#ffd166", "#06d6a0", "#118ab2", "#073b4c", "#f8f4e3", "#ef476f", "#8338ec"],
-];
-const stage = document.getElementById("stage");
-let two = null;
-let type = "svg";
-let theme = 0;
-let tiles = [];
-const origin = { x: 0, y: 0, tx: 0, ty: 0, idle: true };
-const start = performance.now();
+const PAL = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#9d8cff"];
+const rootCss = getComputedStyle(document.documentElement);
+const FONT = rootCss.getPropertyValue("--font").trim() || "system-ui, sans-serif";
+const MONO = rootCss.getPropertyValue("--mono").trim() || "ui-monospace, monospace";
+const PHOTO = (n) => `_shared/img/photo-${n}.jpg`;
+const TAU = Math.PI * 2;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const smooth = (prev, v) => prev + (v - prev) * 0.1;
+const ease = (x) => { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); };
+// Wrap v into [-p/2, p/2) so texture offsets never cross the sign flip in the SVG renderer.
+const wrapHalf = (v, p) => ((((v + p / 2) % p) + p) % p) - p / 2;
+const mixHex = (a, b, t) => "#" + [1, 3, 5].map((i) => {
+  const v = Math.round(parseInt(a.slice(i, i + 2), 16) * (1 - t) + parseInt(b.slice(i, i + 2), 16) * t);
+  return v.toString(16).padStart(2, "0");
+}).join("");
+// Space taken by the top control cluster, so content starts below it.
+const belowControls = (ctx) => (ctx.controls.childElementCount ? ctx.controls.offsetHeight + 20 : 12);
+const countShapes = (g) => g.children.reduce((n, c) => n + (c.children ? countShapes(c) : (c instanceof Two.Path || c instanceof Two.Text ? 1 : 0)), 0);
 
-function pick(arr, i) { return arr[((i % arr.length) + arr.length) % arr.length]; }
+// The renderer choice is shared by every scene, so a comparison carries over when switching scenes.
+const RK = ["svg", "canvas", "webgl"];
+const RN = ["SVG", "Canvas", "WebGL"];
+let RT = 0;
 
-function makeShape(kind, s) {
-  switch (kind) {
-    case 0: return two.makeCircle(0, 0, s * 0.36);
-    case 1: return two.makeArcSegment(0, 0, 0, s * 0.42, 0, Math.PI);
-    case 2: return two.makeArcSegment(-s * 0.35, -s * 0.35, 0, s * 0.7, 0, Math.PI / 2);
-    case 3: return two.makePolygon(0, s * 0.06, s * 0.42, 3);
-    case 4: return two.makeRoundedRectangle(0, 0, s * 0.56, s * 0.56, s * 0.12);
-    case 5: return two.makeStar(0, 0, s * 0.17, s * 0.42, 5);
-    default: return two.makeArcSegment(0, 0, s * 0.2, s * 0.4, 0, Math.PI * 2);
-  }
+function htmlTag(ctx, parent = ctx.el) {
+  const el = Showcase.h("div", { class: "tw-tag" });
+  parent.append(el);
+  let last = "", at = 0;
+  return (html, force) => {
+    const now = performance.now();
+    if (!force && now - at < 250) return;
+    at = now;
+    const s = typeof html === "function" ? html() : html;
+    if (s === last) return;
+    last = s;
+    el.innerHTML = s;
+  };
 }
 
-function layout() {
-  two.clear();
-  tiles = [];
-  const w = two.width, h = two.height;
-  const cell = Math.max(64, Math.min(120, Math.min(w, h) / 4.6));
-  const cols = Math.ceil(w / cell), rows = Math.ceil(h / cell);
-  const ox = (w - cols * cell) / 2 + cell / 2, oy = (h - rows * cell) / 2 + cell / 2;
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const x = ox + c * cell, y = oy + r * cell;
-      const bg = two.makeRectangle(x, y, cell + 0.5, cell + 0.5);
-      bg.noStroke();
-      const kind = (r * 7 + c * 3 + ((r * c) % 5)) % 7;
-      const shape = makeShape(kind, cell);
-      shape.noStroke();
-      const g = two.makeGroup(shape);
-      g.translation.set(x, y);
-      tiles.push({ x, y, bg, shape, g, seed: r * 31 + c * 17 });
-    }
-  }
-  recolor();
-  document.getElementById("count").textContent = tiles.length * 2;
+function disposeTwo(two, rt) {
+  two.pause();
+  two.release();
+  const i = Two.Instances.indexOf(two);
+  if (i >= 0) Two.Instances.splice(i, 1);
+  // Free the GL context right away instead of waiting for GC; browsers cap live contexts.
+  if (RK[rt] === "webgl") two.renderer.ctx?.getExtension("WEBGL_lose_context")?.loseContext();
+  two.renderer.domElement.remove();
 }
 
-function recolor() {
-  const pal = THEMES[theme];
-  for (const t of tiles) {
-    const a = pick(pal, t.seed);
-    let b = pick(pal, t.seed * 3 + 1);
-    if (b === a) b = pick(pal, t.seed + 2);
-    t.bg.fill = a;
-    t.shape.fill = b;
-  }
-}
-
-function smoothstep(x) { x = Math.min(1, Math.max(0, x)); return x * x * (3 - 2 * x); }
-
-function tick() {
-  const time = (performance.now() - start) / 1000;
-  if (origin.idle) {
-    origin.tx = two.width * (0.5 + 0.35 * Math.cos(time * 0.4));
-    origin.ty = two.height * (0.5 + 0.35 * Math.sin(time * 0.53));
-  }
-  origin.x += (origin.tx - origin.x) * 0.08;
-  origin.y += (origin.ty - origin.y) * 0.08;
-  for (const t of tiles) {
-    const d = Math.hypot(t.x - origin.x, t.y - origin.y);
-    const p = time * 0.8 - d / 260 + (t.seed % 4) * 0.25;
-    // Snap rotation in quarter turns so tiles rest aligned, then tick to the next pose
-    const k = Math.floor(p);
-    const turn = k + smoothstep((p - k - 0.55) / 0.45);
-    t.g.rotation = turn * Math.PI / 2;
-    t.g.scale = 0.78 + 0.22 * Math.cos((p - k) * Math.PI * 2);
-  }
-}
-
-function build() {
-  if (two) {
-    two.pause();
-    two.unbind("update", tick);
-    two.renderer.domElement.remove();
-    const i = Two.Instances.indexOf(two);
-    if (i >= 0) Two.Instances.splice(i, 1);
-  }
-  two = new Two({ type: Two.Types[type], width: innerWidth, height: innerHeight, autostart: true }).appendTo(stage);
-  layout();
-  two.bind("update", tick);
-  document.getElementById("rtype").textContent = { svg: "SVG", canvas: "Canvas", webgl: "WebGL" }[type];
-}
-
-build();
-
-stage.addEventListener("pointermove", (e) => { origin.tx = e.clientX; origin.ty = e.clientY; origin.idle = false; });
-stage.addEventListener("pointerleave", () => { origin.idle = true; });
-stage.addEventListener("click", () => { theme = (theme + 1) % THEMES.length; recolor(); });
-addEventListener("resize", () => { two.width = innerWidth; two.height = innerHeight; layout(); });
-document.querySelectorAll("[data-type]").forEach((b) => {
-  b.addEventListener("click", () => {
-    type = b.dataset.type;
-    document.querySelectorAll("[data-type]").forEach((x) => x.setAttribute("aria-pressed", x === b));
-    build();
+// One Two instance per scene. setup(two, S) builds the scene and returns optional hooks:
+// frame(t, dt), after(t), down/move/up/click(point, event), dispose().
+// S.build() throws the instance away and runs setup again with the current renderer type.
+function twoScene(ctx, setup, { parent = ctx.el } = {}) {
+  const box = Showcase.h("div", { class: "tw-host" });
+  parent.prepend(box);
+  const S = { two: null, box, w: 0, h: 0, rt: RT, time: 0, ms: 0, shapes: 0, pointer: null, moved: -1e9 };
+  let api = {};
+  S.live = () => performance.now() - S.moved < 2500;
+  S.nodes = () => (S.rt === 0 && S.two ? S.two.renderer.domElement.getElementsByTagName("*").length : 0);
+  const drop = () => {
+    if (!S.two) return;
+    api.dispose?.();
+    disposeTwo(S.two, S.rt);
+    S.two = null;
+  };
+  S.build = () => {
+    drop();
+    S.w = Math.max(1, box.clientWidth);
+    S.h = Math.max(1, box.clientHeight);
+    S.rt = RT;
+    S.two = new Two({ type: Two.Types[RK[RT]], width: S.w, height: S.h, autostart: false }).appendTo(box);
+    api = setup(S.two, S) || {};
+    S.shapes = countShapes(S.two.scene);
+    S.two.update();
+  };
+  ctx.group(RN, RT, (i) => { RT = i; S.build(); });
+  S.start = () => {
+    S.build();
+    let t0 = -1;
+    ctx.raf((t, dt) => {
+      if (!S.two) return;
+      if (t0 < 0) t0 = t;
+      S.time = Math.max(0, t - t0) / 1000;
+      api.frame?.(S.time, dt);
+      const a = performance.now();
+      S.two.update();
+      S.ms = smooth(S.ms, performance.now() - a);
+      api.after?.(S.time);
+    });
+  };
+  const loc = (e) => {
+    const r = box.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  };
+  const touch = (e) => { S.pointer = loc(e); S.moved = performance.now(); return S.pointer; };
+  ctx.on(box, "pointermove", (e) => api.move?.(touch(e), e));
+  ctx.on(box, "pointerdown", (e) => { box.setPointerCapture?.(e.pointerId); api.down?.(touch(e), e); });
+  ctx.on(box, "pointerup", (e) => api.up?.(loc(e), e));
+  ctx.on(box, "pointercancel", (e) => api.up?.(loc(e), e));
+  ctx.on(box, "click", (e) => api.click?.(loc(e), e));
+  let rq = 0;
+  const ro = new ResizeObserver(() => {
+    cancelAnimationFrame(rq);
+    rq = requestAnimationFrame(() => {
+      if (S.two && (box.clientWidth !== S.w || box.clientHeight !== S.h)) S.build();
+    });
   });
-});
+  ro.observe(box);
+  ctx.onCleanup(() => { ro.disconnect(); cancelAnimationFrame(rq); drop(); box.remove(); });
+  return S;
+}
+
+const rline = (S) => `<b>${RN[S.rt]}</b>・${S.rt === 0 ? `${S.nodes()} 個 DOM 節點` : "1 個 &lt;canvas&gt;"}・update() ${S.ms.toFixed(2)} ms`;
+
+Showcase.run({ scenes: [
+  // 1. Kinetic poster (port of the original single-page demo)
+  {
+    id: "poster", title: "動態海報",
+    api: "new Two({ type })、makeArcSegment / makeStar / makeRoundedRectangle、Group.rotation / scale",
+    desc: "改寫自原本的扁平動態海報：每格是一個背景方塊加一個幾何圖形，依與波紋中心的距離輪流翻轉與縮放。上方切換渲染器時只改 new Two() 的 type，建立場景與每幀更新的程式完全相同；右下角顯示 SVG 模式下的 DOM 節點數與每幀 update() 耗時。",
+    hint: "移動指標控制波紋中心・點畫面換配色",
+    mount(ctx) {
+      const THEMES = [
+        ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#9d8cff", "#ecebe6", "#1a1d24"],
+        ["#e63946", "#f1c453", "#2a9d8f", "#264653", "#f4a261", "#ecebe6", "#1d3557", "#a8dadc"],
+        ["#ff5d8f", "#ffd166", "#06d6a0", "#118ab2", "#073b4c", "#f8f4e3", "#ef476f", "#8338ec"],
+      ];
+      let theme = 0, tiles = [];
+      const origin = { x: 0, y: 0 };
+      const tag = htmlTag(ctx);
+      const pick = (arr, i) => arr[((i % arr.length) + arr.length) % arr.length];
+      const recolor = () => {
+        const pal = THEMES[theme];
+        for (const t of tiles) {
+          const a = pick(pal, t.seed);
+          let b = pick(pal, t.seed * 3 + 1);
+          if (b === a) b = pick(pal, t.seed + 2);
+          t.bg.fill = a;
+          t.shape.fill = b;
+        }
+      };
+      const nextTheme = () => { theme = (theme + 1) % THEMES.length; recolor(); };
+      const S = twoScene(ctx, (two, S) => {
+        const makeShape = (kind, s) => {
+          switch (kind) {
+            case 0: return two.makeCircle(0, 0, s * 0.36);
+            case 1: return two.makeArcSegment(0, 0, 0, s * 0.42, 0, Math.PI);
+            case 2: return two.makeArcSegment(-s * 0.35, -s * 0.35, 0, s * 0.7, 0, Math.PI / 2);
+            case 3: return two.makePolygon(0, s * 0.06, s * 0.42, 3);
+            case 4: return two.makeRoundedRectangle(0, 0, s * 0.56, s * 0.56, s * 0.12);
+            // Two.Star halves both radii internally in 0.8.24, so pass diameters for a full-size star.
+            case 5: return two.makeStar(0, 0, s * 0.36, s * 0.84, 5);
+            default: return two.makeArcSegment(0, 0, s * 0.2, s * 0.4, 0, TAU);
+          }
+        };
+        tiles = [];
+        const cell = Math.max(64, Math.min(120, Math.min(S.w, S.h) / 4.6));
+        const cols = Math.ceil(S.w / cell), rows = Math.ceil(S.h / cell);
+        const ox = (S.w - cols * cell) / 2 + cell / 2, oy = (S.h - rows * cell) / 2 + cell / 2;
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            const x = ox + c * cell, y = oy + r * cell;
+            const bg = two.makeRectangle(x, y, cell + 0.5, cell + 0.5);
+            bg.noStroke();
+            const shape = makeShape((r * 7 + c * 3 + ((r * c) % 5)) % 7, cell);
+            shape.noStroke();
+            const g = two.makeGroup(shape);
+            g.translation.set(x, y);
+            tiles.push({ x, y, bg, shape, g, seed: r * 31 + c * 17 });
+          }
+        }
+        origin.x = S.w / 2; origin.y = S.h / 2;
+        recolor();
+        return {
+          frame(time) {
+            const tx = S.live() ? S.pointer.x : S.w * (0.5 + 0.35 * Math.cos(time * 0.4));
+            const ty = S.live() ? S.pointer.y : S.h * (0.5 + 0.35 * Math.sin(time * 0.53));
+            origin.x += (tx - origin.x) * 0.08;
+            origin.y += (ty - origin.y) * 0.08;
+            for (const t of tiles) {
+              const d = Math.hypot(t.x - origin.x, t.y - origin.y);
+              const p = time * 0.8 - d / 260 + (t.seed % 4) * 0.25;
+              // Snap rotation in quarter turns so tiles rest aligned, then tick to the next pose.
+              const k = Math.floor(p);
+              t.g.rotation = (k + ease((p - k - 0.55) / 0.45)) * Math.PI / 2;
+              t.g.scale = 0.78 + 0.22 * Math.cos((p - k) * TAU);
+            }
+          },
+          after() {
+            tag(() => `${tiles.length} 格・${S.shapes} 個圖形・配色 ${theme + 1}／${THEMES.length}<br>${rline(S)}`);
+          },
+          click: nextTheme,
+        };
+      });
+      ctx.button("換配色", nextTheme);
+      S.start();
+    },
+  },
+
+  // 2. Anchors, automatic curves and manual bezier handles
+  {
+    id: "anchors", title: "錨點與曲線",
+    api: "Two.Anchor、anchor.controls.left / right、Path.curved / automatic、plot()、getPointAt()",
+    desc: "同一組 Two.Anchor 用三種方式連成路徑：折線、自動曲線（Two.js 依前後錨點算出控制點），以及關掉 automatic 後自己調整貝茲控制把手。藍色把手是錨點的 controls（相對於錨點的座標），粉紅點用 getPointAt() 沿路徑行走。",
+    hint: "拖曳黃色錨點・手動貝茲模式可拖藍色把手",
+    mount(ctx) {
+      const MODES = ["折線", "自動曲線", "手動貝茲"];
+      const pts = [[0.03, 0.72], [0.18, 0.2], [0.34, 0.68], [0.5, 0.14], [0.66, 0.72], [0.82, 0.24], [0.97, 0.64]];
+      const hand = [];
+      let mode = 1, closed = false;
+      const tag = htmlTag(ctx);
+      const S = twoScene(ctx, (two, S) => {
+        const top = belowControls(ctx);
+        const A = { x: 40, y: top + 30, w: Math.max(60, S.w - 80), h: Math.max(60, S.h - top - 100) };
+        const toPx = ([u, v]) => [A.x + u * A.w, A.y + v * A.h];
+        const anchors = pts.map((p) => new Two.Anchor(...toPx(p)));
+        const path = new Two.Path(anchors, closed, mode > 0);
+        path.stroke = PAL[0];
+        path.linewidth = 4;
+        path.cap = "round";
+        path.join = "round";
+        if (closed) path.fill = "rgba(247,223,30,0.08)"; else path.noFill();
+        if (mode === 2) {
+          // Let Two.js compute the curve once, then freeze it and keep (or restore) hand-edited handles.
+          path.plot();
+          anchors.forEach((a, i) => {
+            if (!hand[i]) {
+              let l = [a.controls.left.x, a.controls.left.y], r = [a.controls.right.x, a.controls.right.y];
+              if (Math.hypot(...l) < 1 && Math.hypot(...r) < 1) {
+                // Open-path end points get zero-length handles; give them a visible one toward the neighbour.
+                const n = anchors[i === 0 ? 1 : i - 1];
+                const d = [(n.x - a.x) * 0.33, (n.y - a.y) * 0.33];
+                [l, r] = i === 0 ? [[-d[0], -d[1]], d] : [d, [-d[0], -d[1]]];
+              }
+              hand[i] = [...l, ...r];
+            }
+            a.controls.left.set(hand[i][0], hand[i][1]);
+            a.controls.right.set(hand[i][2], hand[i][3]);
+          });
+          path.automatic = false;
+        }
+        const handles = new Two.Group();
+        const arms = [], knobs = [];
+        anchors.forEach(() => {
+          const arm = new Two.Path([new Two.Anchor(), new Two.Anchor(), new Two.Anchor()], false, false);
+          arm.noFill();
+          arm.stroke = PAL[1];
+          arm.linewidth = 1.5;
+          const kl = new Two.Circle(0, 0, 5), kr = new Two.Circle(0, 0, 5);
+          for (const k of [kl, kr]) { k.fill = PAL[1]; k.noStroke(); }
+          handles.add(arm, kl, kr);
+          arms.push(arm);
+          knobs.push([kl, kr]);
+        });
+        handles.visible = mode > 0;
+        handles.opacity = mode === 2 ? 1 : 0.4;
+        const dots = anchors.map(() => {
+          const d = new Two.Circle(0, 0, 8);
+          d.fill = "#0e1013"; d.stroke = PAL[0]; d.linewidth = 3;
+          return d;
+        });
+        const runner = new Two.Circle(0, 0, 7);
+        runner.fill = PAL[2];
+        runner.noStroke();
+        two.add(path, handles, ...dots, runner);
+        const tmp = new Two.Vector();
+        const knobAt = (a, side) => ({ x: a.x + a.controls[side].x, y: a.y + a.controls[side].y });
+        let drag = null;
+        return {
+          frame(t) {
+            const still = !S.live() && !drag;
+            anchors.forEach((a, i) => {
+              const [x, y] = toPx(pts[i]);
+              const ox = still ? Math.sin(t * 1.1 + i * 1.7) * 8 : 0;
+              const oy = still ? Math.cos(t * 0.9 + i * 2.3) * 8 : 0;
+              a.set(x + ox, y + oy);
+              dots[i].translation.set(x + ox, y + oy);
+            });
+            // In automatic mode Two.js recomputes controls during update(); plot() now so the handles match this frame.
+            if (mode === 1) path.plot();
+            if (mode > 0) {
+              anchors.forEach((a, i) => {
+                const l = knobAt(a, "left"), r = knobAt(a, "right");
+                arms[i].vertices[0].set(l.x, l.y);
+                arms[i].vertices[1].set(a.x, a.y);
+                arms[i].vertices[2].set(r.x, r.y);
+                knobs[i][0].translation.set(l.x, l.y);
+                knobs[i][1].translation.set(r.x, r.y);
+              });
+            }
+            path.getPointAt((t * 0.12) % 1, tmp);
+            runner.translation.set(tmp.x, tmp.y);
+          },
+          after() {
+            tag(() => `<b>${MODES[mode]}</b>・${closed ? "封閉" : "開放"}・${anchors.length} 個錨點・長度 ${Math.round(path.length)} px<br>${rline(S)}`);
+          },
+          down(p) {
+            drag = null;
+            if (mode === 2) {
+              anchors.forEach((a, i) => ["left", "right"].forEach((side) => {
+                const k = knobAt(a, side);
+                if (!drag && Math.hypot(a.controls[side].x, a.controls[side].y) > 10 && Math.hypot(k.x - p.x, k.y - p.y) < 14) drag = { i, side };
+              }));
+            }
+            if (!drag) {
+              let best = 22;
+              anchors.forEach((a, i) => {
+                const d = Math.hypot(a.x - p.x, a.y - p.y);
+                if (d < best) { best = d; drag = { i, side: null }; }
+              });
+            }
+          },
+          move(p) {
+            if (!drag) return;
+            const a = anchors[drag.i];
+            if (!drag.side) {
+              pts[drag.i] = [clamp((p.x - A.x) / A.w, -0.05, 1.05), clamp((p.y - A.y) / A.h, -0.1, 1.1)];
+              return;
+            }
+            // Keep the two handles collinear (a smooth node): the opposite handle mirrors the dragged one.
+            const dx = p.x - a.x, dy = p.y - a.y;
+            hand[drag.i] = drag.side === "left" ? [dx, dy, -dx, -dy] : [-dx, -dy, dx, dy];
+            a.controls.left.set(hand[drag.i][0], hand[drag.i][1]);
+            a.controls.right.set(hand[drag.i][2], hand[drag.i][3]);
+          },
+          up() { drag = null; },
+        };
+      });
+      ctx.group(MODES, mode, (i) => { mode = i; S.build(); });
+      ctx.toggle("封閉", closed, (v) => { closed = v; S.build(); });
+      S.start();
+    },
+  },
+
+  // 3. SVG import with two.load(), then animate the parsed paths
+  {
+    id: "svg", title: "SVG 解析與描邊",
+    api: "two.load(svgText)、Path.beginning / ending、Path.dashes + dashes.offset、linewidth",
+    desc: "一段寫在頁面裡的 SVG 原始碼（rect、circle、line、polyline、path，含巢狀 g 繼承的 stroke 與 C／S／q 指令）交給 two.load() 解析成 Two.js 物件，之後就能用同一套 API 製作動畫：描繪模式依序調整 beginning／ending，虛線模式讓 dashes.offset 流動。",
+    hint: "切換描繪／虛線・拖動線寬",
+    mount(ctx) {
+      const ART = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 300">
+<g fill="none" stroke-linecap="round" stroke-linejoin="round">
+<rect x="6" y="6" width="468" height="288" rx="16" stroke="#3a4050" stroke-width="2"/>
+<circle cx="372" cy="78" r="30" stroke="#f7df1e" stroke-width="5"/>
+<g stroke="#f7df1e" stroke-width="3">
+<line x1="372" y1="32" x2="372" y2="18"/><line x1="404.5" y1="45.5" x2="414.4" y2="35.6"/>
+<line x1="418" y1="78" x2="432" y2="78"/><line x1="404.5" y1="110.5" x2="414.4" y2="120.4"/>
+<line x1="372" y1="124" x2="372" y2="138"/><line x1="339.5" y1="110.5" x2="329.6" y2="120.4"/>
+<line x1="326" y1="78" x2="312" y2="78"/><line x1="339.5" y1="45.5" x2="329.6" y2="35.6"/>
+</g>
+<polyline points="20,236 92,140 138,186 206,96 300,236" stroke="#9d8cff" stroke-width="5"/>
+<path d="M 186 118 L 206 96 L 226 118" stroke="#ecebe6" stroke-width="3"/>
+<path d="M 196 236 L 262 160 L 304 196 L 366 128 L 460 236" stroke="#4cc9f0" stroke-width="5"/>
+<path d="M 20 254 C 50 238 80 270 110 254 S 170 238 200 254 S 260 270 290 254 S 350 238 380 254 S 440 270 460 254" stroke="#4cc9f0" stroke-width="4"/>
+<path d="M 44 276 C 74 260 104 292 134 276 S 194 260 224 276 S 284 292 314 276 S 374 260 404 276" stroke="#7bd389" stroke-width="3"/>
+<path d="M 96 58 q 12 -12 24 0 q 12 -12 24 0" stroke="#f72585" stroke-width="3"/>
+<path d="M 162 34 q 9 -9 18 0 q 9 -9 18 0" stroke="#ff8c42" stroke-width="3"/>
+<path d="M 216 68 q 7 -7 14 0 q 7 -7 14 0" stroke="#f72585" stroke-width="2.5"/>
+</g>
+</svg>`;
+      const SRC = new DOMParser().parseFromString(ART, "image/svg+xml");
+      const srcCount = ["rect", "circle", "line", "polyline", "path"].map((t) => `${t} ${SRC.getElementsByTagName(t).length}`).join("・");
+      let mode = 0, width = 1;
+      let paths = [];
+      const tag = htmlTag(ctx);
+      const S = twoScene(ctx, (two, S) => {
+        const top = belowControls(ctx);
+        const avail = Math.max(60, S.h - top - 56);
+        const g = two.load(ART);
+        two.add(g);
+        const sc = Math.min((S.w - 32) / 480, avail / 300);
+        g.scale = sc;
+        g.translation.set((S.w - 480 * sc) / 2, top + (avail - 300 * sc) / 2);
+        paths = [];
+        const walk = (n) => { for (const c of n.children) { if (c.children) walk(c); else if (c.vertices) paths.push(c); } };
+        walk(g);
+        for (const p of paths) {
+          p.baseWidth = p.linewidth;
+          p.linewidth = p.baseWidth * width;
+          if (mode === 1) p.dashes = [12, 9];
+        }
+        return {
+          frame(t) {
+            if (mode === 1) {
+              for (const p of paths) p.dashes.offset = -t * 28;
+              return;
+            }
+            const u = (t % 7) / 7;
+            paths.forEach((p, i) => {
+              const d = (i / paths.length) * 0.3;
+              const e = ease((u - d) / 0.35);
+              const b = Math.min(e, ease((u - 0.6 - d * 0.4) / 0.25));
+              p.ending = e;
+              p.beginning = b;
+              p.visible = e - b > 0.002;
+            });
+          },
+          after() {
+            tag(() => `&lt;svg&gt; 原始碼：${srcCount}<br>two.load() → <b>${paths.length}</b> 個 Two.Path・${mode ? "虛線流動" : "描繪動畫"}<br>${rline(S)}`);
+          },
+        };
+      });
+      ctx.group(["描繪動畫", "虛線流動"], mode, (i) => { mode = i; S.build(); });
+      ctx.slider("線寬", { min: 0.5, max: 3, step: 0.1, value: width, format: (v) => `×${v.toFixed(1)}` }, (v) => {
+        width = v;
+        for (const p of paths) p.linewidth = p.baseWidth * width;
+      });
+      S.start();
+    },
+  },
+
+  // 4. Linear and radial gradients, live text, and a group mask
+  {
+    id: "gradient", title: "漸層、文字與遮罩",
+    api: "makeLinearGradient / makeRadialGradient、Gradient.units、makeText、Group.mask",
+    desc: "背景與大字各用一個線性漸層，端點每幀旋轉與平移；下方的等寬文字每幀改 value。聚光燈是一個群組（放射漸層、斜紋與深色字），以 Group.mask 指定一個圓形遮罩，只露出圓內的部分。漸層座標設為 userSpaceOnUse，三種渲染器的結果才會一致。注意 WebGL 的 update() 在這裡反而最慢：漸層與文字每幀都在變，每變一次就要重新柵格化成紋理。",
+    hint: "移動指標移動聚光燈・關掉遮罩看被遮住的整層",
+    mount(ctx) {
+      let masked = true, R = 120;
+      const tag = htmlTag(ctx);
+      const S = twoScene(ctx, (two, S) => {
+        const top = belowControls(ctx);
+        const cx = S.w / 2, cy = top + (S.h - top - 40) / 2;
+        const half = Math.hypot(S.w, S.h) / 2;
+        const bg = two.makeRectangle(S.w / 2, S.h / 2, S.w, S.h);
+        bg.noStroke();
+        const bgGrad = two.makeLinearGradient(-half, 0, half, 0,
+          new Two.Stop(0, "#1c2142"), new Two.Stop(0.5, "#3a1745"), new Two.Stop(1, "#0f3a44"));
+        bgGrad.units = "userSpaceOnUse";
+        bg.fill = bgGrad;
+
+        const fs = clamp(Math.min(S.w * 0.17, (S.h - top) * 0.3), 40, 190);
+        const tw = fs * 3.6;
+        const style = { family: FONT, size: fs, weight: 900, alignment: "center", baseline: "middle" };
+        const title = two.makeText("TWO.JS", cx, cy - fs * 0.12, style);
+        const textGrad = two.makeLinearGradient(-tw / 2, 0, tw / 2, 0,
+          new Two.Stop(0, PAL[0]), new Two.Stop(0.5, PAL[1]), new Two.Stop(1, PAL[2]));
+        textGrad.units = "userSpaceOnUse";
+        title.fill = textGrad;
+        title.noStroke();
+        const capStyle = { family: MONO, size: clamp(fs * 0.15, 11, 18), alignment: "center", baseline: "middle", fill: "#d6d9e0" };
+        const cap = two.makeText("", cx, cy + fs * 0.6, capStyle);
+
+        // Spotlight layer: everything in this group is clipped by the circular mask.
+        const spot = two.makeGroup();
+        const glow = new Two.Rectangle(S.w / 2, S.h / 2, S.w, S.h);
+        glow.noStroke();
+        const radial = two.makeRadialGradient(0, 0, R,
+          new Two.Stop(0, "#fff6c2"), new Two.Stop(0.45, "#ffd166"), new Two.Stop(1, "#f72585"));
+        radial.units = "userSpaceOnUse";
+        glow.fill = radial;
+        spot.add(glow);
+        for (let x = -S.h; x < S.w + 40; x += 36) {
+          const ln = new Two.Line(x, S.h + 20, x + S.h + 40, -20);
+          ln.stroke = "rgba(14,16,19,0.13)";
+          ln.linewidth = 12;
+          spot.add(ln);
+        }
+        // Dark ink copies of both texts, so the lit area reads as the same words in another colour.
+        spot.add(new Two.Text("TWO.JS", cx, cy - fs * 0.12, { ...style, fill: "#0e1013" }));
+        const capInk = new Two.Text("", cx, cy + fs * 0.6, { ...capStyle, fill: "#0e1013" });
+        spot.add(capInk);
+        // The mask circle stays in the scene graph (clip shapes are not drawn) so moving it updates the clip path.
+        const lens = masked ? two.makeCircle(cx, cy, R) : null;
+        if (lens) spot.mask = lens;
+        const ring = two.makeCircle(cx, cy, R);
+        ring.noFill();
+        ring.stroke = "rgba(255,255,255,0.6)";
+        ring.linewidth = 2;
+        ring.visible = masked;
+        return {
+          frame(t) {
+            const a = t * 0.35;
+            bgGrad.left.set(-Math.cos(a) * half, -Math.sin(a) * half);
+            bgGrad.right.set(Math.cos(a) * half, Math.sin(a) * half);
+            const sh = Math.sin(t * 0.9) * tw * 0.35;
+            textGrad.left.x = -tw / 2 + sh;
+            textGrad.right.x = tw / 2 + sh;
+            const px = S.live() ? S.pointer.x : cx + Math.cos(t * 0.6) * S.w * 0.3;
+            const py = S.live() ? S.pointer.y : cy + Math.sin(t * 0.9) * (S.h - top) * 0.22;
+            if (lens) { lens.translation.set(px, py); lens.radius = R; }
+            ring.translation.set(px, py);
+            ring.radius = R;
+            // Radial gradient coordinates are local to the glow rectangle, whose origin is the scene centre.
+            radial.center.set(px - S.w / 2, py - S.h / 2);
+            radial.focal.set(px - S.w / 2, py - S.h / 2);
+            radial.radius = R * 1.15;
+            cap.value = `linear ${Math.round(((a * 180) / Math.PI) % 360)}°・radial r=${R}`;
+            capInk.value = cap.value;
+          },
+          after() {
+            tag(() => `漸層 3 個（linear×2、radial×1）・遮罩 <b>${masked ? "開" : "關"}</b>・半徑 ${R}<br>${rline(S)}`);
+          },
+        };
+      });
+      ctx.toggle("遮罩", masked, (v) => { masked = v; S.build(); });
+      ctx.slider("聚光半徑", { min: 40, max: 220, step: 1, value: R }, (v) => { R = v; });
+      S.start();
+    },
+  },
+
+  // 5. Texture fills and makeImage() fit modes
+  {
+    id: "texture", title: "紋理與影像",
+    api: "new Two.Texture(src)、texture.repeat / scale / offset、makeImage(src, x, y, w, h, mode)",
+    desc: "左邊的六角星以 Two.Texture 當填色，repeat 平鋪並逐幀平移 offset，圖樣隨星形一起旋轉。右邊用 makeImage() 把同一張照片放進正方形框，切換 Image 模式比較 fill（填滿裁切）、fit（完整放入）、tile（平鋪）、stretch（拉伸）的差別；虛線框是圖形本身的範圍。fit 在 SVG 渲染器下留白處仍會看到重複的圖，因為 SVG 的 pattern 一律平鋪，Canvas 與 WebGL 才會真的留白。",
+    hint: "切換 Image 模式・換一張照片",
+    mount(ctx) {
+      let photo = 6, mode = "fill";
+      const MODES = [
+        { value: "fill", label: "fill 填滿裁切" },
+        { value: "fit", label: "fit 完整放入" },
+        { value: "tile", label: "tile 平鋪" },
+        { value: "stretch", label: "stretch 拉伸" },
+      ];
+      const tag = htmlTag(ctx);
+      let tex = null;
+      const S = twoScene(ctx, (two, S) => {
+        const top = belowControls(ctx);
+        const gap = 18, capH = 30;
+        const wide = S.w > S.h;
+        const pw = wide ? (S.w - gap * 3) / 2 : S.w - gap * 2;
+        const ph = wide ? S.h - top - capH - 44 : (S.h - top - capH * 2 - 60) / 2;
+        const ax = gap + pw / 2, ay = top + ph / 2;
+        const bx = wide ? gap * 2 + pw * 1.5 : ax, by = wide ? ay : top + ph + capH + gap + ph / 2;
+        const side = Math.max(40, Math.min(pw, ph) * 0.92);
+        const capFont = { family: MONO, size: 13, alignment: "center", baseline: "middle", fill: "#c9cdd6" };
+
+        const r = side / 2;
+        tex = new Two.Texture(PHOTO(photo));
+        tex.repeat = "repeat";
+        tex.scale = (r * 1.3) / 1200;
+        // Two.Star halves its radii in 0.8.24: these give an outer radius of r and an inner radius of 0.55r.
+        const star = new Two.Star(ax, ay, r * 1.1, r * 2, 6);
+        star.fill = tex;
+        star.stroke = PAL[0];
+        star.linewidth = 3;
+        two.add(star);
+        two.makeText("Two.Texture・repeat＋offset 平移", ax, ay + side / 2 + capH * 0.55, capFont);
+
+        const img = two.makeImage(PHOTO(photo), bx, by, side, side, mode);
+        if (mode === "tile") img.texture.scale = side / 3 / 1200;
+        const frame = two.makeRectangle(bx, by, side, side);
+        frame.noFill();
+        frame.stroke = "rgba(255,255,255,0.7)";
+        frame.linewidth = 1.5;
+        frame.dashes = [6, 5];
+        two.makeText(`makeImage・mode "${mode}"`, bx, by + side / 2 + capH * 0.55, capFont);
+        return {
+          frame(t) {
+            star.rotation = t * 0.12;
+            tex.offset.x = wrapHalf(t * 70, 1200);
+            tex.offset.y = wrapHalf(t * 30, 800);
+          },
+          after() {
+            tag(() => `照片 ${photo}・Image 模式 <b>${mode}</b>・紋理${tex.loaded ? "已載入" : "載入中"}${S.rt === 0 && mode === "fit" ? "<br>SVG pattern 一律平鋪，fit 留白處會重複" : ""}<br>${rline(S)}`);
+          },
+        };
+      });
+      ctx.select("Image 模式", MODES, mode, (v) => { mode = v; S.build(); });
+      ctx.button("換照片", () => { photo = (photo % 8) + 1; S.build(); });
+      S.start();
+    },
+  },
+
+  // 6. Nested groups: a recursive tree where every branch is a Two.Group
+  {
+    id: "tree", title: "群組階層",
+    api: "new Two.Group()、group.add()、translation / rotation 疊加、Two.Line",
+    desc: "每一根樹枝是一個 Two.Group，裡面放一條 Two.Line 和兩個子群組；子群組平移到父枝末端再旋轉，變換矩陣沿著階層一路相乘。每幀只改每個群組的 rotation，整棵樹就跟著擺動，不必自己算任何座標。",
+    hint: "左右移動指標改變分岔角度・拖動深度",
+    mount(ctx) {
+      let depth = 8, wind = true;
+      let groups = 0, spread = 0.5;
+      const tag = htmlTag(ctx);
+      const S = twoScene(ctx, (two, S) => {
+        const top = belowControls(ctx);
+        const avail = S.h - top - 30;
+        const L = Math.max(16, Math.min(avail * 0.25, S.w * 0.17));
+        const joints = [];
+        let leaves = 0;
+        groups = 0;
+        const grow = (d, len) => {
+          const g = new Two.Group();
+          groups++;
+          const ln = new Two.Line(0, 0, 0, -len);
+          ln.stroke = mixHex("#ff8c42", "#7bd389", 1 - (d - 1) / Math.max(1, depth - 1));
+          ln.linewidth = Math.max(1, d * 1.4);
+          ln.cap = "round";
+          g.add(ln);
+          if (d > 1) {
+            for (const s of [-1, 1]) {
+              const c = grow(d - 1, len * 0.75);
+              c.translation.set(0, -len);
+              joints.push({ g: c, s, d });
+              g.add(c);
+            }
+          } else {
+            const leaf = new Two.Circle(0, -len, 3.2);
+            leaf.fill = leaves++ % 2 ? PAL[2] : PAL[0];
+            leaf.noStroke();
+            g.add(leaf);
+          }
+          return g;
+        };
+        const root = grow(depth, L);
+        root.translation.set(S.w / 2, S.h - 22);
+        two.add(root);
+        return {
+          frame(t) {
+            const target = S.live() ? 0.15 + 0.75 * clamp(S.pointer.x / S.w, 0, 1) : 0.5 + 0.22 * Math.sin(t * 0.45);
+            spread += (target - spread) * 0.1;
+            for (const j of joints) {
+              const sway = wind ? Math.sin(t * 1.7 + j.d * 0.6) * 0.06 * (depth - j.d + 1) / depth : 0;
+              j.g.rotation = j.s * spread + sway;
+            }
+            root.rotation = wind ? Math.sin(t * 1.1) * 0.03 : 0;
+          },
+          after() {
+            tag(() => `深度 ${depth}・<b>${groups}</b> 個 Group・${S.shapes} 個圖形・張角 ${Math.round((spread * 180) / Math.PI)}°<br>${rline(S)}`);
+          },
+        };
+      });
+      ctx.slider("深度", { min: 3, max: 11, step: 1, value: depth }, (v) => { depth = v; S.build(); });
+      ctx.toggle("風", wind, (v) => { wind = v; });
+      S.start();
+    },
+  },
+
+  // 7. Geometric hit testing that works the same in every renderer
+  {
+    id: "hittest", title: "命中測試",
+    api: "two.getShapesAtPoint(x, y, { mode, tolerance, filter })、Path.contains()",
+    desc: "getShapesAtPoint() 用路徑本身的幾何判斷命中，不靠 DOM 事件或讀像素，所以三種渲染器結果相同：圓環中間的洞、星形尖角之間都不算命中，開放曲線與直線只看線寬（另加 4 px 容差），文字用外框。閒置時十字準星會自動巡覽這些邊界情況；拖曳圖形可疊在一起，開啟穿透會列出該點所有圖形。",
+    hint: "移動指標測試命中・拖曳圖形疊在一起再開穿透",
+    mount(ctx) {
+      const NAMES = ["圓", "星形", "圓環", "圓角矩形", "三角形", "開放曲線", "文字", "橢圓", "半圓環", "六邊形", "直線", "箭頭"];
+      const TOUR = ["圓環中心的洞", "圓環本體", "星形尖角之間", "開放曲線的線條", "文字", "圓"];
+      const pos = [];
+      let all = false, posCols = 0;
+      const tag = htmlTag(ctx);
+      const S = twoScene(ctx, (two, S) => {
+        const top = belowControls(ctx);
+        const cols = S.w > S.h * 1.15 ? 4 : 3, rows = 12 / cols;
+        if (posCols !== cols) { pos.length = 0; posCols = cols; }
+        const A = { x: 12, y: top + 4, w: S.w - 24, h: Math.max(60, S.h - top - 70) };
+        const s = Math.min(A.w / cols, A.h / rows) * 0.34;
+        const layer = two.makeGroup();
+        const make = [
+          () => new Two.Circle(0, 0, s),
+          // Two.Star halves its radii in 0.8.24: outer radius s, inner radius 0.42s.
+          () => new Two.Star(0, 0, s * 0.84, s * 2, 5),
+          () => new Two.ArcSegment(0, 0, s * 0.55, s, 0, TAU),
+          () => new Two.RoundedRectangle(0, 0, s * 1.8, s * 1.3, s * 0.3),
+          () => new Two.Polygon(0, s * 0.15, s * 1.05, 3),
+          () => new Two.Path([new Two.Anchor(-s, s * 0.5), new Two.Anchor(-s * 0.35, -s * 0.6), new Two.Anchor(s * 0.35, s * 0.6), new Two.Anchor(s, -s * 0.5)], false, true),
+          () => new Two.Text("Aa", 0, 0, { family: FONT, size: s * 1.5, weight: 800 }),
+          () => new Two.Ellipse(0, 0, s * 1.1, s * 0.62),
+          () => new Two.ArcSegment(0, s * 0.3, s * 0.5, s, Math.PI, TAU),
+          () => new Two.Polygon(0, 0, s, 6),
+          () => new Two.Line(-s, s * 0.6, s, -s * 0.6),
+          () => two.makeArrow(-s, 0, s, 0, s * 0.55),
+        ];
+        const STROKED = new Set([5, 10, 11]);
+        const items = make.map((fn, k) => {
+          const sh = fn();
+          const color = PAL[k % PAL.length];
+          if (STROKED.has(k)) {
+            sh.noFill();
+            sh.stroke = color;
+            sh.linewidth = k === 5 ? 10 : 7;
+            sh.cap = "round";
+            sh.join = "round";
+          } else {
+            sh.fill = color;
+            sh.noStroke();
+          }
+          if (!pos[k]) pos[k] = [((k % cols) + 0.5) / cols, (Math.floor(k / cols) + 0.5) / rows];
+          sh.translation.set(A.x + pos[k][0] * A.w, A.y + pos[k][1] * A.h);
+          layer.add(sh);
+          return { sh, k, name: NAMES[k], stroked: STROKED.has(k), stroke: sh.stroke, lw: sh.linewidth, on: false };
+        });
+        const byShape = new Map(items.map((it) => [it.sh, it]));
+        const filter = (sh) => byShape.has(sh);
+        const probe = new Two.Group();
+        const pc = new Two.Circle(0, 0, 9);
+        pc.noFill();
+        const ph = new Two.Line(-17, 0, 17, 0), pv = new Two.Line(0, -17, 0, 17);
+        for (const p of [pc, ph, pv]) { p.stroke = "#ffffff"; p.linewidth = 1.5; }
+        probe.add(pc, ph, pv);
+        two.add(probe);
+        const tmp = new Two.Vector();
+        const tourPoint = (i) => {
+          const c = (k) => items[k].sh.translation;
+          switch (i) {
+            case 0: return [c(2).x, c(2).y];
+            case 1: return [c(2).x + s * 0.78, c(2).y];
+            case 2: return [c(1).x, c(1).y + s * 0.72];
+            case 3: items[5].sh.getPointAt(0.5, tmp); return [c(5).x + tmp.x, c(5).y + tmp.y];
+            case 4: return [c(6).x, c(6).y];
+            default: return [c(0).x, c(0).y];
+          }
+        };
+        let hits = [], ms = 0, drag = null, stop = 0;
+        return {
+          frame(t) {
+            let x, y;
+            if (S.live() || drag) ({ x, y } = S.pointer);
+            else {
+              stop = Math.floor(t / 1.4) % TOUR.length;
+              [x, y] = tourPoint(stop);
+            }
+            probe.translation.set(x, y);
+            const a = performance.now();
+            const res = two.getShapesAtPoint(x, y, { mode: all ? "all" : "deepest", tolerance: 4, filter });
+            ms = smooth(ms, performance.now() - a);
+            hits = Array.from(res);
+            const now = new Set(hits);
+            for (const it of items) {
+              const on = now.has(it.sh);
+              if (on === it.on) continue;
+              it.on = on;
+              if (on) { it.sh.stroke = "#ffffff"; it.sh.linewidth = it.stroked ? it.lw : 3; }
+              else { it.sh.stroke = it.stroke; it.sh.linewidth = it.lw; }
+            }
+          },
+          after() {
+            tag(() => {
+              const names = hits.map((h) => byShape.get(h).name).join("、") || "無";
+              const el = S.rt === 0 && hits[0] && hits[0]._renderer.elem;
+              const dom = el ? `・&lt;${el.tagName} id="${el.id}"&gt;` : "";
+              const src = S.live() || drag ? "指標" : `巡覽：${TOUR[stop]}`;
+              return `命中 <b>${names}</b>${dom}<br>${src}・${all ? "全部" : "最上層"}・${ms.toFixed(3)} ms<br>${rline(S)}`;
+            });
+          },
+          down(p) {
+            const sh = two.getShapesAtPoint(p.x, p.y, { mode: "deepest", tolerance: 4, filter })[0];
+            if (!sh) return;
+            layer.add(sh); // re-adding moves it to the end of the children, i.e. on top
+            drag = { it: byShape.get(sh), dx: p.x - sh.translation.x, dy: p.y - sh.translation.y };
+          },
+          move(p) {
+            if (!drag) return;
+            const x = clamp(p.x - drag.dx, A.x, A.x + A.w), y = clamp(p.y - drag.dy, A.y, A.y + A.h);
+            drag.it.sh.translation.set(x, y);
+            pos[drag.it.k] = [(x - A.x) / A.w, (y - A.y) / A.h];
+          },
+          up() { drag = null; },
+        };
+      });
+      ctx.toggle("穿透（全部）", all, (v) => { all = v; });
+      S.start();
+    },
+  },
+
+  // 8. Stress test: N moving triangles, same code on each renderer
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "ctx.ramp、makePolygon × N、translation / rotation",
+    desc: "N 個三角形沿 Lissajous 軌跡移動並自轉，每幀只改變換矩陣，不改形狀與顏色。先在下方選渲染器，再按「自動加壓」逐級加倍數量，直到掉到 30 FPS 以下，比較同一份場景在三種渲染器的上限。",
+    hint: "先選渲染器，再按自動加壓",
+    mount(ctx) {
+      ctx.controls.classList.add("bottom");
+      const host = Showcase.h("div", { class: "stress-host" });
+      ctx.el.append(host);
+      const STEPS = [250, 500, 1000, 2000, 4000, 8000, 16000, 32000];
+      let n = STEPS[2];
+      const tag = htmlTag(ctx, host);
+      const S = twoScene(ctx, (two, S) => {
+        let seed = 7;
+        const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+        const cx = S.w / 2, cy = S.h / 2;
+        const items = new Array(n);
+        for (let i = 0; i < n; i++) {
+          const tri = new Two.Polygon(0, 0, 4 + rnd() * 6, 3);
+          tri.fill = PAL[i % PAL.length];
+          tri.noStroke();
+          items[i] = {
+            s: tri, ax: (0.1 + rnd() * 0.9) * S.w * 0.47, ay: (0.1 + rnd() * 0.9) * S.h * 0.45,
+            fx: 0.2 + rnd() * 0.5, fy: 0.2 + rnd() * 0.5, ph: rnd() * TAU, spin: (rnd() - 0.5) * 4,
+          };
+        }
+        two.add(items.map((o) => o.s));
+        return {
+          frame(t) {
+            for (const o of items) {
+              o.s.translation.set(cx + o.ax * Math.cos(o.fx * t + o.ph), cy + o.ay * Math.sin(o.fy * 1.3 * t + o.ph));
+              o.s.rotation = o.spin * t;
+            }
+          },
+          after() { tag(() => `<b>${n.toLocaleString()}</b> 個三角形<br>${rline(S)}`); },
+        };
+      }, { parent: host });
+      ctx.ramp({
+        label: "三角形", unit: "個", minFps: 30,
+        steps: STEPS,
+        initial: 2,
+        apply(v) { n = v; S.build(); },
+        metrics: () => ({ 渲染器: RN[S.rt], "update()": `${S.ms.toFixed(1)} ms`, "DOM 節點": S.rt === 0 ? S.nodes() : "無（單一 canvas）" }),
+        note: "量的是同一份場景在不同渲染器下每幀的總成本，三角形只改位置與角度。SVG：每個圖形是一個 DOM 節點，每幀寫入 transform 屬性後還要經過瀏覽器的樣式、排版與繪製，節點數是主要瓶頸。Canvas：每幀清空後由 CPU 逐一描路徑與填色，成本隨圖形數線性增加。WebGL：Two.js 先把每個圖形柵格化成一張小紋理（只改變換時不重畫），之後每個圖形一次 draw call，瓶頸轉為 draw call 數與 JS 端的矩陣計算。數字依裝置與 GPU 而異。",
+      });
+      S.start();
+    },
+  },
+] });
 </script>
 </body>
 </html>

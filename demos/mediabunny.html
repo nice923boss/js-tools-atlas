@@ -3,357 +3,726 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mediabunny 示範：音樂視覺化影片產生器</title>
+<title>Mediabunny 示範：七個場景看懂瀏覽器內的影音讀寫</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","needs":["audio"],"note":"把 loop.mp3 離線算成頻譜動畫，用 WebCodecs 編碼並封裝成含音軌的 MP4"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","scenes":["音樂視覺化 MP4","解析容器與封包","逐格解碼","影像編碼器比較","音訊編碼","轉檔：裁切與縮放","極限測試"],"needs":["audio"],"note":"影片素材全部在頁面內用 Canvas、MediaRecorder 與 OfflineAudioContext 產生，輸出檔都會用 Mediabunny 讀回驗證"}</script>
 <style>
-  body { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 14px; padding: 14px 14px 46px; height: 100%; }
-  .stage-box { position: relative; min-width: 0; min-height: 0; border-radius: 12px; overflow: hidden; background: #06070a; border: 1px solid var(--line); }
-  .stage-box canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
-  .pill { position: absolute; left: 12px; top: 12px; padding: 4px 10px; border-radius: 999px; background: rgba(0, 0, 0, 0.6); font: 12px var(--mono); color: #d5d7dc; }
-  .meter { position: absolute; left: 0; right: 0; bottom: 0; height: 5px; background: rgba(255, 255, 255, 0.1); }
-  .meter i { display: block; height: 100%; width: 0; background: var(--accent); }
-
-  aside { display: flex; flex-direction: column; gap: 9px; min-height: 0; overflow: hidden; }
-  .cap { font-size: 12px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg-2); line-height: 1.5; }
-  .cap.ok { border-color: rgba(123, 211, 137, 0.5); color: #b9ecc2; }
-  .cap.bad { border-color: rgba(229, 72, 77, 0.6); color: #ffb4b6; }
-  .group { display: flex; flex-direction: column; gap: 4px; }
-  .group > span { font-size: 12px; color: var(--muted); }
-  .seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-  .seg button { flex: 1; border: 0; background: var(--bg-2); color: var(--fg); padding: 6px 0; cursor: pointer; font: 12px var(--font); }
-  .seg button.on { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
-  .seg button:disabled { opacity: .45; cursor: not-allowed; }
-  .result { flex: 1; min-height: 80px; position: relative; border-radius: 10px; border: 1px dashed var(--line); background: #0a0b0e; overflow: hidden; }
-  .result video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
-  .result .empty { position: absolute; inset: 0; display: grid; place-items: center; font-size: 12px; color: var(--muted); }
-  .meta { display: grid; grid-template-columns: auto 1fr; gap: 1px 10px; margin: 0; font-size: 12px; }
-  .meta dt { color: var(--muted); }
-  .meta dd { margin: 0; font-family: var(--mono); font-size: 11px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .row { display: flex; gap: 8px; }
-  .row .btn { flex: 1; }
-
-  @media (max-width: 640px) {
-    /* stacked layout scrolls under the fixed hint: show it briefly, then fade it out */
-    .hint { animation: hint-fade .5s 8s forwards; }
-    body { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; padding: 10px 10px 42px; gap: 8px; }
-    aside { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; overflow: visible; }
-    .group > span, .meta, .hide-narrow { display: none; }
-    .cap { grid-column: 1 / -1; padding: 4px 8px; font-size: 11px; }
-    .result { min-height: 0; height: 58px; }
+  .mb-wrap { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); display: grid; gap: 10px; }
+  .mb-two { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); }
+  .mb-even { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .mb-rows { grid-template-rows: minmax(0, 1fr) auto; }
+  .mb-six { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+  .mb-four { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto repeat(2, minmax(0, 1fr)); }
+  .mb-four > .mb-strip { grid-column: 1 / -1; }
+  .mb-even.mb-rows > .mb-strip { grid-column: 1 / -1; }
+  .mb-col { display: flex; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; }
+  .mb-card { position: relative; min-width: 0; min-height: 0; border: 1px solid var(--line); border-radius: 10px; background: #07080b; overflow: hidden; }
+  .mb-grow { flex: 1; min-height: 38%; }
+  .mb-fill { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+  .mb-tag { position: absolute; left: 8px; top: 8px; z-index: 2; max-width: calc(100% - 16px); padding: 3px 9px; border-radius: 999px; background: rgba(0, 0, 0, .66);
+    font: 600 11.5px/1.4 var(--font); color: #e8e6df; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mb-tag code, .mb-tag b { font: 600 11px var(--mono); color: var(--accent); }
+  .mb-info { position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 2; padding: 5px 9px; border-radius: 8px; background: rgba(0, 0, 0, .72);
+    font: 11.5px/1.55 var(--font); color: #cfd2d8; }
+  .mb-info.top { top: 34px; bottom: auto; }
+  .mb-info b, .mb-num, .mb-dl dd { font-family: var(--mono); font-variant-numeric: tabular-nums; color: #fff; font-weight: 600; }
+  .mb-info a, .mb-strip a { color: var(--accent); }
+  .mb-empty { position: absolute; inset: 0; display: grid; place-items: center; font-size: 12px; color: var(--muted); text-align: center; padding: 10px; }
+  .mb-meter { position: absolute; left: 0; right: 0; bottom: 0; height: 5px; background: rgba(255, 255, 255, .1); z-index: 2; }
+  .mb-meter i { display: block; height: 100%; width: 0; background: var(--accent); }
+  .mb-dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; margin: 0; padding: 8px 10px; font-size: 12px; line-height: 1.5;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--panel); overflow: auto; min-height: 0; }
+  .mb-dl dt { color: var(--muted); white-space: nowrap; }
+  .mb-dl dd { margin: 0; font-size: 11px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mb-strip { padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); font-size: 12px; line-height: 1.6; }
+  .mb-strip b { font-family: var(--mono); }
+  .mb-film { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px; }
+  .mb-thumb { position: relative; aspect-ratio: 16 / 9; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: #000; cursor: pointer; padding: 0; }
+  .mb-thumb canvas { width: 100%; height: 100%; display: block; }
+  .mb-thumb span { position: absolute; left: 3px; bottom: 2px; font: 10px var(--mono); color: #fff; text-shadow: 0 0 3px #000; }
+  .mb-thumb.on { outline: 2px solid var(--accent); }
+  .mb-acard { display: flex; flex-direction: column; gap: 5px; padding: 7px 8px; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: #07080b; min-width: 0; min-height: 0; }
+  .mb-acard h4 { margin: 0; font-size: 12.5px; }
+  .mb-acard h4 small { font: 11px var(--mono); color: var(--muted); font-weight: 400; margin-left: 6px; }
+  .mb-acard canvas { flex: 1; min-height: 26px; width: 100%; display: block; border-radius: 6px; background: #0d0f14; }
+  .mb-acard audio { width: 100%; height: 32px; flex: none; }
+  .mb-acard p { margin: 0; font-size: 11.5px; color: #cfd2d8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mb-acard p b { font-family: var(--mono); color: #fff; }
+  .mb-sum { padding: 10px 12px; overflow: auto; background: var(--panel); font-size: 12px; }
+  .mb-sum h4 { margin: 0 0 6px; font-size: 12.5px; }
+  .mb-sum .r { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 2px 8px; align-items: center; margin-bottom: 6px; }
+  .mb-sum .r > span { font-weight: 600; grid-row: span 2; }
+  .mb-sum .bar { position: relative; height: 13px; border-radius: 3px; background: rgba(255, 255, 255, .06); }
+  .mb-sum .bar i { position: absolute; inset: 0 auto 0 0; border-radius: 3px; }
+  .mb-sum .bar em { position: absolute; right: 4px; top: -1px; font: normal 10px var(--mono); color: #fff; }
+  .mb-sum .sz i { background: #4cc9f0; }
+  .mb-sum .tm i { background: #f7df1e; opacity: .8; }
+  .mb-msg { display: grid; place-content: center; text-align: center; padding: 20px; background: var(--panel); }
+  .mb-msg h3 { margin: 0 0 8px; font-size: 16px; }
+  .mb-msg p { margin: 0 auto; max-width: 46ch; font-size: 13px; line-height: 1.7; color: #cfd2d8; }
+  .mb-bench { position: absolute; inset: 8px 8px 8px 350px; padding-bottom: var(--sc-ctl-b, 0px); }
+  .mb-bench .mb-card { height: 100%; }
+  @media (max-width: 760px) { .mb-bench { inset: 8px; opacity: .9; } }
+  @media (max-height: 480px) { .mb-four > .mb-strip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .mb-acard audio { height: 26px; } }
+  @media (max-width: 560px) {
+    .mb-two, .mb-even { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 1fr); }
+    .mb-even.mb-rows { grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) auto; }
+    .mb-even.mb-rows > .mb-strip { grid-column: auto; }
+    .mb-six { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(3, minmax(0, 1fr)); }
+    .mb-film { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .mb-film > :nth-child(n+5) { display: none; }
+    .mb-dl { font-size: 11px; padding: 6px 8px; }
+    .mb-strip { font-size: 11px; padding: 4px 8px; }
+    .mb-acard audio { height: 28px; }
   }
 </style>
 </head>
 <body>
-<div class="stage-box">
-  <canvas id="cv" width="640" height="360"></canvas>
-  <div class="pill" id="pill">準備中…</div>
-  <div class="meter"><i id="meter"></i></div>
-</div>
-<aside>
-  <div class="cap" id="cap">檢查 WebCodecs 編碼器中…</div>
-  <div class="group"><span>影片長度</span>
-    <div class="seg" id="len"><button data-v="8" class="on">前 8 秒</button><button data-v="19">完整 19 秒</button></div>
-  </div>
-  <div class="group"><span>解析度</span>
-    <div class="seg" id="res"><button data-v="640" class="on">640×360</button><button data-v="1280">1280×720</button></div>
-  </div>
-  <div class="group hide-narrow"><span>畫質（位元率）</span>
-    <div class="seg" id="q"><button data-v="LOW">低</button><button data-v="MEDIUM" class="on">中</button><button data-v="HIGH">高</button></div>
-  </div>
-  <button class="btn primary" id="go" disabled>產生 MP4</button>
-  <div class="result" id="result"><div class="empty">完成後在這裡播放（含音樂）</div></div>
-  <dl class="meta" id="meta">
-    <dt>容器</dt><dd id="mMime">尚未產生</dd>
-    <dt>視訊</dt><dd id="mVideo">無</dd>
-    <dt>音訊</dt><dd id="mAudio">無</dd>
-    <dt>長度</dt><dd id="mDur">無</dd>
-    <dt>檔案</dt><dd id="mSize">無</dd>
-  </dl>
-  <div class="row"><button class="btn" id="dl" disabled>下載 MP4</button></div>
-</aside>
-<div class="hint">離線算圖比即時播放更快，再由瀏覽器的 WebCodecs 編碼器壓成 MP4</div>
-
+<script src="_shared/showcase.js"></script>
 <script type="module">
-// Mediabunny: a dependency-free media toolkit. Here it drives WebCodecs to encode canvas frames
-// and an AudioBuffer, muxes them into an MP4 entirely in the browser, then reads the file back.
+// Mediabunny 1.61 showcase: read containers (Input), decode (CanvasSink / AudioBufferSink),
+// encode and mux (Output + CanvasSource / AudioBufferSource) and convert (Conversion).
+// All sources are generated in the page; every output file is read back with Mediabunny.
 import * as MB from "https://cdn.jsdelivr.net/npm/mediabunny@1.61.0/dist/bundles/mediabunny.min.mjs";
+import { pattern, melody, visualize, smooth, sliceBuffer, cutWithFade, drawWave } from "./assets/mediabunny/visual.js";
 
-const $ = (id) => document.getElementById(id);
-const cv = $("cv");
-const ctx = cv.getContext("2d");
+const { h, fmtMs } = Showcase;
+const css = getComputedStyle(document.documentElement);
+const MONO = css.getPropertyValue("--mono").trim() || "ui-monospace, monospace";
+const NAMES = { avc: "H.264", hevc: "H.265", vp9: "VP9", av1: "AV1", vp8: "VP8", aac: "AAC", opus: "Opus", mp3: "MP3", vorbis: "Vorbis", flac: "FLAC", "pcm-s16": "PCM 16-bit" };
+const QUALITIES = [MB.QUALITY_LOW, MB.QUALITY_MEDIUM, MB.QUALITY_HIGH];
 const FPS = 30;
-const FFT_SIZE = 2048;
-const BANDS = 64;
-const NAMES = { avc: "H.264", hevc: "H.265", vp9: "VP9", av1: "AV1", vp8: "VP8", aac: "AAC", opus: "Opus", mp3: "MP3" };
-const opts = { len: 8, res: 640, q: "MEDIUM" };
-const font = getComputedStyle(document.body).fontFamily;
-let song = null;
-let lastUrl = null;
-let busy = false;
+const HAS_WC = typeof VideoEncoder !== "undefined" && typeof VideoDecoder !== "undefined";
+const kb = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(2)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+const kbps = (bytes, sec) => `${Math.round((bytes * 8) / sec / 1000)} kbps`;
+const name = (c) => NAMES[c] || c || "?";
+const abortError = () => new DOMException("場景已切換", "AbortError");
+const isAbort = (e) => e && e.name === "AbortError";
 
-for (const id of ["len", "res", "q"]) {
-  $(id).addEventListener("click", (e) => {
-    const b = e.target.closest("button");
-    if (!b || busy) return;
-    opts[id] = id === "q" ? b.dataset.v : Number(b.dataset.v);
-    [...$(id).children].forEach((x) => x.classList.toggle("on", x === b));
-  });
+function canvas(w, hh) {
+  const c = document.createElement("canvas");
+  c.width = w; c.height = hh;
+  return c;
+}
+const readInput = (data) => new MB.Input({ source: data instanceof Blob ? new MB.BlobSource(data) : new MB.BufferSource(data), formats: MB.ALL_FORMATS });
+
+// Object URLs created by a scene; revoked when the scene unmounts (or when a slot is reused).
+function urls(ctx) {
+  const live = new Map();
+  ctx.onCleanup(() => live.forEach((u) => URL.revokeObjectURL(u)));
+  return (blob, slot = blob) => {
+    if (live.has(slot)) URL.revokeObjectURL(live.get(slot));
+    const u = URL.createObjectURL(blob);
+    live.set(slot, u);
+    return u;
+  };
+}
+const dl = (url, file) => `<a href="${url}" download="${file}">下載</a>`;
+
+function showVideo(box, url, { controls = false, muted = true } = {}) {
+  box.querySelectorAll("video, .mb-empty").forEach((x) => x.remove());
+  const v = h("video", { class: "mb-fill" });
+  v.muted = muted; v.defaultMuted = muted;
+  Object.assign(v, { preload: "auto", loop: true, autoplay: true, playsInline: true, controls, src: url });
+  box.prepend(v);
+  return v;
 }
 
-// --- tiny radix-2 FFT for the offline spectrum ---------------------------------
-function fft(re, im) {
-  const n = re.length;
-  for (let i = 1, j = 0; i < n; i++) {
-    let bit = n >> 1;
-    for (; j & bit; bit >>= 1) j ^= bit;
-    j ^= bit;
-    if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
-  }
-  for (let len = 2; len <= n; len <<= 1) {
-    const ang = (-2 * Math.PI) / len;
-    const wr = Math.cos(ang), wi = Math.sin(ang);
-    for (let i = 0; i < n; i += len) {
-      let cr = 1, ci = 0;
-      for (let k = 0; k < len / 2; k++) {
-        const a = i + k, b = a + len / 2;
-        const tr = re[b] * cr - im[b] * ci, ti = re[b] * ci + im[b] * cr;
-        re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
-        const ncr = cr * wr - ci * wi;
-        ci = cr * wi + ci * wr;
-        cr = ncr;
-      }
-    }
-  }
+// Explain what is missing instead of failing when WebCodecs is not available.
+function noWebCodecs(ctx) {
+  if (HAS_WC) return false;
+  ctx.html(`<div class="mb-wrap"><div class="mb-card mb-msg"><h3>這個瀏覽器沒有 WebCodecs</h3>
+    <p>Mediabunny 讀寫容器（MP4、WebM、WAV 的封裝與解析）是純 JavaScript，但影音的編碼與解碼交給瀏覽器內建的 WebCodecs
+    （<code>VideoEncoder</code>／<code>VideoDecoder</code>）。請改用 Chrome／Edge 94 以上、Safari 16.4 以上或 Firefox 130 以上。</p></div></div>`);
+  return true;
 }
 
-const hann = Float32Array.from({ length: FFT_SIZE }, (_, i) => 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (FFT_SIZE - 1)));
-const smooth = new Float32Array(BANDS);
-function analyse(mono, sr, t) {
-  const re = new Float32Array(FFT_SIZE);
-  const im = new Float32Array(FFT_SIZE);
-  const start = Math.max(0, Math.floor(t * sr) - FFT_SIZE / 2);
-  let energy = 0;
-  for (let i = 0; i < FFT_SIZE; i++) {
-    const v = mono[start + i] || 0;
-    re[i] = v * hann[i];
-    energy += v * v;
-  }
-  fft(re, im);
-  const lo = Math.log(40), hi = Math.log(12000);
-  for (let b = 0; b < BANDS; b++) {
-    const f0 = Math.exp(lo + ((hi - lo) * b) / BANDS);
-    const f1 = Math.exp(lo + ((hi - lo) * (b + 1)) / BANDS);
-    const i0 = Math.max(1, Math.floor((f0 / sr) * FFT_SIZE));
-    const i1 = Math.max(i0 + 1, Math.ceil((f1 / sr) * FFT_SIZE));
-    let m = 0;
-    for (let i = i0; i < i1; i++) m = Math.max(m, Math.hypot(re[i], im[i]));
-    const db = 20 * Math.log10((m * 4) / FFT_SIZE + 1e-9);
-    const v = Math.min(1, Math.max(0, (db + 62) / 56));
-    smooth[b] = Math.max(v, smooth[b] * 0.86);
-  }
-  return { bands: smooth, energy: Math.sqrt(energy / FFT_SIZE), start };
-}
 
-function draw(t, dur, mono, sr) {
-  const W = cv.width, H = cv.height, k = H / 360;
-  const { bands, energy, start } = analyse(mono, sr, t);
-  const pulse = Math.min(1, energy * 3.2);
-  const hue = 220 + Math.sin(t * 0.6) * 40;
-  const bg = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, W * 0.7);
-  bg.addColorStop(0, `hsl(${hue} 60% ${12 + pulse * 10}%)`);
-  bg.addColorStop(1, "#050508");
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, W, H);
-
-  // Circular, mirrored spectrum.
-  const cx = W / 2, cy = H * 0.46;
-  const R = H * (0.2 + pulse * 0.04);
-  ctx.lineCap = "round";
-  ctx.lineWidth = Math.max(2, 4 * k);
-  for (let s = -1; s <= 1; s += 2) {
-    for (let b = 0; b < BANDS; b++) {
-      const a = -Math.PI / 2 + s * (b + 0.5) * (Math.PI / BANDS);
-      const len = 4 * k + bands[b] * H * 0.2;
-      ctx.strokeStyle = `hsl(${(hue + 120 + b * 2.6) % 360} 90% ${55 + bands[b] * 20}%)`;
-      ctx.beginPath();
-      ctx.moveTo(cx + Math.cos(a) * R, cy + Math.sin(a) * R);
-      ctx.lineTo(cx + Math.cos(a) * (R + len), cy + Math.sin(a) * (R + len));
-      ctx.stroke();
-    }
-  }
-  ctx.fillStyle = "rgba(5, 5, 10, 0.85)";
-  ctx.beginPath();
-  ctx.arc(cx, cy, R - 6 * k, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "#f7df1e";
-  ctx.font = `800 ${20 * k}px ${font}`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText("Mediabunny", cx, cy - 8 * k);
-  ctx.fillStyle = "#cfd2d8";
-  ctx.font = `${12 * k}px Consolas, monospace`;
-  ctx.fillText(`${t.toFixed(1)} / ${dur.toFixed(1)} s`, cx, cy + 14 * k);
-
-  // Waveform strip along the bottom.
-  const baseY = H * 0.88;
-  ctx.strokeStyle = "rgba(76, 201, 240, 0.85)";
-  ctx.lineWidth = 1.5 * k;
-  ctx.beginPath();
-  for (let x = 0; x <= W; x += 2) {
-    const v = mono[start + Math.floor((x / W) * FFT_SIZE)] || 0;
-    const y = baseY + v * H * 0.12;
-    x ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
-  }
-  ctx.stroke();
-  ctx.fillStyle = "rgba(255, 255, 255, 0.12)";
-  ctx.fillRect(0, H - 4 * k, W, 4 * k);
-  ctx.fillStyle = "#f7df1e";
-  ctx.fillRect(0, H - 4 * k, (W * t) / dur, 4 * k);
-  ctx.textAlign = "left";
-  ctx.textBaseline = "alphabetic";
-  ctx.fillStyle = "rgba(236, 235, 230, 0.7)";
-  ctx.font = `${12 * k}px ${font}`;
-  ctx.fillText("loop.mp3・WebCodecs 編碼", 14 * k, 24 * k);
-}
-
-function sliceBuffer(buf, from, to) {
-  const sr = buf.sampleRate;
-  const a = Math.floor(from * sr), b = Math.min(buf.length, Math.floor(to * sr));
-  const out = new AudioBuffer({ length: b - a, numberOfChannels: buf.numberOfChannels, sampleRate: sr });
-  for (let c = 0; c < buf.numberOfChannels; c++) out.copyToChannel(buf.getChannelData(c).subarray(a, b), c);
-  return out;
-}
-
-function cutWithFade(buf, dur) {
-  const out = sliceBuffer(buf, 0, dur);
-  if (dur < buf.duration - 0.05) {
-    const sr = out.sampleRate, n = Math.floor(0.6 * sr);
-    for (let c = 0; c < out.numberOfChannels; c++) {
-      const d = out.getChannelData(c);
-      for (let i = 0; i < n; i++) d[d.length - 1 - i] *= i / n;
-    }
-  }
-  return out;
-}
-
-async function detect() {
-  if (typeof VideoEncoder === "undefined") return null;
-  const video = await MB.getFirstEncodableVideoCodec(["avc", "vp9", "av1"], { width: 1280, height: 720 });
-  const audio = await MB.getFirstEncodableAudioCodec(["aac", "opus"], { numberOfChannels: 2, sampleRate: 44100 });
-  return video ? { video, audio } : null;
-}
-
-async function generate() {
-  if (busy) return;
-  busy = true;
-  $("go").disabled = true;
-  document.querySelectorAll(".seg button").forEach((b) => { b.disabled = true; });
-  const W = opts.res, H = Math.round((opts.res * 9) / 16);
-  cv.width = W;
-  cv.height = H;
-  smooth.fill(0);
-  const dur = Math.min(opts.len, song.duration);
-  const audio = cutWithFade(song, dur);
-  const mono = audio.getChannelData(0);
-  const sr = audio.sampleRate;
-  const total = Math.round(dur * FPS);
-  const quality = MB[`QUALITY_${opts.q}`];
-  const videoCodec = await MB.getFirstEncodableVideoCodec(["avc", "vp9", "av1"], { width: W, height: H });
-  const audioCodec = await MB.getFirstEncodableAudioCodec(["aac", "opus"], { numberOfChannels: audio.numberOfChannels, sampleRate: sr });
-
-  const output = new MB.Output({ format: new MB.Mp4OutputFormat({ fastStart: "in-memory" }), target: new MB.BufferTarget() });
-  const videoSource = new MB.CanvasSource(cv, { codec: videoCodec, quality, keyFrameInterval: 2 });
-  output.addVideoTrack(videoSource, { frameRate: FPS });
-  let audioSource = null;
-  if (audioCodec) {
-    audioSource = new MB.AudioBufferSource({ codec: audioCodec, quality: MB.QUALITY_MEDIUM });
-    output.addAudioTrack(audioSource);
+// Encode `frames` frames of the test pattern (plus an optional AudioBuffer) and return the file bytes.
+async function encodeCanvas({ cv, codec, mp4, frames, quality = MB.QUALITY_MEDIUM, audio = null, audioCodec = null, label = "", alive = () => true, onFrame }) {
+  const output = new MB.Output({ format: mp4 ? new MB.Mp4OutputFormat({ fastStart: "in-memory" }) : new MB.WebMOutputFormat(), target: new MB.BufferTarget() });
+  const src = new MB.CanvasSource(cv, { codec, quality, keyFrameInterval: 1 });
+  output.addVideoTrack(src, { frameRate: FPS });
+  let asrc = null;
+  if (audio && audioCodec) {
+    asrc = new MB.AudioBufferSource({ codec: audioCodec, quality: MB.QUALITY_MEDIUM });
+    output.addAudioTrack(asrc);
   }
   await output.start();
-
+  if (asrc) await asrc.add(audio);
   const t0 = performance.now();
-  let audioUntil = 0;
-  for (let i = 0; i < total; i++) {
-    const t = i / FPS;
-    // Keep the audio track at most one second ahead of the video so the muxer can interleave.
-    if (audioSource && t >= audioUntil) {
-      await audioSource.add(sliceBuffer(audio, audioUntil, Math.min(dur, audioUntil + 1)));
-      audioUntil += 1;
-    }
-    draw(t, dur, mono, sr);
-    await videoSource.add(t, 1 / FPS);
-    if (i % 6 === 0) {
-      const speed = t / Math.max(0.001, (performance.now() - t0) / 1000);
-      $("pill").textContent = `離線算圖 ${i} / ${total} 影格・${speed.toFixed(1)}× 即時速度`;
-      $("meter").style.width = `${(i / total) * 100}%`;
-      await new Promise((r) => setTimeout(r)); // let the canvas repaint
-    }
+  for (let i = 0; i < frames; i++) {
+    if (!alive()) { await output.cancel(); throw abortError(); }
+    pattern(cv, i / FPS, label);
+    await src.add(i / FPS, 1 / FPS);
+    if (onFrame) await onFrame(i);
   }
-  while (audioSource && audioUntil < dur) {
-    await audioSource.add(sliceBuffer(audio, audioUntil, Math.min(dur, audioUntil + 1)));
-    audioUntil += 1;
-  }
-  $("pill").textContent = "封裝 MP4 中…";
   await output.finalize();
-  const secs = (performance.now() - t0) / 1000;
-  const blob = new Blob([output.target.buffer], { type: "video/mp4" });
-  $("meter").style.width = "100%";
-  $("pill").textContent = `完成：${dur.toFixed(1)} 秒影片只花 ${secs.toFixed(1)} 秒（${(dur / secs).toFixed(1)}× 即時）`;
-
-  if (lastUrl) URL.revokeObjectURL(lastUrl);
-  lastUrl = URL.createObjectURL(blob);
-  const video = document.createElement("video");
-  Object.assign(video, { src: lastUrl, controls: true, muted: true, autoplay: true, loop: true, playsInline: true });
-  $("result").replaceChildren(video);
-  $("dl").disabled = false;
-  await describe(blob);
-
-  busy = false;
-  $("go").disabled = false;
-  document.querySelectorAll(".seg button").forEach((b) => { b.disabled = false; });
+  const mime = await output.getMimeType();
+  return { blob: new Blob([output.target.buffer], { type: mime.split(";")[0] }), mime, ms: performance.now() - t0 };
 }
 
-// Read the freshly written file back with Mediabunny's demuxer.
-async function describe(blob) {
-  const input = new MB.Input({ source: new MB.BlobSource(blob), formats: MB.ALL_FORMATS });
-  const mime = await input.getMimeType();
-  const duration = await input.computeDuration();
-  const vt = await input.getPrimaryVideoTrack();
-  const at = await input.getPrimaryAudioTrack();
-  $("mMime").textContent = mime;
-  $("mMime").title = mime;
+// 4-second 640x360 clip with audio, written by Mediabunny itself (shared by several scenes).
+let synthJob = null;
+function synthClip() {
+  if (!synthJob) synthJob = (async () => {
+    const video = await MB.getFirstEncodableVideoCodec(["avc", "vp9", "av1", "vp8"], { width: 640, height: 360 });
+    if (!video) throw new Error("此瀏覽器沒有可用的影像編碼器");
+    const mp4 = video === "avc";
+    const audio = await MB.getFirstEncodableAudioCodec(mp4 ? ["aac", "opus"] : ["opus"], { numberOfChannels: 2, sampleRate: 44100 });
+    const r = await encodeCanvas({ cv: canvas(640, 360), codec: video, mp4, frames: 4 * FPS, audio: await melody(4), audioCodec: audio, label: "Mediabunny 測試片" });
+    return r.blob;
+  })();
+  synthJob.catch(() => (synthJob = null));
+  return synthJob;
+}
+
+let songJob = null;
+const song = () => (songJob ||= fetch("_shared/audio/loop.mp3").then((r) => r.arrayBuffer()).then((b) => new OfflineAudioContext(2, 44100, 44100).decodeAudioData(b)));
+
+// ---------- scene 2 helpers --------------------------------------------------------------
+const REC_SEC = 3;
+let recJob = null;
+// Record the test pattern in real time with the browser's own MediaRecorder (a file Mediabunny did not write).
+function recording() {
+  if (recJob) return recJob;
+  const cv = canvas(640, 360);
+  const mime = ["video/webm;codecs=vp8", "video/webm", "video/mp4"].find((m) => MediaRecorder.isTypeSupported(m));
+  const rec = new MediaRecorder(cv.captureStream(FPS), { mimeType: mime, videoBitsPerSecond: 2e6 });
+  const chunks = [];
+  rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+  const done = new Promise((res, rej) => {
+    rec.onstop = () => res(new Blob(chunks, { type: rec.mimeType.split(";")[0] }));
+    rec.onerror = (e) => rej(e.error || new Error("MediaRecorder 失敗"));
+  });
+  const t0 = performance.now();
+  pattern(cv, 0, "MediaRecorder 錄製");
+  rec.start(500);
+  const tick = () => {
+    const t = (performance.now() - t0) / 1000;
+    pattern(cv, t, "MediaRecorder 錄製");
+    if (t < REC_SEC) setTimeout(tick, 16); else rec.stop();
+  };
+  tick();
+  recJob = { cv, done };
+  done.catch(() => (recJob = null));
+  return recJob;
+}
+async function inspect(blob) {
+  const input = readInput(blob);
+  const fmt = await input.getFormat();
+  const vt = await input.getPrimaryVideoTrack(), at = await input.getPrimaryAudioTrack();
+  const dur = await input.computeDuration();
+  const info = { fmt: fmt.name, mime: await input.getMimeType(), dur, size: blob.size, packets: [], keys: 0 };
   if (vt) {
-    const stats = await vt.computePacketStats(90);
-    $("mVideo").textContent = `${NAMES[vt.codec] || vt.codec}・${vt.displayWidth}×${vt.displayHeight}・${Math.round(stats.averagePacketRate)} fps・${(stats.averageBitrate / 1e6).toFixed(2)} Mbps`;
+    const fr = await vt.computeFrameRateMetrics();
+    info.video = `${name(await vt.getCodec())}・${await vt.getDisplayWidth()}×${await vt.getDisplayHeight()}`;
+    info.fps = fr.frameRateIsConstant ? `固定 ${fr.bestGuessFrameRate} fps` : `不固定 ${fr.minFrameRate.toFixed(0)}~${fr.maxFrameRate.toFixed(0)} fps（中位 ${fr.medianFrameRate.toFixed(0)}）`;
+    // EncodedPacketSink reads compressed packets straight from the container: no decoding involved.
+    for await (const p of new MB.EncodedPacketSink(vt).packets()) {
+      info.packets.push({ t: p.timestamp, size: p.byteLength, key: p.type === "key" });
+      if (p.type === "key") info.keys++;
+    }
   }
-  $("mAudio").textContent = at ? `${NAMES[at.codec] || at.codec}・${at.sampleRate} Hz・${at.numberOfChannels} 聲道` : "瀏覽器無可用音訊編碼器";
-  $("mDur").textContent = `${duration.toFixed(2)} 秒`;
-  $("mSize").textContent = `${(blob.size / 1024).toFixed(0)} KB`;
+  info.audio = at ? `${name(await at.getCodec())}・${await at.getSampleRate()} Hz・${await at.getNumberOfChannels()} 聲道` : "無";
+  return info;
+}
+function drawPackets(cv, info) {
+  const dpr = Math.min(2, devicePixelRatio || 1), W = Math.max(50, cv.clientWidth * dpr), H = Math.max(40, cv.clientHeight * dpr);
+  cv.width = W; cv.height = H;
+  const g = cv.getContext("2d");
+  g.fillStyle = "#0d0f14";
+  g.fillRect(0, 0, W, H);
+  const list = info.packets, max = Math.max(...list.map((p) => p.size)), dur = Math.max(info.dur, 0.001);
+  const top = 30 * dpr, bw = Math.max(1, (W - 16 * dpr) / Math.max(list.length, 1) - 1);
+  for (const p of list) {
+    const bh = Math.sqrt(p.size / max) * (H - top - 6 * dpr);
+    g.fillStyle = p.key ? "#f7df1e" : "#4cc9f0";
+    g.fillRect(8 * dpr + (p.t / dur) * (W - 16 * dpr - bw), H - 4 * dpr - bh, bw, bh);
+  }
+}
+function infoRows(dlEl, info) {
+  const keyTimes = info.packets.filter((p) => p.key).map((p) => p.t.toFixed(2));
+  const rows = [
+    ["容器", `${info.fmt}・${kb(info.size)}`],
+    ["MIME", info.mime],
+    ["長度", `${info.dur.toFixed(3)} s`],
+    ["影像", info.video || "無"],
+    ["影格率", info.fps || "無"],
+    ["音訊", info.audio],
+    ["封包", `${info.packets.length} 個・平均 ${kbps(info.packets.reduce((s, p) => s + p.size, 0), info.dur)}`],
+    ["關鍵格", `${info.keys} 個（${keyTimes.slice(0, 6).join("、")}${keyTimes.length > 6 ? "…" : ""} s）`],
+  ];
+  dlEl.replaceChildren(...rows.flatMap(([k, v]) => [h("dt", { text: k }), h("dd", { text: v, title: v })]));
 }
 
-$("go").onclick = generate;
-$("dl").onclick = () => {
-  const a = document.createElement("a");
-  a.href = lastUrl;
-  a.download = "mediabunny-visualizer.mp4";
-  a.click();
-};
 
-const support = await detect();
-if (!support) {
-  $("cap").className = "cap bad";
-  $("cap").textContent = "此瀏覽器沒有可用的 WebCodecs 影像編碼器，請改用新版 Chrome、Edge 或 Safari。";
-  $("pill").textContent = "無法編碼";
-} else {
-  $("cap").className = "cap ok";
-  $("cap").textContent = `WebCodecs 可用・視訊 ${NAMES[support.video]}・音訊 ${support.audio ? NAMES[support.audio] : "無"}`;
-  $("pill").textContent = "解碼 loop.mp3 中…";
-  const bytes = await (await fetch("_shared/audio/loop.mp3")).arrayBuffer();
-  song = await new OfflineAudioContext(2, 44100, 44100).decodeAudioData(bytes);
-  generate();
-}
+Showcase.run({ scenes: [
+  {
+    id: "visualizer", title: "音樂視覺化 MP4",
+    api: "new Output({ format: new Mp4OutputFormat(), target: new BufferTarget() })",
+    desc: "把 loop.mp3 逐格算成頻譜動畫，CanvasSource 把每一格畫布交給 WebCodecs 編碼，AudioBufferSource 同時寫入音軌，最後封裝成 MP4 並用 Input 讀回驗證。",
+    hint: "離線算圖通常比即時播放快",
+    mount(ctx) {
+      if (noWebCodecs(ctx)) return;
+      ctx.html(`<div class="mb-wrap mb-two">
+        <div class="mb-card"><canvas class="mb-fill" width="640" height="360"></canvas><span class="mb-tag">準備中…</span><div class="mb-meter"><i></i></div></div>
+        <div class="mb-col"><div class="mb-card mb-grow"><div class="mb-empty">完成後在這裡播放（含音樂）</div></div><dl class="mb-dl"></dl></div></div>`);
+      const opts = { len: 8, res: 640, q: 1 };
+      ctx.group(["前 8 秒", "完整 19 秒"], 0, (i) => (opts.len = i ? 19 : 8));
+      ctx.group(["640×360", "1280×720"], 0, (i) => (opts.res = i ? 1280 : 640));
+      ctx.group(["低", "中", "高"], 1, (i) => (opts.q = i));
+      const go = ctx.button("產生 MP4", () => generate(), { primary: true });
+      const cv = ctx.$("canvas"), tag = ctx.$(".mb-tag"), meter = ctx.$(".mb-meter i");
+      const box = ctx.$(".mb-col .mb-card"), meta = ctx.$(".mb-dl");
+      const make = urls(ctx);
+      let busy = false, stopPreview = null;
+      async function generate() {
+        if (busy) return;
+        busy = true; go.disabled = true;
+        if (stopPreview) stopPreview();
+        try {
+          const buf = await song();
+          const W = opts.res, H = (opts.res * 9) / 16;
+          cv.width = W; cv.height = H;
+          smooth.fill(0);
+          const dur = Math.min(opts.len, buf.duration), audio = cutWithFade(buf, dur), mono = audio.getChannelData(0), sr = audio.sampleRate;
+          const vcodec = await MB.getFirstEncodableVideoCodec(["avc", "vp9", "av1"], { width: W, height: H });
+          const acodec = await MB.getFirstEncodableAudioCodec(["aac", "opus"], { numberOfChannels: audio.numberOfChannels, sampleRate: sr });
+          if (!vcodec) throw new Error("沒有可用的影像編碼器");
+          const output = new MB.Output({ format: new MB.Mp4OutputFormat({ fastStart: "in-memory" }), target: new MB.BufferTarget() });
+          const vsrc = new MB.CanvasSource(cv, { codec: vcodec, quality: QUALITIES[opts.q], keyFrameInterval: 2 });
+          output.addVideoTrack(vsrc, { frameRate: FPS });
+          const asrc = acodec ? new MB.AudioBufferSource({ codec: acodec, quality: MB.QUALITY_MEDIUM }) : null;
+          if (asrc) output.addAudioTrack(asrc);
+          await output.start();
+          const total = Math.round(dur * FPS), t0 = performance.now();
+          let audioUntil = 0;
+          for (let i = 0; i < total; i++) {
+            if (!ctx.active) { await output.cancel(); return; }
+            const t = i / FPS;
+            // Keep audio at most one second ahead of video so the muxer can interleave.
+            if (asrc && t >= audioUntil) { await asrc.add(sliceBuffer(audio, audioUntil, Math.min(dur, audioUntil + 1))); audioUntil += 1; }
+            visualize(cv, t, dur, mono, sr);
+            await vsrc.add(t, 1 / FPS);
+            if (i % 6 === 0) {
+              tag.innerHTML = `編碼 <b>${name(vcodec)}</b> ${i}/${total} 格・<b>${(t / Math.max(0.001, (performance.now() - t0) / 1000)).toFixed(1)}×</b> 即時速度`;
+              meter.style.width = `${(i / total) * 100}%`;
+              await new Promise((r) => setTimeout(r));
+            }
+          }
+          while (asrc && audioUntil < dur) { await asrc.add(sliceBuffer(audio, audioUntil, Math.min(dur, audioUntil + 1))); audioUntil += 1; }
+          tag.textContent = "封裝 MP4 中…";
+          await output.finalize();
+          if (!ctx.active) return;
+          const secs = (performance.now() - t0) / 1000;
+          const blob = new Blob([output.target.buffer], { type: "video/mp4" });
+          meter.style.width = "100%";
+          tag.innerHTML = `完成：${dur.toFixed(1)} 秒影片花 <b>${secs.toFixed(1)} s</b>（<b>${(dur / secs).toFixed(1)}×</b> 即時）`;
+          const url = make(blob, "out");
+          const video = showVideo(box, url, { controls: true });
+          // Read the freshly written file back with Mediabunny's demuxer.
+          const input = readInput(blob);
+          const vt = await input.getPrimaryVideoTrack(), at = await input.getPrimaryAudioTrack();
+          const stats = await vt.computePacketStats(90);
+          const rows = [
+            ["容器", await input.getMimeType()],
+            ["影像", `${name(await vt.getCodec())}・${await vt.getDisplayWidth()}×${await vt.getDisplayHeight()}・${Math.round(stats.averagePacketRate)} fps・${(stats.averageBitrate / 1e6).toFixed(2)} Mbps`],
+            ["音訊", at ? `${name(await at.getCodec())}・${await at.getSampleRate()} Hz・${await at.getNumberOfChannels()} 聲道` : "瀏覽器無可用音訊編碼器"],
+            ["長度", `${(await input.computeDuration()).toFixed(2)} 秒`],
+            ["檔案", `${kb(blob.size)}`],
+          ];
+          meta.replaceChildren(...rows.flatMap(([k, v]) => [h("dt", { text: k }), h("dd", { text: v, title: v })]));
+          const dlLink = h("dd", {});
+          dlLink.innerHTML = dl(url, "mediabunny-visualizer.mp4");
+          meta.append(h("dt", { text: "取得" }), dlLink);
+          // Left panel follows the encoded video while it plays.
+          stopPreview = ctx.raf(() => { if (!video.paused) visualize(cv, video.currentTime, dur, mono, sr); });
+        } catch (e) {
+          if (!isAbort(e)) tag.textContent = `失敗：${e.message}`;
+        } finally {
+          busy = false;
+          if (ctx.active) go.disabled = false;
+        }
+      }
+      generate();
+    },
+  },
+  {
+    id: "inspect", title: "解析容器與封包",
+    api: "input.getFormat()・computeFrameRateMetrics()・new EncodedPacketSink(track).packets()",
+    desc: "同一支測試動畫，左邊是瀏覽器 MediaRecorder 即時錄的檔，右邊是 Mediabunny 自己寫的 MP4。Input 只讀容器，不解碼；EncodedPacketSink 列出每個壓縮封包，黃色是關鍵格，藍色是差異格。",
+    hint: "看兩個檔的關鍵格分布差在哪",
+    mount(ctx) {
+      if (noWebCodecs(ctx)) return;
+      ctx.html(`<div class="mb-wrap mb-even">
+        <div class="mb-col"><div class="mb-card mb-grow"><span class="mb-tag">MediaRecorder 錄的檔</span></div><dl class="mb-dl"></dl></div>
+        <div class="mb-col"><div class="mb-card mb-grow"><span class="mb-tag">Mediabunny 寫的檔</span></div><dl class="mb-dl"></dl></div></div>`);
+      const cols = ctx.$$(".mb-col");
+      const charts = cols.map((c) => { const cv = h("canvas", { class: "mb-fill" }); c.querySelector(".mb-card").prepend(cv); return cv; });
+      const infos = [null, null];
+      ctx.button("重新錄一段", () => { recJob = null; runRec(); });
+      ctx.onResize(() => infos.forEach((inf, i) => inf && drawPackets(charts[i], inf)));
+      async function show(i, blob) {
+        const info = await inspect(blob);
+        if (!ctx.active) return;
+        infos[i] = info;
+        charts[i].style.background = "#0d0f14";
+        drawPackets(charts[i], info);
+        infoRows(cols[i].querySelector(".mb-dl"), info);
+      }
+      async function runRec() {
+        const job = recording();
+        const live = job.cv;
+        live.className = "mb-fill";
+        charts[0].replaceWith(live);
+        cols[0].querySelector(".mb-dl").replaceChildren(h("dt", { text: "狀態" }), h("dd", { text: `MediaRecorder 即時錄製 ${REC_SEC} 秒中…` }));
+        try {
+          const blob = await job.done;
+          if (!ctx.active) return;
+          live.replaceWith(charts[0]);
+          await show(0, blob);
+        } catch (e) {
+          if (ctx.active) cols[0].querySelector(".mb-dl").replaceChildren(h("dt", { text: "錯誤" }), h("dd", { text: e.message }));
+        }
+      }
+      runRec();
+      cols[1].querySelector(".mb-dl").replaceChildren(h("dt", { text: "狀態" }), h("dd", { text: "用 CanvasSource 編碼 4 秒測試片中…" }));
+      synthClip().then((b) => ctx.active && show(1, b)).catch((e) => ctx.active && (cols[1].querySelector(".mb-dl").textContent = `失敗：${e.message}`));
+    },
+  },
+  {
+    id: "decode", title: "逐格解碼",
+    api: "new CanvasSink(track).getCanvas(t)・canvasesAtTimestamps(ts)・canvases(start)",
+    desc: "CanvasSink 用 WebCodecs 把影片解成畫布。下排縮圖用 canvasesAtTimestamps 一次取 8 個時間點；拖曳時間軸用 getCanvas 隨機跳轉（要從前一個關鍵格開始解）；播放則用 canvases() 依序解碼，每格只需解一次。",
+    hint: "拖時間軸或點縮圖跳轉",
+    mount(ctx) {
+      if (noWebCodecs(ctx)) return;
+      ctx.html(`<div class="mb-wrap mb-rows">
+        <div class="mb-card"><canvas class="mb-fill" width="640" height="360"></canvas><span class="mb-tag">解碼測試片中…</span><div class="mb-info">畫面中央的格號應等於 round(t × 30)，可以直接核對取到的是不是那一格。</div></div>
+        <div class="mb-film"></div></div>`);
+      const view = ctx.$("canvas"), vg = view.getContext("2d"), tag = ctx.$(".mb-tag"), film = ctx.$(".mb-film");
+      let playing = false, sink = null, dur = 4;
+      const playBtn = ctx.button("暫停", () => (playing ? (playing = false) : play()));
+      const slider = ctx.slider("時間", { min: 0, max: 3.96, step: 0.01, value: 0, format: (v) => `${v.toFixed(2)} s` }, (v) => { playing = false; seek(v); });
+      slider.disabled = true;
+      let want = null, seeking = false;
+      async function seek(t) {
+        want = t;
+        if (seeking) return;
+        seeking = true;
+        while (want != null && ctx.active) {
+          const x = want;
+          want = null;
+          const t0 = performance.now();
+          const w = await sink.getCanvas(x);
+          if (!ctx.active || !w) break;
+          vg.drawImage(w.canvas, 0, 0, 640, 360);
+          tag.innerHTML = `getCanvas(${x.toFixed(2)}) → 第 <b>${Math.round(w.timestamp * FPS)}</b> 格（${w.timestamp.toFixed(3)} s）・解碼 <b>${(performance.now() - t0).toFixed(0)} ms</b>`;
+          film.querySelectorAll(".mb-thumb").forEach((b) => b.classList.toggle("on", Math.abs(+b.dataset.t - w.timestamp) < 0.02));
+        }
+        seeking = false;
+      }
+      async function play() {
+        playing = true;
+        playBtn.textContent = "暫停";
+        let n = 0, wait = 0;
+        while (playing && ctx.active) {
+          const start = +slider.value >= dur - 0.05 ? 0 : +slider.value, real0 = performance.now();
+          const it = sink.canvases(start);
+          try {
+            for (;;) {
+              const d0 = performance.now();
+              const { value: w, done } = await it.next();
+              if (done || !playing || !ctx.active) break;
+              wait += performance.now() - d0; n++;
+              const due = real0 + (w.timestamp - start) * 1000 - performance.now();
+              if (due > 0) await ctx.sleep(due);
+              vg.drawImage(w.canvas, 0, 0, 640, 360);
+              slider.value = w.timestamp.toFixed(2);
+              slider.nextElementSibling.textContent = `${w.timestamp.toFixed(2)} s`;
+              tag.innerHTML = `canvases() 依序解碼・第 <b>${Math.round(w.timestamp * FPS)}</b> 格・平均每格 <b>${(wait / n).toFixed(1)} ms</b>`;
+            }
+          } finally { await it.return(); }
+          if (playing) slider.value = 0;
+        }
+        if (ctx.active) playBtn.textContent = "播放";
+      }
+      (async () => {
+        const blob = await synthClip();
+        if (!ctx.active) return;
+        const input = readInput(blob);
+        const track = await input.getPrimaryVideoTrack();
+        dur = await input.computeDuration();
+        sink = new MB.CanvasSink(track, { width: 640, height: 360, fit: "contain", poolSize: 2 });
+        const thumbs = new MB.CanvasSink(track, { width: 160, height: 90, fit: "contain" });
+        const ts = Array.from({ length: 8 }, (_, i) => +((i * dur) / 8).toFixed(3));
+        const t0 = performance.now();
+        let i = 0;
+        for await (const w of thumbs.canvasesAtTimestamps(ts)) {
+          if (!ctx.active) return;
+          const b = h("button", { class: "mb-thumb", type: "button", title: `跳到 ${ts[i]} s`, onclick: () => { playing = false; slider.value = b.dataset.t; slider.nextElementSibling.textContent = `${(+b.dataset.t).toFixed(2)} s`; seek(+b.dataset.t); } },
+            w.canvas, h("span", { text: `${w.timestamp.toFixed(2)}s` }));
+          b.dataset.t = w.timestamp;
+          film.append(b);
+          i++;
+        }
+        tag.innerHTML = `canvasesAtTimestamps：8 張縮圖共 <b>${(performance.now() - t0).toFixed(0)} ms</b>`;
+        slider.disabled = false;
+        await seek(0);
+        if (ctx.active) await ctx.sleep(900);
+        play();
+      })().catch((e) => { if (!isAbort(e)) tag.textContent = `失敗：${e.message}`; });
+    },
+  },
+  {
+    id: "codecs", title: "影像編碼器比較",
+    api: "getEncodableVideoCodecs()・new CanvasSource(canvas, { codec, quality, keyFrameInterval })",
+    desc: "同一段 2 秒 640×360 測試動畫，依序交給瀏覽器能用的每一種影像編碼器（H.264／H.265 封裝成 MP4，VP8／VP9／AV1 封裝成 WebM），比較檔案大小與編碼時間，並直接播放結果。",
+    hint: "切換畫質看檔案大小怎麼變",
+    mount(ctx) {
+      if (noWebCodecs(ctx)) return;
+      const LIST = ["avc", "hevc", "vp9", "av1", "vp8"];
+      ctx.html(`<div class="mb-wrap mb-six">${LIST.map((c) => `<div class="mb-card" data-c="${c}"><span class="mb-tag">${name(c)}</span><div class="mb-empty">等待中</div></div>`).join("")}
+        <div class="mb-card mb-sum"><h4>大小（藍）與編碼時間（黃）</h4><div class="mb-rows-out"></div></div></div>`);
+      let q = 1, run = 0;
+      ctx.group(["低畫質", "中畫質", "高畫質"], 1, (i) => { q = i; go(); });
+      const make = urls(ctx);
+      const sum = ctx.$(".mb-rows-out");
+      const probe = document.createElement("video");
+      async function go() {
+        const my = ++run, alive = () => ctx.active && my === run;
+        const ok = await MB.getEncodableVideoCodecs(LIST, { width: 640, height: 360 });
+        const res = [];
+        sum.replaceChildren();
+        for (const c of LIST) {
+          const card = ctx.$(`[data-c="${c}"]`);
+          card.querySelectorAll("video, .mb-info, .mb-empty").forEach((x) => x.remove());
+          card.append(h("div", { class: "mb-empty", text: ok.includes(c) ? "排隊中…" : "此瀏覽器無法編碼" }));
+        }
+        for (const c of LIST) {
+          if (!ok.includes(c)) continue;
+          const card = ctx.$(`[data-c="${c}"]`), mp4 = c === "avc" || c === "hevc";
+          card.querySelector(".mb-empty").textContent = "編碼中…";
+          let r;
+          try {
+            r = await encodeCanvas({ cv: canvas(640, 360), codec: c, mp4, frames: 2 * FPS, quality: QUALITIES[q], label: `${name(c)}・${mp4 ? "MP4" : "WebM"}`, alive });
+          } catch (e) {
+            if (isAbort(e) || !alive()) return;
+            card.querySelector(".mb-empty").textContent = `失敗：${e.message}`;
+            continue;
+          }
+          if (!alive()) return;
+          // Read back the codec string the muxer wrote.
+          const vt = await readInput(r.blob).getPrimaryVideoTrack();
+          const param = await vt.getCodecParameterString();
+          res.push({ c, size: r.blob.size, ms: r.ms });
+          card.querySelector(".mb-tag").innerHTML = `${name(c)}・<code>${param}</code>`;
+          const url = make(r.blob, c);
+          const info = h("div", { class: "mb-info" });
+          info.innerHTML = `<b>${kb(r.blob.size)}</b>・${kbps(r.blob.size, 2)}・編碼 <b>${fmtMs(r.ms)}</b>・${dl(url, `mediabunny-${c}.${mp4 ? "mp4" : "webm"}`)}`;
+          if (probe.canPlayType(r.mime)) showVideo(card, url);
+          else card.querySelector(".mb-empty").textContent = "編碼成功，但此瀏覽器無法播放這種格式";
+          card.append(info);
+          const maxS = Math.max(...res.map((x) => x.size)), maxT = Math.max(...res.map((x) => x.ms));
+          sum.replaceChildren(...res.map((x) => {
+            const row = h("div", { class: "r" }, h("span", { text: name(x.c) }));
+            row.insertAdjacentHTML("beforeend", `<div class="bar sz"><i style="width:${(x.size / maxS) * 100}%"></i><em>${kb(x.size)}</em></div><div class="bar tm"><i style="width:${(x.ms / maxT) * 100}%"></i><em>${fmtMs(x.ms)}</em></div>`);
+            return row;
+          }));
+        }
+      }
+      go();
+    },
+  },
+  {
+    id: "audio", title: "音訊編碼",
+    api: "new AudioBufferSource({ codec, quality })・new AudioBufferSink(track).buffers()",
+    desc: "OfflineAudioContext 合成 3 秒的琶音，再用 AudioBufferSource 分別編成 Opus（WebM、Ogg）、AAC（MP4）與 PCM（WAV）。每個檔都再用 AudioBufferSink 解碼回來畫波形：灰色是原始訊號，彩色是解碼結果。",
+    hint: "按播放鍵比較各格式的音質",
+    mount(ctx) {
+      if (noWebCodecs(ctx)) return;
+      const JOBS = [
+        { codec: "opus", F: MB.WebMOutputFormat, label: "Opus・WebM", ext: "webm", col: "#f7df1e" },
+        { codec: "opus", F: MB.OggOutputFormat, label: "Opus・Ogg", ext: "ogg", col: "#4cc9f0" },
+        { codec: "aac", F: MB.Mp4OutputFormat, label: "AAC・MP4", ext: "m4a", col: "#f72585" },
+        { codec: "pcm-s16", F: MB.WavOutputFormat, label: "PCM・WAV", ext: "wav", col: "#7bd389" },
+      ];
+      ctx.html(`<div class="mb-wrap mb-four"><div class="mb-strip">檢查可用的音訊編碼器中…</div>
+        ${JOBS.map((j, i) => `<div class="mb-acard" data-i="${i}"><h4>${j.label}<small></small></h4><canvas></canvas><p>編碼中…</p></div>`).join("")}</div>`);
+      let q = 1, run = 0;
+      ctx.group(["低位元率", "中位元率", "高位元率"], 1, (i) => { q = i; go(); });
+      const make = urls(ctx), strip = ctx.$(".mb-strip");
+      const drawn = [];
+      ctx.onResize(() => drawn.forEach((f) => f && f()));
+      (async () => {
+        const all = await MB.getEncodableAudioCodecs(["aac", "opus", "mp3", "vorbis", "flac", "pcm-s16"], { numberOfChannels: 2, sampleRate: 44100 });
+        const no = ["mp3", "vorbis", "flac"].filter((c) => !all.includes(c));
+        if (ctx.active) strip.innerHTML = `可編碼：<b>${all.map(name).join("、")}</b>${no.length ? `　不支援：${no.map(name).join("、")}（瀏覽器沒有內建，可用 <code>registerEncoder()</code> 掛自訂編碼器補上）` : ""}`;
+      })();
+      async function go() {
+        const my = ++run, alive = () => ctx.active && my === run;
+        const buf = await melody(3);
+        const orig = buf.getChannelData(0);
+        for (const [i, j] of JOBS.entries()) {
+          const card = ctx.$(`[data-i="${i}"]`), p = card.querySelector("p"), cv = card.querySelector("canvas"), small = card.querySelector("small");
+          card.querySelector("audio")?.remove();
+          drawWave(cv, [{ data: orig, col: "#3a3c44" }]);
+          drawn[i] = null;
+          if (!(await MB.canEncodeAudio(j.codec, { numberOfChannels: 2, sampleRate: 44100 }))) { p.textContent = `此瀏覽器無法編碼 ${name(j.codec)}`; continue; }
+          p.textContent = "編碼中…";
+          try {
+            const output = new MB.Output({ format: new j.F(), target: new MB.BufferTarget() });
+            const src = new MB.AudioBufferSource({ codec: j.codec, quality: QUALITIES[q] });
+            output.addAudioTrack(src);
+            const t0 = performance.now();
+            await output.start();
+            await src.add(buf);
+            await output.finalize();
+            const ms = performance.now() - t0;
+            if (!alive()) return;
+            const bytes = output.target.buffer, mime = (await output.getMimeType()).split(";")[0];
+            // Read the file back and decode it to PCM again.
+            const track = await readInput(bytes).getPrimaryAudioTrack();
+            const sr = await track.getSampleRate(), dec = [];
+            let len = 0;
+            for await (const { buffer } of new MB.AudioBufferSink(track).buffers()) { dec.push(buffer.getChannelData(0).slice()); len += buffer.length; }
+            if (!alive()) return;
+            const joined = new Float32Array(len);
+            dec.reduce((o, d) => (joined.set(d, o), o + d.length), 0);
+            drawn[i] = () => drawWave(cv, [{ data: orig, col: "#3a3c44" }, { data: joined.subarray(0, Math.round((orig.length / buf.sampleRate) * sr)), col: j.col + "cc" }]);
+            drawn[i]();
+            const url = make(new Blob([bytes], { type: mime }), i);
+            const audio = h("audio");
+            Object.assign(audio, { preload: "auto", controls: true, src: url });
+            card.append(audio);
+            small.textContent = `${await track.getCodecParameterString()}・${sr} Hz`;
+            p.innerHTML = `<b>${kb(bytes.byteLength)}</b>・${kbps(bytes.byteLength, 3)}・讀回 <b>${(len / sr).toFixed(2)} s</b>・${fmtMs(ms)}・${dl(url, `mediabunny-audio.${j.ext}`)}`;
+          } catch (e) {
+            if (!alive()) return;
+            p.textContent = `失敗：${e.message}`;
+          }
+        }
+      }
+      go();
+    },
+  },
+  {
+    id: "convert", title: "轉檔：裁切與縮放",
+    api: "Conversion.init({ input, output, trim, video: { width, height, fit, crop, process } })",
+    desc: "Conversion 把讀檔、解碼、處理、編碼、封裝串成一條管線：trim 剪時間、width／height＋fit 縮放、crop 裁切、process 逐格加濾鏡，容器換成 WebM 時音軌會自動轉成 Opus。右邊是轉出的檔，下方資訊是讀回來的實際結果。",
+    hint: "改選項後按「轉檔」",
+    mount(ctx) {
+      if (noWebCodecs(ctx)) return;
+      ctx.html(`<div class="mb-wrap mb-even mb-rows">
+        <div class="mb-card"><span class="mb-tag">原始檔（Mediabunny 寫的 4 秒 MP4）</span><div class="mb-empty">準備測試片中…</div></div>
+        <div class="mb-card"><span class="mb-tag">轉檔結果</span><div class="mb-empty">等待轉檔</div><div class="mb-meter"><i></i></div></div>
+        <div class="mb-strip">讀回結果會顯示在這裡</div></div>`);
+      const SIZES = {
+        keep: {},
+        w320: { width: 320 },
+        square: { width: 360, height: 360, fit: "cover" },
+        crop: { crop: { left: 0, top: 60, width: 320, height: 240 } },
+      };
+      const o = { trim: "all", size: "square", fmt: "mp4", gray: true };
+      ctx.select("", [{ value: "all", label: "完整 4 秒" }, { value: "mid", label: "只取 1~3 秒" }], o.trim, (v) => (o.trim = v));
+      ctx.select("", [{ value: "keep", label: "原尺寸" }, { value: "w320", label: "寬 320（等比）" }, { value: "square", label: "360×360 填滿" }, { value: "crop", label: "裁切左側 320×240" }], o.size, (v) => (o.size = v));
+      ctx.select("", [{ value: "mp4", label: "MP4" }, { value: "webm", label: "WebM" }], o.fmt, (v) => (o.fmt = v));
+      ctx.toggle("灰階濾鏡", o.gray, (v) => (o.gray = v));
+      const go = ctx.button("轉檔", () => convert(), { primary: true });
+      const [srcCard, outCard] = ctx.$$(".mb-card"), meter = outCard.querySelector(".mb-meter i"), strip = ctx.$(".mb-strip");
+      const make = urls(ctx);
+      let conv = null, srcBlob = null;
+      ctx.onCleanup(() => conv && conv.cancel().catch(() => {}));
+      const pc = canvas(2, 2), pg = pc.getContext("2d");
+      // process(): runs on every decoded (already resized) frame; returning a canvas replaces the frame.
+      const grayStamp = (s) => {
+        pc.width = s.displayWidth; pc.height = s.displayHeight;
+        pg.filter = "grayscale(1) contrast(1.2)";
+        s.draw(pg, 0, 0);
+        pg.filter = "none";
+        pg.fillStyle = "#f7df1e";
+        pg.font = `600 ${Math.max(12, pc.height / 14)}px ${MONO}`;
+        pg.fillText(`process ${s.timestamp.toFixed(2)}s`, 8, pc.height - 10);
+        return pc;
+      };
+      async function convert() {
+        if (!srcBlob || conv) return;
+        go.disabled = true;
+        meter.style.width = "0";
+        try {
+          const output = new MB.Output({ format: o.fmt === "mp4" ? new MB.Mp4OutputFormat({ fastStart: "in-memory" }) : new MB.WebMOutputFormat(), target: new MB.BufferTarget() });
+          conv = await MB.Conversion.init({
+            input: readInput(srcBlob), output,
+            trim: o.trim === "mid" ? { start: 1, end: 3 } : undefined,
+            video: { ...SIZES[o.size], ...(o.gray ? { process: grayStamp } : {}) },
+          });
+          if (!conv.isValid) throw new Error(conv.discardedTracks.map((d) => d.reason).join("、") || "無法轉檔");
+          conv.onProgress = (p) => (meter.style.width = `${p * 100}%`);
+          const t0 = performance.now();
+          await conv.execute();
+          const ms = performance.now() - t0;
+          if (!ctx.active) return;
+          const mime = await output.getMimeType();
+          const blob = new Blob([output.target.buffer], { type: mime.split(";")[0] });
+          const url = make(blob, "out");
+          showVideo(outCard, url, { controls: true });
+          const input = readInput(blob), vt = await input.getPrimaryVideoTrack(), at = await input.getPrimaryAudioTrack();
+          strip.innerHTML = `讀回：<b>${o.fmt.toUpperCase()}</b>・<b>${(await input.computeDuration()).toFixed(2)} s</b>・<b>${await vt.getDisplayWidth()}×${await vt.getDisplayHeight()}</b>・${name(await vt.getCodec())}${at ? ` + ${name(await at.getCodec())}` : ""}・<b>${kb(blob.size)}</b>・耗時 <b>${fmtMs(ms)}</b>・${dl(url, `mediabunny-convert.${o.fmt}`)}`;
+        } catch (e) {
+          if (!isAbort(e) && ctx.active) strip.textContent = `失敗：${e.message}`;
+        } finally {
+          conv = null;
+          if (ctx.active) go.disabled = false;
+        }
+      }
+      go.disabled = true;
+      synthClip().then((b) => {
+        if (!ctx.active) return;
+        srcBlob = b;
+        showVideo(srcCard, make(b, "src"), { controls: true });
+        go.disabled = false;
+        convert();
+      }).catch((e) => ctx.active && (strip.textContent = `失敗：${e.message}`));
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "new CanvasSource(canvas, { codec }).add(t, 1 / 30) ×60 → output.finalize()",
+    desc: "逐級放大畫布，每級用 CanvasSource 編碼 60 格（2 秒影片）並封裝完成，看編碼速度隨像素數怎麼掉。2 秒內完成代表比即時快，超過 12 秒就停止加大。",
+    hint: "選編碼器後按「開始測試」",
+    mount(ctx) {
+      if (noWebCodecs(ctx)) return;
+      ctx.html(`<div class="mb-bench"><div class="mb-card"><div class="mb-empty">按「開始測試」後在這裡顯示正在編碼的畫布</div></div></div>`);
+      ctx.controls.classList.add("bottom");
+      const CODECS = ["avc", "vp9", "av1"];
+      let codec = "avc";
+      ctx.group(["H.264", "VP9", "AV1"], 0, (i) => (codec = CODECS[i]));
+      const card = ctx.$(".mb-bench .mb-card"), tag = h("span", { class: "mb-tag" });
+      const H = (w) => Math.round((w * 9) / 16 / 2) * 2;
+      ctx.bench({
+        label: "畫布尺寸", unit: "", sizes: [320, 640, 1280, 1920, 2560, 3840], target: 2000, budget: 12000,
+        format: (n) => `${n}×${H(n)}`,
+        async prepare(n) {
+          const cv = canvas(n, H(n));
+          card.replaceChildren(cv, tag);
+          cv.className = "mb-fill";
+          const ok = await MB.canEncodeVideo(codec, { width: n, height: H(n) });
+          tag.textContent = `${n}×${H(n)}・${name(codec)}${ok ? "" : "・此尺寸不支援"}`;
+          return { cv, ok };
+        },
+        async run(n, { cv, ok }) {
+          if (!ok) return "不支援";
+          const r = await encodeCanvas({ cv, codec, mp4: codec === "avc", frames: 60, label: `${n}×${H(n)}`, alive: () => ctx.active });
+          return `${(60 / (r.ms / 1000)).toFixed(0)} fps・${(2000 / r.ms).toFixed(1)}× 即時・${kb(r.blob.size)}`;
+        },
+        note: "每級編碼 60 格 640×360 版面放大後的測試動畫，時間包含繪圖、VideoFrame 建立、WebCodecs 編碼與封裝。H.264 封裝成 MP4，VP9／AV1 封裝成 WebM。有硬體編碼器時通常比軟體編碼快很多；結果列的 fps 是整體吞吐量。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

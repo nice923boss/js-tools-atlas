@@ -3,322 +3,910 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TensorFlow.js 示範：瀏覽器內即時訓練分類器</title>
+<title>TensorFlow.js 示範：八個場景看懂瀏覽器裡的張量運算與訓練</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"auto","note":"模型在瀏覽器內即時訓練，不需要伺服器；小型網路使用 CPU 後端反而最快"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"auto","note":"所有運算都在瀏覽器內完成；WASM 後端在需要時才下載（約 0.6 MB）","scenes":["即時訓練","張量運算","自動微分","優化器賽跑","記憶體管理","影像卷積","後端比較","極限測試"]}</script>
 <style>
-  #app { position: fixed; inset: 0; overflow: auto; padding: 14px 16px 50px; display: grid; grid-template-columns: auto 250px; gap: 14px; justify-content: center; align-content: start; }
-  #stage { position: relative; }
-  #board { display: block; border-radius: 12px; border: 1px solid var(--line); cursor: crosshair; touch-action: none; }
-  #epochBadge { position: absolute; left: 10px; top: 10px; padding: 3px 9px; border-radius: 999px; font: 12px var(--mono); background: rgba(0,0,0,.55); color: var(--fg); pointer-events: none; }
-  .side { display: grid; gap: 10px; align-content: start; }
-  .side h1 { margin: 0; font-size: 15px; }
-  .side h1 small { display: block; font-weight: 400; color: var(--muted); font-size: 12px; margin-top: 2px; }
-  .group { display: grid; gap: 6px; }
-  .group > span { font-size: 12px; color: var(--muted); }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-  .chips .btn { padding: 5px 10px; font-size: 12px; }
-  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 5px; vertical-align: 0; }
-  .slider { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); white-space: nowrap; }
-  .slider input { flex: 1; min-width: 0; }
-  .slider b { min-width: 22px; text-align: right; color: var(--fg); font-family: var(--mono); }
-  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-  .stats div { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font-size: 11px; color: var(--muted); }
-  .stats b { display: block; font: 700 16px var(--mono); color: var(--fg); }
-  #loss { width: 100%; height: 64px; display: block; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); }
+  .tf-wrap { position: absolute; inset: 0; padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px); display: grid; gap: 10px; }
+  .tf-box { position: relative; min-width: 0; min-height: 0; }
+  .tf-box > canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .tf-mem { position: absolute; left: 10px; bottom: 8px; z-index: 6; pointer-events: none; padding: 3px 8px; border-radius: 6px;
+    background: rgba(0, 0, 0, 0.55); color: var(--muted); font: 500 11px/1.4 var(--mono); }
+  .tf-mem b { color: var(--fg); font-weight: 600; }
+  .tf-tag { position: absolute; left: 10px; top: 10px; z-index: 4; pointer-events: none; padding: 3px 9px; border-radius: 999px;
+    background: rgba(0, 0, 0, 0.55); color: var(--fg); font: 500 11.5px/1.4 var(--mono); }
+  .tf-k { color: var(--muted); font-family: var(--font); font-size: 11px; }
+
+  /* 1. training */
+  .tf-train { grid-template-columns: minmax(0, 1fr) 230px; }
+  .tf-train .tf-board { cursor: crosshair; touch-action: none; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); }
+  .tf-side { display: grid; gap: 8px; align-content: start; min-width: 0; }
+  .tf-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .tf-stats div { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font-size: 11px; color: var(--muted); }
+  .tf-stats b { display: block; font: 700 15px/1.3 var(--mono); color: var(--fg); font-variant-numeric: tabular-nums; }
+  .tf-loss { height: 110px; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); }
   @media (max-width: 640px) {
-    /* stacked layout scrolls under the fixed hint: show it briefly, then fade it out */
-    .hint { animation: hint-fade .5s 8s forwards; }
-    #app { grid-template-columns: minmax(0, 1fr); padding: 10px 10px 46px; gap: 10px; }
-    .side h1 { display: none; }
-    .stats { grid-template-columns: repeat(4, 1fr); }
-    .stats b { font-size: 13px; }
-    #loss { height: 44px; }
+    .tf-train { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+    .tf-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .tf-stats b { font-size: 12.5px; }
+    .tf-loss { display: none; }
   }
+
+  /* 2. tensor ops */
+  .tf-ops { place-items: center; overflow: hidden; }
+  .tf-eq { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 10px 14px; max-width: 100%; }
+  .tf-sym { font: 600 22px/1 var(--mono); color: var(--muted); }
+  .tf-t { display: grid; gap: 4px; justify-items: center; }
+  .tf-t small { font: 500 11px/1.2 var(--mono); color: var(--muted); }
+  .tf-t small b { color: var(--fg); font-family: var(--font); font-weight: 600; margin-right: 4px; }
+  .tf-cells { display: grid; gap: 2px; }
+  .tf-cells span { width: var(--cell, 30px); height: var(--cell, 30px); display: grid; place-items: center; border-radius: 4px;
+    font: 500 10.5px/1 var(--mono); color: #fff; font-variant-numeric: tabular-nums; transition: background .3s; }
+  .tf-code { font: 500 12.5px/1.5 var(--mono); color: var(--accent); text-align: center; padding: 6px 12px; border-radius: 8px; background: var(--bg-2); border: 1px solid var(--line); max-width: 100%; overflow-wrap: anywhere; }
+  .tf-col { display: grid; gap: 14px; justify-items: center; max-width: 100%; }
+  @media (max-width: 520px) { .tf-cells span { --cell: 24px; font-size: 9.5px; } .tf-sym { font-size: 17px; } .tf-eq { gap: 8px; } }
+
+  /* 3/4/5. single canvas + legend */
+  .tf-solo { grid-template-columns: minmax(0, 1fr); }
+  .tf-legend { position: absolute; right: 18px; bottom: 16px; z-index: 4; display: grid; gap: 3px; padding: 7px 10px; border-radius: 8px;
+    background: rgba(0, 0, 0, 0.55); font-size: 11.5px; pointer-events: none; }
+  .tf-legend div { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .tf-legend i { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+  .tf-legend .n { font-family: var(--mono); color: var(--muted); margin-left: auto; padding-left: 10px; font-variant-numeric: tabular-nums; }
+
+  /* 5. memory */
+  .tf-memg { grid-template-columns: minmax(0, 1fr) 290px; }
+  .tf-code-box { margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--bg-2); border: 1px solid var(--line);
+    font: 500 11px/1.6 var(--mono); white-space: pre; overflow: hidden; color: var(--fg); }
+  .tf-code-box em { color: var(--accent); font-style: normal; }
+  .tf-code-box i { color: var(--muted); font-style: normal; }
+  .tf-big { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .tf-big div { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font-size: 11px; color: var(--muted); }
+  .tf-big b { display: block; font: 700 18px/1.25 var(--mono); color: var(--fg); font-variant-numeric: tabular-nums; }
+  .tf-big b.bad { color: var(--c3); } .tf-big b.ok { color: var(--c4); }
+  @media (max-width: 640px) {
+    .tf-memg { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+    .tf-memg .tf-code-box { display: none; }
+    .tf-big { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .tf-big b { font-size: 13px; }
+  }
+
+  /* 6. image */
+  .tf-img { place-items: center; }
+  .tf-photo { position: relative; border-radius: 10px; overflow: hidden; touch-action: none; cursor: ew-resize; border: 1px solid var(--line); }
+  .tf-photo canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .tf-split { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--accent); pointer-events: none; }
+  .tf-split::after { content: "⇆"; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 28px; height: 28px; border-radius: 50%;
+    display: grid; place-items: center; background: var(--accent); color: #111; font-size: 14px; font-weight: 700; }
+  .tf-photo .tf-tag.r { left: auto; right: 10px; }
+
+  /* 7. backend table */
+  .tf-bk { align-content: center; justify-items: center; overflow: hidden; }
+  .tf-table { width: min(860px, 100%); border-collapse: separate; border-spacing: 0 6px; font-size: 12px; }
+  .tf-table th { font-weight: 600; text-align: left; color: var(--muted); padding: 0 8px; font-size: 11.5px; }
+  .tf-table th.cur { color: var(--accent); }
+  .tf-table td { padding: 6px 8px; background: var(--bg-2); vertical-align: middle; }
+  .tf-table td:first-child { border-radius: 8px 0 0 8px; white-space: nowrap; }
+  .tf-table td:last-child { border-radius: 0 8px 8px 0; }
+  .tf-cell { display: grid; gap: 3px; min-width: 0; }
+  .tf-cell .v { font: 600 12px/1.2 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tf-cell .e { font: 500 10px/1.2 var(--mono); color: var(--muted); white-space: nowrap; }
+  .tf-cell .bar { height: 5px; border-radius: 3px; background: rgba(127, 127, 127, 0.18); overflow: hidden; }
+  .tf-cell .bar i { display: block; height: 100%; width: 0; border-radius: 3px; transition: width .4s; }
+  .tf-cell.best .v { color: var(--c4); }
+  .tf-info { width: min(860px, 100%); font-size: 11.5px; color: var(--muted); line-height: 1.6; }
+  .tf-info b { font-family: var(--mono); color: var(--fg); font-weight: 500; }
+  @media (max-width: 560px) {
+    .tf-table { font-size: 11px; } .tf-table td, .tf-table th { padding: 5px 4px; }
+    .tf-cell .e { display: none; } .tf-table td:first-child { white-space: normal; }
+  }
+
+  /* 8. stress */
+  .tf-stress { position: absolute; inset: 8px 8px calc(var(--sc-ctl-b, 0px) + 8px); }
+  @media (min-width: 761px) { .tf-stress { left: 350px; } }
+  @media (max-width: 760px) { .tf-stress { opacity: .9; } }
 </style>
 </head>
 <body>
-<div id="app">
-  <div id="stage"><canvas id="board"></canvas><div id="epochBadge">載入 TensorFlow.js…</div></div>
-  <div class="side">
-    <h1>神經網路即時學分類<small>背景顏色是模型目前的判斷，邊界會隨訓練慢慢成形</small></h1>
-    <div class="group">
-      <span>資料集</span>
-      <div class="chips" id="sets">
-        <button class="btn" data-set="spiral" aria-pressed="true">螺旋</button>
-        <button class="btn" data-set="circle">同心圓</button>
-        <button class="btn" data-set="xor">XOR 四象限</button>
-        <button class="btn" data-set="empty">自己點</button>
-      </div>
-    </div>
-    <div class="group">
-      <span>點畫面新增資料點</span>
-      <div class="chips" id="paint">
-        <button class="btn" data-c="0" aria-pressed="true"><i class="dot" style="background:#4cc9f0"></i>青色類</button>
-        <button class="btn" data-c="1"><i class="dot" style="background:#f72585"></i>粉紅類</button>
-      </div>
-    </div>
-    <div class="slider">隱藏層<input type="range" id="layers" min="1" max="3" value="2"><b id="lv">2</b></div>
-    <div class="slider">每層神經元<input type="range" id="units" min="2" max="24" value="12"><b id="uv">12</b></div>
-    <div class="chips">
-      <button class="btn primary" id="run">暫停訓練</button>
-      <button class="btn" id="reset">重新初始化</button>
-    </div>
-    <div class="stats">
-      <div>訓練回合<b id="sEpoch">0</b></div>
-      <div>準確率<b id="sAcc">-</b></div>
-      <div>損失<b id="sLoss">-</b></div>
-      <div>參數量<b id="sParams">-</b></div>
-    </div>
-    <canvas id="loss" width="500" height="128"></canvas>
-  </div>
-</div>
-<div class="hint" id="hint">點畫面加資料點・調整網路大小看邊界變化</div>
-
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<script src="_shared/showcase.js"></script>
 <script>
-// TensorFlow.js: a small MLP trained live in the browser (tf.layers + trainOnBatch), decision boundary redrawn every frame.
-const $ = (id) => document.getElementById(id);
-const COL = [[76, 201, 240], [247, 37, 133]];
-const GRID = 64;
-const MAX_EPOCH = 3000;
-const STEPS = 10;
+// TensorFlow.js showcase: live training, tensor ops, autodiff, optimizers, memory, image convolution,
+// backend comparison and a matMul GFLOPS benchmark.
+const { h, fmt, fmtMs } = Showcase;
+const WASM_DIR = "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-wasm@4.22.0/dist/";
+const WEBGPU_JS = "https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgpu@4.22.0/dist/tf-backend-webgpu.min.js";
+const css = getComputedStyle(document.documentElement);
+const C = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6"].map((v) => css.getPropertyValue(v).trim());
+const CYAN = [76, 201, 240], PINK = [247, 37, 133];
+const BK_NAME = { webgl: "WebGL", wasm: "WASM", cpu: "CPU", webgpu: "WebGPU" };
+const BK_COLOR = { webgl: C[1], wasm: C[4], cpu: C[0], webgpu: C[5] };
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const kb = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${(b / 1024).toFixed(0)} KB`);
 
-let seed = 5;
-const rand = () => ((seed = (seed * 16807) % 2147483647) - 1) / 2147483646;
-const noise = (s) => (rand() - 0.5) * s;
+// Seeded random numbers so the datasets look the same on every visit
+function rng(seed) { let s = seed; return () => (s = (s * 16807) % 2147483647) / 2147483647; }
 
-const DATASETS = {
-  spiral() {
-    const pts = [];
-    for (let c = 0; c < 2; c++) {
-      for (let i = 0; i < 90; i++) {
-        const r = (i / 90) * 0.92 + 0.05;
-        const t = (i / 90) * 3.3 * Math.PI + c * Math.PI;
-        pts.push({ x: r * Math.cos(t) + noise(0.08), y: r * Math.sin(t) + noise(0.08), c });
+// ---------- backends ----------
+let wasmReady = null, webgpuReady = null;
+function ensureWasm(ctx) {
+  wasmReady ??= ctx.load(WASM_DIR + "tf-backend-wasm.min.js").then(() => { tf.wasm.setWasmPaths(WASM_DIR); return true; })
+    .catch(() => { wasmReady = null; return false; });
+  return wasmReady;
+}
+// WebGPU is only offered when the browser exposes a real adapter.
+function ensureWebGPU(ctx) {
+  webgpuReady ??= (async () => {
+    if (!navigator.gpu) return false;
+    const adapter = await navigator.gpu.requestAdapter().catch(() => null);
+    if (!adapter) return false;
+    await ctx.load(WEBGPU_JS);
+    return true;
+  })().catch(() => false);
+  return webgpuReady;
+}
+async function useBackend(name) {
+  if (tf.getBackend() !== name) {
+    const ok = await tf.setBackend(name);
+    if (!ok) throw new Error(`無法切換到 ${BK_NAME[name] || name} 後端`);
+  }
+  await tf.ready();
+}
+// WebGL in this page; fall back to CPU if the context cannot be created
+async function useGPU() {
+  try { await useBackend("webgl"); } catch { await useBackend("cpu"); }
+}
+
+// Live tf.memory() readout: proves every scene releases its tensors on exit
+function memTag(ctx) {
+  const box = h("div", { class: "tf-mem" });
+  ctx.el.append(box);
+  const paint = () => {
+    let m;
+    // tf.memory() throws while an async setBackend() (e.g. WASM) is still initializing
+    try { m = tf.memory(); } catch (e) {
+      if (!/not yet been initialized/.test(e.message)) throw e;
+      box.textContent = "切換後端中…";
+      return;
+    }
+    const gpu = m.numBytesInGPU != null ? `・GPU <b>${kb(m.numBytesInGPU)}</b>` : "";
+    box.innerHTML = `${tf.getBackend()}・張量 <b>${m.numTensors}</b>・<b>${kb(m.numBytes)}</b>${gpu}`;
+  };
+  paint();
+  ctx.interval(paint, 400);
+  return box;
+}
+
+// HiDPI canvas that tracks its host element size
+function canvasIn(ctx, host, onFit) {
+  const cv = h("canvas");
+  host.append(cv);
+  const g = cv.getContext("2d");
+  const st = { cv, g, w: 0, h: 0 };
+  const fit = (first) => {
+    const w = host.clientWidth, hh = host.clientHeight;
+    if (!w || !hh || (w === st.w && hh === st.h)) return;
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    st.w = w; st.h = hh;
+    cv.width = Math.round(w * dpr); cv.height = Math.round(hh * dpr);
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // first call is deferred so the caller can finish assigning the returned object
+    if (onFit) first === true ? queueMicrotask(() => ctx.active && onFit(st)) : onFit(st);
+  };
+  const ro = new ResizeObserver(() => fit());
+  ro.observe(host);
+  ctx.onCleanup(() => ro.disconnect());
+  fit(true);
+  return st;
+}
+
+// Run a background loop; surface its error in the scene instead of an unhandled rejection
+function loop(ctx, fn) {
+  const p = fn().catch((e) => { if (ctx.active && e.name !== "AbortError") ctx.status(`發生錯誤：${e.message}`).error(`發生錯誤：${e.message}`); });
+  return p;
+}
+
+// ---------- scene 1 data ----------
+function makeData(kind) {
+  const r = rng(kind === "spiral" ? 7 : kind === "circle" ? 11 : 13);
+  const pts = [];
+  if (kind === "spiral") {
+    for (let i = 0; i < 90; i++) {
+      const rad = (i / 90) * 0.88 + 0.06;
+      for (let c = 0; c < 2; c++) {
+        const t = (1.75 * i / 90) * 2 * Math.PI + c * Math.PI;
+        pts.push({ x: rad * Math.sin(t) + (r() - 0.5) * 0.08, y: rad * Math.cos(t) + (r() - 0.5) * 0.08, c });
       }
     }
-    return pts;
-  },
-  circle() {
-    const pts = [];
-    for (let i = 0; i < 180; i++) {
-      const inner = i % 2 === 0;
-      const r = inner ? rand() * 0.38 : 0.6 + rand() * 0.3;
-      const t = rand() * Math.PI * 2;
-      pts.push({ x: r * Math.cos(t), y: r * Math.sin(t), c: inner ? 0 : 1 });
+  } else if (kind === "circle") {
+    while (pts.length < 200) {
+      const x = r() * 2 - 1, y = r() * 2 - 1, d = Math.hypot(x, y);
+      if (d < 0.42) pts.push({ x, y, c: 0 }); else if (d > 0.58 && d < 0.95) pts.push({ x, y, c: 1 });
     }
-    return pts;
-  },
-  xor() {
-    const pts = [];
-    for (let i = 0; i < 180; i++) {
-      let x = rand() * 1.8 - 0.9, y = rand() * 1.8 - 0.9;
-      x += x > 0 ? 0.05 : -0.05; y += y > 0 ? 0.05 : -0.05;
-      pts.push({ x, y, c: x * y > 0 ? 0 : 1 });
+  } else if (kind === "xor") {
+    while (pts.length < 200) {
+      const x = r() * 2 - 1, y = r() * 2 - 1;
+      if (Math.abs(x) > 0.08 && Math.abs(y) > 0.08) pts.push({ x, y, c: x * y > 0 ? 0 : 1 });
     }
-    return pts;
-  },
-  empty() {
-    return [{ x: -0.4, y: 0.3, c: 0 }, { x: 0.4, y: -0.3, c: 1 }];
-  },
+  }
+  return pts;
+}
+function buildClassifier(layers, units) {
+  const m = tf.sequential();
+  for (let i = 0; i < layers; i++) m.add(tf.layers.dense(i === 0 ? { units, activation: "tanh", inputShape: [2] } : { units, activation: "tanh" }));
+  m.add(tf.layers.dense({ units: 1, activation: "sigmoid" }));
+  const opt = tf.train.adam(0.03);
+  m.compile({ optimizer: opt, loss: "binaryCrossentropy", metrics: ["accuracy"] });
+  return { m, opt };
+}
+
+// ---------- scene 3/4 functions (written with tf ops, so tf.grad can differentiate them) ----------
+const FUNCS = [
+  { label: "x³ − 3x", f: (x) => x.pow(3).sub(x.mul(3)), range: [-2.4, 2.4] },
+  { label: "x·sin(2x)", f: (x) => x.mul(x.mul(2).sin()), range: [-4, 4] },
+  { label: "tanh(x)", f: (x) => x.tanh(), range: [-4, 4] },
+  { label: "e^(−x²)", f: (x) => x.square().neg().exp(), range: [-3, 3] },
+];
+const SURFACES = [
+  { label: "Himmelblau", x: [-5, 5], y: [-5, 5], start: [-0.5, -4.6],
+    f: (x, y) => x.square().add(y).sub(11).square().add(x.add(y.square()).sub(7).square()),
+    lr: { sgd: 0.008, momentum: 0.002, rmsprop: 0.06, adam: 0.12 } },
+  { label: "Rosenbrock", x: [-2, 2], y: [-1, 3], start: [-1.6, 2.6],
+    f: (x, y) => tf.scalar(1).sub(x).square().add(y.sub(x.square()).square().mul(10)),
+    lr: { sgd: 0.006, momentum: 0.0015, rmsprop: 0.02, adam: 0.06 } },
+  { label: "狹長碗", x: [-5, 5], y: [-3, 3], start: [-4.5, 2.4],
+    f: (x, y) => x.square().mul(0.05).add(y.square().mul(2)),
+    lr: { sgd: 0.45, momentum: 0.05, rmsprop: 0.08, adam: 0.15 } },
+];
+const OPTS = [
+  { id: "sgd", name: "SGD", color: C[0], make: (lr) => tf.train.sgd(lr) },
+  { id: "momentum", name: "Momentum", color: C[1], make: (lr) => tf.train.momentum(lr, 0.9) },
+  { id: "rmsprop", name: "RMSProp", color: C[2], make: (lr) => tf.train.rmsprop(lr) },
+  { id: "adam", name: "Adam", color: C[3], make: (lr) => tf.train.adam(lr) },
+];
+
+// ---------- scene 6 filters (input: float32 [H, W, 3] in 0..1) ----------
+const SOBEL = [[-1, 0, 1, -2, 0, 2, -1, 0, 1], [-1, -2, -1, 0, 0, 0, 1, 2, 1]];
+const gray3 = (img) => img.mul([0.299, 0.587, 0.114]).sum(2, true);
+const FILTERS = [
+  { label: "模糊", code: "tf.avgPool(x, k, 1, 'same')", run: (img, s) => {
+    const k = 1 + 2 * Math.round(s);
+    return tf.avgPool(tf.avgPool(img.expandDims(0), k, 1, "same"), k, 1, "same").squeeze([0]);
+  } },
+  { label: "邊緣", code: "tf.conv2d(gray, sobel, 1, 'same')", run: (img, s) => {
+    const k = tf.tensor4d([0, 1, 2, 3, 4, 5, 6, 7, 8].flatMap((i) => [SOBEL[0][i], SOBEL[1][i]]), [3, 3, 1, 2]);
+    const g = tf.conv2d(gray3(img).expandDims(0), k, 1, "same").squeeze([0]);
+    return g.square().sum(2, true).sqrt().mul(0.4 + s * 0.25).tile([1, 1, 3]);
+  } },
+  { label: "銳化", code: "tf.depthwiseConv2d(x, kernel, 1, 'same')", run: (img, s) => {
+    const a = s * 0.35;
+    const k = [0, -a, 0, -a, 1 + 4 * a, -a, 0, -a, 0];
+    const ker = tf.tensor4d(k.flatMap((v) => [v, v, v]), [3, 3, 3, 1]);
+    return tf.depthwiseConv2d(img.expandDims(0), ker, 1, "same").squeeze([0]);
+  } },
+  { label: "浮雕", code: "tf.conv2d(gray, emboss) + 0.5", run: (img, s) => {
+    const k = tf.tensor4d([-2, -1, 0, -1, 1, 1, 0, 1, 2].map((v) => v * (0.3 + s * 0.15)), [3, 3, 1, 1]);
+    return tf.conv2d(gray3(img).expandDims(0), k, 1, "same").squeeze([0]).add(0.5).tile([1, 1, 3]);
+  } },
+  { label: "像素化", code: "resizeNearestNeighbor ↓ 再 ↑", run: (img, s) => {
+    const [H, W] = img.shape, f = 2 + Math.round(s * 3);
+    const small = tf.image.resizeNearestNeighbor(img, [Math.max(1, Math.round(H / f)), Math.max(1, Math.round(W / f))]);
+    return tf.image.resizeNearestNeighbor(small, [H, W]);
+  } },
+  { label: "色調分離", code: "x.mul(n).round().div(n)", run: (img, s) => {
+    const n = Math.max(1, 7 - Math.round(s));
+    return img.mul(n).round().div(n);
+  } },
+];
+const PHOTOS = [["photo-4.jpg", "巴哥犬"], ["photo-7.jpg", "母獅"], ["photo-2.jpg", "峽谷"], ["photo-6.jpg", "水母"]];
+function loadImage(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error(`圖片載入失敗：${src}`));
+    img.src = src;
+  });
+}
+
+// ---------- scene 7 workloads (same seeded inputs on every backend) ----------
+function seeded(n, seed) { const r = rng(seed), a = new Float32Array(n); for (let i = 0; i < n; i++) a[i] = r() * 2 - 1; return a; }
+const TASKS = [
+  { name: "矩陣乘法", sub: "512×512", inputs: [[[512, 512], 1], [[512, 512], 2]], run: ([a, b]) => tf.matMul(a, b) },
+  { name: "卷積", sub: "128²×16 通道", inputs: [[[1, 128, 128, 16], 3], [[3, 3, 16, 16], 4]], run: ([x, k]) => tf.conv2d(x, k, 1, "same") },
+  { name: "逐元素", sub: "100 萬個", inputs: [[[1000000], 5]], run: ([x]) => tf.tidy(() => x.mul(1.5).add(0.5).relu().sqrt()) },
+  { name: "歸約加總", sub: "100 萬個", inputs: [[[1000000], 6]], run: ([x]) => x.sum() },
+];
+const INPUT_CACHE = new Map();
+const inputData = ([shape, seed]) => {
+  const key = shape.join("x") + ":" + seed;
+  if (!INPUT_CACHE.has(key)) INPUT_CACHE.set(key, seeded(shape.reduce((a, b) => a * b, 1), seed));
+  return INPUT_CACHE.get(key);
 };
 
-const state = { set: "spiral", paint: 0, layers: 2, units: 12, running: true, epoch: 0, history: [] };
-let points = DATASETS.spiral();
-let model, xs, ys, gridT;
-const cv = $("board");
-const ctx = cv.getContext("2d");
-const off = document.createElement("canvas");
-off.width = off.height = GRID;
-const offCtx = off.getContext("2d");
-const img = offCtx.createImageData(GRID, GRID);
+const GFLOPS = {}; // backend -> { n: gflops }, kept across visits to the stress scene
 
-function buildModel() {
-  if (model) model.dispose();
-  model = tf.sequential();
-  for (let i = 0; i < state.layers; i++) {
-    model.add(tf.layers.dense({ units: state.units, activation: "tanh", ...(i === 0 ? { inputShape: [2] } : {}) }));
-  }
-  model.add(tf.layers.dense({ units: 1, activation: "sigmoid" }));
-  model.compile({ optimizer: tf.train.adam(0.03), loss: "binaryCrossentropy", metrics: ["accuracy"] });
-  state.epoch = 0;
-  state.history = [];
-  $("sParams").textContent = model.countParams();
-  resume();
-}
-
-function syncData() {
-  if (xs) { xs.dispose(); ys.dispose(); }
-  xs = tf.tensor2d(points.map((p) => [p.x, p.y]));
-  ys = tf.tensor2d(points.map((p) => [p.c]), [points.length, 1]);
-}
-
-function resume() {
-  state.running = true;
-  $("run").textContent = "暫停訓練";
-}
-
-// Canvas sizing: square board that fits beside (or above) the side panel
-function layout() {
-  const narrow = innerWidth <= 640;
-  const side = narrow
-    ? Math.min(innerWidth - 22, innerHeight - 300)
-    : Math.min(innerWidth - 300, innerHeight - 70);
-  const size = Math.max(200, Math.floor(side));
-  const dpr = Math.min(2, devicePixelRatio || 1);
-  cv.style.width = cv.style.height = `${size}px`;
-  cv.width = cv.height = Math.round(size * dpr);
-  draw();
-}
-
-const toCanvas = (v) => ((v + 1) / 2) * cv.width;
-
-let lastPred = null;
-function draw() {
-  ctx.fillStyle = "#0b0d10";
-  ctx.fillRect(0, 0, cv.width, cv.height);
-  if (lastPred) {
-    for (let i = 0; i < GRID * GRID; i++) {
-      const p = lastPred[i];
-      const k = Math.min(1, Math.abs(p - 0.5) * 2.2);
-      const c = p < 0.5 ? COL[0] : COL[1];
-      img.data[i * 4] = 11 + (c[0] - 11) * k * 0.55;
-      img.data[i * 4 + 1] = 13 + (c[1] - 13) * k * 0.55;
-      img.data[i * 4 + 2] = 16 + (c[2] - 16) * k * 0.55;
-      img.data[i * 4 + 3] = 255;
-    }
-    offCtx.putImageData(img, 0, 0);
-    ctx.imageSmoothingEnabled = true;
-    ctx.drawImage(off, 0, 0, cv.width, cv.height);
-  }
-  // axes
-  ctx.strokeStyle = "rgba(255,255,255,.08)";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(cv.width / 2, 0); ctx.lineTo(cv.width / 2, cv.height);
-  ctx.moveTo(0, cv.height / 2); ctx.lineTo(cv.width, cv.height / 2);
-  ctx.stroke();
-  const r = Math.max(3.5, cv.width / 110);
-  for (const p of points) {
-    ctx.beginPath();
-    ctx.arc(toCanvas(p.x), toCanvas(-p.y), r, 0, Math.PI * 2);
-    ctx.fillStyle = `rgb(${COL[p.c]})`;
-    ctx.fill();
-    ctx.lineWidth = Math.max(1, r / 3);
-    ctx.strokeStyle = "#fff";
-    ctx.stroke();
-  }
-}
-
-function drawLoss() {
-  const c = $("loss");
-  const g = c.getContext("2d");
-  const h = state.history;
-  g.clearRect(0, 0, c.width, c.height);
-  if (h.length < 2) return;
-  const max = Math.max(...h, 0.1);
-  const grad = g.createLinearGradient(0, 0, c.width, 0);
-  grad.addColorStop(0, "#f72585"); grad.addColorStop(1, "#4cc9f0");
-  g.strokeStyle = grad;
-  g.lineWidth = 3;
-  g.beginPath();
-  h.forEach((v, i) => {
-    const x = (i / (h.length - 1)) * (c.width - 8) + 4;
-    const y = c.height - 6 - (v / max) * (c.height - 12);
-    i ? g.lineTo(x, y) : g.moveTo(x, y);
-  });
-  g.stroke();
-}
-
-async function predictGrid() {
-  const out = tf.tidy(() => model.predict(gridT));
-  lastPred = await out.data();
-  out.dispose();
-}
-
-// Data / model changes are applied between training steps so no tensor is disposed mid-step
-const pending = { sync: false, rebuild: false };
-
-async function loop() {
-  if (pending.sync) { syncData(); pending.sync = false; }
-  if (pending.rebuild) { buildModel(); pending.rebuild = false; }
-  if (state.running && points.length >= 2) {
-    let res;
-    for (let i = 0; i < STEPS; i++) res = await model.trainOnBatch(xs, ys);
-    state.epoch += STEPS;
-    const [loss, acc] = res;
-    if (state.epoch % 10 === 0) {
-      state.history.push(loss);
-      if (state.history.length > 250) state.history.shift();
-      drawLoss();
-    }
-    await predictGrid();
-    draw();
-    $("sEpoch").textContent = state.epoch;
-    $("sLoss").textContent = loss.toFixed(3);
-    $("sAcc").textContent = `${Math.round(acc * 100)}%`;
-    $("epochBadge").textContent = `訓練中・第 ${state.epoch} 回`;
-    if (state.epoch >= MAX_EPOCH || (acc === 1 && loss < 0.02)) {
-      state.running = false;
-      $("run").textContent = "繼續訓練";
-      $("epochBadge").textContent = `已收斂・第 ${state.epoch} 回（點畫面加點可繼續）`;
-    }
-  }
-  requestAnimationFrame(loop);
-}
-
-// UI
-$("sets").addEventListener("click", (e) => {
-  const b = e.target.closest("[data-set]");
-  if (!b) return;
-  state.set = b.dataset.set;
-  seed = 5;
-  points = DATASETS[state.set]();
-  document.querySelectorAll("[data-set]").forEach((x) => x.setAttribute("aria-pressed", x === b));
-  pending.sync = pending.rebuild = true;
-  draw();
-});
-$("paint").addEventListener("click", (e) => {
-  const b = e.target.closest("[data-c]");
-  if (!b) return;
-  state.paint = +b.dataset.c;
-  document.querySelectorAll("[data-c]").forEach((x) => x.setAttribute("aria-pressed", x === b));
-});
-cv.addEventListener("pointerdown", (e) => {
-  const rect = cv.getBoundingClientRect();
-  const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-  const y = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
-  points.push({ x, y, c: e.shiftKey ? 1 - state.paint : state.paint });
-  pending.sync = true;
-  if (state.epoch >= MAX_EPOCH) state.epoch = MAX_EPOCH - 600;
-  resume();
-  draw();
-});
-$("layers").addEventListener("input", (e) => { state.layers = +e.target.value; $("lv").textContent = state.layers; pending.rebuild = true; });
-$("units").addEventListener("input", (e) => { state.units = +e.target.value; $("uv").textContent = state.units; pending.rebuild = true; });
-$("run").addEventListener("click", () => {
-  state.running = !state.running;
-  if (state.running && state.epoch >= MAX_EPOCH) state.epoch = 0;
-  $("run").textContent = state.running ? "暫停訓練" : "繼續訓練";
-});
-$("reset").addEventListener("click", () => { pending.rebuild = true; });
-addEventListener("resize", layout);
-
-(async () => {
-  // A network this small trains faster on the CPU backend than paying WebGL upload / readback costs each step
-  await tf.setBackend("cpu");
-  await tf.ready();
-  $("hint").textContent = `後端 ${tf.getBackend().toUpperCase()}・點畫面加資料點，Shift＋點擊加另一類`;
-  const cells = [];
-  for (let j = 0; j < GRID; j++) for (let i = 0; i < GRID; i++) cells.push([(i + 0.5) / GRID * 2 - 1, -((j + 0.5) / GRID * 2 - 1)]);
-  gridT = tf.tensor2d(cells);
-  syncData();
-  buildModel();
-  layout();
-  loop();
-})();
+Showcase.run({ scenes: [
+  {
+    id: "train", title: "即時訓練",
+    api: "tf.sequential() + model.trainOnBatch(xs, ys)",
+    desc: "兩層 tanh 全連接網路在頁面上即時訓練，背景是模型對每個位置的判斷（model.predict 一次算 48×48 個點），右側是 loss 曲線。",
+    hint: "點畫面加入資料點（先選顏色）・換資料集或調整層數後重新訓練",
+    async mount(ctx) {
+      await useBackend("cpu");
+      ctx.html(`<div class="tf-wrap tf-train"><div class="tf-box tf-board"><div class="tf-tag">準備中…</div></div>
+        <div class="tf-side"><div class="tf-stats"><div>Epoch<b data-k="ep">0</b></div><div>Loss<b data-k="loss">…</b></div>
+        <div>準確率<b data-k="acc">…</b></div><div>參數量<b data-k="par">…</b></div></div><div class="tf-box tf-loss"></div></div></div>`);
+      const board = ctx.$(".tf-board"), tag = ctx.$(".tf-tag");
+      const stat = (k, v) => (ctx.$(`[data-k="${k}"]`).textContent = v);
+      let kind = "spiral", pts = makeData(kind), paint = 0, layers = 2, units = 10;
+      let dirtyData = true, dirtyModel = true, model = null, xs = null, ys = null, epoch = 0, hist = [], heat = null;
+      const N = 48;
+      const grid = tf.tidy(() => {
+        const v = tf.linspace(-1, 1, N);
+        const [gx, gy] = tf.meshgrid(v, v);
+        return tf.stack([gx.flatten(), gy.flatten().neg()], 1);
+      });
+      const off = h("canvas", { width: N, height: N });
+      const og = off.getContext("2d"), img = og.createImageData(N, N);
+      const view = canvasIn(ctx, board, () => draw());
+      const lossView = canvasIn(ctx, ctx.$(".tf-loss"), () => drawLoss());
+      memTag(ctx);
+      ctx.select("", [{ value: "spiral", label: "螺旋" }, { value: "circle", label: "同心圓" }, { value: "xor", label: "XOR" }, { value: "empty", label: "空白" }], kind, (v) => {
+        kind = v; pts = makeData(v); dirtyData = dirtyModel = true;
+      });
+      ctx.group(["● 青", "● 粉"], 0, (i) => (paint = i));
+      ctx.slider("層", { min: 1, max: 3, value: layers }, (v) => { layers = v; dirtyModel = true; });
+      ctx.slider("神經元", { min: 2, max: 24, value: units }, (v) => { units = v; dirtyModel = true; });
+      ctx.button("重新訓練", () => (dirtyModel = true), { primary: true });
+      ctx.on(board, "pointerdown", (e) => {
+        e.preventDefault();
+        const r = board.getBoundingClientRect(), s = Math.min(r.width, r.height);
+        const x = ((e.clientX - r.left - (r.width - s) / 2) / s) * 2 - 1, y = -(((e.clientY - r.top - (r.height - s) / 2) / s) * 2 - 1);
+        if (Math.abs(x) > 1 || Math.abs(y) > 1) return;
+        pts.push({ x, y, c: e.shiftKey || e.button === 2 ? 1 - paint : paint });
+        dirtyData = true; epoch = Math.min(epoch, 0); done = false;
+      });
+      ctx.on(board, "contextmenu", (e) => e.preventDefault());
+      let done = false;
+      function draw() {
+        const { g, w, h: hh } = view;
+        if (!w) return;
+        const s = Math.min(w, hh), ox = (w - s) / 2, oy = (hh - s) / 2;
+        g.fillStyle = "#0b0d10"; g.fillRect(0, 0, w, hh);
+        if (heat) {
+          for (let i = 0; i < N * N; i++) {
+            const p = heat[i], k = Math.abs(p - 0.5) * 1.4 + 0.12;
+            const col = p > 0.5 ? PINK : CYAN;
+            img.data[i * 4] = col[0] * k; img.data[i * 4 + 1] = col[1] * k; img.data[i * 4 + 2] = col[2] * k; img.data[i * 4 + 3] = 255;
+          }
+          og.putImageData(img, 0, 0);
+          g.imageSmoothingEnabled = true;
+          g.drawImage(off, ox, oy, s, s);
+        }
+        g.strokeStyle = "rgba(255,255,255,0.08)"; g.lineWidth = 1;
+        g.beginPath(); g.moveTo(ox + s / 2, oy); g.lineTo(ox + s / 2, oy + s); g.moveTo(ox, oy + s / 2); g.lineTo(ox + s, oy + s / 2); g.stroke();
+        const rr = Math.max(2.5, s / 140);
+        for (const p of pts) {
+          g.beginPath(); g.arc(ox + ((p.x + 1) / 2) * s, oy + ((1 - p.y) / 2) * s, rr, 0, Math.PI * 2);
+          g.fillStyle = p.c ? C[2] : C[1]; g.fill(); g.strokeStyle = "#fff"; g.lineWidth = 1; g.stroke();
+        }
+      }
+      function drawLoss() {
+        const { g, w, h: hh } = lossView;
+        if (!w) return;
+        g.clearRect(0, 0, w, hh);
+        g.fillStyle = "#9b998f"; g.font = `11px ${css.getPropertyValue("--font")}`; g.fillText("loss（對數刻度）", 8, 14);
+        if (hist.length < 2) return;
+        const lo = Math.log10(1e-3), hi = Math.log10(Math.max(1, ...hist));
+        g.beginPath();
+        hist.forEach((v, i) => {
+          const x = 6 + (i / (hist.length - 1)) * (w - 12), y = hh - 8 - ((Math.log10(Math.max(v, 1e-3)) - lo) / (hi - lo)) * (hh - 28);
+          i ? g.lineTo(x, y) : g.moveTo(x, y);
+        });
+        g.strokeStyle = C[0]; g.lineWidth = 1.6; g.stroke();
+      }
+      const work = loop(ctx, async () => {
+        while (ctx.active) {
+          if (dirtyModel) {
+            if (model) { model.m.dispose(); model.opt.dispose(); }
+            model = buildClassifier(layers, units); epoch = 0; hist = []; done = false; dirtyModel = false;
+            stat("par", model.m.countParams());
+          }
+          if (dirtyData) {
+            xs?.dispose(); ys?.dispose(); xs = ys = null; dirtyData = false;
+            if (pts.length) { xs = tf.tensor2d(pts.map((p) => [p.x, p.y])); ys = tf.tensor2d(pts.map((p) => [p.c]), [pts.length, 1]); }
+          }
+          if (xs && !done) {
+            let r;
+            const t0 = performance.now();
+            for (let k = 0; k < 8; k++) r = await model.m.trainOnBatch(xs, ys);
+            const ms = (performance.now() - t0) / 8;
+            epoch += 8;
+            const [loss, acc] = r;
+            hist.push(loss); if (hist.length > 400) hist.splice(0, hist.length - 400);
+            stat("ep", epoch); stat("loss", loss.toFixed(3)); stat("acc", `${(acc * 100).toFixed(0)}%`);
+            tag.textContent = `${pts.length} 點・每步 ${ms.toFixed(1)} ms`;
+            if (epoch >= 3000 || (acc >= 1 && loss < 0.02)) { done = true; tag.textContent = `收斂於第 ${epoch} 步・${pts.length} 點`; }
+          } else if (!xs) { tag.textContent = "點畫面加入資料點"; heat = null; }
+          if (xs || heat) {
+            const p = tf.tidy(() => model.m.predict(grid));
+            heat = await p.data(); p.dispose();
+          }
+          draw(); drawLoss();
+          await ctx.frame(done ? 6 : 1);
+        }
+      });
+      ctx.onCleanup(() => work.then(() => { model?.m.dispose(); model?.opt.dispose(); xs?.dispose(); ys?.dispose(); grid.dispose(); }));
+    },
+  },
+  {
+    id: "ops", title: "張量運算",
+    api: "tf.tensor / add / matMul / transpose / softmax / sum / reshape",
+    desc: "張量是不可變的多維陣列，每個運算都回傳新張量。切換運算看形狀如何改變，包含廣播（[3,4] + [1,4]）與矩陣乘法（[3,4]·[4,2]）。",
+    hint: "切換運算・按「換一組數字」重新抽亂數",
+    async mount(ctx) {
+      await useBackend("cpu");
+      ctx.html(`<div class="tf-wrap tf-ops"><div class="tf-col"><div class="tf-eq"></div><div class="tf-code"></div></div></div>`);
+      memTag(ctx);
+      const OPS = [
+        { label: "相加 add", code: "a.add(b)", b: [3, 4], sym: "+", f: (a, b) => a.add(b) },
+        { label: "廣播 add", code: "a.add(b)  // b 形狀 [1,4]", b: [1, 4], sym: "+", f: (a, b) => a.add(b) },
+        { label: "逐元素 mul", code: "a.mul(b)", b: [3, 4], sym: "×", f: (a, b) => a.mul(b) },
+        { label: "矩陣乘法", code: "tf.matMul(a, b)", b: [4, 2], sym: "·", f: (a, b) => tf.matMul(a, b) },
+        { label: "轉置", code: "a.transpose()", f: (a) => a.transpose() },
+        { label: "ReLU", code: "tf.relu(a)", f: (a) => tf.relu(a) },
+        { label: "Softmax", code: "tf.softmax(a)  // 每列加總為 1", f: (a) => tf.softmax(a) },
+        { label: "列加總", code: "a.sum(1)", f: (a) => a.sum(1) },
+        { label: "重塑", code: "a.reshape([2, 6])", f: (a) => a.reshape([2, 6]) },
+      ];
+      let op = 0, seed = 1;
+      const tensorView = (name, t) => {
+        const shape = t.shape.length === 1 ? [1, t.shape[0]] : t.shape;
+        const vals = t.dataSync();
+        const max = Math.max(1e-6, ...Array.from(vals, Math.abs));
+        const cells = h("div", { class: "tf-cells", style: `grid-template-columns: repeat(${shape[1]}, auto)` });
+        vals.forEach((v) => {
+          const k = Math.min(1, Math.abs(v) / max), col = v >= 0 ? C[1] : C[2];
+          const hex = Math.round(k * 200 + 30).toString(16).padStart(2, "0");
+          cells.append(h("span", { style: `background:${col}${hex}`, text: Number.isInteger(v) ? String(v) : v.toFixed(2) }));
+        });
+        return h("div", { class: "tf-t" }, h("small", {}, h("b", { text: name }), `[${t.shape.join(",")}] ${t.dtype}`), cells);
+      };
+      function render() {
+        const o = OPS[op];
+        tf.tidy(() => {
+          const r = rng(seed * 97);
+          const ints = (shape) => tf.tensor(Array.from({ length: shape[0] * shape[1] }, () => Math.round(r() * 8 - 4)), shape);
+          const a = ints([3, 4]);
+          const b = o.b ? ints(o.b) : null;
+          const out = o.f(a, b);
+          const eq = ctx.$(".tf-eq");
+          eq.replaceChildren(tensorView("a", a));
+          if (b) eq.append(h("span", { class: "tf-sym", text: o.sym }), tensorView("b", b));
+          eq.append(h("span", { class: "tf-sym", text: "=" }), tensorView("結果", out));
+          ctx.$(".tf-code").textContent = o.code;
+        });
+      }
+      ctx.select("", OPS.map((o, i) => ({ value: i, label: o.label })), 0, (v) => { op = +v; render(); });
+      ctx.button("換一組數字", () => { seed++; render(); }, { primary: true });
+      render();
+      let auto = ctx.interval(() => { op = (op + 1) % OPS.length; ctx.$("select").value = op; render(); }, 2600);
+      ctx.on(ctx.controls, "pointerdown", () => clearInterval(auto), { once: true });
+    },
+  },
+  {
+    id: "grad", title: "自動微分",
+    api: "tf.grad(f) / tf.grad(tf.grad(f))",
+    desc: "只寫出 f(x)，tf.grad 自動推出導函數；再包一層 tf.grad 得到二階導數。黃線是 f，藍線是 f′，粉線是 f″，白線是游標處的切線。",
+    hint: "滑過畫面移動切點・切換函數",
+    async mount(ctx) {
+      await useBackend("cpu");
+      ctx.html(`<div class="tf-wrap tf-solo"><div class="tf-box"></div></div>`);
+      memTag(ctx);
+      const box = ctx.$(".tf-box");
+      const legend = h("div", { class: "tf-legend" });
+      box.append(legend);
+      let fi = 0, curves = null, x0 = null, hover = false, t0 = performance.now();
+      const view = canvasIn(ctx, box, () => compute());
+      function compute() {
+        const F = FUNCS[fi], [a, b] = F.range, n = Math.max(80, Math.round(view.w / 3));
+        const g1 = tf.grad(F.f), g2 = tf.grad(g1);
+        curves = tf.tidy(() => {
+          const xs = tf.linspace(a, b, n);
+          return { xs: xs.arraySync(), f: F.f(xs).arraySync(), d1: g1(xs).arraySync(), d2: g2(xs).arraySync() };
+        });
+        curves.g1 = g1; curves.g2 = g2;
+      }
+      ctx.group(FUNCS.map((f) => f.label), 0, (i) => { fi = i; compute(); });
+      ctx.on(box, "pointermove", (e) => {
+        const r = box.getBoundingClientRect(), [a, b] = FUNCS[fi].range;
+        x0 = a + ((e.clientX - r.left) / r.width) * (b - a); hover = true;
+      });
+      ctx.on(box, "pointerleave", () => (hover = false));
+      ctx.raf((t) => {
+        const { g, w, h: hh } = view;
+        if (!w || !curves) return;
+        const F = FUNCS[fi], [a, b] = F.range;
+        if (!hover) x0 = a + (b - a) * (0.5 + 0.42 * Math.sin((t - t0) / 1900));
+        const all = [...curves.f, ...curves.d1, ...curves.d2];
+        let lo = Math.min(...all), hi = Math.max(...all);
+        const pad = (hi - lo) * 0.08 || 1; lo -= pad; hi += pad;
+        const top = 16, bot = hh - 16;
+        const X = (x) => ((x - a) / (b - a)) * w, Y = (y) => bot - ((y - lo) / (hi - lo)) * (bot - top);
+        g.clearRect(0, 0, w, hh);
+        g.strokeStyle = "rgba(255,255,255,0.12)"; g.lineWidth = 1;
+        g.beginPath(); g.moveTo(0, Y(0)); g.lineTo(w, Y(0)); g.moveTo(X(0), top); g.lineTo(X(0), bot); g.stroke();
+        const line = (ys, col, wd) => {
+          g.beginPath(); ys.forEach((y, i) => (i ? g.lineTo(X(curves.xs[i]), Y(y)) : g.moveTo(X(curves.xs[i]), Y(y))));
+          g.strokeStyle = col; g.lineWidth = wd; g.stroke();
+        };
+        line(curves.d2, C[2], 1.5); line(curves.d1, C[1], 1.8); line(curves.f, C[0], 2.6);
+        // exact values at x0 come from the same gradient functions
+        const [fv, d1, d2] = tf.tidy(() => { const x = tf.scalar(x0); return [F.f(x).dataSync()[0], curves.g1(x).dataSync()[0], curves.g2(x).dataSync()[0]]; });
+        const span = (b - a) * 0.18;
+        g.beginPath(); g.moveTo(X(x0 - span), Y(fv - d1 * span)); g.lineTo(X(x0 + span), Y(fv + d1 * span));
+        g.strokeStyle = "rgba(255,255,255,0.85)"; g.lineWidth = 1.5; g.stroke();
+        g.beginPath(); g.arc(X(x0), Y(fv), 5, 0, Math.PI * 2); g.fillStyle = C[0]; g.fill();
+        g.beginPath(); g.arc(X(x0), Y(d1), 3.5, 0, Math.PI * 2); g.fillStyle = C[1]; g.fill();
+        legend.innerHTML = `<div><i style="background:${C[0]}"></i>f(x) = ${F.label}<span class="n">${fv.toFixed(3)}</span></div>
+          <div><i style="background:${C[1]}"></i>f′(x) 斜率<span class="n">${d1.toFixed(3)}</span></div>
+          <div><i style="background:${C[2]}"></i>f″(x) 曲率<span class="n">${d2.toFixed(3)}</span></div>
+          <div class="tf-k">x = ${x0.toFixed(2)}</div>`;
+      });
+    },
+  },
+  {
+    id: "optim", title: "優化器賽跑",
+    api: "tf.train.sgd / momentum / rmsprop / adam + optimizer.minimize(f)",
+    desc: "四個優化器從同一點出發，各自用 optimizer.minimize 更新 tf.variable，背景是用張量一次算出的損失等高線。注意 SGD 在狹長碗裡左右震盪、Adam 在 Rosenbrock 峽谷裡的路徑。",
+    hint: "點畫面設定新起點・切換損失函數",
+    async mount(ctx) {
+      await useBackend("cpu");
+      ctx.html(`<div class="tf-wrap tf-solo"><div class="tf-box"></div></div>`);
+      memTag(ctx);
+      const box = ctx.$(".tf-box");
+      const legend = h("div", { class: "tf-legend" });
+      box.append(legend);
+      let si = 0, runners = [], bg = null, step = 0;
+      const view = canvasIn(ctx, box, () => { bg = null; });
+      const toX = (x) => ((x - S().x[0]) / (S().x[1] - S().x[0])) * view.w;
+      const toY = (y) => view.h - ((y - S().y[0]) / (S().y[1] - S().y[0])) * view.h;
+      const S = () => SURFACES[si];
+      // MomentumOptimizer.dispose() leaves its scalar fields (c, m) behind in tfjs 4.22, so free any leftovers
+      const freeOpt = (o) => { o.dispose(); Object.values(o).forEach((v) => v instanceof tf.Tensor && !v.isDisposed && v.dispose()); };
+      function disposeRunners() { runners.forEach((r) => { r.v.dispose(); freeOpt(r.opt); }); runners = []; }
+      function reset(start) {
+        disposeRunners(); step = 0;
+        // tf.tidy frees the initial tensor; the variable keeps its own reference to the data
+        runners = OPTS.map((o) => ({ ...o, v: tf.tidy(() => tf.variable(tf.tensor1d(start))), opt: o.make(S().lr[o.id]), trail: [start.slice()], loss: NaN, dead: false }));
+      }
+      function contour() {
+        const W = Math.max(40, Math.round(view.w / 4)), H = Math.max(30, Math.round(view.h / 4));
+        const s = S();
+        const vals = tf.tidy(() => {
+          const xs = tf.linspace(s.x[0], s.x[1], W), ys = tf.linspace(s.y[1], s.y[0], H);
+          const [gx, gy] = tf.meshgrid(xs, ys);
+          return s.f(gx, gy).add(1).log().dataSync();
+        });
+        let lo = Infinity, hi = -Infinity;
+        for (const v of vals) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+        const off = h("canvas", { width: W, height: H }), og = off.getContext("2d"), im = og.createImageData(W, H);
+        for (let i = 0; i < vals.length; i++) {
+          const k = (vals[i] - lo) / (hi - lo), band = Math.floor(k * 14) % 2;
+          const base = 1 - k;
+          im.data[i * 4] = 20 + base * 40 + band * 10; im.data[i * 4 + 1] = 24 + base * 70 + band * 10; im.data[i * 4 + 2] = 34 + base * 90 + band * 12; im.data[i * 4 + 3] = 255;
+        }
+        og.putImageData(im, 0, 0);
+        bg = off;
+      }
+      ctx.group(SURFACES.map((s) => s.label), 0, (i) => { si = i; bg = null; reset(S().start); });
+      ctx.button("重新開始", () => reset(S().start), { primary: true });
+      ctx.on(box, "pointerdown", (e) => {
+        const r = box.getBoundingClientRect(), s = S();
+        reset([s.x[0] + ((e.clientX - r.left) / r.width) * (s.x[1] - s.x[0]), s.y[1] - ((e.clientY - r.top) / r.height) * (s.y[1] - s.y[0])]);
+      });
+      reset(S().start);
+      ctx.onCleanup(disposeRunners);
+      ctx.raf(() => {
+        const { g, w, h: hh } = view;
+        if (!w) return;
+        if (!bg) contour();
+        const s = S();
+        if (step < 600) {
+          step++;
+          for (const r of runners) {
+            if (r.dead) continue;
+            const cost = r.opt.minimize(() => s.f(r.v.slice(0, 1), r.v.slice(1, 1)).sum(), true);
+            r.loss = cost.dataSync()[0]; cost.dispose();
+            const [x, y] = r.v.dataSync();
+            if (!Number.isFinite(x + y) || Math.abs(x) > 50 || Math.abs(y) > 50) { r.dead = true; continue; }
+            r.trail.push([x, y]);
+          }
+        } else if (step++ > 700) reset([s.x[0] + Math.random() * (s.x[1] - s.x[0]), s.y[0] + Math.random() * (s.y[1] - s.y[0])]);
+        g.imageSmoothingEnabled = true;
+        g.drawImage(bg, 0, 0, w, hh);
+        for (const r of runners) {
+          g.beginPath();
+          r.trail.forEach(([x, y], i) => (i ? g.lineTo(toX(x), toY(y)) : g.moveTo(toX(x), toY(y))));
+          g.strokeStyle = r.color; g.lineWidth = 2; g.globalAlpha = 0.9; g.stroke(); g.globalAlpha = 1;
+          const [x, y] = r.trail[r.trail.length - 1];
+          g.beginPath(); g.arc(toX(x), toY(y), 5, 0, Math.PI * 2); g.fillStyle = r.color; g.fill();
+          g.strokeStyle = "#000"; g.lineWidth = 1; g.stroke();
+        }
+        const [sx, sy] = runners[0].trail[0];
+        g.beginPath(); g.arc(toX(sx), toY(sy), 7, 0, Math.PI * 2); g.strokeStyle = "#fff"; g.lineWidth = 1.5; g.stroke();
+        legend.innerHTML = runners.map((r) => `<div><i style="background:${r.color}"></i>${r.name}<span class="n">${r.dead ? "發散" : r.loss.toExponential(2)}</span></div>`).join("")
+          + `<div class="tf-k">第 ${Math.min(step, 600)} 步・lr 依函數調整</div>`;
+      });
+    },
+  },
+  {
+    id: "memory", title: "記憶體管理",
+    api: "tf.tidy(fn) / tensor.dispose() / tf.memory()",
+    desc: "WebGL 後端的張量存在 GPU 紋理裡，JavaScript 垃圾回收不會釋放它們。每秒 20 次建立中間張量：沒釋放時 tf.memory() 的張量數一路上升，用 tf.tidy 包起來就維持水平。",
+    hint: "切換三種寫法看曲線變化・「清掉洩漏」會 dispose 累積的張量",
+    async mount(ctx) {
+      await useGPU();
+      ctx.html(`<div class="tf-wrap tf-memg"><div class="tf-box"></div><div class="tf-side">
+        <div class="tf-big"><div>張量數<b data-k="n">0</b></div><div>記憶體<b data-k="b">0</b></div><div>洩漏張量<b data-k="leak">0</b></div><div>每輪新增<b data-k="d">0</b></div></div>
+        <pre class="tf-code-box"></pre></div></div>`);
+      memTag(ctx);
+      const CODE = [
+        `<i>// 中間張量沒有人釋放</i>\nconst x = tf.randomNormal([128, 128]);\nconst y = x.square().mean(1)\n  .sqrt().add(1);\nlast = y; <i>// x 與中間值都留在記憶體</i>`,
+        `<i>// 手動釋放每一個</i>\nconst x = tf.randomNormal([128, 128]);\nconst a = x.square(), b = a.mean(1);\nconst c = b.sqrt(), y = c.add(1);\n<em>x.dispose(); a.dispose();</em>\n<em>b.dispose(); c.dispose();</em>\nlast.dispose(); last = y;`,
+        `<i>// tidy 結束時自動釋放</i>\nconst y = <em>tf.tidy(</em>() => {\n  const x = tf.randomNormal([128, 128]);\n  return x.square().mean(1).sqrt().add(1);\n}<em>)</em>;\nlast.dispose(); last = y;`,
+      ];
+      let mode = 0, leaked = [], last = null, histN = [], prevN = tf.memory().numTensors;
+      const LIMIT = 2400;
+      const box = ctx.$(".tf-box"), view = canvasIn(ctx, box);
+      const code = ctx.$(".tf-code-box");
+      const stat = (k, v, cls = "") => { const el = ctx.$(`[data-k="${k}"]`); el.textContent = v; el.className = cls; };
+      const setMode = (i) => { mode = i; code.innerHTML = CODE[i]; };
+      ctx.group(["忘記釋放", "手動 dispose", "tf.tidy"], 0, setMode);
+      ctx.button("清掉洩漏", () => { leaked.forEach((t) => t.dispose()); leaked = []; });
+      setMode(0);
+      ctx.onCleanup(() => { leaked.forEach((t) => t.dispose()); leaked = []; last?.dispose(); });
+      ctx.interval(() => {
+        if (mode === 0) {
+          if (leaked.length >= LIMIT) return;
+          const x = tf.randomNormal([128, 128]);
+          const a = x.square(), b = a.mean(1), c = b.sqrt(), y = c.add(1);
+          leaked.push(x, a, b, c);
+          last?.dispose(); last = y;
+        } else if (mode === 1) {
+          const x = tf.randomNormal([128, 128]);
+          const a = x.square(), b = a.mean(1), c = b.sqrt(), y = c.add(1);
+          x.dispose(); a.dispose(); b.dispose(); c.dispose();
+          last?.dispose(); last = y;
+        } else {
+          const y = tf.tidy(() => tf.randomNormal([128, 128]).square().mean(1).sqrt().add(1));
+          last?.dispose(); last = y;
+        }
+      }, 50);
+      ctx.interval(() => {
+        const m = tf.memory();
+        histN.push(m.numTensors); if (histN.length > 160) histN.shift();
+        stat("n", m.numTensors, leaked.length ? "bad" : "ok");
+        stat("b", kb(m.numBytes));
+        stat("leak", leaked.length >= LIMIT ? `${leaked.length} 上限` : leaked.length, leaked.length ? "bad" : "ok");
+        stat("d", m.numTensors - prevN >= 0 ? `+${m.numTensors - prevN}` : m.numTensors - prevN);
+        prevN = m.numTensors;
+        const { g, w, h: hh } = view;
+        if (!w) return;
+        g.clearRect(0, 0, w, hh);
+        const max = Math.max(50, ...histN) * 1.15;
+        g.strokeStyle = "rgba(255,255,255,0.08)"; g.lineWidth = 1; g.fillStyle = "#9b998f"; g.font = `11px ${css.getPropertyValue("--mono")}`;
+        for (let i = 0; i <= 4; i++) { const y = 20 + (hh - 40) * (i / 4); g.beginPath(); g.moveTo(40, y); g.lineTo(w - 8, y); g.stroke(); g.fillText(String(Math.round(max * (1 - i / 4))), 4, y + 4); }
+        g.font = `11.5px ${css.getPropertyValue("--font")}`; g.fillText("tf.memory().numTensors（每 0.25 秒取樣）", 44, 12);
+        g.beginPath();
+        histN.forEach((v, i) => { const x = 40 + (i / 159) * (w - 48), y = hh - 20 - (v / max) * (hh - 40); i ? g.lineTo(x, y) : g.moveTo(x, y); });
+        g.strokeStyle = leaked.length ? C[2] : C[3]; g.lineWidth = 2.2; g.stroke();
+      }, 250);
+    },
+  },
+  {
+    id: "image", title: "影像卷積",
+    api: "tf.browser.fromPixels(img) → conv2d / avgPool → tf.browser.toPixels",
+    desc: "照片轉成 [高, 寬, 3] 的張量後，用卷積核做邊緣偵測、銳化、浮雕，用池化做模糊，全部在 GPU 上執行，再以 toPixels 畫回畫布。左半邊是原圖。",
+    hint: "拖曳中線比較前後・切換濾鏡與照片・調整強度",
+    paper: false,
+    async mount(ctx) {
+      await useGPU();
+      ctx.html(`<div class="tf-wrap tf-img"><div class="tf-photo"><canvas class="a"></canvas><canvas class="b"></canvas><div class="tf-split"></div>
+        <div class="tf-tag">原圖</div><div class="tf-tag r">處理後</div></div></div>`);
+      memTag(ctx);
+      const wrap = ctx.$(".tf-img"), photo = ctx.$(".tf-photo"), ca = ctx.$("canvas.a"), cb = ctx.$("canvas.b"), split = ctx.$(".tf-split"), rtag = ctx.$(".tf-tag.r");
+      let fi = 1, strength = 3, pi = 0, src = null, split01 = 0.5, busy = false, again = false;
+      const fit = () => {
+        const W = wrap.clientWidth - 20, H = wrap.clientHeight - parseFloat(getComputedStyle(wrap).paddingTop) - parseFloat(getComputedStyle(wrap).paddingBottom);
+        const w = Math.max(10, Math.min(W, H * 1.5));
+        photo.style.width = `${w}px`; photo.style.height = `${w / 1.5}px`;
+      };
+      const ro = new ResizeObserver(fit); ro.observe(wrap); ctx.onCleanup(() => ro.disconnect());
+      const setSplit = (v) => { split01 = clamp(v, 0, 1); cb.style.clipPath = `inset(0 0 0 ${split01 * 100}%)`; split.style.left = `${split01 * 100}%`; };
+      setSplit(0.5);
+      ctx.on(photo, "pointerdown", (e) => { photo.setPointerCapture(e.pointerId); const r = photo.getBoundingClientRect(); setSplit((e.clientX - r.left) / r.width); });
+      ctx.on(photo, "pointermove", (e) => { if (!e.buttons) return; const r = photo.getBoundingClientRect(); setSplit((e.clientX - r.left) / r.width); });
+      async function apply() {
+        if (!src || !ctx.active) return;
+        if (busy) { again = true; return; }
+        busy = true;
+        const t0 = performance.now();
+        const out = tf.tidy(() => FILTERS[fi].run(src, strength).clipByValue(0, 1));
+        await tf.browser.toPixels(out, cb);
+        out.dispose();
+        rtag.textContent = `${FILTERS[fi].label}・${(performance.now() - t0).toFixed(0)} ms`;
+        busy = false;
+        if (again) { again = false; apply(); }
+      }
+      async function loadPhoto(i) {
+        pi = i;
+        const img = await loadImage(`_shared/img/${PHOTOS[i][0]}`);
+        if (!ctx.active) return;
+        src?.dispose();
+        src = tf.tidy(() => tf.image.resizeBilinear(tf.browser.fromPixels(img), [400, 600]).div(255));
+        await tf.browser.toPixels(src, ca);
+        ctx.$(".tf-tag").textContent = `原圖 [${src.shape.join(",")}] ${src.dtype}`;
+        apply();
+      }
+      ctx.onCleanup(() => { const s = src; src = null; s?.dispose(); });
+      ctx.select("", FILTERS.map((f, i) => ({ value: i, label: f.label })), fi, (v) => { fi = +v; apply(); });
+      ctx.select("", PHOTOS.map((p, i) => ({ value: i, label: p[1] })), pi, (v) => loadPhoto(+v));
+      ctx.slider("強度", { min: 1, max: 6, step: 0.5, value: strength, format: (v) => v.toFixed(1) }, (v) => { strength = v; apply(); });
+      await loadPhoto(0);
+    },
+  },
+  {
+    id: "backends", title: "後端比較",
+    api: "tf.setBackend('webgl' | 'wasm' | 'cpu' | 'webgpu')",
+    desc: "同一段程式、同一組輸入分別在各後端執行（取 3 次中位數，已扣除首次編譯），並以 CPU 結果為基準算最大相對誤差。大型矩陣運算 GPU 佔優，小型或分支多的運算 WASM 常常更快。",
+    hint: "按「重新測試」再跑一次；WebGPU 只在瀏覽器支援時出現",
+    async mount(ctx) {
+      ctx.html(`<div class="tf-wrap tf-bk"><table class="tf-table"></table><div class="tf-info">偵測後端中…</div></div>`);
+      memTag(ctx);
+      const [hasWasm, hasGpu] = await Promise.all([ensureWasm(ctx), ensureWebGPU(ctx)]);
+      if (!ctx.active) return;
+      const list = ["webgl", ...(hasGpu ? ["webgpu"] : []), ...(hasWasm ? ["wasm"] : []), "cpu"];
+      const table = ctx.$(".tf-table"), info = ctx.$(".tf-info");
+      table.innerHTML = `<tr><th></th>${list.map((b) => `<th data-h="${b}" style="color:${BK_COLOR[b]}">${BK_NAME[b]}</th>`).join("")}</tr>`
+        + TASKS.map((t, ti) => `<tr><td>${t.name}<br><span class="tf-k">${t.sub}</span></td>${list.map((b) => `<td><div class="tf-cell" data-c="${ti}-${b}"><span class="v">…</span><div class="bar"><i style="background:${BK_COLOR[b]}"></i></div><span class="e">&nbsp;</span></div></td>`).join("")}</tr>`).join("");
+      const res = {};
+      let running = false;
+      const cell = (ti, b) => ctx.$(`[data-c="${ti}-${b}"]`);
+      async function runAll() {
+        if (running) return;
+        running = true;
+        try {
+          table.querySelectorAll(".v").forEach((v) => (v.textContent = "…"));
+          for (const b of list) {
+            try { await useBackend(b); } catch { TASKS.forEach((_, ti) => (cell(ti, b).querySelector(".v").textContent = "不可用")); continue; }
+            if (!ctx.active) return;
+            ctx.$$(".tf-table th").forEach((th) => th.classList.toggle("cur", th.dataset.h === b));
+            for (let ti = 0; ti < TASKS.length; ti++) {
+              const t = TASKS[ti];
+              const ins = t.inputs.map((d) => tf.tensor(inputData(d), d[0]));
+              const times = [];
+              let out = null;
+              for (let k = 0; k < 4; k++) {
+                const t0 = performance.now();
+                const y = t.run(ins);
+                const data = await y.data();
+                times.push(performance.now() - t0);
+                y.dispose();
+                if (k === 3) out = data;
+                await ctx.frame(1);
+                if (!ctx.active) { ins.forEach((x) => x.dispose()); return; }
+              }
+              ins.forEach((x) => x.dispose());
+              times.shift(); times.sort((p, q) => p - q);
+              res[`${ti}-${b}`] = { ms: times[1], out };
+              const row = list.map((x) => res[`${ti}-${x}`]?.ms).filter((x) => x != null);
+              const worst = Math.max(...row), best = Math.min(...row);
+              list.forEach((x) => {
+                const r = res[`${ti}-${x}`];
+                if (!r) return;
+                const c = cell(ti, x);
+                c.querySelector(".v").textContent = fmtMs(r.ms);
+                c.querySelector(".bar i").style.width = `${Math.max(3, (r.ms / worst) * 100)}%`;
+                c.classList.toggle("best", r.ms === best && row.length > 1);
+              });
+            }
+          }
+          // error against the CPU reference
+          for (let ti = 0; ti < TASKS.length; ti++) {
+            const ref = res[`${ti}-cpu`]?.out;
+            if (!ref) continue;
+            const scale = Math.max(1e-6, ...Array.from(ref, Math.abs));
+            for (const b of list) {
+              const r = res[`${ti}-${b}`];
+              if (!r) continue;
+              let err = 0;
+              for (let i = 0; i < ref.length; i++) err = Math.max(err, Math.abs(r.out[i] - ref[i]));
+              cell(ti, b).querySelector(".e").textContent = b === "cpu" ? "基準" : `誤差 ${(err / scale).toExponential(1)}`;
+            }
+          }
+          ctx.$$(".tf-table th").forEach((th) => th.classList.remove("cur"));
+        } finally { running = false; }
+        await useGPU();
+      }
+      await useGPU();
+      const gl = tf.backend() && tf.getBackend() === "webgl" ? `WebGL ${tf.env().getNumber("WEBGL_VERSION")}・float32 紋理 ${tf.env().getBool("WEBGL_RENDER_FLOAT32_ENABLED") ? "支援" : "不支援"}` : "WebGL 不可用";
+      const wasmInfo = hasWasm ? `WASM SIMD ${tf.env().getAsync ? "" : ""}${await tf.env().getAsync("WASM_HAS_SIMD_SUPPORT") ? "支援" : "不支援"}・多執行緒 ${await tf.env().getAsync("WASM_HAS_MULTITHREAD_SUPPORT") ? "支援" : "不支援（需 cross-origin isolation）"}` : "WASM 後端載入失敗";
+      info.innerHTML = `<b>${gl}</b>・<b>${wasmInfo}</b>・WebGPU ${hasGpu ? "<b>支援</b>" : "<b>此瀏覽器不支援</b>"}`;
+      ctx.button("重新測試", () => loop(ctx, runAll), { primary: true });
+      await loop(ctx, runAll);
+    },
+  },
+  {
+    id: "stress", title: "極限測試", kind: "stress",
+    api: "tf.matMul(a, b) → await c.data()",
+    desc: "n×n 矩陣乘法需要 2n³ 次浮點運算。逐級放大 n，量一次乘法加上讀回結果的時間，換算成 GFLOPS（每秒十億次浮點運算）。切換後端再測一次，右側圖會疊出各後端的曲線。",
+    hint: "先選後端，再按「開始測試」",
+    async mount(ctx) {
+      await useGPU();
+      ctx.html(`<div class="tf-stress tf-box"></div>`);
+      memTag(ctx).style.cssText = "left:auto;right:10px;top:8px;bottom:auto;";
+      const view = canvasIn(ctx, ctx.$(".tf-stress"), () => draw());
+      const SIZES = [128, 256, 384, 512, 768, 1024, 1536, 2048];
+      const live = new Set();
+      ctx.onCleanup(() => live.forEach((t) => t.dispose()));
+      let backend = tf.getBackend();
+      const hasWasm = await ensureWasm(ctx);
+      const opts = ["webgl", ...(hasWasm ? ["wasm"] : []), "cpu"];
+      ctx.controls.classList.add("bottom");
+      ctx.group(opts.map((b) => BK_NAME[b]), Math.max(0, opts.indexOf(backend)), async (i) => { await useBackend(opts[i]); backend = opts[i]; draw(); });
+      function draw() {
+        const { g, w, h: hh } = view;
+        if (!w) return;
+        g.clearRect(0, 0, w, hh);
+        const L = 46, R = w - 14, T = 26, B = hh - 30;
+        const all = Object.values(GFLOPS).flatMap((o) => Object.values(o));
+        const max = Math.max(1, ...all) * 1.15;
+        const X = (n) => L + (Math.log2(n / SIZES[0]) / Math.log2(SIZES[SIZES.length - 1] / SIZES[0])) * (R - L);
+        const Y = (v) => B - (v / max) * (B - T);
+        g.font = `11px ${css.getPropertyValue("--mono")}`; g.fillStyle = "#9b998f"; g.strokeStyle = "rgba(255,255,255,0.08)"; g.lineWidth = 1;
+        for (let i = 0; i <= 4; i++) { const v = (max * i) / 4, y = Y(v); g.beginPath(); g.moveTo(L, y); g.lineTo(R, y); g.stroke(); g.fillText(v.toFixed(v < 10 ? 1 : 0), 6, y + 4); }
+        SIZES.forEach((n) => g.fillText(String(n), X(n) - 12, B + 16));
+        g.font = `11.5px ${css.getPropertyValue("--font")}`;
+        g.fillText("GFLOPS（越高越快）・橫軸：矩陣邊長 n", L, 14);
+        let ly = T + 22;
+        for (const [b, o] of Object.entries(GFLOPS)) {
+          const pts = SIZES.filter((n) => o[n] != null);
+          if (!pts.length) continue;
+          g.beginPath(); pts.forEach((n, i) => (i ? g.lineTo(X(n), Y(o[n])) : g.moveTo(X(n), Y(o[n]))));
+          g.strokeStyle = BK_COLOR[b]; g.lineWidth = 2.4; g.stroke();
+          pts.forEach((n) => { g.beginPath(); g.arc(X(n), Y(o[n]), 3.5, 0, Math.PI * 2); g.fillStyle = BK_COLOR[b]; g.fill(); });
+          g.fillStyle = BK_COLOR[b]; g.fillText(`${BK_NAME[b]}${b === backend ? "（目前）" : ""}`, R - 110, ly); ly += 16;
+        }
+        if (!all.length) { g.fillStyle = "#9b998f"; g.fillText(`目前後端：${BK_NAME[backend]}，按「開始測試」`, L + 10, (T + B) / 2); }
+      }
+      ctx.bench({
+        label: "矩陣邊長", unit: "", sizes: SIZES, target: 800, budget: 3000,
+        format: (n) => `${n}²`,
+        async prepare(n) {
+          const a = tf.randomNormal([n, n]), b = tf.randomNormal([n, n]);
+          live.add(a); live.add(b);
+          const warm = tf.matMul(a, b); await warm.data(); warm.dispose(); // compile shaders / warm caches first
+          return { a, b };
+        },
+        async run(n, { a, b }) {
+          const t0 = performance.now();
+          const c = tf.matMul(a, b);
+          await c.data();
+          c.dispose(); a.dispose(); b.dispose(); live.delete(a); live.delete(b);
+          const ms = performance.now() - t0;
+          const gf = (2 * n ** 3) / (Math.max(ms, 0.01) / 1000) / 1e9;
+          (GFLOPS[backend] ??= {})[n] = gf;
+          draw();
+          return `${gf.toFixed(gf < 10 ? 2 : 1)} GFLOPS`;
+        },
+        note: "每一級先做一次暖身（WebGL 編譯著色器），計時只含一次乘法與讀回結果。CPU 後端是純 JavaScript，WASM 會用 SIMD；WebGL 在軟體繪圖環境下數字會偏低。",
+      });
+    },
+  },
+] });
 </script>
 </body>
 </html>

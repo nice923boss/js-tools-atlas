@@ -3,494 +3,1145 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MediaPipe 示範：手勢、姿勢、臉部網格即時偵測</title>
+<title>MediaPipe 示範：八個場景看懂 Tasks Vision 的偵測能力與上限</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="_shared/demo.css">
-<script type="application/json" id="demo-meta">{"mode":"click","needs":["camera"],"size":"約 20 MB 起","note":"沒有鏡頭時可點範例照片或上傳照片"}</script>
+<link rel="stylesheet" href="_shared/showcase.css">
+<script type="application/json" id="demo-meta">{"mode":"click","size":"約 12 MB 起（模型依場景另計 0.2 到 8 MB）","note":"預設處理範例照片，有鏡頭時第一個場景可切換即時偵測","scenes":["手勢・姿勢・臉部","手部 3D 關鍵點","表情係數與頭部姿態","物件偵測","影像分割","IMAGE 與 VIDEO 模式","GPU 與 CPU 委派","極限測試"]}</script>
 <style>
-  .app { position: fixed; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr) 290px; }
-  .main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; gap: 10px; padding: 12px 12px 48px; min-width: 0; min-height: 0; }
-  .top { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-  .chip { margin-left: auto; font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg-2); color: var(--muted); white-space: nowrap; }
-  .chip.live { color: var(--c4); border-color: rgba(123, 211, 137, .4); }
-  .chip.live::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--c4); margin-right: 6px; animation: pulse 1.2s infinite; }
-  @keyframes pulse { 50% { opacity: .25; } }
-  .stage { position: relative; min-height: 0; border-radius: 14px; overflow: hidden; display: grid; place-items: center;
-    background: radial-gradient(70% 90% at 50% 0%, rgba(76, 201, 240, .10), transparent 70%), #0a0c0f; border: 1px solid var(--line); }
-  .frame { position: relative; }
-  .frame > video, .frame > img, .frame > canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-  .frame > video, .frame > img { object-fit: fill; border-radius: 6px; }
-  .frame.mirror > video, .frame.mirror > canvas { transform: scaleX(-1); }
-  .frame[data-src="video"] > img, .frame[data-src="photo"] > video { display: none; }
-  .tagl { position: absolute; inset: 0; pointer-events: none; }
-  .tagl span { position: absolute; transform: translate(0, calc(-100% - 6px)); white-space: nowrap; font-size: 13px; font-weight: 700; line-height: 1;
-    padding: 5px 9px; border-radius: 999px; background: rgba(10, 12, 15, .82); border: 1px solid var(--accent); color: var(--fg); }
-  .empty { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); max-width: 92%; color: var(--fg); font-size: 12px; pointer-events: none;
-    padding: 4px 12px; border-radius: 999px; background: rgba(10, 12, 15, .85); border: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .empty:empty { display: none; }
-  .src { display: flex; gap: 8px; align-items: center; min-width: 0; }
-  .src .btn { flex: none; white-space: nowrap; }
-  .thumbs { display: flex; gap: 6px; min-width: 0; overflow-x: auto; }
-  .thumb { flex: none; width: 52px; height: 40px; padding: 0; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); background: #000; cursor: pointer; }
-  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .thumb[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-  .side { border-left: 1px solid var(--line); background: var(--bg-2); padding: 14px 14px 48px; overflow-y: auto; min-height: 0; }
-  .side h2 { margin: 0 0 2px; font-size: 13px; color: var(--muted); font-weight: 600; }
-  .hero { display: flex; align-items: center; gap: 12px; margin: 6px 0 12px; }
-  .hero .big { font-size: 46px; line-height: 1; width: 56px; text-align: center; }
-  .hero .ttl { font-size: 20px; font-weight: 800; }
-  .hero .sub { font-size: 12px; color: var(--muted); }
-  .row { display: grid; grid-template-columns: 82px minmax(0, 1fr) 42px; gap: 8px; align-items: center; font-size: 12px; margin: 5px 0; }
-  .row .m { height: 7px; border-radius: 7px; background: var(--line); overflow: hidden; }
-  .row .m i { display: block; height: 100%; border-radius: 7px; background: linear-gradient(90deg, var(--c2), var(--c6)); transition: width .15s; }
-  .row b { font: 600 12px var(--mono); text-align: right; }
-  .meta { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font: 11px/1.7 var(--mono); color: var(--muted); }
-  .meta b { color: var(--c1); font-weight: 600; }
-  @media (max-width: 640px) {
-    /* single column: the side panel scrolls under the fixed hint, and its own text already explains the controls */
-    .hint { display: none; }
-    .app { grid-template-columns: 1fr; grid-template-rows: minmax(0, 60%) minmax(0, 40%); }
-    .main { padding: 8px 8px 6px; gap: 6px; }
-    .top .btn { padding: 6px 9px; font-size: 12px; }
-    .chip { display: none; }
-    .src .btn { padding: 7px 9px; font-size: 12px; }
-    .thumb { width: 44px; height: 34px; }
-    .side { border-left: 0; border-top: 1px solid var(--line); padding: 8px 12px 12px; }
-    .hero { margin: 2px 0 6px; }
-    .hero .big { font-size: 34px; width: 42px; }
-    .hero .ttl { font-size: 17px; }
+  .mp-wrap {
+    position: absolute; inset: 0; display: grid; grid-template-columns: minmax(0, 1fr) 270px; gap: 10px;
+    padding: calc(var(--sc-ctl-h, 0px) + 10px) 10px calc(var(--sc-ctl-b, 0px) + 10px);
+  }
+  .mp-view {
+    position: relative; min-width: 0; min-height: 0; border-radius: 12px; overflow: hidden; touch-action: none;
+    background: radial-gradient(70% 90% at 50% 0%, rgba(76, 201, 240, .10), transparent 70%), #0a0c0f; border: 1px solid var(--line);
+  }
+  .mp-frame { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); }
+  .mp-frame > canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; border-radius: 6px; }
+  .mp-view > canvas, .mp-tile > canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+  .mp-tags { position: absolute; inset: 0; pointer-events: none; }
+  .mp-tags span { position: absolute; transform: translate(0, calc(-100% - 6px)); white-space: nowrap; font-size: 13px; font-weight: 700; line-height: 1;
+    padding: 5px 9px; border-radius: 999px; background: rgba(10, 12, 15, .82); border: 1px solid var(--accent); color: #ecebe6; }
+  .mp-tag { position: absolute; left: 6px; top: 6px; z-index: 2; max-width: calc(100% - 12px); padding: 2px 8px; border-radius: 999px; pointer-events: none;
+    background: rgba(10, 12, 15, .78); border: 1px solid rgba(255, 255, 255, .16); color: #ecebe6; font-size: 11.5px; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mp-tag:empty { display: none; }
+  .mp-tag i { font-style: normal; font-family: var(--mono); color: #f7df1e; }
+  .mp-tag.r { left: auto; right: 6px; color: #4cc9f0; }
+  .mp-msg { position: absolute; left: 50%; top: 8px; transform: translateX(-50%); max-width: 92%; z-index: 3; padding: 4px 12px; border-radius: 999px; pointer-events: none;
+    background: rgba(10, 12, 15, .88); border: 1px solid var(--line); color: #ecebe6; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mp-msg:empty { display: none; }
+  .mp-thumbs { position: absolute; left: 6px; bottom: 6px; z-index: 3; display: flex; gap: 5px; max-width: calc(100% - 12px); overflow-x: auto; }
+  .mp-thumb { flex: none; width: 50px; height: 38px; padding: 0; border-radius: 7px; overflow: hidden; border: 1px solid rgba(255, 255, 255, .25); background: #000; cursor: pointer; }
+  .mp-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .mp-thumb[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .mp-tiles { position: absolute; inset: 6px; display: grid; grid-template-columns: 1fr 1fr; grid-auto-rows: minmax(0, 1fr); gap: 6px; }
+  .mp-tile { position: relative; min-width: 0; min-height: 0; border-radius: 9px; overflow: hidden; background: #050608; }
+  .mp-tiles + .mp-thumbs { left: 12px; bottom: 12px; }
+  .mp-panel { min-width: 0; min-height: 0; overflow: auto; padding: 10px 12px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line);
+    font-size: 12px; line-height: 1.5; }
+  .mp-panel h4 { margin: 0 0 3px; font-size: 13px; }
+  .mp-panel p { margin: 0 0 8px; color: var(--muted); font-size: 11.5px; }
+  .mp-hero { display: flex; align-items: center; gap: 10px; margin: 2px 0 8px; }
+  .mp-big { font-size: 38px; line-height: 1; width: 46px; text-align: center; flex: none; }
+  .mp-ttl { font-size: 18px; font-weight: 800; line-height: 1.25; }
+  .mp-sub { font-size: 11.5px; color: var(--muted); }
+  .mp-row { display: grid; grid-template-columns: 6.4em minmax(0, 1fr) 3.4em; gap: 8px; align-items: center; font-size: 12px; margin: 4px 0; }
+  .mp-row > span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mp-row .m { height: 7px; border-radius: 7px; background: var(--line); overflow: hidden; }
+  .mp-row .m i { display: block; height: 100%; border-radius: 7px; background: linear-gradient(90deg, var(--c2), var(--c6)); }
+  .mp-row b { font: 600 12px var(--mono); text-align: right; white-space: nowrap; }
+  .mp-row.wide { grid-template-columns: 8.6em minmax(0, 1fr) 3.4em; }
+  .mp-row small { font-family: var(--mono); color: var(--muted); font-size: 10px; margin-left: 4px; }
+  .mp-kv { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; margin: 6px 0; }
+  .mp-kv span { color: var(--muted); }
+  .mp-kv b { font: 600 12px var(--mono); text-align: right; }
+  .mp-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 8px 0; }
+  .mp-stat { border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; min-width: 0; }
+  .mp-stat b { display: block; font: 700 16px/1.3 var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mp-stat span { font-size: 11px; color: var(--muted); }
+  .mp-stat.a b { color: var(--c3); } .mp-stat.b b { color: var(--c2); }
+  .mp-legend { display: flex; flex-wrap: wrap; gap: 3px 10px; font-size: 11.5px; margin: 6px 0; }
+  .mp-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  .mp-legend b { font: 500 11px var(--mono); color: var(--muted); margin-left: 3px; }
+  .mp-code { margin: 6px 0 0; padding: 8px; border-radius: 8px; background: #0a0c0f; color: #c9d1d9; font: 10.5px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .mp-code em { font-style: normal; color: #f72585; }
+  .mp-code u { text-decoration: none; color: #4cc9f0; }
+  .mp-note { margin-top: 6px; color: var(--muted); font-size: 11px; }
+  .mp-mem { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--line); color: var(--muted); font-size: 11px; }
+  .mp-mem b { font: 600 11px var(--mono); color: var(--c4); }
+  .mp-table { width: 100%; border-collapse: collapse; font-size: 11.5px; margin: 6px 0; }
+  .mp-table th, .mp-table td { padding: 3px 4px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+  .mp-table th:first-child, .mp-table td:first-child { text-align: left; color: var(--muted); font-weight: 400; }
+  .mp-table td { font-family: var(--mono); }
+  .mp-table .best { color: var(--c4); font-weight: 700; }
+  .mp-stress { position: absolute; inset: calc(var(--sc-ctl-h, 0px) + 8px) 8px calc(var(--sc-ctl-b, 0px) + 8px) 350px; }
+  .mp-stress .mp-view { position: absolute; inset: 0; }
+  @media (max-width: 900px) { .mp-wrap { grid-template-columns: minmax(0, 1fr) 220px; } .mp-row { grid-template-columns: 5.4em minmax(0, 1fr) 3.2em; } }
+  @media (max-width: 560px) {
+    .mp-wrap { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) auto; }
+    .mp-panel { max-height: 200px; padding: 8px 10px; }
+    .mp-panel p, .mp-code, .mp-note { display: none; }
+    .mp-big { font-size: 28px; width: 34px; }
+    .mp-ttl { font-size: 15px; }
+    .mp-thumb { width: 40px; height: 30px; }
+    .mp-stat b { font-size: 14px; }
+  }
+  @media (max-width: 760px) {
+    .mp-stress { inset: auto 8px calc(var(--sc-ctl-b, 0px) + 8px) 8px; height: 40%; }
+    .mp-st .sc-lab { top: calc(var(--sc-ctl-h, 0px) + 10px); max-height: calc(58% - var(--sc-ctl-h, 0px) - 24px); }
   }
 </style>
 </head>
 <body>
-<div class="app">
-  <section class="main">
-    <div class="top" id="tabs">
-      <button class="btn" data-task="gesture" aria-pressed="true">✋ 手勢辨識</button>
-      <button class="btn" data-task="pose" aria-pressed="false">🧍 姿勢骨架</button>
-      <button class="btn" data-task="face" aria-pressed="false">🙂 臉部網格</button>
-      <span class="chip" id="chip">尚未啟動</span>
-    </div>
-    <div class="stage" id="stage">
-      <div class="frame" id="frame" data-src="photo">
-        <video id="video" playsinline muted></video>
-        <img id="photo" alt="偵測用照片" crossorigin="anonymous">
-        <canvas id="overlay"></canvas>
-        <div class="tagl" id="tags"></div>
-      </div>
-      <div class="empty" id="empty"></div>
-    </div>
-    <div class="src">
-      <button class="btn primary" id="camBtn">開啟鏡頭</button>
-      <label class="btn" for="file">上傳</label>
-      <input type="file" id="file" accept="image/*" hidden>
-      <div class="thumbs" id="thumbs"></div>
-    </div>
-  </section>
-  <aside class="side" id="side">
-    <h2>偵測結果</h2>
-    <div class="hero"><span class="big">🖐️</span><div><div class="ttl">等待啟動</div><div class="sub">按下開始後載入模型</div></div></div>
-  </aside>
-</div>
-<div class="hint">切換任務，用鏡頭或點範例照片即時偵測</div>
-
-<script src="_shared/gate.js"></script>
+<script src="_shared/showcase.js"></script>
 <script type="module">
+// MediaPipe Tasks Vision showcase: eight scenes over one shared WebAssembly runtime.
+// Every task gets its own OffscreenCanvas so closing a scene can close the task AND lose its
+// WebGL context; the panels show live task / context counts to prove nothing accumulates.
+const { fmt, fmtMs } = Showcase;
 const VER = "1.0.1";
-const MODELS = "https://storage.googleapis.com/mediapipe-models/";
-const GOOGLE_IMG = "https://storage.googleapis.com/mediapipe-assets/";
-const HF_IMG = "https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/fbe92bd97d48f3ec17779d8d8f2964e1c6bc7634/";
-const TASKS = {
-  gesture: {
-    model: MODELS + "gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task", mb: 8.4,
-    samples: [GOOGLE_IMG + "thumb_up.jpg", GOOGLE_IMG + "victory.jpg", GOOGLE_IMG + "pointing_up.jpg"],
-  },
-  pose: {
-    model: MODELS + "pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task", mb: 5.8,
-    samples: [GOOGLE_IMG + "pose.jpg", HF_IMG + "young-man-standing-and-leaning-on-car.jpg"],
-  },
-  face: {
-    model: MODELS + "face_landmarker/face_landmarker/float16/1/face_landmarker.task", mb: 3.8,
-    samples: [HF_IMG + "portrait-of-woman_small.jpg", HF_IMG + "selfie_segmentation.png", HF_IMG + "woman-with-afro.jpg"],
-  },
+const CDN = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${VER}`;
+const MODEL_BASE = "https://storage.googleapis.com/mediapipe-models/";
+// Sample photos are loaded from the same public hosts the original demo used (Google's MediaPipe
+// test assets and the transformers.js docs dataset); nothing is copied into this repository.
+const GA = "https://storage.googleapis.com/mediapipe-assets/";
+const HF = "https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/fbe92bd97d48f3ec17779d8d8f2964e1c6bc7634/";
+const WASM_BYTES = 11756954;
+const MODELS = {
+  gesture: { url: "gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task", bytes: 8373440, name: "手勢模型" },
+  hand: { url: "hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", bytes: 7819105, name: "手部模型" },
+  face: { url: "face_landmarker/face_landmarker/float16/1/face_landmarker.task", bytes: 3758596, name: "臉部模型" },
+  pose: { url: "pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task", bytes: 5777746, name: "姿勢模型" },
+  det16: { url: "object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite", bytes: 7254339, name: "物件模型 float16" },
+  det8: { url: "object_detector/efficientdet_lite0/int8/1/efficientdet_lite0.tflite", bytes: 4602795, name: "物件模型 int8" },
+  deeplab: { url: "image_segmenter/deeplab_v3/float32/1/deeplab_v3.tflite", bytes: 2780176, name: "DeepLab v3" },
+  selfie: { url: "image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite", bytes: 249537, name: "人像分割模型" },
 };
-const GESTURES = {
-  Thumb_Up: ["👍", "讚"], Thumb_Down: ["👎", "倒讚"], Victory: ["✌️", "勝利手勢"], Pointing_Up: ["☝️", "食指朝上"],
-  Open_Palm: ["🖐️", "張開手掌"], Closed_Fist: ["✊", "握拳"], ILoveYou: ["🤟", "我愛你"], None: ["🤚", "未定義手勢"],
+const IMG = {
+  thumb: [GA + "thumb_up.jpg", "比讚"], victory: [GA + "victory.jpg", "勝利手勢"], pointing: [GA + "pointing_up.jpg", "食指朝上"],
+  fist: [GA + "fist.jpg", "握拳"], pose: [GA + "pose.jpg", "瑜伽姿勢"], car: [HF + "young-man-standing-and-leaning-on-car.jpg", "倚車站立"],
+  woman: [HF + "portrait-of-woman_small.jpg", "肖像"], afro: [HF + "woman-with-afro.jpg", "爆炸頭"], portrait: [GA + "portrait.jpg", "側臉肖像"],
+  selfie: [HF + "selfie_segmentation.png", "自拍"], city: [HF + "city-streets.jpg", "街景"], catdog: [GA + "cats_and_dogs.jpg", "貓與狗"],
+  football: [HF + "football-match.jpg", "足球賽"], savanna: [HF + "savanna.jpg", "草原"], corgi: [HF + "corgi.jpg", "柯基"],
 };
-const $ = (id) => document.getElementById(id);
-const video = $("video"), photo = $("photo"), canvas = $("overlay"), ctx = canvas.getContext("2d");
-const frame = $("frame"), stage = $("stage");
 
-let mp = null, vision = null, draw = null;
-const runners = {};        // task name -> { runner, mode }
-let task = "gesture";
-let source = "photo";      // "photo" | "video"
-let stream = null, lastVideoTime = -1, busy = false;
-let currentSample = null;
+let mp = null, vision = null, rtPromise = null, made = 0;
+const bufs = new Map(), prog = new Map(), bufDone = new Set();
+const LIVE = new Set(), GLS = new Set();
 
-const setChip = (t, cls = "") => { const c = $("chip"); c.textContent = t; c.className = `chip ${cls}`; };
-
-// Fit the media inside the stage (object-fit: contain) so the canvas overlay lines up 1:1.
-function fit() {
-  const w = source === "video" ? video.videoWidth : photo.naturalWidth;
-  const h = source === "video" ? video.videoHeight : photo.naturalHeight;
-  if (!w || !h) return;
-  const sw = stage.clientWidth - 16, sh = stage.clientHeight - 16;
-  const k = Math.min(sw / w, sh / h);
-  frame.style.width = `${Math.floor(w * k)}px`;
-  frame.style.height = `${Math.floor(h * k)}px`;
-  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
-}
-new ResizeObserver(fit).observe(stage);
-
-async function fetchWithProgress(url, onProgress) {
+// ---------- loading: runtime once, models per scene ----------
+async function fetchBytes(url, id, total) {
+  const p = { got: 0, total };
+  prog.set(id, p);
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const total = Number(res.headers.get("content-length")) || 0;
-  const reader = res.body.getReader();
-  const chunks = [];
-  let got = 0;
+  if (!res.ok) throw new Error(`下載失敗（HTTP ${res.status}）：${url.split("/").pop()}`);
+  const reader = res.body.getReader(), parts = [];
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    chunks.push(value);
-    got += value.length;
-    if (total) onProgress(got / total);
+    parts.push(value);
+    p.got += value.length;
   }
-  const buf = new Uint8Array(got);
+  p.total = p.got;
+  const out = new Uint8Array(p.got);
   let off = 0;
-  for (const c of chunks) { buf.set(c, off); off += c.length; }
-  return buf;
+  for (const c of parts) { out.set(c, off); off += c.length; }
+  return out;
 }
-
-async function createRunner(name, buffer, delegate) {
-  const base = { baseOptions: { modelAssetBuffer: buffer, delegate }, runningMode: "IMAGE" };
-  if (name === "gesture") return mp.GestureRecognizer.createFromOptions(vision, { ...base, numHands: 2 });
-  if (name === "pose") return mp.PoseLandmarker.createFromOptions(vision, { ...base, numPoses: 2 });
-  return mp.FaceLandmarker.createFromOptions(vision, { ...base, numFaces: 2, outputFaceBlendshapes: true });
+async function loadRuntime() {
+  const mod = await import(`${CDN}/vision_bundle.mjs`);
+  const fs = await mod.FilesetResolver.forVisionTasks(`${CDN}/wasm`);
+  // Fetch the 11.8 MB wasm ourselves for a progress bar; every task then instantiates from this blob.
+  const bin = await fetchBytes(fs.wasmBinaryPath, "rt", WASM_BYTES);
+  vision = { ...fs, wasmBinaryPath: URL.createObjectURL(new Blob([bin], { type: "application/wasm" })) };
+  mp = mod;
 }
-
-async function ensureRunner(name) {
-  if (runners[name]) return runners[name];
-  const s = demoStatus(`下載${{ gesture: "手勢", pose: "姿勢", face: "臉部" }[name]}模型（約 ${TASKS[name].mb} MB）…`);
-  try {
-    if (!mp) {
-      s.text("下載 MediaPipe 執行環境（約 12 MB）…");
-      mp = await import(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${VER}/vision_bundle.mjs`);
-      vision = await mp.FilesetResolver.forVisionTasks(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${VER}/wasm`);
-      draw = new mp.DrawingUtils(ctx);
-      s.text(`下載${{ gesture: "手勢", pose: "姿勢", face: "臉部" }[name]}模型（約 ${TASKS[name].mb} MB）…`);
-    }
-    const buf = await fetchWithProgress(TASKS[name].model, (p) => s.progress(p));
-    s.text("初始化推論引擎…");
-    let runner, delegate = "GPU";
-    try { runner = await createRunner(name, buf, "GPU"); }
-    catch (err) { console.warn("GPU delegate unavailable, using CPU:", err); delegate = "CPU"; runner = await createRunner(name, buf, "CPU"); }
-    runners[name] = { runner, mode: "IMAGE", delegate };
-    s.done();
-    return runners[name];
-  } catch (err) {
-    s.error(`模型載入失敗：${err.message || err}`);
-    throw err;
+function model(key) {
+  if (!bufs.has(key)) {
+    const m = MODELS[key];
+    bufs.set(key, fetchBytes(MODEL_BASE + m.url, key, m.bytes).then((b) => { bufDone.add(key); return b; }, (e) => { bufs.delete(key); throw e; }));
   }
+  return bufs.get(key);
+}
+const abortable = (ctx, p) => new Promise((resolve, reject) => {
+  p.then(() => resolve(), reject);
+  ctx.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+});
+const mbOf = (keys) => keys.reduce((s, k) => s + MODELS[k].bytes, 0) / 1e6;
+
+async function ready(ctx, keys) {
+  if (!rtPromise) {
+    await ctx.gate({
+      icon: "🖐️", title: "MediaPipe Tasks Vision 實驗室", button: `載入（約 ${((WASM_BYTES / 1e6) + mbOf(keys)).toFixed(0)} MB）`,
+      tags: ["執行環境 11.8 MB", `本場景模型 ${mbOf(keys).toFixed(1)} MB`, "WebAssembly", "不需鏡頭"],
+      desc: "下載 Google 官方 Tasks Vision 1.0.1 的執行環境與本場景模型。執行環境八個場景共用；其他場景的模型切換過去時才下載（0.2 到 8 MB）。",
+    });
+    rtPromise ??= loadRuntime().catch((e) => {
+      rtPromise = null;
+      throw /[一-鿿]/.test(e.message) ? e : new Error(`MediaPipe 載入失敗：${e.message}`);
+    });
+  }
+  if (vision && keys.every((k) => bufDone.has(k))) return;
+  const jobs = [rtPromise, ...keys.map(model)];
+  const ids = ["rt", ...keys];
+  const label = keys.map((k) => MODELS[k].name).join("、") || "執行環境";
+  const st = ctx.status(`下載${label}…`);
+  const paint = () => {
+    let got = 0, total = 0;
+    for (const id of ids) {
+      const p = prog.get(id) || { got: 0, total: id === "rt" ? WASM_BYTES : MODELS[id].bytes };
+      got += p.got; total += p.total;
+    }
+    st.progress(total ? got / total : 0);
+    st.text(got < total ? `下載${vision ? label : "執行環境與" + label}… ${(got / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)} MB` : "初始化 WebAssembly…");
+  };
+  paint();
+  const id = ctx.interval(paint, 120);
+  try { await abortable(ctx, Promise.all(jobs)); } finally { clearInterval(id); st.done(); }
 }
 
-async function setMode(r, mode) {
-  if (r.mode !== mode) { await r.runner.setOptions({ runningMode: mode }); r.mode = mode; r.warm = false; }
-}
+// ---------- task lifecycle ----------
+const loseGL = (c) => { const gl = c.getContext("webgl2"); const ext = gl && gl.getExtension("WEBGL_lose_context"); if (ext && !gl.isContextLost()) ext.loseContext(); };
+const glLost = (c) => { const gl = c.getContext("webgl2"); return !gl || gl.isContextLost(); };
+const glCount = () => { for (const c of GLS) if (glLost(c)) GLS.delete(c); return GLS.size; };
 
-function infer(r, input, ts) {
-  if (task === "gesture") return r.mode === "VIDEO" ? r.runner.recognizeForVideo(input, ts) : r.runner.recognize(input);
-  return r.mode === "VIDEO" ? r.runner.detectForVideo(input, ts) : r.runner.detect(input);
+let autoDel = null;
+// Software WebGL (SwiftShader, llvmpipe) makes the GPU delegate far slower than XNNPACK on the CPU, so pick CPU there.
+function pickDelegate() {
+  if (autoDel) return autoDel;
+  const c = document.createElement("canvas"), gl = c.getContext("webgl2");
+  let renderer = "";
+  if (gl) {
+    const ext = gl.getExtension("WEBGL_debug_renderer_info");
+    renderer = String(gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+  }
+  const soft = !gl || /swiftshader|llvmpipe|software|basic render/i.test(renderer);
+  autoDel = { d: soft ? "CPU" : "GPU", why: !gl ? "沒有 WebGL2" : soft ? "偵測到軟體繪圖，改用 CPU" : "硬體 GPU", renderer: renderer || "無" };
+  return autoDel;
 }
+const DEL = (d) => (d === "GPU" ? "GPU（WebGL）" : "CPU（WASM）");
 
-/* ---------- rendering ---------- */
-const lw = () => Math.max(2, canvas.width / 220);
+async function makeTask(ctx, Cls, key, opts, delegate = pickDelegate().d, { fallback = true, quiet = false } = {}) {
+  const buf = await model(key);
+  const st = quiet ? null : ctx.status("建立推論任務…");
+  const t0 = performance.now();
+  let task = null, canvas = null, used = delegate, err = null;
+  try {
+    for (const d of fallback && delegate === "GPU" ? ["GPU", "CPU"] : [delegate]) {
+      canvas = new OffscreenCanvas(1, 1);
+      try { task = await Cls.createFromOptions(vision, { ...opts, canvas, baseOptions: { modelAssetBuffer: buf, delegate: d } }); used = d; break; }
+      catch (e) { loseGL(canvas); err = e; console.warn(`MediaPipe ${d} delegate failed:`, e); }
+    }
+  } finally { st?.done(); }
+  if (!task) throw err;
+  made++;
+  const hd = { task, canvas, delegate: used, fellBack: used !== delegate, createMs: performance.now() - t0, du: null, closed: false };
+  LIVE.add(hd); GLS.add(canvas);
+  hd.close = () => {
+    if (hd.closed) return;
+    hd.closed = true;
+    try { hd.du?.close(); } catch (e) { console.warn(e); }
+    task.close();
+    loseGL(canvas);
+    LIVE.delete(hd);
+  };
+  ctx.onCleanup(hd.close);
+  if (!ctx.active) throw new DOMException("aborted", "AbortError");
+  return hd;
+}
+const memHTML = () => `存活 Task <b>${LIVE.size}</b>・WebGL context <b>${glCount()}</b>・累計建立 <b>${made}</b> 個`;
+function memWatch(ctx) { const paint = () => ctx.$$(".mp-mem").forEach((el) => (el.innerHTML = memHTML())); paint(); ctx.interval(paint, 700); return paint; }
+
+// ---------- page helpers ----------
+const imgCache = new Map();
+function loadImg(src) {
+  if (!imgCache.has(src)) {
+    imgCache.set(src, new Promise((ok, fail) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => ok(img);
+      img.onerror = () => { imgCache.delete(src); fail(new Error("範例照片載入失敗，請檢查網路")); };
+      img.src = src;
+    }));
+  }
+  return imgCache.get(src);
+}
+function fitInto(frame, box, w, hh) {
+  const bw = box.clientWidth - 8, bh = box.clientHeight - 8;
+  if (!w || !hh || bw <= 0 || bh <= 0) return;
+  const k = Math.min(bw / w, bh / hh);
+  frame.style.width = `${Math.floor(w * k)}px`;
+  frame.style.height = `${Math.floor(hh * k)}px`;
+}
+function watch(ctx, el, fn) { const ro = new ResizeObserver(() => ctx.active && fn()); ro.observe(el); ctx.onCleanup(() => ro.disconnect()); }
+const isAbort = (e) => e && e.name === "AbortError";
 const pct = (v) => `${Math.round(v * 100)}%`;
-const mirrorX = (x) => (source === "video" ? 1 - x : x);
-
-function setTags(list) {
-  $("tags").innerHTML = list.map((t) =>
-    `<span style="left:${(t.x * 100).toFixed(1)}%;top:${(t.y * 100).toFixed(1)}%;border-color:${t.color || "var(--accent)"}">${t.text}</span>`).join("");
-}
-function bars(items) {
-  return items.map(([label, v, txt]) =>
-    `<div class="row"><span>${label}</span><span class="m"><i style="width:${Math.round(Math.max(0, Math.min(1, v)) * 100)}%"></i></span><b>${txt ?? pct(v)}</b></div>`).join("");
-}
-function panel(emoji, title, sub, body, meta) {
-  $("side").innerHTML = `<h2>${{ gesture: "手勢辨識", pose: "姿勢骨架", face: "臉部網格" }[task]}</h2>
-    <div class="hero"><span class="big">${emoji}</span><div><div class="ttl">${title}</div><div class="sub">${sub}</div></div></div>
-    ${body}<div class="meta">${meta}</div>`;
-}
+const clamp01 = (v) => Math.max(0, Math.min(1, v));
+const bars = (items, cls = "") => items.map(([label, v, txt]) =>
+  `<div class="mp-row ${cls}"><span>${label}</span><span class="m"><i style="width:${Math.round(clamp01(v) * 100)}%"></i></span><b>${txt ?? pct(v)}</b></div>`).join("");
+const hero = (emo, ttl, sub) => `<div class="mp-hero"><span class="mp-big">${emo}</span><div><div class="mp-ttl">${ttl}</div><div class="mp-sub">${sub}</div></div></div>`;
+const kv = (rows) => `<div class="mp-kv">${rows.map(([k, v]) => `<span>${k}</span><b>${v}</b>`).join("")}</div>`;
 function boxOf(lms) {
   let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
   for (const p of lms) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
   return { x0, y0, x1, y1 };
 }
-function tagAt(lms, text, color) {
-  const b = boxOf(lms);
-  const x = source === "video" ? 1 - b.x1 : b.x0;
-  return { x: Math.max(0, Math.min(0.75, x)), y: Math.max(0.08, b.y0), text, color };
-}
+const tagAt = (lms, text, color) => { const b = boxOf(lms); return { x: Math.max(0, Math.min(0.72, b.x0)), y: Math.max(0.09, b.y0), text, color }; };
+const hasCamera = async () => { try { return (await navigator.mediaDevices.enumerateDevices()).some((d) => d.kind === "videoinput"); } catch { return false; } };
 
-function renderGesture(res, ms, meta) {
-  const hands = res.landmarks || [];
-  const tags = [];
-  hands.forEach((lms, i) => {
-    draw.drawConnectors(lms, mp.GestureRecognizer.HAND_CONNECTIONS, { color: "#4cc9f0", lineWidth: lw() * 1.4 });
-    draw.drawLandmarks(lms, { color: "#0a0c0f", fillColor: "#f7df1e", lineWidth: lw() * 0.5, radius: lw() * 1.6 });
-    const g = res.gestures?.[i]?.[0];
-    const [emo, name] = GESTURES[g?.categoryName] || GESTURES.None;
-    tags.push(tagAt(lms, `${emo} ${name} ${g ? pct(g.score) : ""}`));
-  });
-  setTags(tags);
-  if (!hands.length) {
-    panel("🤚", "沒有偵測到手", "把手舉到鏡頭前，或點下方範例照片", "", meta);
-    return;
-  }
-  const g = res.gestures[0][0];
-  const [emo, name] = GESTURES[g.categoryName] || GESTURES.None;
-  const all = Object.keys(GESTURES).filter((k) => k !== "None");
-  const scores = Object.fromEntries((res.gestures[0] || []).map((c) => [c.categoryName, c.score]));
-  const body = bars(all.map((k) => [`${GESTURES[k][0]} ${GESTURES[k][1]}`, scores[k] || 0]));
-  panel(emo, name, `信心 ${pct(g.score)}，共 ${hands.length} 隻手`, body, `${meta}<br>每隻手 <b>21</b> 個 3D 關鍵點`);
+// Image view with a centered frame (canvas + HTML tags), a sample strip and a side panel.
+function layout(ctx) {
+  ctx.html(`<div class="mp-wrap"><div class="mp-view"><div class="mp-frame"><canvas></canvas><div class="mp-tags"></div></div>
+    <span class="mp-tag" data-tag></span><div class="mp-msg">載入範例照片與第一次推論…</div><div class="mp-thumbs"></div></div><aside class="mp-panel"></aside></div>`);
+  const view = ctx.$(".mp-view"), frame = ctx.$(".mp-frame"), cvs = frame.querySelector("canvas");
+  const L = { view, frame, cvs, g: cvs.getContext("2d"), panel: ctx.$(".mp-panel"), msg: ctx.$(".mp-msg"), tag: ctx.$("[data-tag]"), tags: ctx.$(".mp-tags"), thumbs: ctx.$(".mp-thumbs") };
+  L.size = (w, hh) => { if (cvs.width !== w || cvs.height !== hh) { cvs.width = w; cvs.height = hh; } fitInto(frame, view, w, hh); };
+  L.draw = (img, max = 1000) => {
+    const w = img.naturalWidth || img.width, hh = img.naturalHeight || img.height, k = Math.min(1, max / Math.max(w, hh));
+    L.size(Math.round(w * k), Math.round(hh * k));
+    L.g.drawImage(img, 0, 0, cvs.width, cvs.height);
+    return k;
+  };
+  L.setTags = (list) => {
+    L.tags.innerHTML = list.map((t) => `<span style="left:${(t.x * 100).toFixed(1)}%;top:${(t.y * 100).toFixed(1)}%;border-color:${t.color || "var(--accent)"}">${t.text}</span>`).join("");
+  };
+  watch(ctx, view, () => fitInto(frame, view, cvs.width, cvs.height));
+  return L;
 }
+function thumbStrip(el, list, onPick) {
+  el.innerHTML = list.map(([u, label], i) => `<button type="button" class="mp-thumb" data-i="${i}" title="${label}" aria-label="範例照片：${label}"><img src="${u}" alt="" crossorigin="anonymous"></button>`).join("");
+  const mark = (i) => el.querySelectorAll(".mp-thumb").forEach((b, k) => b.setAttribute("aria-pressed", String(k === i)));
+  el.onclick = (e) => { const b = e.target.closest(".mp-thumb"); if (b) { mark(+b.dataset.i); onPick(+b.dataset.i); } };
+  return mark;
+}
+const guard = (L) => (e) => { if (isAbort(e)) return; console.error(e); L.msg.textContent = `處理失敗：${e.message || e}`; };
 
-function angle(a, b, c) {
-  const w = canvas.width, h = canvas.height;
-  const v1 = [(a.x - b.x) * w, (a.y - b.y) * h], v2 = [(c.x - b.x) * w, (c.y - b.y) * h];
-  const cos = (v1[0] * v2[0] + v1[1] * v2[1]) / (Math.hypot(...v1) * Math.hypot(...v2) || 1);
-  return Math.round(Math.acos(Math.max(-1, Math.min(1, cos))) * 180 / Math.PI);
-}
-function renderPose(res, ms, meta) {
-  const poses = res.landmarks || [];
-  const tags = [];
-  poses.forEach((lms) => {
-    draw.drawConnectors(lms, mp.PoseLandmarker.POSE_CONNECTIONS, { color: "rgba(236, 235, 230, .9)", lineWidth: lw() * 1.3 });
-    // odd indices are the subject's left side, even indices the right side
-    draw.drawLandmarks(lms.filter((_, i) => i > 10 && i % 2 === 1), { color: "#0a0c0f", fillColor: "#f72585", radius: lw() * 1.7, lineWidth: 1 });
-    draw.drawLandmarks(lms.filter((_, i) => i > 10 && i % 2 === 0), { color: "#0a0c0f", fillColor: "#4cc9f0", radius: lw() * 1.7, lineWidth: 1 });
-    draw.drawLandmarks(lms.slice(0, 11), { color: "#0a0c0f", fillColor: "#f7df1e", radius: lw(), lineWidth: 1 });
-  });
-  if (!poses.length) {
-    setTags([]);
-    panel("🧍", "沒有偵測到人", "退後讓全身入鏡，或點下方範例照片", "", meta);
-    return;
-  }
-  const p = poses[0];
-  const seen = (...ids) => ids.every((i) => (p[i].visibility ?? 1) > 0.5);
-  const J = [
-    ["左肘", [11, 13, 15]], ["右肘", [12, 14, 16]], ["左肩", [23, 11, 13]], ["右肩", [24, 12, 14]],
-    ["左膝", [23, 25, 27]], ["右膝", [24, 26, 28]],
-  ].map(([label, ids]) => [label, seen(...ids) ? angle(p[ids[0]], p[ids[1]], p[ids[2]]) : null]);
-  const A = Object.fromEntries(J);
-  const acts = [];
-  if (seen(0, 15, 16) && p[15].y < p[0].y && p[16].y < p[0].y) acts.push("雙手高舉");
-  else if (seen(0, 15, 16) && (p[15].y < p[0].y || p[16].y < p[0].y)) acts.push("舉起一隻手");
-  else if (A["左肩"] > 65 && A["右肩"] > 65 && A["左肘"] > 150 && A["右肘"] > 150) acts.push("雙臂平舉");
-  const kneeL = A["左膝"], kneeR = A["右膝"];
-  if (kneeL != null && kneeR != null) {
-    if (kneeL < 120 && kneeR < 120) acts.push("深蹲");
-    else if (Math.min(kneeL, kneeR) < 135 && Math.max(kneeL, kneeR) > 155) acts.push("弓步");
-  }
-  const label = acts.length ? acts.join("＋") : "站姿";
-  tags.push(tagAt(p, `🧍 ${label}`, "#f72585"));
-  setTags(tags);
-  const body = bars(J.map(([l, v]) => [l, v == null ? 0 : v / 180, v == null ? "看不到" : `${v}°`]));
-  panel(acts.includes("弓步") && acts.includes("雙臂平舉") ? "🧘" : "🧍", label, `關節角度由 33 個關鍵點計算，共 ${poses.length} 人`, body,
-    `${meta}<br><span style="color:#f72585">●</span> 左側　<span style="color:#4cc9f0">●</span> 右側`);
-}
-
+// ---------- scene 1: the original gesture / pose / face demo ----------
+const GESTURES = {
+  Thumb_Up: ["👍", "讚"], Thumb_Down: ["👎", "倒讚"], Victory: ["✌️", "勝利手勢"], Pointing_Up: ["☝️", "食指朝上"],
+  Open_Palm: ["🖐️", "張開手掌"], Closed_Fist: ["✊", "握拳"], ILoveYou: ["🤟", "我愛你"], None: ["🤚", "未定義手勢"],
+};
 const BLEND = [
   ["😊 微笑", ["mouthSmileLeft", "mouthSmileRight"]], ["😮 張嘴", ["jawOpen"]], ["😉 眨眼", ["eyeBlinkLeft", "eyeBlinkRight"]],
   ["🤨 挑眉", ["browInnerUp"]], ["😠 皺眉", ["browDownLeft", "browDownRight"]], ["😗 嘟嘴", ["mouthPucker"]],
   ["😳 睜大眼", ["eyeWideLeft", "eyeWideRight"]], ["🐡 鼓頰", ["cheekPuff"]],
 ];
-function renderFace(res, ms, meta) {
-  const faces = res.faceLandmarks || [];
+const CLASSIC = {
+  gesture: { key: "gesture", cls: "GestureRecognizer", name: "手勢辨識", opts: { numHands: 2 }, samples: [IMG.thumb, IMG.victory, IMG.pointing] },
+  pose: { key: "pose", cls: "PoseLandmarker", name: "姿勢骨架", opts: { numPoses: 2 }, samples: [IMG.pose, IMG.car] },
+  face: { key: "face", cls: "FaceLandmarker", name: "臉部網格", opts: { numFaces: 2, outputFaceBlendshapes: true }, samples: [IMG.woman, IMG.selfie, IMG.afro] },
+};
+function angle2(a, b, c, w, hh) {
+  const v1 = [(a.x - b.x) * w, (a.y - b.y) * hh], v2 = [(c.x - b.x) * w, (c.y - b.y) * hh];
+  const cos = (v1[0] * v2[0] + v1[1] * v2[1]) / (Math.hypot(...v1) * Math.hypot(...v2) || 1);
+  return Math.round((Math.acos(Math.max(-1, Math.min(1, cos))) * 180) / Math.PI);
+}
+function drawFaceMesh(du, lms, lw, parts = { mesh: true, oval: true, eyes: true, brows: true, iris: true, lips: true }) {
   const F = mp.FaceLandmarker;
-  const tags = [];
-  faces.forEach((lms, i) => {
-    draw.drawConnectors(lms, F.FACE_LANDMARKS_TESSELATION, { color: "rgba(76, 201, 240, .38)", lineWidth: lw() * 0.45 });
-    draw.drawConnectors(lms, F.FACE_LANDMARKS_FACE_OVAL, { color: "#ecebe6", lineWidth: lw() });
-    for (const c of [F.FACE_LANDMARKS_LEFT_EYE, F.FACE_LANDMARKS_RIGHT_EYE]) draw.drawConnectors(lms, c, { color: "#f72585", lineWidth: lw() });
-    for (const c of [F.FACE_LANDMARKS_LEFT_EYEBROW, F.FACE_LANDMARKS_RIGHT_EYEBROW]) draw.drawConnectors(lms, c, { color: "#f7df1e", lineWidth: lw() });
-    for (const c of [F.FACE_LANDMARKS_LEFT_IRIS, F.FACE_LANDMARKS_RIGHT_IRIS]) draw.drawConnectors(lms, c, { color: "#7bd389", lineWidth: lw() });
-    draw.drawConnectors(lms, F.FACE_LANDMARKS_LIPS, { color: "#ff8c42", lineWidth: lw() });
-    tags.push(tagAt(lms, `🙂 臉 ${i + 1}`, "#4cc9f0"));
-  });
-  setTags(tags);
-  if (!faces.length) {
-    panel("🙂", "沒有偵測到臉", "正對鏡頭，或點下方範例照片", "", meta);
-    return;
+  if (parts.mesh) du.drawConnectors(lms, F.FACE_LANDMARKS_TESSELATION, { color: "rgba(76, 201, 240, .38)", lineWidth: lw * 0.45 });
+  if (parts.oval) du.drawConnectors(lms, F.FACE_LANDMARKS_FACE_OVAL, { color: "#ecebe6", lineWidth: lw });
+  if (parts.eyes) for (const c of [F.FACE_LANDMARKS_LEFT_EYE, F.FACE_LANDMARKS_RIGHT_EYE]) du.drawConnectors(lms, c, { color: "#f72585", lineWidth: lw });
+  if (parts.brows) for (const c of [F.FACE_LANDMARKS_LEFT_EYEBROW, F.FACE_LANDMARKS_RIGHT_EYEBROW]) du.drawConnectors(lms, c, { color: "#f7df1e", lineWidth: lw });
+  if (parts.iris) for (const c of [F.FACE_LANDMARKS_LEFT_IRIS, F.FACE_LANDMARKS_RIGHT_IRIS]) du.drawConnectors(lms, c, { color: "#7bd389", lineWidth: lw });
+  if (parts.lips) du.drawConnectors(lms, F.FACE_LANDMARKS_LIPS, { color: "#ff8c42", lineWidth: lw });
+}
+function drawPose(du, lms, lw) {
+  du.drawConnectors(lms, mp.PoseLandmarker.POSE_CONNECTIONS, { color: "rgba(236, 235, 230, .9)", lineWidth: lw * 1.3 });
+  // odd indices are the subject's left side, even indices the right side
+  du.drawLandmarks(lms.filter((_, i) => i > 10 && i % 2 === 1), { color: "#0a0c0f", fillColor: "#f72585", radius: lw * 1.7, lineWidth: 1 });
+  du.drawLandmarks(lms.filter((_, i) => i > 10 && i % 2 === 0), { color: "#0a0c0f", fillColor: "#4cc9f0", radius: lw * 1.7, lineWidth: 1 });
+  du.drawLandmarks(lms.slice(0, 11), { color: "#0a0c0f", fillColor: "#f7df1e", radius: lw, lineWidth: 1 });
+}
+function drawHand(du, lms, lw) {
+  du.drawConnectors(lms, mp.HandLandmarker.HAND_CONNECTIONS, { color: "#4cc9f0", lineWidth: lw * 1.4 });
+  du.drawLandmarks(lms, { color: "#0a0c0f", fillColor: "#f7df1e", lineWidth: lw * 0.5, radius: lw * 1.6 });
+}
+
+function renderClassic(name, res, L, du, meta) {
+  const w = L.cvs.width, hh = L.cvs.height, lw = Math.max(2, w / 220), tags = [];
+  if (name === "gesture") {
+    const hands = res.landmarks || [];
+    hands.forEach((lms, i) => {
+      drawHand(du, lms, lw);
+      const g = res.gestures?.[i]?.[0];
+      const [emo, nm] = GESTURES[g?.categoryName] || GESTURES.None;
+      tags.push(tagAt(lms, `${emo} ${nm} ${g ? pct(g.score) : ""}`));
+    });
+    L.setTags(tags);
+    if (!hands.length) return hero("🤚", "沒有偵測到手", "換一張照片或開啟鏡頭") + meta;
+    const g = res.gestures[0][0];
+    const [emo, nm] = GESTURES[g.categoryName] || GESTURES.None;
+    const scores = Object.fromEntries((res.gestures[0] || []).map((c) => [c.categoryName, c.score]));
+    const all = Object.keys(GESTURES).filter((k) => k !== "None");
+    return hero(emo, nm, `信心 ${pct(g.score)}，共 ${hands.length} 隻手`) + bars(all.map((k) => [`${GESTURES[k][0]} ${GESTURES[k][1]}`, scores[k] || 0])) + meta + "<br>每隻手 <b>21</b> 個 3D 關鍵點";
   }
+  if (name === "pose") {
+    const poses = res.landmarks || [];
+    poses.forEach((lms) => drawPose(du, lms, lw));
+    if (!poses.length) { L.setTags([]); return hero("🧍", "沒有偵測到人", "換一張全身入鏡的照片") + meta; }
+    const p = poses[0];
+    const seen = (...ids) => ids.every((i) => (p[i].visibility ?? 1) > 0.5);
+    const J = [["左肘", [11, 13, 15]], ["右肘", [12, 14, 16]], ["左肩", [23, 11, 13]], ["右肩", [24, 12, 14]], ["左膝", [23, 25, 27]], ["右膝", [24, 26, 28]]]
+      .map(([label, ids]) => [label, seen(...ids) ? angle2(p[ids[0]], p[ids[1]], p[ids[2]], w, hh) : null]);
+    const A = Object.fromEntries(J), acts = [];
+    if (seen(0, 15, 16) && p[15].y < p[0].y && p[16].y < p[0].y) acts.push("雙手高舉");
+    else if (seen(0, 15, 16) && (p[15].y < p[0].y || p[16].y < p[0].y)) acts.push("舉起一隻手");
+    else if (A["左肩"] > 65 && A["右肩"] > 65 && A["左肘"] > 150 && A["右肘"] > 150) acts.push("雙臂平舉");
+    const kL = A["左膝"], kR = A["右膝"];
+    if (kL != null && kR != null) {
+      if (kL < 120 && kR < 120) acts.push("深蹲");
+      else if (Math.min(kL, kR) < 135 && Math.max(kL, kR) > 155) acts.push("弓步");
+    }
+    const label = acts.length ? acts.join("＋") : "站姿";
+    L.setTags([tagAt(p, `🧍 ${label}`, "#f72585")]);
+    return hero(acts.includes("弓步") && acts.includes("雙臂平舉") ? "🧘" : "🧍", label, `關節角度由 33 個關鍵點計算，共 ${poses.length} 人`) +
+      bars(J.map(([l, v]) => [l, v == null ? 0 : v / 180, v == null ? "看不到" : `${v}°`])) + meta +
+      `<br><span style="color:#f72585">●</span> 左側　<span style="color:#4cc9f0">●</span> 右側`;
+  }
+  const faces = res.faceLandmarks || [];
+  faces.forEach((lms, i) => { drawFaceMesh(du, lms, lw); tags.push(tagAt(lms, `🙂 臉 ${i + 1}`, "#4cc9f0")); });
+  L.setTags(tags);
+  if (!faces.length) return hero("🙂", "沒有偵測到臉", "換一張正面的照片") + meta;
   const cats = Object.fromEntries((res.faceBlendshapes?.[0]?.categories || []).map((c) => [c.categoryName, c.score]));
   const vals = BLEND.map(([label, keys]) => [label, keys.reduce((s, k) => s + (cats[k] || 0), 0) / keys.length]);
   const top = vals.reduce((a, b) => (b[1] > a[1] ? b : a));
   const [emo, word] = top[1] > 0.3 ? top[0].split(" ") : ["😐", "表情平靜"];
-  panel(emo, word, `52 種表情係數中最明顯的一項，共 ${faces.length} 張臉`, bars(vals), `${meta}<br>每張臉 <b>478</b> 個 3D 網格點`);
+  return hero(emo, word, `52 種表情係數中最明顯的一項，共 ${faces.length} 張臉`) + bars(vals) + meta + "<br>每張臉 <b>478</b> 個 3D 網格點";
 }
 
-function render(res, ms) {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  const r = runners[task];
-  const meta = `推論 <b>${ms.toFixed(1)} ms</b>，${r.delegate === "GPU" ? "GPU（WebGL）" : "CPU（WASM）"}`;
-  if (task === "gesture") renderGesture(res, ms, meta);
-  else if (task === "pose") renderPose(res, ms, meta);
-  else renderFace(res, ms, meta);
-}
-
-/* ---------- sources ---------- */
-async function runPhoto() {
-  if (source !== "photo" || !photo.complete || !photo.naturalWidth) return;
-  const r = await ensureRunner(task);
-  await setMode(r, "IMAGE");
-  fit();
-  // The first call after (re)building the graph compiles shaders; warm up so the timing shown is steady-state.
-  if (!r.warm) { infer(r, photo); r.warm = true; }
-  const t0 = performance.now();
-  const res = infer(r, photo);
-  render(res, performance.now() - t0);
-}
-
-function loadPhoto(url) {
-  return new Promise((resolve, reject) => {
-    photo.onload = resolve;
-    photo.onerror = () => reject(new Error("照片載入失敗"));
-    photo.src = url;
-  });
-}
-
-async function usePhoto(url) {
-  await stopCamera();
-  source = "photo";
-  frame.dataset.src = "photo";
-  frame.classList.remove("mirror");
-  currentSample = url;
-  markThumbs();
-  setChip("範例照片");
-  $("empty").textContent = "";
-  try {
-    await loadPhoto(url);
-    await runPhoto();
-  } catch (err) {
-    $("empty").textContent = `無法處理照片：${err.message || err}`;
-    console.warn(err);
-  }
-}
-
-function markThumbs() {
-  for (const b of $("thumbs").children) b.setAttribute("aria-pressed", String(b.dataset.url === currentSample));
-}
-function buildThumbs() {
-  $("thumbs").innerHTML = "";
-  for (const url of TASKS[task].samples) {
-    const b = document.createElement("button");
-    b.className = "thumb";
-    b.dataset.url = url;
-    b.title = "改用這張範例照片";
-    b.innerHTML = `<img src="${url}" alt="範例照片" crossorigin="anonymous" loading="lazy">`;
-    b.addEventListener("click", () => usePhoto(url));
-    $("thumbs").append(b);
-  }
-  markThumbs();
-}
-
-async function startCamera() {
-  $("camBtn").disabled = true;
-  setChip("鏡頭啟動中…");
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 960 }, height: { ideal: 720 } }, audio: false });
-    video.srcObject = stream;
-    await video.play();
-    source = "video";
-    currentSample = null;
-    markThumbs();
-    frame.dataset.src = "video";
-    frame.classList.add("mirror");
-    $("empty").textContent = "";
-    fit();
-    const r = await ensureRunner(task);
-    await setMode(r, "VIDEO");
-    setChip("鏡頭即時偵測", "live");
-    $("camBtn").textContent = "停止鏡頭";
-    $("camBtn").classList.remove("primary");
-    requestAnimationFrame(loop);
-  } catch (err) {
-    console.warn("camera unavailable:", err);
-    const msg = /NotAllowed|Permission/i.test(String(err)) ? "鏡頭權限被拒絕" : "找不到可用的鏡頭";
-    await stopCamera();
-    $("empty").textContent = `${msg}，已改用範例照片`;
-    await usePhoto(TASKS[task].samples[0]);
-    $("empty").textContent = `${msg}，已改用範例照片`;
-  }
-  $("camBtn").disabled = false;
-}
-
-async function stopCamera() {
-  if (!stream) return;
-  stream.getTracks().forEach((t) => t.stop());
-  stream = null;
-  video.srcObject = null;
-  $("camBtn").textContent = "開啟鏡頭";
-  $("camBtn").classList.add("primary");
-}
-
-function loop() {
-  if (source !== "video" || !stream) return;
-  const r = runners[task];
-  if (r && r.mode === "VIDEO" && !busy && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
-    lastVideoTime = video.currentTime;
-    if (canvas.width !== video.videoWidth) fit();
+async function mountClassic(ctx) {
+  await ready(ctx, ["gesture"]);
+  const L = layout(ctx);
+  const du = new mp.DrawingUtils(L.g);
+  ctx.onCleanup(() => du.close());
+  let name = "gesture", hd = null, gen = 0, img = null, stream = null, video = null, mode = "IMAGE", ts = 0, sample = 0, upURL = null;
+  const body = () => `<div data-out></div><div class="mp-mem"></div>`;
+  L.panel.innerHTML = body();
+  const out = L.panel.querySelector("[data-out]");
+  const mem = memWatch(ctx);
+  const fail = guard(L);
+  const infer = (input, t) => {
+    const T = hd.task;
+    if (name === "gesture") return mode === "VIDEO" ? T.recognizeForVideo(input, t) : T.recognize(input);
+    return mode === "VIDEO" ? T.detectForVideo(input, t) : T.detect(input);
+  };
+  const metaLine = (ms) => `<div class="mp-kv" style="margin-top:10px"><span>推論</span><b>${fmtMs(ms)}</b><span>委派</span><b>${DEL(hd.delegate)}</b><span>模式</span><b>${mode}</b></div>`;
+  const runImage = () => {
+    if (!hd || !img || stream) return;
+    L.draw(img);
     const t0 = performance.now();
-    render(infer(r, video, t0), performance.now() - t0);
+    const res = infer(img);
+    const ms = performance.now() - t0;
+    L.g.drawImage(img, 0, 0, L.cvs.width, L.cvs.height);
+    out.innerHTML = renderClassic(name, res, L, du, metaLine(ms));
+    L.tag.innerHTML = `${CLASSIC[name].name}・<i>${CLASSIC[name].cls}.${name === "gesture" ? "recognize" : "detect"}()</i>`;
+  };
+  const pick = async (i) => {
+    sample = i;
+    L.msg.textContent = "";
+    try {
+      img = await loadImg(upURL && i < 0 ? upURL : CLASSIC[name].samples[i][0]);
+      if (ctx.active) runImage();
+    } catch (e) { fail(e); }
+  };
+  let mark = () => {};
+  const switchTo = async (n) => {
+    const my = ++gen;
+    name = n;
+    hd?.close(); hd = null;
+    L.setTags([]);
+    mark = thumbStrip(L.thumbs, CLASSIC[n].samples, (i) => pick(i));
+    mark(stream ? -1 : 0);
+    try {
+      await ready(ctx, [CLASSIC[n].key]);
+      const h2 = await makeTask(ctx, mp[CLASSIC[n].cls], CLASSIC[n].key, { ...CLASSIC[n].opts, runningMode: stream ? "VIDEO" : "IMAGE" });
+      if (my !== gen) { h2.close(); return; }
+      hd = h2; mode = stream ? "VIDEO" : "IMAGE";
+      // The first call builds the graph's buffers; warm up once so the timing shown is steady-state.
+      if (!stream) { img = await loadImg(CLASSIC[n].samples[0][0]); if (my !== gen) return; L.draw(img); infer(img); await pick(0); }
+      mem();
+    } catch (e) { fail(e); }
+  };
+  ctx.group(["✋ 手勢", "🧍 姿勢", "🙂 臉部"], 0, (i) => switchTo(["gesture", "pose", "face"][i]));
+  const file = Object.assign(document.createElement("input"), { type: "file", accept: "image/*", hidden: true });
+  ctx.el.append(file);
+  ctx.button("📁 上傳照片", () => file.click());
+  ctx.on(file, "change", async () => {
+    const f = file.files[0];
+    file.value = "";
+    if (!f) return;
+    if (stream) await camOff();
+    if (upURL) URL.revokeObjectURL(upURL);
+    upURL = URL.createObjectURL(f);
+    mark(-1);
+    pick(-1);
+  });
+  ctx.onCleanup(() => upURL && URL.revokeObjectURL(upURL));
+
+  const stopTracks = () => { if (stream) stream.getTracks().forEach((t) => t.stop()); stream = null; if (video) video.srcObject = null; };
+  ctx.onCleanup(stopTracks);
+  const camOff = async () => {
+    stopTracks();
+    camBtn?.setAttribute("aria-pressed", "false");
+    if (hd) { await hd.task.setOptions({ runningMode: "IMAGE" }); mode = "IMAGE"; }
+    mark(sample); pick(sample);
+  };
+  let camBtn = null;
+  if (await hasCamera() && ctx.active) {
+    camBtn = ctx.toggle("📷 鏡頭", false, async (on) => {
+      if (!on) return camOff();
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 960 }, height: { ideal: 720 } }, audio: false });
+        if (!ctx.active) return stopTracks();
+        video = video || Object.assign(document.createElement("video"), { muted: true, playsInline: true });
+        video.srcObject = stream;
+        await video.play();
+        if (hd) { await hd.task.setOptions({ runningMode: "VIDEO" }); mode = "VIDEO"; }
+        mark(-1);
+        L.msg.textContent = "";
+      } catch (e) {
+        stopTracks();
+        camBtn.setAttribute("aria-pressed", "false");
+        L.msg.textContent = /NotAllowed|Permission/i.test(String(e)) ? "鏡頭權限被拒絕，繼續使用照片" : "無法開啟鏡頭，繼續使用照片";
+      }
+    });
   }
-  requestAnimationFrame(loop);
+  let lastT = -1;
+  ctx.raf(() => {
+    if (!stream || !hd || mode !== "VIDEO" || !video || video.readyState < 2 || video.currentTime === lastT) return;
+    lastT = video.currentTime;
+    L.size(video.videoWidth, video.videoHeight);
+    // Mirror into the canvas first so the model sees a selfie view and the overlay needs no flipping.
+    L.g.save(); L.g.scale(-1, 1); L.g.drawImage(video, -L.cvs.width, 0, L.cvs.width, L.cvs.height); L.g.restore();
+    ts = Math.max(ts + 1, performance.now());
+    const t0 = performance.now();
+    const res = infer(L.cvs, ts);
+    const ms = performance.now() - t0;
+    out.innerHTML = renderClassic(name, res, L, du, metaLine(ms));
+    L.tag.innerHTML = `${CLASSIC[name].name}・鏡頭・<i>${name === "gesture" ? "recognizeForVideo" : "detectForVideo"}()</i>`;
+  });
+  await switchTo("gesture");
 }
 
-async function switchTask(name) {
-  if (busy || name === task) return;
-  busy = true;
-  task = name;
-  for (const b of $("tabs").querySelectorAll("[data-task]")) b.setAttribute("aria-pressed", String(b.dataset.task === name));
-  buildThumbs();
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  setTags([]);
-  try {
-    const r = await ensureRunner(name);
-    if (source === "video") { await setMode(r, "VIDEO"); busy = false; }
-    else { busy = false; await usePhoto(TASKS[name].samples[0]); }
-  } catch (err) {
-    console.warn(err);
-  } finally {
-    busy = false;
-  }
+// ---------- scene 2: hand landmarks in metric 3D ----------
+const FINGERS = [["拇指", [1, 2, 3, 4], "#f72585"], ["食指", [5, 6, 7, 8], "#f7df1e"], ["中指", [9, 10, 11, 12], "#7bd389"], ["無名指", [13, 14, 15, 16], "#4cc9f0"], ["小指", [17, 18, 19, 20], "#9d8cff"]];
+const sub3 = (a, b) => [a.x - b.x, a.y - b.y, a.z - b.z];
+function bend(a, b, c) {
+  const u = sub3(b, a), v = sub3(c, b);
+  const cos = (u[0] * v[0] + u[1] * v[1] + u[2] * v[2]) / ((Math.hypot(...u) * Math.hypot(...v)) || 1);
+  return (Math.acos(Math.max(-1, Math.min(1, cos))) * 180) / Math.PI;
+}
+// Sum of joint bends along a finger in world (metre) space; a straight finger is near 0 degrees.
+function fingerBend(wl, ids, i) {
+  const chain = i === 0 ? [wl[ids[0]], wl[ids[1]], wl[ids[2]], wl[ids[3]]] : [wl[0], wl[ids[0]], wl[ids[1]], wl[ids[2]], wl[ids[3]]];
+  let s = 0;
+  for (let k = 0; k + 2 < chain.length; k++) s += bend(chain[k], chain[k + 1], chain[k + 2]);
+  return s;
+}
+const dist3 = (a, b) => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+
+async function mountHand3D(ctx) {
+  await ready(ctx, ["hand"]);
+  ctx.html(`<div class="mp-wrap"><div class="mp-view"><div class="mp-tiles"><div class="mp-tile"><canvas data-a></canvas><span class="mp-tag">影像座標 landmarks（0~1）</span></div>
+    <div class="mp-tile" data-drag style="cursor:grab"><canvas data-b></canvas><span class="mp-tag r">世界座標 worldLandmarks（公尺）</span></div></div>
+    <div class="mp-thumbs"></div><div class="mp-msg"></div></div><aside class="mp-panel"><div data-out></div><div class="mp-mem"></div></aside></div>`);
+  const A = ctx.$("[data-a]"), B = ctx.$("[data-b]"), ga = A.getContext("2d"), gb = B.getContext("2d"), out = ctx.$("[data-out]"), msg = ctx.$(".mp-msg");
+  const du = new mp.DrawingUtils(ga);
+  ctx.onCleanup(() => du.close());
+  const hd = await makeTask(ctx, mp.HandLandmarker, "hand", { runningMode: "IMAGE", numHands: 2 });
+  const mem = memWatch(ctx);
+  const samples = [IMG.victory, IMG.thumb, IMG.pointing, IMG.fist];
+  let res = null, yaw = 0.5, pitch = -0.35, spin = true, drag = null;
+  const fail = (e) => { if (!isAbort(e)) { console.error(e); msg.textContent = `處理失敗：${e.message || e}`; } };
+  const run = async (i) => {
+    try {
+      const img = await loadImg(samples[i][0]);
+      if (!ctx.active) return;
+      const k = Math.min(1, 900 / Math.max(img.naturalWidth, img.naturalHeight));
+      A.width = Math.round(img.naturalWidth * k); A.height = Math.round(img.naturalHeight * k);
+      const t0 = performance.now();
+      res = hd.task.detect(img);
+      const ms = performance.now() - t0;
+      ga.drawImage(img, 0, 0, A.width, A.height);
+      const lw = Math.max(2, A.width / 220);
+      res.landmarks.forEach((l) => drawHand(du, l, lw));
+      panel(ms);
+      mem();
+    } catch (e) { fail(e); }
+  };
+  const panel = (ms) => {
+    if (!res.landmarks.length) { out.innerHTML = hero("🤚", "沒有偵測到手", "換一張照片") + kv([["推論", fmtMs(ms)]]); return; }
+    out.innerHTML = res.worldLandmarks.map((wl, i) => {
+      const hc = res.handedness[i][0];
+      const states = FINGERS.map(([nm, ids], f) => { const b = fingerBend(wl, ids, f); return [nm, b, b < (f === 0 ? 45 : 70)]; });
+      const open = states.filter((s) => s[2]).length;
+      return `<h4>${hc.categoryName === "Left" ? "左手" : "右手"} <span class="mp-sub">信心 ${pct(hc.score)}・伸直 ${open} 根</span></h4>` +
+        bars(states.map(([nm, b, ext]) => [`${nm} ${ext ? "伸直" : "彎曲"}`, b / 240, `${Math.round(b)}°`])) +
+        kv([["拇指尖到小指尖", `${(dist3(wl[4], wl[20]) * 100).toFixed(1)} cm`], ["掌寬（食指根到小指根）", `${(dist3(wl[5], wl[17]) * 100).toFixed(1)} cm`]]);
+    }).join("") + kv([["推論", fmtMs(ms)], ["委派", DEL(hd.delegate)]]) +
+      `<p class="mp-note">彎曲角度＝各關節夾角總和（世界座標）。左右手判斷假設輸入是鏡像自拍畫面，一般照片的左右可能相反。</p>`;
+  };
+  const sizeB = () => { const r = B.getBoundingClientRect(), d = Math.min(2, devicePixelRatio || 1); B.width = Math.max(1, Math.round(r.width * d)); B.height = Math.max(1, Math.round(r.height * d)); };
+  watch(ctx, B, sizeB);
+  const project = (p, cx, cy, s) => {
+    const cyw = Math.cos(yaw), syw = Math.sin(yaw), cp = Math.cos(pitch), sp = Math.sin(pitch);
+    const x1 = p[0] * cyw + p[2] * syw, z1 = -p[0] * syw + p[2] * cyw;
+    const y2 = p[1] * cp - z1 * sp, z2 = p[1] * sp + z1 * cp;
+    return [cx + x1 * s, cy + y2 * s, z2];
+  };
+  const draw3D = () => {
+    const W = B.width, H = B.height, s = Math.min(W, H) / 0.26, cx = W / 2, cy = H / 2;
+    gb.clearRect(0, 0, W, H);
+    // floor grid 30 x 30 cm, 5 cm cells, placed under the hand
+    gb.strokeStyle = "rgba(236,235,230,.10)"; gb.lineWidth = 1;
+    for (let k = -3; k <= 3; k++) {
+      for (const [a, b] of [[[k * 0.05, 0.1, -0.15], [k * 0.05, 0.1, 0.15]], [[-0.15, 0.1, k * 0.05], [0.15, 0.1, k * 0.05]]]) {
+        const p = project(a, cx, cy, s), q = project(b, cx, cy, s);
+        gb.beginPath(); gb.moveTo(p[0], p[1]); gb.lineTo(q[0], q[1]); gb.stroke();
+      }
+    }
+    const segs = [];
+    const hands = res ? res.worldLandmarks : [];
+    hands.forEach((wl, hi) => {
+      const off = (hi - (hands.length - 1) / 2) * 0.16;
+      const P = wl.map((l) => project([l.x + off, l.y, l.z], cx, cy, s));
+      const add = (a, b, col) => segs.push({ a: P[a], b: P[b], z: (P[a][2] + P[b][2]) / 2, col });
+      for (const [a, b] of [[0, 1], [0, 5], [5, 9], [9, 13], [13, 17], [0, 17]]) add(a, b, "#ecebe6");
+      FINGERS.forEach(([, ids, col], f) => { if (f) add(ids[0], ids[1], col); else add(1, 2, col); add(ids[1], ids[2], col); add(ids[2], ids[3], col); });
+      P.forEach((p, k) => segs.push({ dot: p, z: p[2], col: k === 0 ? "#ecebe6" : FINGERS[Math.min(4, Math.floor((k - 1) / 4))][2] }));
+    });
+    segs.sort((u, v) => v.z - u.z);
+    const lw = Math.max(2, W / 160);
+    for (const sg of segs) {
+      const fade = 0.55 + 0.45 * clamp01(0.5 - sg.z / (s * 0.2));
+      gb.globalAlpha = fade;
+      if (sg.dot) { gb.fillStyle = sg.col; gb.beginPath(); gb.arc(sg.dot[0], sg.dot[1], lw * 1.3, 0, Math.PI * 2); gb.fill(); }
+      else { gb.strokeStyle = sg.col; gb.lineWidth = lw; gb.lineCap = "round"; gb.beginPath(); gb.moveTo(sg.a[0], sg.a[1]); gb.lineTo(sg.b[0], sg.b[1]); gb.stroke(); }
+    }
+    gb.globalAlpha = 1;
+    // 5 cm scale bar
+    gb.fillStyle = "#ecebe6"; gb.font = `${Math.round(11 * (W / B.clientWidth || 1))}px ${getComputedStyle(document.body).getPropertyValue("--mono")}`;
+    gb.fillRect(12, H - 16, 0.05 * s, 3); gb.fillText("5 cm", 12, H - 22);
+  };
+  ctx.raf((t, dt) => { if (spin && !drag) yaw += dt * 0.0007; draw3D(); });
+  const tile = ctx.$("[data-drag]");
+  ctx.on(tile, "pointerdown", (e) => { drag = { x: e.clientX, y: e.clientY }; tile.setPointerCapture(e.pointerId); });
+  ctx.on(tile, "pointermove", (e) => { if (!drag) return; yaw += (e.clientX - drag.x) * 0.01; pitch = Math.max(-1.4, Math.min(1.4, pitch + (e.clientY - drag.y) * 0.01)); drag = { x: e.clientX, y: e.clientY }; });
+  ctx.on(tile, "pointerup", () => (drag = null));
+  ctx.toggle("自動旋轉", true, (v) => (spin = v));
+  const mark = thumbStrip(ctx.$(".mp-thumbs"), samples, run);
+  mark(0);
+  await run(0);
 }
 
-$("tabs").addEventListener("click", (e) => {
-  const b = e.target.closest("[data-task]");
-  if (b) switchTask(b.dataset.task);
-});
-$("camBtn").addEventListener("click", () => (stream ? usePhoto(TASKS[task].samples[0]) : startCamera()));
-$("file").addEventListener("change", (e) => {
-  const f = e.target.files[0];
-  if (f) usePhoto(URL.createObjectURL(f));
-  e.target.value = "";
-});
-buildThumbs();
+// ---------- scene 3: blendshapes and head pose ----------
+const BS_ZH = Object.fromEntries(("browDownLeft 左眉下壓 browDownRight 右眉下壓 browInnerUp 眉心上揚 browOuterUpLeft 左眉外側上揚 browOuterUpRight 右眉外側上揚 " +
+  "cheekPuff 鼓頰 cheekSquintLeft 左頰上提 cheekSquintRight 右頰上提 eyeBlinkLeft 左眼閉合 eyeBlinkRight 右眼閉合 eyeLookDownLeft 左眼下看 " +
+  "eyeLookDownRight 右眼下看 eyeLookInLeft 左眼內看 eyeLookInRight 右眼內看 eyeLookOutLeft 左眼外看 eyeLookOutRight 右眼外看 eyeLookUpLeft 左眼上看 " +
+  "eyeLookUpRight 右眼上看 eyeSquintLeft 左眼瞇 eyeSquintRight 右眼瞇 eyeWideLeft 左眼睜大 eyeWideRight 右眼睜大 jawForward 下顎前伸 jawLeft 下顎左移 " +
+  "jawOpen 張嘴 jawRight 下顎右移 mouthClose 閉唇 mouthDimpleLeft 左嘴角內縮 mouthDimpleRight 右嘴角內縮 mouthFrownLeft 左嘴角下垂 mouthFrownRight 右嘴角下垂 " +
+  "mouthFunnel 圓唇 mouthLeft 嘴左移 mouthLowerDownLeft 左下唇下拉 mouthLowerDownRight 右下唇下拉 mouthPressLeft 左唇抿 mouthPressRight 右唇抿 " +
+  "mouthPucker 嘟嘴 mouthRight 嘴右移 mouthRollLower 下唇內捲 mouthRollUpper 上唇內捲 mouthShrugLower 下唇上推 mouthShrugUpper 上唇上推 " +
+  "mouthSmileLeft 左嘴角上揚 mouthSmileRight 右嘴角上揚 mouthStretchLeft 左嘴角外拉 mouthStretchRight 右嘴角外拉 mouthUpperUpLeft 左上唇上提 " +
+  "mouthUpperUpRight 右上唇上提 noseSneerLeft 左鼻皺 noseSneerRight 右鼻皺").split(" ").reduce((a, v, i, arr) => (i % 2 ? a : [...a, [v, arr[i + 1]]]), []));
+const REGIONS = [
+  ["全部", { mesh: true, oval: true, eyes: true, brows: true, iris: true, lips: true }],
+  ["網格", { mesh: true }], ["眼與虹膜", { eyes: true, iris: true, brows: true }], ["嘴唇", { lips: true, oval: true }], ["只看姿態", {}],
+];
 
-await demoGate({
-  icon: "🖐️", title: "MediaPipe 手勢、姿勢、臉部偵測",
-  desc: "按下後下載 Google 官方模型並請求鏡頭權限；沒有鏡頭也能用範例照片",
-  tags: ["需要鏡頭", "約 20 MB 起", "可改用照片"], button: "開始偵測",
-});
-try {
-  await ensureRunner("gesture");
-  await startCamera();
-} catch (err) {
-  console.warn(err);
+async function mountFace(ctx) {
+  await ready(ctx, ["face"]);
+  const L = layout(ctx);
+  const du = new mp.DrawingUtils(L.g);
+  ctx.onCleanup(() => du.close());
+  const hd = await makeTask(ctx, mp.FaceLandmarker, "face", { runningMode: "IMAGE", numFaces: 1, outputFaceBlendshapes: true, outputFacialTransformationMatrixes: true });
+  L.panel.innerHTML = `<div data-out></div><div class="mp-mem"></div>`;
+  const out = L.panel.querySelector("[data-out]"), mem = memWatch(ctx);
+  const src = document.createElement("canvas"), sg = src.getContext("2d");
+  const samples = [IMG.woman, IMG.afro, IMG.portrait, IMG.selfie];
+  let img = null, region = 0, mirror = false, res = null, ms = 0;
+  const detect = () => {
+    if (!img) return;
+    const k = Math.min(1, 900 / Math.max(img.naturalWidth, img.naturalHeight));
+    src.width = Math.round(img.naturalWidth * k); src.height = Math.round(img.naturalHeight * k);
+    sg.save();
+    if (mirror) { sg.scale(-1, 1); sg.drawImage(img, -src.width, 0, src.width, src.height); } else sg.drawImage(img, 0, 0, src.width, src.height);
+    sg.restore();
+    const t0 = performance.now();
+    res = hd.task.detect(src);
+    ms = performance.now() - t0;
+    paint();
+  };
+  const paint = () => {
+    L.draw(src);
+    const lw = Math.max(1.5, L.cvs.width / 260), g = L.g;
+    const face = res.faceLandmarks[0];
+    if (!face) { L.tag.textContent = ""; out.innerHTML = hero("🙂", "沒有偵測到臉", "換一張照片") + kv([["推論", fmtMs(ms)]]); return; }
+    drawFaceMesh(du, face, lw, REGIONS[region][1]);
+    const m = res.facialTransformationMatrixes[0].data;
+    const R = (r, c) => m[c * 4 + r];   // column-major 4x4
+    const pitch = (Math.asin(-Math.max(-1, Math.min(1, R(1, 2)))) * 180) / Math.PI;
+    const yaw = (Math.atan2(R(0, 2), R(2, 2)) * 180) / Math.PI;
+    const roll = (Math.atan2(R(1, 0), R(1, 1)) * 180) / Math.PI;
+    // axis gizmo at the nose tip: canonical face space is x right, y up, z toward the camera
+    const b = boxOf(face), len = (b.x1 - b.x0) * L.cvs.width * 0.45, nose = face[1];
+    const nx = nose.x * L.cvs.width, ny = nose.y * L.cvs.height;
+    [["#f72585", 0, "X"], ["#7bd389", 1, "Y"], ["#4cc9f0", 2, "Z"]].forEach(([col, c, t]) => {
+      const ex = nx + R(0, c) * len, ey = ny - R(1, c) * len;
+      g.strokeStyle = col; g.lineWidth = lw * 2.2; g.lineCap = "round";
+      g.beginPath(); g.moveTo(nx, ny); g.lineTo(ex, ey); g.stroke();
+      g.fillStyle = col; g.font = `700 ${Math.round(lw * 9)}px ${getComputedStyle(document.body).getPropertyValue("--mono")}`; g.fillText(t, ex + lw * 2, ey);
+    });
+    const cats = (res.faceBlendshapes[0]?.categories || []).filter((c) => c.categoryName !== "_neutral").sort((a, b2) => b2.score - a.score).slice(0, 10);
+    L.tag.innerHTML = `${mirror ? "鏡像輸入・" : ""}<i>outputFacialTransformationMatrixes</i>`;
+    out.innerHTML = `<h4>頭部姿態（由 4×4 轉換矩陣求得）</h4>` +
+      bars([["俯仰 pitch", 0.5 + pitch / 180, `${pitch.toFixed(1)}°`], ["偏航 yaw", 0.5 + yaw / 180, `${yaw.toFixed(1)}°`], ["翻滾 roll", 0.5 + roll / 180, `${roll.toFixed(1)}°`]]) +
+      kv([["與相機距離（模型預設內參估計）", `${Math.abs(m[14]).toFixed(0)} cm`]]) +
+      `<h4 style="margin-top:8px">52 個表情係數，前 10 名</h4>` +
+      bars(cats.map((c) => [`${BS_ZH[c.categoryName] || c.categoryName}`, c.score, c.score.toFixed(2)]), "wide") +
+      kv([["網格點", `${face.length}`], ["推論", fmtMs(ms)], ["委派", DEL(hd.delegate)]]) +
+      `<p class="mp-note">開啟「鏡像輸入」會把同一張照片左右翻轉後重算：yaw 與 roll 變號，左右眼與嘴角的係數互換。</p>`;
+  };
+  ctx.group(REGIONS.map((r) => r[0]), 0, (i) => { region = i; if (res) paint(); });
+  ctx.toggle("鏡像輸入", false, (v) => { mirror = v; detect(); });
+  const pick = async (i) => {
+    try { img = await loadImg(samples[i][0]); if (ctx.active) { L.msg.textContent = ""; detect(); mem(); } } catch (e) { guard(L)(e); }
+  };
+  thumbStrip(L.thumbs, samples, pick)(0);
+  await pick(0);
 }
+
+// ---------- scene 4: object detection ----------
+const COCO_ZH = Object.fromEntries(("person:人,bicycle:腳踏車,car:汽車,motorcycle:機車,airplane:飛機,bus:公車,train:火車,truck:卡車,boat:船,traffic light:紅綠燈," +
+  "fire hydrant:消防栓,stop sign:停車標誌,parking meter:停車收費錶,bench:長椅,bird:鳥,cat:貓,dog:狗,horse:馬,sheep:羊,cow:牛,elephant:大象,bear:熊," +
+  "zebra:斑馬,giraffe:長頸鹿,backpack:背包,umbrella:雨傘,handbag:手提包,tie:領帶,suitcase:行李箱,frisbee:飛盤,skis:滑雪板,snowboard:單板滑雪板," +
+  "sports ball:球,kite:風箏,baseball bat:球棒,baseball glove:棒球手套,skateboard:滑板,surfboard:衝浪板,tennis racket:網球拍,bottle:瓶子," +
+  "wine glass:酒杯,cup:杯子,fork:叉子,knife:刀子,spoon:湯匙,bowl:碗,banana:香蕉,apple:蘋果,sandwich:三明治,orange:柳橙,broccoli:花椰菜," +
+  "carrot:紅蘿蔔,hot dog:熱狗,pizza:披薩,donut:甜甜圈,cake:蛋糕,chair:椅子,couch:沙發,potted plant:盆栽,bed:床,dining table:餐桌,toilet:馬桶," +
+  "tv:電視,laptop:筆電,mouse:滑鼠,remote:遙控器,keyboard:鍵盤,cell phone:手機,microwave:微波爐,oven:烤箱,toaster:烤麵包機,sink:水槽," +
+  "refrigerator:冰箱,book:書,clock:時鐘,vase:花瓶,scissors:剪刀,teddy bear:泰迪熊,hair drier:吹風機,toothbrush:牙刷").split(",").map((s) => s.split(":")));
+const PALETTE = ["#f7df1e", "#4cc9f0", "#f72585", "#7bd389", "#ff8c42", "#9d8cff", "#ecebe6", "#2ec4b6", "#e76f51", "#90be6d"];
+const ALLOW = [
+  { value: "all", label: "全部 80 類", list: [] },
+  { value: "person", label: "只要人", list: ["person"] },
+  { value: "vehicle", label: "只要車輛", list: ["car", "truck", "bus", "motorcycle", "bicycle", "train"] },
+  { value: "animal", label: "只要動物", list: ["dog", "cat", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "bird"] },
+];
+
+async function mountObjects(ctx) {
+  await ready(ctx, ["det16"]);
+  const L = layout(ctx);
+  const opts = { scoreThreshold: 0.3, maxResults: 20, categoryAllowlist: [] };
+  const hd = await makeTask(ctx, mp.ObjectDetector, "det16", { runningMode: "IMAGE", ...opts });
+  L.panel.innerHTML = `<div data-out></div><div class="mp-mem"></div>`;
+  const out = L.panel.querySelector("[data-out]"), mem = memWatch(ctx);
+  const samples = [IMG.city, IMG.catdog, IMG.football, IMG.savanna, IMG.corgi];
+  let img = null, busy = false, again = false, allow = "all";
+  const run = async () => {
+    if (!img) return;
+    if (busy) { again = true; return; }
+    busy = true;
+    try {
+      await hd.task.setOptions(opts);
+      if (!ctx.active) return;
+      const k = L.draw(img);
+      const t0 = performance.now();
+      const res = hd.task.detect(img);
+      const ms = performance.now() - t0;
+      const g = L.g, lw = Math.max(2, L.cvs.width / 300), colors = {}, counts = {};
+      g.font = `600 ${Math.round(lw * 7)}px ${getComputedStyle(document.body).getPropertyValue("--font")}`;
+      res.detections.forEach((d) => {
+        const c = d.categories[0], name = COCO_ZH[c.categoryName] || c.categoryName;
+        colors[name] ??= PALETTE[Object.keys(colors).length % PALETTE.length];
+        counts[name] = (counts[name] || 0) + 1;
+        const { originX: x, originY: y, width: w, height: hh } = d.boundingBox;
+        g.strokeStyle = colors[name]; g.lineWidth = lw; g.strokeRect(x * k, y * k, w * k, hh * k);
+        const label = `${name} ${pct(c.score)}`, tw = g.measureText(label).width + lw * 4, th = lw * 9;
+        g.fillStyle = colors[name]; g.fillRect(x * k, Math.max(0, y * k - th), tw, th);
+        g.fillStyle = "#0a0c0f"; g.fillText(label, x * k + lw * 2, Math.max(th, y * k) - lw * 2.2);
+      });
+      const n = res.detections.length;
+      L.tag.innerHTML = `scoreThreshold <i>${opts.scoreThreshold.toFixed(2)}</i>・maxResults <i>${opts.maxResults}</i>`;
+      out.innerHTML = hero("📦", `${n} 個物件`, `${Object.keys(counts).length} 種類別，COCO 80 類`) +
+        `<div class="mp-legend">${Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([nm, c]) => `<span><i style="background:${colors[nm]}"></i>${nm}<b>×${c}</b></span>`).join("") || "<span>沒有符合條件的物件</span>"}</div>` +
+        bars(res.detections.slice(0, 8).map((d) => [COCO_ZH[d.categories[0].categoryName] || d.categories[0].categoryName, d.categories[0].score])) +
+        kv([["推論", fmtMs(ms)], ["委派", DEL(hd.delegate)], ["模型", "EfficientDet-Lite0 float16"]]) +
+        `<pre class="mp-code">detector.<u>setOptions</u>({\n  scoreThreshold: <em>${opts.scoreThreshold.toFixed(2)}</em>,\n  maxResults: <em>${opts.maxResults}</em>,\n  categoryAllowlist: [${opts.categoryAllowlist.map((c) => `"${c}"`).join(", ")}]\n})</pre>`;
+      mem();
+    } catch (e) { guard(L)(e); } finally {
+      busy = false;
+      if (again && ctx.active) { again = false; run(); }
+    }
+  };
+  ctx.slider("信心門檻", { min: 0.05, max: 0.9, step: 0.05, value: opts.scoreThreshold, format: (v) => v.toFixed(2) }, (v) => { opts.scoreThreshold = v; run(); });
+  ctx.slider("最多結果", { min: 1, max: 30, step: 1, value: opts.maxResults }, (v) => { opts.maxResults = v; run(); });
+  ctx.select("類別", ALLOW.map(({ value, label }) => ({ value, label })), allow, (v) => { allow = v; opts.categoryAllowlist = ALLOW.find((a) => a.value === v).list; run(); });
+  const pick = async (i) => { try { img = await loadImg(samples[i][0]); if (ctx.active) { L.msg.textContent = ""; run(); } } catch (e) { guard(L)(e); } };
+  thumbStrip(L.thumbs, samples, pick)(0);
+  await pick(0);
+}
+
+// ---------- scene 5: image segmentation ----------
+const VOC_ZH = ["背景", "飛機", "腳踏車", "鳥", "船", "瓶子", "公車", "汽車", "貓", "椅子", "牛", "餐桌", "狗", "馬", "機車", "人", "盆栽", "羊", "沙發", "火車", "電視"];
+const VOC_RGB = [[0, 0, 0], [247, 223, 30], [76, 201, 240], [123, 211, 137], [255, 140, 66], [157, 140, 255], [46, 196, 182], [76, 201, 240], [255, 140, 66], [231, 111, 81],
+  [144, 190, 109], [233, 196, 106], [247, 223, 30], [157, 140, 255], [42, 157, 143], [247, 37, 133], [123, 211, 137], [236, 235, 230], [244, 162, 97], [69, 123, 157], [168, 218, 220]];
+const SEG_BG = ["模糊背景", "單色背景", "黑白背景", "只看遮罩"];
+
+async function mountSegment(ctx) {
+  await ready(ctx, ["deeplab", "selfie"]);
+  const L = layout(ctx);
+  L.panel.innerHTML = `<div data-out></div><div class="mp-mem"></div>`;
+  const out = L.panel.querySelector("[data-out]"), mem = memWatch(ctx);
+  const samples = [IMG.catdog, IMG.city, IMG.football, IMG.selfie, IMG.woman];
+  const blur = document.createElement("canvas"), gray = document.createElement("canvas");
+  let which = 0, hd = null, img = null, bg = 0, gen = 0;
+  const build = async (i) => {
+    const my = ++gen;
+    which = i;
+    hd?.close(); hd = null;
+    const key = i === 0 ? "deeplab" : "selfie";
+    const h2 = await makeTask(ctx, mp.ImageSegmenter, key, { runningMode: "IMAGE", outputCategoryMask: i === 0, outputConfidenceMasks: i === 1 });
+    if (my !== gen) { h2.close(); return; }
+    // DrawingUtils renders masks with WebGL2: hand it the task's own context so no extra context is created.
+    h2.du = new mp.DrawingUtils(L.g, h2.canvas.getContext("webgl2"));
+    hd = h2;
+    bgCtl.style.display = i === 1 ? "" : "none";
+    run();
+    mem();
+  };
+  const run = () => {
+    if (!hd || !img) return;
+    L.msg.textContent = "";
+    const k = L.draw(img, 900);
+    const W = L.cvs.width, H = L.cvs.height;
+    const t0 = performance.now();
+    let info = "";
+    hd.task.segment(img, (res) => {
+      const ms = performance.now() - t0;
+      if (which === 0) {
+        const mask = res.categoryMask, arr = mask.getAsUint8Array(), cnt = new Array(21).fill(0);
+        for (const v of arr) cnt[v]++;
+        hd.du.drawCategoryMask(mask, VOC_RGB.map((c, n) => [...c, n ? 175 : 0]), img);
+        const labels = hd.task.getLabels();
+        const found = cnt.map((c, n) => [n, c / arr.length]).filter(([n, f]) => n && f > 0.002).sort((a, b) => b[1] - a[1]);
+        info = hero("🏷️", `${found.length} 種類別`, `DeepLab v3・${mask.width}×${mask.height} 類別遮罩`) +
+          `<div class="mp-legend">${found.map(([n, f]) => `<span><i style="background:rgb(${VOC_RGB[n]})"></i>${VOC_ZH[n]}<b>${(f * 100).toFixed(1)}%</b></span>`).join("") || "<span>只有背景</span>"}</div>` +
+          bars(found.slice(0, 6).map(([n, f]) => [`${VOC_ZH[n]} <small>${labels[n] || ""}</small>`, f, `${(f * 100).toFixed(1)}%`])) +
+          kv([["推論＋上色", fmtMs(ms)], ["委派", DEL(hd.delegate)], ["背景占比", `${((cnt[0] / arr.length) * 100).toFixed(1)}%`]]) +
+          `<pre class="mp-code">segmenter.<u>segment</u>(img, (r) =&gt;\n  draw.<u>drawCategoryMask</u>(r.categoryMask, colors, img))</pre>` +
+          `<p class="mp-note">DeepLab v3 的輸入只有 257×257，放大回原圖後邊界較粗，也可能認錯類別（例如把捲毛狗判成馬），這是模型本身的極限。</p>`;
+      } else {
+        const mask = res.confidenceMasks[0], arr = mask.getAsFloat32Array();
+        let fg = 0, soft = 0;
+        for (const v of arr) { if (v > 0.5) fg++; if (v > 0.1 && v < 0.9) soft++; }
+        let back;
+        if (bg === 0) { blur.width = W; blur.height = H; const b = blur.getContext("2d"); b.filter = `blur(${Math.round(W / 60)}px)`; b.drawImage(img, 0, 0, W, H); back = blur; }
+        else if (bg === 1) back = [24, 46, 92, 255];
+        else if (bg === 2) { gray.width = W; gray.height = H; const b = gray.getContext("2d"); b.filter = "grayscale(1) brightness(.75)"; b.drawImage(img, 0, 0, W, H); back = gray; }
+        else back = [10, 12, 15, 255];
+        hd.du.drawConfidenceMask(mask, back, bg === 3 ? [255, 255, 255, 255] : img);
+        info = hero("👤", `人像 ${((fg / arr.length) * 100).toFixed(1)}%`, `selfie_segmenter・${mask.width}×${mask.height} 信心遮罩`) +
+          bars([["人像像素", fg / arr.length], ["半透明邊緣", soft / arr.length]]) +
+          kv([["推論＋合成", fmtMs(ms)], ["委派", DEL(hd.delegate)], ["背景", SEG_BG[bg]]]) +
+          `<pre class="mp-code">draw.<u>drawConfidenceMask</u>(\n  r.confidenceMasks[0],\n  <em>${bg === 1 ? "[24,46,92,255]" : bg === 3 ? "黑色" : "背景畫布"}</em>, ${bg === 3 ? "白色" : "img"})</pre>` +
+          `<p class="mp-note">信心遮罩是 0 到 1 的浮點數，邊緣（頭髮）會是半透明過渡，不像類別遮罩只有整數類別。</p>`;
+      }
+    });
+    L.tag.innerHTML = which === 0 ? "語意分割・<i>categoryMask</i>" : "人像分割・<i>confidenceMasks[0]</i>";
+    out.innerHTML = info;
+  };
+  ctx.group(["🏷️ 21 類語意分割", "👤 人像分割"], 0, (i) => build(i).catch(guard(L)));
+  const bgCtl = ctx.select("背景", SEG_BG.map((label, value) => ({ value: String(value), label })), "0", (v) => { bg = +v; run(); }).closest("label");
+  bgCtl.style.display = "none";
+  const pick = async (i) => { try { img = await loadImg(samples[i][0]); if (ctx.active) { L.msg.textContent = ""; run(); } } catch (e) { guard(L)(e); } };
+  thumbStrip(L.thumbs, samples, pick)(0);
+  img = await loadImg(samples[0][0]);
+  await build(0);
+}
+
+// ---------- scene 6: IMAGE vs VIDEO running mode ----------
+async function mountModes(ctx) {
+  await ready(ctx, ["pose"]);
+  ctx.html(`<div class="mp-wrap"><div class="mp-view"><div class="mp-tiles"><div class="mp-tile"><canvas data-a></canvas><span class="mp-tag">IMAGE・<i>detect()</i></span></div>
+    <div class="mp-tile"><canvas data-b></canvas><span class="mp-tag r">VIDEO・<i>detectForVideo(frame, ts)</i></span></div></div><div class="mp-msg"></div></div>
+    <aside class="mp-panel"><div data-out></div><div class="mp-mem"></div></aside></div>`);
+  const tiles = [ctx.$("[data-a]"), ctx.$("[data-b]")], out = ctx.$("[data-out]"), msg = ctx.$(".mp-msg");
+  const dus = tiles.map((c) => new mp.DrawingUtils(c.getContext("2d")));
+  ctx.onCleanup(() => dus.forEach((d) => d.close()));
+  const img = await loadImg(IMG.pose[0]);
+  const hi = await makeTask(ctx, mp.PoseLandmarker, "pose", { runningMode: "IMAGE", numPoses: 1 });
+  const hv = await makeTask(ctx, mp.PoseLandmarker, "pose", { runningMode: "VIDEO", numPoses: 1 });
+  const mem = memWatch(ctx);
+  const W = 640, H = Math.round((640 * img.naturalHeight) / img.naturalWidth);
+  const frame = Object.assign(document.createElement("canvas"), { width: W, height: H }), fg = frame.getContext("2d", { willReadFrequently: true });
+  tiles.forEach((c) => { c.width = W; c.height = H; });
+  let noise = 24, pan = false, paused = false, ts = 0, n = 0;
+  const KEY = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
+  const st = [0, 1].map(() => ({ prev: null, jit: [], ms: [], trail: [] }));
+  const reset = () => st.forEach((s) => { s.jit.length = 0; s.trail.length = 0; s.prev = null; });
+  ctx.slider("感光雜訊", { min: 0, max: 48, step: 4, value: noise, format: (v) => `±${v / 2}` }, (v) => { noise = v; reset(); });
+  ctx.toggle("緩慢平移", false, (v) => { pan = v; reset(); });
+  ctx.toggle("暫停", false, (v) => (paused = v));
+  const avg = (a) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : 0);
+  const step = () => {
+    // a still subject filmed by a noisy sensor; optionally a slow, known camera pan
+    const dx = pan ? 10 * Math.sin(n * 0.08) : 0, dy = pan ? 5 * Math.sin(n * 0.11) : 0;
+    fg.drawImage(img, -12 + dx, -12 + dy, W + 24, H + 24);
+    if (noise) {
+      const id = fg.getImageData(0, 0, W, H), d = id.data;
+      for (let k = 0; k < d.length; k += 4) { const z = (Math.random() - 0.5) * noise; d[k] += z; d[k + 1] += z; d[k + 2] += z; }
+      fg.putImageData(id, 0, 0);
+    }
+    ts = Math.max(ts + 1, performance.now());
+    const runs = [() => hi.task.detect(frame), () => hv.task.detectForVideo(frame, ts)];
+    n++;
+    runs.forEach((fn, i) => {
+      const t0 = performance.now(), r = fn(), ms = performance.now() - t0, s = st[i];
+      s.ms.push(ms); if (s.ms.length > 30) s.ms.shift();
+      const lms = r.landmarks[0];
+      const c = tiles[i], g = c.getContext("2d");
+      g.drawImage(frame, 0, 0);
+      if (!lms) { s.prev = null; return; }
+      // subtract the known pan so the number reflects the model's own frame-to-frame wobble (plus any tracking lag)
+      const P = KEY.map((k) => [lms[k].x * W - dx, lms[k].y * H - dy]);
+      if (s.prev) { s.jit.push(avg(P.map((p, k) => Math.hypot(p[0] - s.prev[k][0], p[1] - s.prev[k][1])))); if (s.jit.length > 30) s.jit.shift(); }
+      s.prev = P;
+      s.trail.push([P[5][0], P[5][1], P[6][0], P[6][1]]); if (s.trail.length > 40) s.trail.shift();
+      drawPose(dus[i], lms, 2);
+      g.fillStyle = i ? "#4cc9f0" : "#f72585";
+      for (const t of s.trail) { g.fillRect(t[0] + dx - 1.5, t[1] + dy - 1.5, 3, 3); g.fillRect(t[2] + dx - 1.5, t[3] + dy - 1.5, 3, 3); }
+    });
+    const [a, b] = st;
+    out.innerHTML = `<h4>同一串雜訊畫面，兩種執行模式</h4><p>IMAGE 每張獨立偵測；VIDEO 沿用上一幀的位置追蹤並做時間平滑，必須傳入遞增的時間戳。</p>` +
+      `<div class="mp-stats"><div class="mp-stat a"><b>${avg(a.jit).toFixed(2)} px</b><span>IMAGE 抖動</span></div><div class="mp-stat b"><b>${avg(b.jit).toFixed(2)} px</b><span>VIDEO 抖動</span></div>` +
+      `<div class="mp-stat a"><b>${fmtMs(avg(a.ms))}</b><span>IMAGE 每幀</span></div><div class="mp-stat b"><b>${fmtMs(avg(b.ms))}</b><span>VIDEO 每幀</span></div></div>` +
+      kv([["已處理幀數", fmt(n)], ["雜訊", `±${noise / 2} 灰階`], ["平移", pan ? "±10 px 正弦" : "關閉"], ["委派", DEL(hi.delegate)]]) +
+      `<p class="mp-note">人物靜止，畫面每幀只差在隨機雜訊，所以關鍵點的移動全是模型抖動。抖動＝13 個主要關節（扣除已知平移）相鄰兩幀的平均位移，30 幀移動平均。開啟平移時，VIDEO 的平滑會稍微落後畫面，延遲也會算進數字。手腕小點是最近 40 幀軌跡。</p>`;
+  };
+  let busy = false;
+  ctx.raf(() => {
+    if (paused || busy) return;
+    busy = true;
+    try { step(); } catch (e) { paused = true; console.error(e); msg.textContent = `處理失敗：${e.message || e}`; } finally { busy = false; }
+  });
+  mem();
+}
+
+// ---------- scene 7: GPU vs CPU delegate ----------
+const DEL_MODELS = [
+  { value: "hand", label: "手部關鍵點", key: "hand", cls: "HandLandmarker", opts: { numHands: 2 }, img: IMG.victory },
+  { value: "det16", label: "物件偵測 float16", key: "det16", cls: "ObjectDetector", opts: { scoreThreshold: 0.3, maxResults: 20 }, img: IMG.city },
+  { value: "det8", label: "物件偵測 int8", key: "det8", cls: "ObjectDetector", opts: { scoreThreshold: 0.3, maxResults: 20 }, img: IMG.city },
+];
+async function mountDelegate(ctx) {
+  await ready(ctx, ["hand"]);
+  ctx.html(`<div class="mp-wrap"><div class="mp-view"><div class="mp-tiles"><div class="mp-tile"><canvas data-a></canvas><span class="mp-tag">GPU 委派</span></div>
+    <div class="mp-tile"><canvas data-b></canvas><span class="mp-tag r">CPU 委派</span></div></div><div class="mp-msg"></div></div>
+    <aside class="mp-panel"><div data-out></div><div class="mp-mem"></div></aside></div>`);
+  const tiles = [ctx.$("[data-a]"), ctx.$("[data-b]")], tags = ctx.$$(".mp-tile .mp-tag"), out = ctx.$("[data-out]"), msg = ctx.$(".mp-msg");
+  const mem = memWatch(ctx), info = pickDelegate();
+  let cur = DEL_MODELS[0], gen = 0;
+  const N = 8;
+  const drawResult = (i, img, r) => {
+    const c = tiles[i], g = c.getContext("2d"), k = Math.min(1, 640 / Math.max(img.naturalWidth, img.naturalHeight));
+    c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+    g.drawImage(img, 0, 0, c.width, c.height);
+    if (!r) return;
+    if (cur.key === "hand") { const du = new mp.DrawingUtils(g); r.landmarks.forEach((l) => drawHand(du, l, 2.5)); du.close(); }
+    else {
+      g.lineWidth = 2.5; g.strokeStyle = i ? "#4cc9f0" : "#f72585";
+      r.detections.forEach((d) => { const b = d.boundingBox; g.strokeRect(b.originX * k, b.originY * k, b.width * k, b.height * k); });
+    }
+  };
+  const summary = (r) => (!r ? "失敗" : cur.key === "hand" ? `${r.landmarks.length} 隻手` : `${r.detections.length} 個物件`);
+  const agree = (a, b) => {
+    if (!a || !b) return "無法比較";
+    if (cur.key === "hand") {
+      if (!a.landmarks[0] || !b.landmarks[0]) return "其中一邊沒偵測到手";
+      const d = a.landmarks[0].reduce((s, p, k) => s + Math.hypot(p.x - b.landmarks[0][k].x, p.y - b.landmarks[0][k].y), 0) / 21;
+      return `關鍵點平均差 ${(d * 1000).toFixed(1)}‰`;
+    }
+    const ca = a.detections.map((d) => d.categories[0].categoryName).sort().join(), cb = b.detections.map((d) => d.categories[0].categoryName).sort().join();
+    return ca === cb ? "類別完全一致" : `GPU ${a.detections.length} 個 / CPU ${b.detections.length} 個`;
+  };
+  const compare = async () => {
+    const my = ++gen, m = cur;
+    msg.textContent = "";
+    try {
+      await ready(ctx, [m.key]);
+      const img = await loadImg(m.img[0]);
+      const rows = [];
+      tiles.forEach((_, i) => drawResult(i, img, null));
+      for (const [i, d] of [[0, "GPU"], [1, "CPU"]]) {
+        if (my !== gen) return;
+        tags[i].innerHTML = `${d} 委派・<i>建立中…</i>`;
+        const row = { d, create: null, first: null, avg: null, res: null, err: null };
+        rows.push(row);
+        paint(rows, m);
+        let hd = null;
+        try {
+          await ctx.frame(2);
+          hd = await makeTask(ctx, mp[m.cls], m.key, { runningMode: "IMAGE", ...m.opts }, d, { fallback: false, quiet: true });
+          row.create = hd.createMs;
+          mem();
+          const call = () => (m.key === "hand" ? hd.task.detect(img) : hd.task.detect(img));
+          let t0 = performance.now();
+          row.res = call();
+          row.first = performance.now() - t0;
+          paint(rows, m);
+          let sum = 0;
+          for (let k = 0; k < N; k++) {
+            await ctx.frame();
+            if (my !== gen) return;
+            t0 = performance.now(); row.res = call(); sum += performance.now() - t0;
+            row.avg = sum / (k + 1);
+            tags[i].innerHTML = `${d} 委派・<i>${k + 1}/${N}</i>`;
+            if (k % 2 === 0) paint(rows, m);
+          }
+          drawResult(i, img, row.res);
+          tags[i].innerHTML = `${d} 委派・<i>${fmtMs(row.avg)}</i>・${summary(row.res)}`;
+        } catch (e) {
+          if (isAbort(e)) throw e;
+          row.err = e.message || String(e);
+          tags[i].innerHTML = `${d} 委派・無法建立`;
+        } finally {
+          hd?.close();
+          mem();
+        }
+        paint(rows, m);
+      }
+    } catch (e) { if (!isAbort(e)) { console.error(e); msg.textContent = `比較失敗：${e.message || e}`; } }
+  };
+  const paint = (rows, m) => {
+    const cell = (r, k) => (r.err ? (k === "create" ? "失敗" : "－") : r[k] == null ? "…" : fmtMs(r[k]));
+    const best = (k) => { const v = rows.filter((r) => r[k] != null && !r.err); return v.length === 2 ? (v[0][k] < v[1][k] ? 0 : 1) : -1; };
+    const th = ["GPU", "CPU"];
+    out.innerHTML = `<h4>${m.label}</h4><p>同一個模型與同一張照片，分別用 GPU（WebGL）與 CPU（WASM＋XNNPACK）委派建立任務。</p>` +
+      `<table class="mp-table"><tr><th></th>${rows.map((r) => `<th>${r.d}</th>`).join("")}</tr>` +
+      [["建立任務", "create"], ["第一次呼叫", "first"], [`平均（${N} 次）`, "avg"]].map(([nm, k]) =>
+        `<tr><td>${nm}</td>${rows.map((r, i) => `<td class="${best(k) === i ? "best" : ""}">${cell(r, k)}</td>`).join("")}</tr>`).join("") +
+      `<tr><td>結果</td>${rows.map((r) => `<td>${r.err ? "－" : summary(r.res)}</td>`).join("")}</tr></table>` +
+      (rows.length === 2 && rows[1].avg != null ? kv([["兩者一致性", agree(rows[0].res, rows[1].res)]]) : "") +
+      rows.filter((r) => r.err).map((r) => `<p class="mp-note" style="display:block">${r.d} 委派錯誤：${r.err}</p>`).join("") +
+      kv([["WebGL 繪圖器", `<span title="${info.renderer}">${info.renderer.length > 26 ? info.renderer.slice(0, 26) + "…" : info.renderer}</span>`], ["其他場景自動選用", DEL(info.d)]]) +
+      `<p class="mp-note">${info.why}。軟體繪圖（SwiftShader 等）下 GPU 委派反而較慢；int8 量化模型在部分 GPU 上不相容，結果可能是 0 個物件，這也是官方多提供 float16 版本的原因。</p>`;
+  };
+  ctx.select("模型", DEL_MODELS.map(({ value, label }) => ({ value, label })), cur.value, (v) => { cur = DEL_MODELS.find((m) => m.value === v); compare(); });
+  ctx.button("重新比較", () => compare(), { primary: true });
+  await compare();
+}
+
+// ---------- scene 8: stress test ----------
+const STRESS = [
+  { label: "臉部網格", key: "face", cls: "FaceLandmarker", opts: { numFaces: 1 }, img: IMG.woman,
+    run: (t, c) => t.detect(c).faceLandmarks, draw: (g, r, x, y, w, hh) => r.forEach((l) => l.forEach((p, k) => k % 3 || g.fillRect(x + p.x * w, y + p.y * hh, 1.5, 1.5))) },
+  { label: "手部", key: "hand", cls: "HandLandmarker", opts: { numHands: 2 }, img: IMG.victory,
+    run: (t, c) => t.detect(c).landmarks, draw: (g, r, x, y, w, hh) => r.forEach((l) => l.forEach((p) => g.fillRect(x + p.x * w - 1.5, y + p.y * hh - 1.5, 3, 3))) },
+  { label: "姿勢", key: "pose", cls: "PoseLandmarker", opts: { numPoses: 1 }, img: IMG.pose,
+    run: (t, c) => t.detect(c).landmarks, draw: (g, r, x, y, w, hh) => r.forEach((l) => l.forEach((p) => g.fillRect(x + p.x * w - 1.5, y + p.y * hh - 1.5, 3, 3))) },
+  { label: "物件", key: "det16", cls: "ObjectDetector", opts: { scoreThreshold: 0.35, maxResults: 10 }, img: IMG.city,
+    run: (t, c) => t.detect(c).detections, draw: (g, r, x, y, w, hh, cw, ch) => r.forEach((d) => g.strokeRect(x + (d.boundingBox.originX / cw) * w, y + (d.boundingBox.originY / ch) * hh, (d.boundingBox.width / cw) * w, (d.boundingBox.height / ch) * hh)) },
+  { label: "人像分割", key: "selfie", cls: "ImageSegmenter", opts: { outputConfidenceMasks: true, outputCategoryMask: false }, img: IMG.selfie,
+    run: (t, c) => { let f = 0; t.segment(c, (r) => { const a = r.confidenceMasks[0].getAsFloat32Array(); let n = 0; for (let k = 0; k < a.length; k += 16) n += a[k] > 0.5; f = (n * 16) / a.length; }); return f; },
+    draw: (g, f, x, y, w, hh) => g.fillText(`人像 ${(f * 100).toFixed(0)}%`, x + 6, y + hh - 8) },
+];
+async function mountStress(ctx) {
+  await ready(ctx, ["face"]);
+  ctx.el.classList.add("mp-st");
+  ctx.html(`<div class="mp-stress"><div class="mp-view"><canvas></canvas><span class="mp-tag" data-tag></span><div class="mp-msg"></div></div></div>`);
+  const view = ctx.$(".mp-view canvas"), g = view.getContext("2d"), tag = ctx.$("[data-tag]"), msg = ctx.$(".mp-msg");
+  const crop = document.createElement("canvas"), cg = crop.getContext("2d");
+  let cur = null, hd = null, img = null, gen = 0, N = 1, calls = [], last = 0;
+  const sizeView = () => { const r = view.getBoundingClientRect(), d = Math.min(2, devicePixelRatio || 1); view.width = Math.max(1, Math.round(r.width * d)); view.height = Math.max(1, Math.round(r.height * d)); };
+  watch(ctx, view, sizeView);
+  sizeView();
+  const use = async (i) => {
+    const my = ++gen, m = STRESS[i];
+    hd?.close(); hd = null; cur = null;
+    try {
+      await ready(ctx, [m.key]);
+      const im = await loadImg(m.img[0]);
+      const h2 = await makeTask(ctx, mp[m.cls], m.key, { runningMode: "IMAGE", ...m.opts });
+      if (my !== gen) { h2.close(); return; }
+      img = im; hd = h2; cur = m; calls = [];
+      const k = Math.min(1, 384 / Math.max(img.naturalWidth, img.naturalHeight) / 0.75);
+      crop.width = Math.round(img.naturalWidth * 0.75 * k); crop.height = Math.round(img.naturalHeight * 0.75 * k);
+      msg.textContent = "";
+    } catch (e) { if (!isAbort(e)) { console.error(e); msg.textContent = `載入失敗：${e.message || e}`; } }
+  };
+  ctx.select("模型", STRESS.map((m, i) => ({ value: String(i), label: m.label })), "0", (v) => use(+v));
+  ctx.raf((t) => {
+    if (!hd || !cur) return;
+    const W = view.width, H = view.height, cols = Math.ceil(Math.sqrt(N)), rows = Math.ceil(N / cols);
+    const cw = crop.width, ch = crop.height, tw = W / cols, th = H / rows;
+    const s = Math.min(tw / cw, th / ch) * 0.96, dw = cw * s, dh = ch * s;
+    g.fillStyle = "#0a0c0f"; g.fillRect(0, 0, W, H);
+    g.lineWidth = 2; g.strokeStyle = "#f7df1e"; g.fillStyle = "#f7df1e"; g.font = `600 ${Math.max(11, Math.round(dh / 14))}px ${getComputedStyle(document.body).getPropertyValue("--font")}`;
+    let spent = 0;
+    for (let i = 0; i < N; i++) {
+      // each "stream" pans a different 75% window across the photo, so every call sees a new frame
+      const ph = t / 900 + i * 1.7, sx = (0.125 + 0.125 * Math.sin(ph)) * img.naturalWidth, sy = (0.125 + 0.125 * Math.cos(ph * 0.8)) * img.naturalHeight;
+      cg.drawImage(img, sx, sy, img.naturalWidth * 0.75, img.naturalHeight * 0.75, 0, 0, cw, ch);
+      const t0 = performance.now();
+      const r = cur.run(hd.task, crop);
+      spent += performance.now() - t0;
+      calls.push(performance.now());
+      const x = (i % cols) * tw + (tw - dw) / 2, y = Math.floor(i / cols) * th + (th - dh) / 2;
+      g.drawImage(crop, x, y, dw, dh);
+      g.fillStyle = "#f7df1e";
+      cur.draw(g, r, x, y, dw, dh, cw, ch);
+    }
+    last = spent / N;
+    const now = performance.now();
+    while (calls.length && calls[0] < now - 1000) calls.shift();
+    tag.innerHTML = `${cur.label}・每幀 <i>${N}</i> 次 detect・單次 <i>${last.toFixed(1)} ms</i>・${DEL(hd.delegate)}`;
+  });
+  ctx.ramp({
+    label: "每幀推論", unit: "次", steps: [1, 2, 3, 4, 6, 8, 12, 16], minFps: 24,
+    apply: (n) => { N = n; calls = []; },
+    metrics: () => ({ "每秒推論": `${calls.length} 次`, "單次耗時": `${last.toFixed(1)} ms`, "存活 Task": `${LIVE.size}`, "WebGL context": `${glCount()}`, "委派": hd ? hd.delegate : "…" }),
+    note: "每一級在同一幀內連續呼叫 n 次 IMAGE 模式推論，每次輸入不同的平移畫面（模擬 n 路鏡頭）。WASM 推論在主執行緒同步執行，瓶頸是單次推論耗時乘上 n；換模型、換委派（硬體 GPU 通常較快，軟體繪圖下自動改用 CPU）都會大幅改變上限。存活 Task 固定為 1，切換模型時舊任務與它的 WebGL context 會先釋放。",
+  });
+  await use(0);
+}
+
+Showcase.run({ scenes: [
+  { id: "classic", title: "手勢・姿勢・臉部", api: "GestureRecognizer.recognize・PoseLandmarker.detect・FaceLandmarker.detect・DrawingUtils",
+    desc: "原本的招牌示範：同一套執行環境切換三個任務，畫出手部骨架、33 點姿勢與 478 點臉部網格，面板顯示手勢分數、關節角度與表情。",
+    hint: "上方切換任務，點左下範例照片或上傳照片；有鏡頭時可開啟即時偵測",
+    async mount(ctx) { await mountClassic(ctx); } },
+  { id: "hand3d", title: "手部 3D 關鍵點", api: "HandLandmarker.detect → landmarks・worldLandmarks・handedness",
+    desc: "同一隻手的兩種座標：影像座標畫在照片上，世界座標（公尺）畫成可旋轉的 3D 骨架，並由關節夾角判斷每根手指伸直或彎曲。",
+    hint: "拖曳右側 3D 視圖旋轉；換照片看手指狀態與張開幅度",
+    async mount(ctx) { await mountHand3D(ctx); } },
+  { id: "face", title: "表情係數與頭部姿態", api: "FaceLandmarker({ outputFaceBlendshapes, outputFacialTransformationMatrixes })",
+    desc: "52 個表情係數排出前 10 名，4×4 轉換矩陣換算成俯仰、偏航、翻滾角，並在鼻尖畫出頭部座標軸。",
+    hint: "切換網格區域；開「鏡像輸入」看 yaw 變號與左右係數互換",
+    async mount(ctx) { await mountFace(ctx); } },
+  { id: "objects", title: "物件偵測", api: "ObjectDetector.setOptions({ scoreThreshold, maxResults, categoryAllowlist })・detect",
+    desc: "EfficientDet-Lite0 偵測 COCO 80 類物件。信心門檻、結果上限與類別白名單都透過 setOptions 即時套用。",
+    hint: "拉低信心門檻看誤判增加；類別選「只要車輛」只留下車",
+    async mount(ctx) { await mountObjects(ctx); } },
+  { id: "segment", title: "影像分割", api: "ImageSegmenter.segment(img, cb)・DrawingUtils.drawCategoryMask・drawConfidenceMask",
+    desc: "DeepLab v3 輸出 21 類的類別遮罩並統計像素占比；人像模型輸出 0 到 1 的信心遮罩，用 WebGL 合成模糊、單色或黑白背景。",
+    hint: "切換兩種分割；人像模式可換背景效果",
+    async mount(ctx) { await mountSegment(ctx); } },
+  { id: "modes", title: "IMAGE 與 VIDEO 模式", api: "PoseLandmarker({ runningMode: \"IMAGE\" }).detect・({ runningMode: \"VIDEO\" }).detectForVideo(frame, ts)",
+    desc: "兩個姿勢任務吃同一串加了感光雜訊的靜止畫面：IMAGE 每張獨立偵測，VIDEO 追蹤上一幀並做時間平滑，面板量出關節抖動與每幀耗時。",
+    hint: "調整感光雜訊或開啟緩慢平移，比較兩邊的抖動數字與手腕軌跡",
+    async mount(ctx) { await mountModes(ctx); } },
+  { id: "delegate", title: "GPU 與 CPU 委派", api: "baseOptions: { delegate: \"GPU\" | \"CPU\" }",
+    desc: "同一個模型分別用 GPU 與 CPU 委派建立，量建立時間、首次呼叫與平均推論，並比對兩邊結果是否一致。",
+    hint: "換模型重新比較；int8 與 float16 物件模型的差異也在這裡",
+    async mount(ctx) { await mountDelegate(ctx); } },
+  { id: "stress", title: "極限測試", kind: "stress", api: "task.detect(frame) × n（每幀）",
+    desc: "每幀連續推論 n 次（模擬 n 路畫面），逐級加量直到 FPS 掉到 24 以下，量出各模型的每秒推論次數。",
+    hint: "按「自動加壓」；右上角可換模型",
+    async mount(ctx) { await mountStress(ctx); } },
+] });
 </script>
 </body>
 </html>
